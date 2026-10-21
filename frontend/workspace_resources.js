@@ -4,7 +4,8 @@ window.workspaceResourceForm = (container, config) => {
   container.classList.add('workspace-resource-form');
   const field = (parent, label, value, type = 'text') => {
     const row = document.createElement('label'), input = document.createElement('input');
-    row.textContent = label; input.type = type; input.value = value;
+    row.textContent = label; input.type = type; input.value = value; input.required = true;
+    input.setAttribute('aria-label', label);
     input.style.cssText = 'width:100%;box-sizing:border-box';
     if (type === 'number') { input.min = '1024'; input.max = '65535'; }
     row.append(input); parent.append(row); return input;
@@ -18,6 +19,10 @@ window.workspaceResourceForm = (container, config) => {
     const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '移除服务';
     remove.onclick = () => { services.splice(services.indexOf(row), 1); box.remove(); };
     fields.append(remove); rows.append(box); services.push(row);
+    row.name.dialogValidation = value => {
+      const name = value.trim();
+      return name && services.some(other => other !== row && other.name.value.trim() === name) ? '服务名称重复，请使用唯一名称。' : '';
+    };
   };
   Object.entries(config.services).forEach(([name, value]) => add(name, value));
   const addButton = document.createElement('button'); addButton.type = 'button'; addButton.textContent = '添加服务'; addButton.onclick = () => add(); container.append(addButton);
@@ -34,6 +39,8 @@ window.workspaceResourceForm = (container, config) => {
   container.append(browserBox);
   const testData = field(container, '测试数据目录', config.test_data_directory);
   return () => {
+    const invalid = [...container.querySelectorAll('input')].filter(input => !validateDialogField(input));
+    if (invalid.length) { invalid[0].focus(); throw new Error('请按红色提示修正工作区资源配置。'); }
     const result = Object.create(null);
     for (const row of services) {
       const name = row.name.value.trim();
@@ -64,14 +71,15 @@ window.openWorkspaceResources = async (project, profile, onClose = () => {}) => 
     status.textContent = data.revision ? '已加载保存的配置' : '以下为建议配置，保存后由引擎维护';
     save.onclick = async () => {
       if (saving) return;
+      status.dataset.error = 'false';
       try {
         const config = read(); saving = true;
         dialog.querySelectorAll('button,input').forEach(n => n.disabled = true);
         status.textContent = '正在校验并保存…';
         const result = await api(url, {method: 'PUT', body: JSON.stringify({config, revision: data.revision})});
         data.revision = result.revision; status.textContent = '已保存，下次唤醒生效。';
-      } catch (err) { status.textContent = err.message; }
+      } catch (err) { status.textContent = err.message; status.dataset.error = 'true'; }
       finally { saving = false; dialog.querySelectorAll('button,input').forEach(n => n.disabled = false); }
     };
-  } catch (err) { status.textContent = err.message; }
+  } catch (err) { status.textContent = err.message; status.dataset.error = 'true'; }
 };

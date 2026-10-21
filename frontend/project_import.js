@@ -17,7 +17,7 @@
       <p class="profile-help">选择已有目录，再为项目填写一个容易识别的名字。</p>
       <label for="import-root">已有项目目录</label>
       <div class="import-input-row">
-        <input id="import-root" placeholder="E:/Code/existing-project" style="flex:1;min-width:0;box-sizing:border-box;">
+        <input id="import-root" required placeholder="E:/Code/existing-project" style="flex:1;min-width:0;box-sizing:border-box;">
         <button id="import-pick-root" class="directory-picker-button" type="button" title="打开文件夹选择器" aria-label="选择已有项目目录"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v2M3 7v12a1 1 0 0 0 1 1h15l3-10H7L4 20"/></svg></button>
       </div>
       <p class="profile-help">使用本地盘普通绝对路径；目录联接、符号链接和 subst 按实际目标查重。UNC 与扩展前缀路径请改用本地盘路径。</p>
@@ -154,7 +154,7 @@
   el('root').addEventListener('input', rootChanged);
   el('root').addEventListener('change', rootChanged);
   el('name').addEventListener('input', () => { historicalName = null; nameEdited = !!el('name').value.trim(); });
-  const status = text => { el('status').textContent = text; };
+  const status = (text, error = false) => { el('status').textContent = text; el('status').dataset.error = String(error); };
   const button = (label, handler) => {
     const node = document.createElement('button'); node.type = 'button'; node.textContent = label;
     node.addEventListener('click', handler); return node;
@@ -283,7 +283,7 @@
       if (current !== version || !dialog.open) return;
       S.projects = (result.projects || []).filter(p => !p.archived);
       renderProjectBar(); selectProject(project); close();
-    } catch (err) { if (current === version && dialog.open) status('打开失败：' + err.message + '。可重试打开。'); }
+    } catch (err) { if (current === version && dialog.open) status('打开失败：' + err.message + '。可重试打开。', true); }
   }
   function existingProjects(projects) {
     el('existing').hidden = false;
@@ -332,6 +332,7 @@
   el('close').addEventListener('click', close);
   el('preview').addEventListener('click', async () => {
     if (busy) return;
+    if (!validateDialogField(el('root'))) { el('root').focus(); return; }
     const current = ++version; lock(true); status('正在读取目录…'); el('existing').hidden = true;
     try {
       const result = await api('/projects/import/prepare', {method: 'POST', body: JSON.stringify({root: el('root').value.trim(), creation_mode: creationMode, template: {id: el('template').value}, template_explicit: templateExplicit})});
@@ -410,12 +411,12 @@
       if (!result.documents.length) el('documents').textContent = '暂无可预览的规则或文本文档。';
       syncProjectName(result.root);
       updateModeHelp(); renderRoles(); renderMembers(); showStep(1); status(creationMode === 'new' ? '确认创建后自动准备目录和基础文件。' : '请选择协作方式并核对 Git 基线。');
-    } catch (err) { if (current === version) status('预览失败：' + err.message + '。请检查目录后重试。'); }
+    } catch (err) { if (current === version) status('预览失败：' + err.message + '。请检查目录后重试。', true); }
     finally { if (current === version) lock(false); }
   });
   el('role-add').addEventListener('click', () => {
     const name = el('role-name').value.trim();
-    if (!name || roles.some(r => r.name === name)) { status('请填写唯一的角色名称。'); return; }
+    if (!name || roles.some(r => r.name === name)) { status('请填写唯一的角色名称。', true); return; }
     roles.push({name, permissions: []}); el('role-name').value = ''; renderRoles(); renderMembers(); status('');
   });
   function updateModeHelp() {
@@ -465,16 +466,16 @@
         }
       }
       status('检查完成，核对后继续。'); return true;
-    } catch (err) { if (current === version) status(err.message); return false; }
+    } catch (err) { if (current === version) status(err.message, true); return false; }
     finally { if (current === version) lock(false); }
   }
   el('git-check').addEventListener('click', () => { commitFiles = null; checkGit(); });
   el('mode').addEventListener('change', () => { commitFiles = null; el('commit-files').replaceChildren(); updateModeHelp(); invalidateRules(); });
-  el('back').addEventListener('click', () => { try { if (step === 5) captureResources(); showStep(step - 1); status(''); } catch (err) { status(err.message); } });
+  el('back').addEventListener('click', () => { try { if (step === 5) captureResources(); showStep(step - 1); status(''); } catch (err) { status(err.message, true); } });
   el('next').addEventListener('click', async () => {
     if (busy || step < 1 || step > 5) return;
     if (step === 1 && el('mode').value === 'worktree' && !el('worktree').value.trim()) {
-      status('请填写 worktree 根目录。'); el('worktree').focus(); return;
+      status('请填写 worktree 根目录。', true); el('worktree').focus(); return;
     }
     if (step === 1 && needsGitReview() && commitFiles === null) {
       if (!await checkGit()) return;
@@ -490,12 +491,12 @@
         }
         el('agents-roles').textContent = '当前角色：' + roles.map(r => `${r.name}（${r.permissions.join('、') || '无管理权限'}）`).join('；') + '。请核对正文中的角色引用及职责。';
         showStep(3); status('角色或权限变化后，请重新核对正文；已有编辑会保留。');
-      } catch (err) { if (current === version) status('读取规则失败：' + err.message); }
+      } catch (err) { if (current === version) status('读取规则失败：' + err.message, true); }
       finally { if (current === version) lock(false); }
       return;
     }
     if (step === 3 && (!el('agents-content').value.trim() || !el('agents-reviewed').checked)) {
-      status('请编辑并确认 AGENTS.md 与当前角色及流程一致。'); return;
+      status('请编辑并确认 AGENTS.md 与当前角色及流程一致。', true); return;
     }
     if (step < 4) { showStep(step + 1); status(''); return; }
     if (step === 4) {
@@ -513,14 +514,14 @@
         if (current === version && dialog.open) {
           // Retained resources must stay editable when a port or path now conflicts.
           if (resourceDrafts.length) { renderResourceDrafts(); showStep(5); }
-          status(err.message);
+          status(err.message, true);
         }
       }
       finally { if (current === version) lock(false); }
       return;
     }
-    try { captureResources(); } catch (err) { status(err.message); return; }
-    if (!el('name').value.trim()) { status('请填写项目显示名。'); return; }
+    try { captureResources(); } catch (err) { status(err.message, true); return; }
+    if (!el('name').value.trim()) { status('请填写项目显示名。', true); return; }
     payload = buildPayload();
     const current = ++version;
     lock(true); status('正在预览最终配置和文件…');
@@ -593,7 +594,7 @@
     }
     resourceSummary.textContent = resourceLines.join('\n'); text.append(resourceSummary);
     el('review').replaceChildren(title, text); showStep(6); status('确认后保存规则、登记项目并补齐所列文件。AGENTS.md 使用新模板，请检查项目约定。');
-    } catch (err) { if (current === version) { payload = null; status('预览失败：' + err.message); } }
+    } catch (err) { if (current === version) { payload = null; status('预览失败：' + err.message, true); } }
     finally { if (current === version) lock(false); }
   });
   function buildPayload(includeEdit = true) {
@@ -641,7 +642,7 @@
         el('submit').hidden = true; el('back').hidden = true;
         existingProjects(err.detail.existing_projects);
       }
-      status('导入结果：' + err.message + '。');
+      status('导入结果：' + err.message + '。', true);
     } finally { clearInterval(timer); if (dialog.open && current === version) { lock(false); el('progress').hidden = false; } }
   });
   async function queryResult() {
@@ -656,9 +657,9 @@
         await openProject(progress.result.project);
         if (progress.result.review_reminder) showAlert(progress.result.review_reminder);
       } else {
-        status(progress.status === 'failed' ? `上次操作失败：${progress.error}。返回协作方式重新检查后，可预览并重试。` : progress.phase);
+        status(progress.status === 'failed' ? `上次操作失败：${progress.error}。返回协作方式重新检查后，可预览并重试。` : progress.phase, progress.status === 'failed');
       }
-    } catch (err) { if (current === version) status(err.message); }
+    } catch (err) { if (current === version) status(err.message, true); }
     finally { if (current === version) lock(false); }
   }
   el('progress').addEventListener('click', queryResult);

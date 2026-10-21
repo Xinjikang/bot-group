@@ -123,16 +123,22 @@ function memberAddReset() {
     draft: {profile: '', display_name: '', model: '', instructions: '', source: '', reuse_auth: true},
     requestId: [...crypto.getRandomValues(new Uint8Array(16))].map(n => n.toString(16).padStart(2, '0')).join('')};
 }
+function memberProfileError(value) {
+  if (!value) return '请填写 Profile 标识。';
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(value)) return 'Profile 标识须为 1–64 位小写英文字母、数字、短横线或下划线，并以小写英文字母或数字开头，例如 dev-01。';
+  if (['default', 'user', 'profiles'].includes(value) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/.test(value)) return '该 Profile 标识为系统保留名称，请换一个标识。';
+  return '';
+}
 function memberCreateValid() {
-  return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(memberAdd.draft.profile);
+  return !memberProfileError(memberAdd.draft.profile);
 }
 function renderMemberCreate(steps) {
   const form = document.createElement('div');
   form.className = 'member-create-fields';
   form.innerHTML = `<label for="member-create-name">显示名称</label><input id="member-create-name" maxlength="100" placeholder="例如：小夏">
     <label for="member-create-profile">Profile 标识 <span class="profile-help">必填</span></label>
-    <input id="member-create-profile" maxlength="64" placeholder="例如：dev-01" autocomplete="off" spellcheck="false">
-    <p class="profile-help">使用小写字母、数字、短横线或下划线。系统会自动准备独立目录。</p>
+    <input id="member-create-profile" required maxlength="64" placeholder="例如：dev-01" autocomplete="off" spellcheck="false" aria-describedby="member-create-profile-help">
+    <p class="profile-help" id="member-create-profile-help">使用 1–64 位小写英文字母、数字、短横线或下划线，以小写英文字母或数字开头。系统会自动准备独立目录。</p>
     <label for="member-create-source">配置来源</label><select id="member-create-source"><option value="">使用默认设置</option></select>
     ${memberAdd.host === 'codex' ? '' : '<label class="member-create-auth"><input type="checkbox" id="member-create-auth"><span>同时复用来源的模型认证</span></label>'}
     <p class="profile-help" id="member-create-auth-help"></p>
@@ -142,6 +148,7 @@ function renderMemberCreate(steps) {
       <label for="member-create-instructions">个人指令</label><textarea id="member-create-instructions" rows="4" maxlength="32000" placeholder="填写性格、专长或工作偏好；项目职责在加入后设置。"></textarea>
     </details>`;
   const draft = memberAdd.draft;
+  form.querySelector('#member-create-profile').dialogValidation = memberProfileError;
   const details = form.querySelector('details');
   details.open = !!draft.expanded;
   details.addEventListener('toggle', () => { draft.expanded = details.open; });
@@ -150,6 +157,7 @@ function renderMemberCreate(steps) {
     input.value = draft[key];
     input.addEventListener('input', () => {
       draft[key] = input.value;
+      if (key === 'profile') draft.profileTouched = true;
       $('#member-add-join').disabled = !memberCreateValid() || memberAdd.busy || memberAdd.scanning;
     });
   }
@@ -171,6 +179,7 @@ function renderMemberCreate(steps) {
   if (auth) auth.addEventListener('change', () => { draft.reuse_auth = auth.checked; });
   updateAuth();
   steps.appendChild(form);
+  if (draft.profileTouched) validateDialogField(form.querySelector('#member-create-profile'));
   const current = memberAdd;
   mountProjectSoulTemplates(form.querySelector('#member-create-soul-templates'), {
     project: current.project, maxLength: 32000, disabled: current.scanning,
@@ -184,6 +193,7 @@ function renderMemberCreate(steps) {
 }
 function renderMemberAdd() {
   const steps = $('#member-add-steps'), status = $('#member-add-status');
+  status.dataset.error = String(!!memberAdd.error);
   $('#member-add-back').hidden = memberAdd.step === 1;
   const join = $('#member-add-join'), next = $('#member-add-next');
   join.hidden = memberAdd.step !== 2; next.hidden = memberAdd.step === 2;
@@ -270,6 +280,14 @@ function renderMemberAdd() {
       if (memberAdd.candidate.already_member) hint.textContent += ' 注意：该 profile 已在全局花名册中。';
       hint.style.color = 'var(--accent-2)';
       steps.appendChild(hint);
+      if (memberAdd.host === 'codex' && memberAdd.candidate.sandbox_notice?.message) {
+        const notice = document.createElement('p');
+        notice.id = 'member-add-sandbox-notice';
+        notice.className = 'profile-help member-sandbox-notice';
+        notice.setAttribute('role', 'status');
+        notice.textContent = memberAdd.candidate.sandbox_notice.message;
+        steps.appendChild(notice);
+      }
     }
   }
 }
@@ -334,6 +352,7 @@ $('#member-add-join').addEventListener('click', async () => {
   const joinBtn = $('#member-add-join');
   joinBtn.disabled = true;
   $('#member-add-status').textContent = '正在加入…';
+  $('#member-add-status').dataset.error = 'false';
   // req#87：扫描命中已绑定（bound=true）→ 复用 Bot；未绑定 → 注册新 Bot。
   // 契约按 task#150：POST /bots/register 必填 host_type/profile/config_root，
   // 角色和权限由加入后的项目成员设置管理。
@@ -347,6 +366,7 @@ $('#member-add-join').addEventListener('click', async () => {
     $('#pj-members-status').textContent = result?.created === false ? '成员已加入（复用已有 Bot）。' : '成员已加入。';
   } catch (err) {
     $('#member-add-status').textContent = `加入失败：${err.message}`;
+    $('#member-add-status').dataset.error = 'true';
     joinBtn.disabled = false;
   }
 });
@@ -358,6 +378,7 @@ async function submitMemberCreate() {
   const dialog = $('#dlg-member-add');
   dialog.querySelectorAll('input, select, textarea, button').forEach(el => el.disabled = true);
   $('#member-add-status').textContent = '正在创建 profile 并加入项目…';
+  $('#member-add-status').dataset.error = 'false';
   const draft = current.draft, source = current.sources[Number(draft.source)];
   const payload = {project: current.project, host_type: current.host, profile: draft.profile,
     display_name: draft.display_name.trim(), model: draft.model.trim(), instructions: draft.instructions,
@@ -454,11 +475,13 @@ function bindMemberNameEditor(row, member) {
       const name = input.value.trim();
       if (!name || /[\r\n\0]/.test(name)) {
         status.textContent = '请输入非空的单行显示名';
+        status.dataset.error = 'true';
         input.setAttribute('aria-invalid', 'true'); return;
       }
       if (name === member.display_name) { finish(); return; }
       saving = true; input.disabled = true;
       status.textContent = '正在保存显示名…';
+      status.dataset.error = 'false';
       try {
         const result = await api(`/members/${encodeURIComponent(member.profile)}/display-name`,
           {method: 'PATCH', body: JSON.stringify({display_name: name})});
@@ -476,6 +499,7 @@ function bindMemberNameEditor(row, member) {
         renderMessages();
       } catch (err) {
         status.textContent = `显示名保存失败：${err.message}`;
+        status.dataset.error = 'true';
         input.disabled = false;
       } finally { saving = false; }
     };

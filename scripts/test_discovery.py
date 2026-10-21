@@ -190,6 +190,33 @@ class DiscoveryTests(unittest.TestCase):
         self.assertFalse(alice["bound"])
         self.assertIsNone(alice["bot_id"])
 
+    def test_sandbox_notice_is_advisory_and_enrollment_preserves_policy(self):
+        from engine import codex_sandbox_notice
+        import tomllib
+        path = self.croot / 'coco' / 'config.toml'
+        path.write_text('sandbox_mode = "workspace-write"\napproval_policy = "never"\n', encoding='utf-8')
+        before = path.read_bytes()
+        with patch.object(codex_sandbox_notice.sys, 'platform', 'win32'):
+            candidates = self.client.get('/discovery/scan').json()['candidates']
+        candidate = next(c for c in candidates if c['host_type'] == 'codex' and c['profile'] == 'coco')
+        self.assertEqual(candidate['sandbox_notice']['code'], 'unspecified')
+        self.assertEqual(path.read_bytes(), before)
+        conn = db.get_connection()
+        try:
+            conn.execute('INSERT INTO projects(name,root,created_at) VALUES(?,?,?)',
+                         ('sandbox-advisory', str(Path(self.tmp.name) / 'project'), db.now_iso()))
+            conn.commit()
+        finally:
+            conn.close()
+        response = self.client.post('/bots/register', json={
+            'host_type': 'codex', 'profile': 'coco', 'config_root': str(self.croot),
+            'project': 'sandbox-advisory'})
+        self.assertEqual(response.status_code, 200, response.text)
+        config = tomllib.loads(path.read_text(encoding='utf-8'))
+        self.assertEqual(config['approval_policy'], 'never')
+        self.assertEqual(config['sandbox_mode'], 'workspace-write')
+        self.assertNotIn('windows', config)
+
     def test_no_hosts_returns_empty(self):
         # 双根都不可用 → 空列表不报错（冷启动文案由前端渲染）
         os.environ["HERMES_HOME"] = str(Path(self.tmp.name) / "nope")

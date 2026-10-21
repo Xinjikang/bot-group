@@ -19,7 +19,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-from . import db
+from . import codex_sandbox_notice, db
 
 # profile 名合法性（与 profile_config._directory 同口径）：小写字母数字开头，
 # 允许 - 和 _，最长 64。
@@ -121,6 +121,7 @@ def scan_candidates(conn: sqlite3.Connection, project: str = '') -> list[dict]:
             "member_profile": members.get(bot['id']) if bot else None,
             "already_member": bot is not None and bot['id'] in members,
             "already_project_member": bot is not None and bot['id'] in project_bots,
+            "sandbox_notice": codex_sandbox_notice.for_candidate(cand),
         })
     return out
 
