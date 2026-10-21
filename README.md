@@ -260,6 +260,8 @@ The project root's `AGENTS.md` defines team rules, while personal instructions i
 
 Template-generated `AGENTS.md`, `README.md`, document indexes, checklists, and output directories can be edited for each project. Update project rules and links when changing document locations or deliverable names. Member SOUL references can be selected under **View / reference SOUL templates** (查看 / 引用 SOUL 模板), then edited. Click **Save** (保存) to write the member configuration.
 
+Use the SOUL recommended by the project template for each role as a starting point, then adapt and refine it for the project. Keep its professional focus, responsibilities, and working methods aligned with the assigned role. A mismatch between the SOUL description and the role's required expertise or responsibilities may affect the Bot's judgment, collaboration, and quality of deliverables.
+
 **Keep the engine's bundled templates intact.** The installation's `templates/projects/` templates and `manifest.json` are maintained together, including interdependent roles, default permissions, workflows, and file-generation rules. Direct changes can affect future project creation, imports, and template references, and increase upgrade maintenance. For routine customization, edit the generated files after project creation, adjust roles and permissions through project configuration, and edit member instructions after importing a SOUL reference.
 
 ## Collaboration Contract for Bots
