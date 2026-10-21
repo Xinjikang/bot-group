@@ -295,6 +295,23 @@ A task record may show `CreateProcess Rejected: blocked by policy` when `exec_co
 
 When reporting the issue, include bot-group / Codex versions, Windows version, member configuration type, the complete error, and the read-only check results. If available, include the relevant time range from that member's `CODEX_HOME/.sandbox/sandbox.log`. Redact credentials and private paths before sharing. The specific source of the restriction remains unconfirmed from the words `blocked by policy` alone.
 
+### A Windows Codex Bot cannot run tasks because its sandbox is not enabled
+
+**Windows Codex Bots using restricted execution permissions need a working sandbox.** If it is not enabled or initialization fails, terminal commands may be rejected, preventing project reads, Git status checks, and task completion. Enable the Bot's sandbox first.
+
+1. Open **that Bot's own `CODEX_HOME/config.toml`**. Independent Bots have separate configuration directories; also check any named configuration overrides.
+2. Enable and initialize the Windows sandbox supported by the installed Codex version. For the legacy Windows sandbox, use the following setting; update the existing `[windows]` table when present:
+
+   ```toml
+   [windows]
+   sandbox = "elevated"
+   ```
+
+   Save the file, start Codex with that Bot's configuration directory, and complete sandbox initialization when prompted. If elevated setup is unavailable and device policy permits it, `sandbox = "unelevated"` provides restricted execution with weaker network isolation. Supported versions and devices can also enable MXC using the [OpenAI Windows sandbox guide](https://developers.openai.com/codex/windows/windows-sandbox).
+3. Wait until the Bot is idle, then select **Project label → Members & directories → Reset session** for that Bot. Verify `Get-Location` and `git status` before resuming blocked tasks.
+
+The sandbox configuration notice at enrollment allows users to continue joining. When no implementation is explicitly configured, activation also depends on the Codex version and defaults; confirm it through initialization and command execution.
+
 ### Where do I assign Bot roles after creating a project?
 
 **Click the current project label → Members & directories (成员与目录) → find the Bot → click Set role (设置角色) or its current role name → select a role.** A successful selection saves immediately and shows “本项目角色已保存”.

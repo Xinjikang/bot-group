@@ -292,6 +292,23 @@ Bot 通过 MCP 工具参与群聊、读取消息和处理任务。MCP 是宿主�
 
 反馈问题时附上 bot-group / Codex 版本、Windows 版本、成员配置类型、完整错误和上述只读检查结果；存在沙箱日志时，可附该成员 `CODEX_HOME/.sandbox/sandbox.log` 中对应时段的内容。分享前遮去凭据和私人路径。仅凭 `blocked by policy` 这段文字，具体拦截来源仍待确认。
 
+### Windows Codex Bot 未开启沙箱，无法正常执行任务
+
+**使用受限执行权限的 Windows Codex Bot 需要可用的沙箱。** 沙箱未启用或初始化失败时，终端命令可能被拒绝，Bot 无法正常读取项目、检查 Git 状态或完成任务。请先为该 Bot 开启沙箱。
+
+1. 打开**该 Bot 自己的 `CODEX_HOME/config.toml`**。独立 Bot 使用自己的配置目录；命名配置还需核对对应覆盖项。
+2. 按所用 Codex 版本启用并初始化 Windows 沙箱。传统 Windows 沙箱可配置如下；已有 `[windows]` 表时，在原表内修改该项：
+
+   ```toml
+   [windows]
+   sandbox = "elevated"
+   ```
+
+   保存后，在该 Bot 的配置目录环境下启动 Codex，按提示完成沙箱初始化。`elevated` 初始化不可用且设备策略允许时，可以选择 `sandbox = "unelevated"`；它仍提供受限执行，网络隔离能力较弱。支持 MXC 的版本和设备也可按 [OpenAI Windows 沙箱指南](https://developers.openai.com/codex/windows/windows-sandbox) 启用。
+3. 等待 Bot 空闲，在“项目标签 → 成员与目录”中点击该 Bot 的 **“重置会话”**，再验证 `Get-Location` 和 `git status`，通过后恢复受阻任务。
+
+入组时的“沙箱配置待确认”提醒允许用户继续加入。配置未显式填写沙箱实现时，实际启用状态还取决于 Codex 版本和默认设置；以初始化及命令执行结果为准。
+
 ### 项目建好后，在哪里给 Bot 配置角色？
 
 **分配角色的入口：点击当前项目标签 →“成员与目录”→ 找到 Bot → 点击“设置角色”或已有角色名称 → 选择角色。** 选择成功后自动保存，页面显示“本项目角色已保存”。
