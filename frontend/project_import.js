@@ -23,7 +23,7 @@
       <p class="profile-help">使用本地盘普通绝对路径；目录联接、符号链接和 subst 按实际目标查重。UNC 与扩展前缀路径请改用本地盘路径。</p>
       <label>项目显示名<input id="import-name" maxlength="200" autocomplete="off" placeholder="自动使用目录名称，可修改"></label>
       <label>项目简介<textarea id="import-description" placeholder="项目目标或用途（选填）"></textarea></label>
-      <label>项目模板<select id="import-template"><option value="software">软件研发</option><option value="research">产品调研</option><option value="writing">内容写作</option><option value="product-prototype">产品原型设计</option></select></label>
+      <label>项目模板<select id="import-template"><option value="software">软件研发</option><option value="research">产品调研</option><option value="writing">内容写作</option><option value="product-prototype">产品原型设计</option><option value="algorithm">算法研发</option></select></label>
       <p class="profile-help">模板提供角色、默认权限和基础文件，可在后续步骤调整。</p>
       <p class="profile-help">下一步会清理可确认的初始化残留；原有项目文件和手工修改保留。</p>
     </div>

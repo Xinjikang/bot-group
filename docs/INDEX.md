@@ -13,6 +13,7 @@
 | [脚手架与模板](requirements/PROJECT-SCAFFOLD-DESIGN.md) | 创建导入、身份角色、文件与初始化 |
 | [安装与升级需求](requirements/RELEASE-INSTALL-DESIGN-2026-10-16.md) | 安装、启停、配置与文件保护 |
 | [产品原型模板需求](requirements/2026-10-20-product-prototype.md) | 四角色、UX、交互原型和成果目录 |
+| [算法研发模板需求](requirements/2026-10-21-algorithm-template.md) | 四角色、算法方案、实验复现和报告交付 |
 | [MCP API 需求](requirements/2026-10-20-mcp-api-runtime.md) / [配置设计](design/2026-10-20-mcp-config-scope.md) | 运行时配置及身份隔离 |
 | [协作设计依据](design/DESIGN-NOTES.md) / [配置职责](design/PROJECT-CONFIG-INVENTORY-2026-09-23.md) | 会话、持久知识和配置边界 |
 | [Codex 驱动设计](design/CODEX-DRIVER-DESIGN-2026-09-29.md) | 宿主、Bot 与项目成员分层 |
@@ -63,8 +64,9 @@
 | [导入基础交互](engineering/IMPORT-WIZARD-2026-10-13.md) | 导入与团队配置 |
 | [导入模板补充](engineering/IMPORT-TEMPLATE-SUPPLEMENT-2026-10-14.md) | 模板补文件 |
 | [规则编辑](engineering/IMPORT-AGENTS-EDITOR-2026-10-14.md) | 向导内 AGENTS 编辑 |
-| [场景模板](engineering/REQ104-SCENARIO-TEMPLATES-2026-10-10.md) | 软件研发、产品调研、内容写作、产品原型设计模板 |
+| [场景模板](engineering/REQ104-SCENARIO-TEMPLATES-2026-10-10.md) | 软件研发、产品调研、内容写作、产品原型设计、算法研发模板 |
 | [产品原型模板](engineering/PRODUCT-PROTOTYPE-TEMPLATE.md) | 四角色分工、研究与设计、HTML 原型、评审返修和用户验收 |
+| [算法研发模板](engineering/ALGORITHM-TEMPLATE.md) | 文献、算法方案与实验计划、用户管理工程目录、实验记录和最终报告 |
 | [模板工程基线](guides/TEMPLATE-ENGINEERING-BASELINE-2026-10-13.md) | 生成文件及工程约定 |
 | [文档与测试报告](guides/DOCUMENT-STORAGE.md) | docs 分类、Git 版本管理、主目录共享报告与工作区交接 |
 | [模板测试夹具](guides/TEMPLATE-TEST-FIXTURES.md) | 隔离测试和模板验证入口 |

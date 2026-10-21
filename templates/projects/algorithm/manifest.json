@@ -1,0 +1,45 @@
+{
+  "id": "algorithm",
+  "version": "1.0.0",
+  "owner_role_id": "lead",
+  "name": "算法研发",
+  "description": "传统算法与机器学习的文献调研、方案设计、可复现实验、独立评审及报告交付。",
+  "workflow": "{{ROLE_LEAD}}明确目标、指标和资源预算并建立需求、拆解任务 → {{ROLE_RESEARCHER}}完成文献调研、基线与算法方案及实验计划 → {{ROLE_ENGINEER}}实现、自测并记录实验 → {{ROLE_REVIEWER}}独立审查与复现，问题交回对应成员修订后复审 → {{ROLE_RESEARCHER}}汇总研究报告，{{ROLE_LEAD}}组织用户验收并关闭任务和需求。",
+  "roles": [
+    {
+      "id": "lead", "name": "研发负责人",
+      "responsibilities": "明确目标、评价指标、资源预算和停止条件，管理需求与任务、协调成员与阻塞、合并成果并组织用户验收",
+      "permissions": ["req.create", "req.update", "req.resume", "req.complete", "req.cancel", "task.create", "task.update", "task.resume", "task.complete", "task.cancel"],
+      "required": true, "soul_reference": "references/souls/lead.md"
+    },
+    {
+      "id": "researcher", "name": "算法研究员",
+      "responsibilities": "调研文献、建立基线、设计算法与实验计划，说明假设、正确性与复杂度，分析实验并撰写最终报告",
+      "permissions": [], "required": true, "soul_reference": "references/souls/researcher.md"
+    },
+    {
+      "id": "engineer", "name": "算法工程师",
+      "responsibilities": "按方案实现算法与 Demo，准备数据和环境，执行自测及实验，记录配置、版本和证据，完成优化与返修",
+      "permissions": [], "required": true, "soul_reference": "references/souls/engineer.md"
+    },
+    {
+      "id": "reviewer", "name": "评审员",
+      "responsibilities": "独立审查理论依据、实现和评价方法，复现关键结果，核验数据划分、结论与证据，记录问题并复审",
+      "permissions": [], "required": true, "soul_reference": "references/souls/reviewer.md"
+    }
+  ],
+  "directory_modes": ["shared", "worktree"],
+  "files": [
+    {"source": "AGENTS.md.tmpl", "target": "AGENTS.md"},
+    {"source": "README.md.tmpl", "target": "README.md"},
+    {"source": "files/docs/INDEX.md.tmpl", "target": "docs/INDEX.md"},
+    {"source": "files/docs/requirements/BRIEF.md.tmpl", "target": "docs/requirements/BRIEF.md"},
+    {"source": "files/docs/literature/REVIEW.md.tmpl", "target": "docs/literature/REVIEW.md"},
+    {"source": "files/docs/design/ALGORITHM.md.tmpl", "target": "docs/design/ALGORITHM.md"},
+    {"source": "files/docs/engineering/ENGINEERING.md.tmpl", "target": "docs/engineering/ENGINEERING.md"},
+    {"source": "files/reports/gitignore.tmpl", "target": "reports/.gitignore"},
+    {"source": "files/reports/INDEX.md.tmpl", "target": "reports/INDEX.md"},
+    {"source": "files/reports/REPORT.md.tmpl", "target": "reports/REPORT.md"},
+    {"source": "files/reports/experiments/EXPERIMENT.md.tmpl", "target": "reports/experiments/EXPERIMENT.md"}
+  ]
+}

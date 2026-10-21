@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+算法研发模板：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_algorithm_template scripts.test_project_templates scripts.test_project_import_supplement scripts.test_project_setup_history scripts.test_project_setup scripts.test_template_role_rename scripts.test_release_upgrade.ReleaseUpgradeTests.test_source_archive_keeps_public_docs_and_template_resources_only -q`。使用隔离 SQLite、Git、宿主与项目目录，覆盖四角色授权、返修复审、角色改名、shared/worktree、11 个骨架文件、用户管理工程布局、方案内实验计划、报告 Git 排除、导入保护和旧 doc 目录复用、历史模板恢复及源码包资源。`python -X utf8 -B scripts/test_project_templates_browser.py --evidence <报告目录>/browser.json --screenshot <报告目录>/wizard.png` 使用已安装 Playwright 的 Python 与 Chrome，覆盖五类模板参考、算法四角色创建、刷新、复制下载和 390px 窄屏。受限环境将 TEMP/TMP 指向仓库外已授权的隔离临时目录。
+
 公开安装入口：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_public_installer scripts.test_bootstrap scripts.test_release_upgrade scripts.test_windows_bat -q`。覆盖真实 PowerShell 5.1 执行、Python 探测、固定版本与摘要、失败退出及环境恢复、发布资产和默认升级源；下载使用隔离夹具。公开发布后还须从 README 命令经匿名 HTTPS 下载，在空白目录完成真实依赖安装、BAT 启停、HTTP 页面和默认升级检查，并把证据保存在主目录 `reports/tests/`。
 
 公开端到端：`python -X utf8 -B scripts/verify_public_install.py --shell powershell --port <隔离端口> --evidence <新的报告目录>`，CMD 入口使用 `--shell cmd`。从 README 读取用户命令，真实匿名下载正式 Release、创建 venv、安装依赖、同版本重装、空 Python PATH 下 BAT 启停、HTTP 及默认升级查询；脚本隔离实例、数据和运行时目录并在结束时清理测试服务。运行目录必须为空，避开生产端口 8180。
@@ -55,7 +57,7 @@ MCP API 与运行时配置：`test_task_api.py` 验证成员/项目/执行校验
 
 软件模板规则调整复用 `scripts.test_project_templates` 与 `scripts.test_template_role_rename`，覆盖 shared/worktree 预览与落盘一致、角色替换和模板快照；命令为 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_templates scripts.test_template_role_rename -q`。新建项目 Git 基线与成员工作区使用隔离用例 `scripts.test_project_setup` 验证，覆盖 docs 需求设计入库、reports 两类报告排除及主目录授权。协作回归使用 `test_flow.py`、`test_requirement_gate.py`、`test_review_control_regressions.py`、`test_prompt_entry_points.py`。
 
-产品原型模板：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_product_prototype_template scripts.test_project_templates scripts.test_template_role_rename scripts.test_project_import_supplement scripts.test_project_setup_history scripts.test_project_setup -q`。使用仓库外临时 SQLite/Git/宿主目录，覆盖四角色授权、UX 返修复审与负责人关闭、两种目录模式、角色改名、docs/materials/ui-spec/outputs 分类及版本化、references 目录生成、模板资源与清单一致且无遗留空目录、默认 UI 规范及跨目录引用、doc 复用与既有设计资料保护、创建导入和历史模板恢复。`python -X utf8 -B scripts/test_project_templates_browser.py --evidence <测试报告绝对路径> --screenshot <测试截图绝对路径>` 使用 Playwright 与 Chrome，覆盖四类模板参考、产品原型四角色创建和分类目录生成、刷新后参考、复制下载和窄屏。
+产品原型模板：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_product_prototype_template scripts.test_project_templates scripts.test_template_role_rename scripts.test_project_import_supplement scripts.test_project_setup_history scripts.test_project_setup -q`。使用仓库外临时 SQLite/Git/宿主目录，覆盖四角色授权、UX 返修复审与负责人关闭、两种目录模式、角色改名、docs/materials/ui-spec/outputs 分类及版本化、references 目录生成、模板资源与清单一致且无遗留空目录、默认 UI 规范及跨目录引用、doc 复用与既有设计资料保护、创建导入和历史模板恢复。`python -X utf8 -B scripts/test_project_templates_browser.py --evidence <测试报告绝对路径> --screenshot <测试截图绝对路径>` 使用 Playwright 与 Chrome，覆盖五类模板参考、产品原型和算法研发四角色创建及分类目录生成、刷新后参考、复制下载和窄屏。
 
 | 范围 | 用例 |
 | --- | --- |

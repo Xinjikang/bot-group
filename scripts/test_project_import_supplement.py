@@ -38,7 +38,7 @@ class SupplementTests(unittest.TestCase):
         with patch.object(templates, 'TEMPLATE_ROOT', copied):
             projects = []
             for mode in ('new', 'import'):
-                for kind in ('software', 'research', 'writing', 'product-prototype', 'blank'):
+                for kind in ('software', 'research', 'writing', 'product-prototype', 'algorithm', 'blank'):
                     root = self.base / (mode + '-' + kind)
                     root.mkdir()
                     body = {**self.configured(kind, supplement=mode == 'new'), 'root': str(root), 'creation_mode': mode}
@@ -50,7 +50,7 @@ class SupplementTests(unittest.TestCase):
             projects.append((untyped, 'blank'))
             self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM project_initializations').fetchone()[0], 0)
             # Publish newer resources after creation, with different role text.
-            for kind in ('software', 'research', 'writing', 'product-prototype'):
+            for kind in ('software', 'research', 'writing', 'product-prototype', 'algorithm'):
                 path = copied / kind / 'manifest.json'
                 manifest = json.loads(path.read_text(encoding='utf-8'))
                 manifest['version'] = '99.0.0'
@@ -122,8 +122,39 @@ class SupplementTests(unittest.TestCase):
                     other_dir = 'docs' if document_dir == 'doc' else 'doc'
                     self.assertFalse((root / other_dir).exists())
 
+    def test_algorithm_import_preserves_layout_reports_and_existing_documents(self):
+        for document_dir in ('docs', 'doc'):
+            with self.subTest(document_dir=document_dir):
+                root = self.base / ('algorithm-' + document_dir)
+                originals = {
+                    document_dir + '/design/ALGORITHM.md': b'# Existing algorithm plan\r\n',
+                    'examples/demo.py': b'print("custom demo")\r\n',
+                    'settings/trial.toml': b'seed = 23\r\n',
+                    'reports/REPORT.md': b'# Existing research report\r\n',
+                }
+                for path, content in originals.items():
+                    target = root / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(content)
+                body = {**self.configured('algorithm'), 'root': str(root)}
+                body, plan = self.reviewed(body)
+                preserved = {f['path'] for f in plan['files'] if f['action'] == 'preserve'}
+                self.assertIn(document_dir + '/design/ALGORITHM.md', preserved)
+                self.assertIn('reports/REPORT.md', preserved)
+                response = self.submit(body)
+                self.assertEqual(response.status_code, 200, response.text)
+                for path, content in originals.items():
+                    self.assertEqual((root / path).read_bytes(), content)
+                self.assertTrue((root / document_dir / 'literature/REVIEW.md').is_file())
+                self.assertTrue((root / 'reports/experiments/EXPERIMENT.md').is_file())
+                agents = (root / 'AGENTS.md').read_text(encoding='utf-8')
+                self.assertIn(f'{document_dir}/design/', agents)
+                self.assertFalse((root / ('docs' if document_dir == 'doc' else 'doc')).exists())
+                for directory in ('src', 'config', 'configs', document_dir + '/results', document_dir + '/experiments'):
+                    self.assertFalse((root / directory).exists(), directory)
+
     def test_all_templates_generate_agents_and_use_configured_permissions(self):
-        for template in ('software', 'research', 'writing', 'product-prototype'):
+        for template in ('software', 'research', 'writing', 'product-prototype', 'algorithm'):
             with self.subTest(template=template):
                 root = self.base / template
                 root.mkdir()
@@ -220,13 +251,14 @@ class SupplementTests(unittest.TestCase):
         from engine.task_retry import project_owner
         for template, name, count in (('blank', '项目负责人', 5), ('software', '项目负责人', 5),
                                       ('research', '调研负责人', 10), ('writing', '主编', 10),
-                                      ('product-prototype', '产品经理', 10)):
+                                      ('product-prototype', '产品经理', 10),
+                                      ('algorithm', '研发负责人', 10)):
             with self.subTest(template=template):
                 root = self.base / ('owner-' + template); root.mkdir()
                 body = {**self.configured(template), 'root': str(root)}
                 self.assertEqual(body['roles'][0]['name'], name)
                 self.assertEqual(len(body['roles'][0]['permissions']), count)
-                if template in ('research', 'writing', 'product-prototype'):
+                if template in ('research', 'writing', 'product-prototype', 'algorithm'):
                     self.assertEqual(len(body['roles']), 4)
                     self.assertTrue(all(r['permissions'] == [] for r in body['roles'][1:]))
                 missing = copy.deepcopy(body)

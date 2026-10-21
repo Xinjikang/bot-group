@@ -46,10 +46,11 @@ def main(evidence_path=None, screenshot_path=None):
             assert page.locator('#dlg-project-initialization').count() == 0
             assert page.evaluate('typeof openLegacyProjectInitialization') == 'undefined'
             for mode, name in (('new', 'software'), ('import', 'research'), ('import', 'writing'),
-                               ('import', 'product-prototype'), ('new', 'product-prototype')):
+                               ('import', 'product-prototype'), ('new', 'product-prototype'),
+                               ('import', 'algorithm'), ('new', 'algorithm')):
                 page.evaluate('(mode) => openProjectImport({mode})', mode)
-                root = fixture.base / 'prototype-browser' if name == 'product-prototype' else fixture.root
-                if mode == 'import' and name == 'product-prototype':
+                root = fixture.base / (name + '-browser') if name in ('product-prototype', 'algorithm') else fixture.root
+                if mode == 'import' and name in ('product-prototype', 'algorithm'):
                     root.mkdir()
                 page.locator('#import-root').fill(str(root))
                 page.locator('#import-template').select_option(name)
@@ -76,12 +77,17 @@ def main(evidence_path=None, screenshot_path=None):
                 page.set_viewport_size({'width': 390, 'height': 844})
                 assert page.locator('#dlg-project-import').evaluate('d => d.scrollWidth <= d.clientWidth')
                 if screenshot_path: page.screenshot(path=screenshot_path)
-                if mode == 'new' and name == 'product-prototype':
+                if mode == 'new' and name in ('product-prototype', 'algorithm'):
                     page.locator('#import-next').click()
                     page.locator('#import-agents-step').wait_for(state='visible')
                     draft = page.locator('#import-agents-content').input_value()
-                    assert 'UX 设计师开展用户研究' in draft
-                    assert '修订完成后回到原型评审员复审' in draft
+                    if name == 'product-prototype':
+                        assert 'UX 设计师开展用户研究' in draft
+                        assert '修订完成后回到原型评审员复审' in draft
+                    else:
+                        assert '算法研究员调研一手文献' in draft
+                        assert '修订完成后回到评审员复审' in draft
+                        assert '源码、Demo、配置、数据和模型目录由用户管理' in draft
                     page.locator('#import-agents-reviewed').check()
                     page.locator('#import-next').click()
                     for index, role in enumerate(detail['roles']):
@@ -95,13 +101,21 @@ def main(evidence_path=None, screenshot_path=None):
                         assert role['name'] in page.locator('#import-review').inner_text()
                     page.locator('#import-submit').click()
                     page.locator('#dlg-project-import').wait_for(state='hidden')
-                    assert (root / 'outputs/PRD.md').is_file()
-                    assert (root / 'outputs/prototype/README.md').is_file()
-                    assert (root / 'docs/design/UX.md').is_file()
-                    assert (root / 'docs/validation/COVERAGE.md').is_file()
-                    assert (root / 'materials/references/README.md').is_file()
-                    assert '默认基线，可直接采用' in (root / 'ui-spec/UI-SPEC.md').read_text(encoding='utf-8')
-                    assert 'ui-spec/UI-SPEC.md' in draft
+                    if name == 'product-prototype':
+                        assert (root / 'outputs/PRD.md').is_file()
+                        assert (root / 'outputs/prototype/README.md').is_file()
+                        assert (root / 'docs/design/UX.md').is_file()
+                        assert (root / 'docs/validation/COVERAGE.md').is_file()
+                        assert (root / 'materials/references/README.md').is_file()
+                        assert '默认基线，可直接采用' in (root / 'ui-spec/UI-SPEC.md').read_text(encoding='utf-8')
+                        assert 'ui-spec/UI-SPEC.md' in draft
+                    else:
+                        assert (root / 'docs/literature/REVIEW.md').is_file()
+                        assert '实验计划' in (root / 'docs/design/ALGORITHM.md').read_text(encoding='utf-8')
+                        assert (root / 'reports/REPORT.md').is_file()
+                        assert (root / 'reports/experiments/EXPERIMENT.md').is_file()
+                        for unused in ('src', 'config', 'configs', 'docs/results', 'docs/experiments'):
+                            assert not (root / unused).exists(), unused
                     assert 'task node' in draft
                     assert not (root / 'prototype').exists()
                     assert not (root / 'docs/REVIEW.md').exists()
@@ -115,7 +129,7 @@ def main(evidence_path=None, screenshot_path=None):
                     page.evaluate('project => openProjectTemplateReferences(project)', project)
                     page.locator('#template-reference-content details').first.wait_for(state='visible')
                     assert page.locator('#template-reference-content details').count() == 4
-                    assert '产品经理' in page.locator('#template-reference-content').inner_text()
+                    assert detail['roles'][0]['name'] in page.locator('#template-reference-content').inner_text()
                     page.locator('#dlg-template-reference').evaluate('d => d.close()')
                     continue
                 page.locator('#import-close').click()
@@ -149,8 +163,9 @@ def main(evidence_path=None, screenshot_path=None):
             fixture.assert_host_changes(before)
             assert not errors, errors
             browser.close()
-        evidence = {'result': 'pass', 'cases': ['current new/import third step', 'four templates', 'copy/download', '390px',
+        evidence = {'result': 'pass', 'cases': ['current new/import third step', 'five templates', 'copy/download', '390px',
                     'prototype four-role creation and reload', 'prototype docs and default UI spec', 'error retry', 'version mismatch',
+                    'algorithm four-role creation and reload', 'algorithm user-managed code layout and reports',
                     'legacy project latest references', 'legacy UI removed'], 'bot_config_save_calls': state['config_saves']}
         if evidence_path: Path(evidence_path).write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding='utf-8')
         print('PASS: current wizard references, templates, copy/download, retry/version guard, latest project references, preserved Bot files, 390px')

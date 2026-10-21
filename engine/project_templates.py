@@ -140,7 +140,7 @@ def load(template_id, version=None):
 
 
 def catalogue():
-    templates = [load(name) for name in ('software', 'research', 'writing', 'product-prototype')]
+    templates = [load(name) for name in ('software', 'research', 'writing', 'product-prototype', 'algorithm')]
     return {'templates': [{k: t[k] for k in ('id', 'version', 'name', 'description', 'directory_modes')} for t in templates]}
 
 
@@ -177,6 +177,21 @@ def validate_bots(conn, team):
 
 
 def workspace_rules(template_id, mode, roles):
+    if template_id == 'algorithm':
+        names = {r['id']: r['name'] for r in roles}
+        if mode == 'shared':
+            return (f"共享目录串行研发，一次只允许一名执行者修改文件。由{names['lead']}协调写入占用与交接，"
+                    "核对改动归属和实验资源，交接时记录代码提交、文档版本和实验编号。"
+                    "源码、Demo、配置、数据和模型目录沿用用户的实际工程结构；报告写入项目主目录 reports。")
+        return f'''使用引擎分配的独立 Git worktree 工作区。工作区的创建、分配和清理由引擎管理。{names['lead']}确认基线分支、基线提交、工程结构、实验资源与远端同步约定。
+
+开始前检查实际目录、分支、HEAD、任务归属和已有改动。需要修改文件的成员从指定基线或上游交付提交建立 `task/<任务ID>-<阶段>` 分支；续做时使用原分支，detached HEAD 时，先建立任务分支。分支已被其他工作区占用时由负责人协调。
+
+{names['researcher']}提交文献、算法方案和实验计划，{names['engineer']}依据准确提交实现并自测，代码和版本化文档一起交付。源码、Demo、配置、数据与模型位置遵循实际工程约定，实验资源按任务分配。
+
+{names['reviewer']}在自己的工作区核对准确提交及对应方案，独立审查与复现，评审结果写入任务节点。修订交回具体成员并按新提交复审。{names['lead']}核对通过评审的提交并合并，冲突解决涉及的变化补充评审和必要复验，再组织用户验收。
+
+实验记录和最终报告统一写入引擎注入的项目主目录 reports，按研究和实验编号分别保存并备份。交接记录分支、准确提交、方案版本、实验编号、数据与模型版本、报告绝对路径、验证结果和具体接手人。当前工作区中的报告骨架作为格式参考，实际证据通过项目主目录路径交接。远端同步依已确认约定执行；清理前确认成果已集成且报告与证据可追溯。'''
     if template_id == 'product-prototype':
         names = {r['id']: r['name'] for r in roles}
         if mode == 'shared':

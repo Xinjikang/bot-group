@@ -156,7 +156,7 @@ def prepare(body, actor):
             history = historical_config(conn, root) if mode == 'import' else None
         finally:
             conn.close()
-        if history and history['template_id'] in ('software', 'research', 'writing', 'product-prototype', 'blank') and not body.get('template_explicit'):
+        if history and history['template_id'] in ('software', 'research', 'writing', 'product-prototype', 'algorithm', 'blank') and not body.get('template_explicit'):
             request['template'] = {'id': history['template_id']}
         result = imports.preview(request)
         result['cleaned_files'] = removed

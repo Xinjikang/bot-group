@@ -1,6 +1,6 @@
 # 场景模板资源与接口
 
-模板位于 `templates/projects/<id>/`，内置 software、research、writing、product-prototype。`manifest.json` 声明版本、目录模式、流程、角色 ID/名称/职责/默认授权、文件源与目标、SOUL 参考及负责人角色。版本以当前 manifest 为准。
+模板位于 `templates/projects/<id>/`，内置 software、research、writing、product-prototype、algorithm。`manifest.json` 声明版本、目录模式、流程、角色 ID/名称/职责/默认授权、文件源与目标、SOUL 参考及负责人角色。版本以当前 manifest 为准。
 
 ## 生成内容
 
@@ -9,6 +9,8 @@
 shared 渲染串行开发与交接约定，worktree 渲染任务分支、合并和验证约定。需求、设计与技术文档随当前工作区分支提交，测试报告由主目录共用。默认角色及权限见 [软件角色](../guides/SOFTWARE-ROLES-2026-10-14.md) 和 [负责人规则](TEMPLATE-OWNER-ROLES-2026-10-16.md)。
 
 产品原型设计模板提供产品经理、UX 设计师、原型工程师、原型评审员四角色。docs 保存项目说明、体验设计和验证依据，materials 保存研究及 references 素材，ui-spec 保存默认 UI 规范，outputs 保存 PRD 和 prototype 原型；审查、复审及验收结论写入 task node。流程与目录约定见 [产品原型模板](PRODUCT-PROTOTYPE-TEMPLATE.md)。
+
+算法研发模板提供研发负责人、算法研究员、算法工程师和评审员。docs 按需求、文献、算法方案和工程说明分类，实验计划包含在算法方案中；项目主目录 reports 保存最终报告，reports/experiments 保存逐次记录，工程代码与配置目录由用户管理。流程与目录约定见[算法研发模板](ALGORITHM-TEMPLATE.md)。
 
 SOUL 作为参考供查看、复制、下载和引用，实际 profile 保存由成员配置流程执行。项目详情的 template-reference 按项目关联类型返回当前模板参考；历史初始化快照继续保存在原记录中。
 
