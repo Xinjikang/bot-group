@@ -1,6 +1,6 @@
 # 场景模板资源与接口
 
-模板位于 `templates/projects/<id>/`，内置 software、research、writing、product-prototype、algorithm。`manifest.json` 声明版本、目录模式、流程、角色 ID/名称/职责/默认授权、文件源与目标、SOUL 参考及负责人角色。版本以当前 manifest 为准。
+模板位于 `templates/projects/<id>/`，内置 software、research、writing、product-prototype、algorithm、testing。`manifest.json` 声明版本、目录模式、流程、角色 ID/名称/职责/默认授权、文件源与目标、SOUL 参考及负责人角色。版本以当前 manifest 为准。
 
 ## 生成内容
 
@@ -13,6 +13,8 @@ shared 渲染串行开发与交接约定，worktree 渲染任务分支、合并�
 算法研发模板提供研发负责人、算法研究员、算法工程师和评审员。docs 按需求、文献、算法方案和工程说明分类，实验计划包含在算法方案中；项目主目录 reports 保存最终报告，reports/experiments 保存逐次记录，工程代码与配置目录由用户管理。流程与目录约定见[算法研发模板](ALGORITHM-TEMPLATE.md)。
 
 SOUL 作为参考供查看、复制、下载和引用，实际 profile 保存由成员配置流程执行。项目详情的 template-reference 按项目关联类型返回当前模板参考；历史初始化快照继续保存在原记录中。
+
+测试项目提供测试负责人、测试工程师、测试评审员。docs 保存产品依据、计划、用例及环境，scripts 保存测试脚本与映射索引，主目录 reports 按轮次保存报告及证据。产品质量和报告交付分别判断，产品修复及下一轮测试按用户指令安排。维护契约见[测试项目模板](TESTING-TEMPLATE.md)。
 
 ## 接口与校验
 

@@ -90,8 +90,8 @@ class TemplateTests(unittest.TestCase):
     def test_catalogue_details_validate_every_resource(self):
         result = self.client.get('/projects/templates')
         self.assertEqual(result.status_code, 200, result.text)
-        self.assertEqual([t['id'] for t in result.json()['templates']], ['software', 'research', 'writing', 'product-prototype', 'algorithm'])
-        for name in ('software', 'research', 'writing', 'product-prototype', 'algorithm'):
+        self.assertEqual([t['id'] for t in result.json()['templates']], ['software', 'research', 'writing', 'product-prototype', 'algorithm', 'testing'])
+        for name in ('software', 'research', 'writing', 'product-prototype', 'algorithm', 'testing'):
             detail = self.client.get('/projects/templates/' + name).json()
             self.assertEqual(len(detail['bots']), 8)
             self.assertEqual(len(detail['permissions']), 10)
@@ -111,7 +111,7 @@ class TemplateTests(unittest.TestCase):
 
     def test_all_templates_generate_exact_preview_and_valid_links(self):
         before = fingerprints(self.hosts)
-        for name in ('software', 'research', 'writing', 'product-prototype', 'algorithm'):
+        for name in ('software', 'research', 'writing', 'product-prototype', 'algorithm', 'testing'):
             with self.subTest(name=name):
                 self.root = self.base / name; self.root.mkdir()
                 body = self.body(name); body['roles'][0]['name'] = 'Custom lead'
@@ -140,7 +140,8 @@ class TemplateTests(unittest.TestCase):
                 ('research', '复核结果写入任务节点'),
                 ('writing', '审校结果写入任务节点'),
                 ('product-prototype', '评审结果写入任务节点'),
-                ('algorithm', '评审结果写入任务节点')):
+                ('algorithm', '评审结果写入任务节点'),
+                ('testing', '评审结果写入任务节点')):
             with self.subTest(template=name):
                 self.root = self.base / (name + '-worktree')
                 self.root.mkdir()

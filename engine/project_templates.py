@@ -140,7 +140,7 @@ def load(template_id, version=None):
 
 
 def catalogue():
-    templates = [load(name) for name in ('software', 'research', 'writing', 'product-prototype', 'algorithm')]
+    templates = [load(name) for name in ('software', 'research', 'writing', 'product-prototype', 'algorithm', 'testing')]
     return {'templates': [{k: t[k] for k in ('id', 'version', 'name', 'description', 'directory_modes')} for t in templates]}
 
 
@@ -177,6 +177,18 @@ def validate_bots(conn, team):
 
 
 def workspace_rules(template_id, mode, roles):
+    if template_id == 'testing':
+        names = {r['id']: r['name'] for r in roles}
+        if mode == 'shared':
+            return (f"共享目录串行维护，一次只允许一名执行者修改文档与脚本。由{names['lead']}协调写入、环境和测试数据占用。"
+                    "执行前固定被测版本和用例脚本版本，按独立执行编号保存结果；实际报告统一写入项目主目录 reports。")
+        return f'''使用引擎分配的独立 Git worktree 工作区。工作区由引擎创建、分配和清理。{names['lead']}登记测试项目基线分支、提交、远端同步约定，以及被测产品的独立目录和版本。
+
+开始前检查工作目录、分支、HEAD、任务归属和已有改动。修改测试资料或脚本的成员从指定基线或上游交付提交建立 `task/<任务ID>-<阶段>` 分支；detached HEAD 时，先建立任务分支，续做使用原分支。分支已被其他工作区占用时由负责人协调。
+
+{names['tester']}在同一交付中维护用例、脚本和映射，提交准确版本，登记被测产品提交及环境。{names['reviewer']}检出交付的准确提交，独立检查覆盖与断言、抽查执行结果，评审结果写入任务节点。修订交回具体成员并按影响复审。{names['lead']}核对通过评审的测试资料与脚本并合并；冲突解决涉及的变化补充验证，实际执行记录继续绑定原提交。
+
+被测产品使用任务指定版本及授权隔离环境，测试项目与产品版本分别管理。每轮报告和证据统一写入引擎注入的项目主目录 reports/<测试轮次>/，使用独立执行编号防止覆盖；worktree 中的初始报告文件仅作格式参考。交接记录分支、准确提交、PRD 和原型版本、被测版本、环境、报告绝对路径、实际结果和具体接手人。清理前确认文档与脚本已集成、报告和证据已备份、测试资源归属明确。'''
     if template_id == 'algorithm':
         names = {r['id']: r['name'] for r in roles}
         if mode == 'shared':

@@ -1,6 +1,6 @@
 {
   "id": "algorithm",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "owner_role_id": "lead",
   "name": "算法研发",
   "description": "传统算法与机器学习的文献调研、方案设计、可复现实验、独立评审及报告交付。",

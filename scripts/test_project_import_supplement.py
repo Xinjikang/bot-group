@@ -38,7 +38,7 @@ class SupplementTests(unittest.TestCase):
         with patch.object(templates, 'TEMPLATE_ROOT', copied):
             projects = []
             for mode in ('new', 'import'):
-                for kind in ('software', 'research', 'writing', 'product-prototype', 'algorithm', 'blank'):
+                for kind in ('software', 'research', 'writing', 'product-prototype', 'algorithm', 'testing', 'blank'):
                     root = self.base / (mode + '-' + kind)
                     root.mkdir()
                     body = {**self.configured(kind, supplement=mode == 'new'), 'root': str(root), 'creation_mode': mode}
@@ -50,7 +50,7 @@ class SupplementTests(unittest.TestCase):
             projects.append((untyped, 'blank'))
             self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM project_initializations').fetchone()[0], 0)
             # Publish newer resources after creation, with different role text.
-            for kind in ('software', 'research', 'writing', 'product-prototype', 'algorithm'):
+            for kind in ('software', 'research', 'writing', 'product-prototype', 'algorithm', 'testing'):
                 path = copied / kind / 'manifest.json'
                 manifest = json.loads(path.read_text(encoding='utf-8'))
                 manifest['version'] = '99.0.0'
@@ -153,8 +153,36 @@ class SupplementTests(unittest.TestCase):
                 for directory in ('src', 'config', 'configs', document_dir + '/results', document_dir + '/experiments'):
                     self.assertFalse((root / directory).exists(), directory)
 
+    def test_testing_import_preserves_product_sources_cases_and_custom_scripts(self):
+        for document_dir in ('docs', 'doc'):
+            with self.subTest(document_dir=document_dir):
+                root = self.base / ('testing-' + document_dir)
+                originals = {
+                    document_dir + '/product/PRD.md': b'# Approved PRD v3\r\n',
+                    document_dir + '/product/PROTOTYPE.md': b'# Prototype reference v2\r\n',
+                    document_dir + '/cases/CASE.md': b'# Existing CASE-1\r\n',
+                    'scripts/TEST_INDEX.md': b'# Existing mappings\r\n',
+                    'custom/verify.py': b'print("existing script")\r\n',
+                    'reports/REPORT.md': b'# Prior report\r\n',
+                }
+                for path, content in originals.items():
+                    target = root / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(content)
+                body = {**self.configured('testing'), 'root': str(root)}
+                body, plan = self.reviewed(body)
+                response = self.submit(body)
+                self.assertEqual(response.status_code, 200, response.text)
+                for path, content in originals.items():
+                    self.assertEqual((root / path).read_bytes(), content)
+                self.assertTrue((root / document_dir / 'cases/COVERAGE.md').is_file())
+                self.assertTrue((root / 'reports/RUN.md').is_file())
+                self.assertIn(f'{document_dir}/product', (root / 'AGENTS.md').read_text(encoding='utf-8'))
+                self.assertFalse((root / ('docs' if document_dir == 'doc' else 'doc')).exists())
+                self.assertFalse((root / 'tests').exists())
+
     def test_all_templates_generate_agents_and_use_configured_permissions(self):
-        for template in ('software', 'research', 'writing', 'product-prototype', 'algorithm'):
+        for template in ('software', 'research', 'writing', 'product-prototype', 'algorithm', 'testing'):
             with self.subTest(template=template):
                 root = self.base / template
                 root.mkdir()
@@ -252,7 +280,8 @@ class SupplementTests(unittest.TestCase):
         for template, name, count in (('blank', '项目负责人', 5), ('software', '项目负责人', 5),
                                       ('research', '调研负责人', 10), ('writing', '主编', 10),
                                       ('product-prototype', '产品经理', 10),
-                                      ('algorithm', '研发负责人', 10)):
+                                      ('algorithm', '研发负责人', 10),
+                                      ('testing', '测试负责人', 10)):
             with self.subTest(template=template):
                 root = self.base / ('owner-' + template); root.mkdir()
                 body = {**self.configured(template), 'root': str(root)}
@@ -260,6 +289,9 @@ class SupplementTests(unittest.TestCase):
                 self.assertEqual(len(body['roles'][0]['permissions']), count)
                 if template in ('research', 'writing', 'product-prototype', 'algorithm'):
                     self.assertEqual(len(body['roles']), 4)
+                    self.assertTrue(all(r['permissions'] == [] for r in body['roles'][1:]))
+                if template == 'testing':
+                    self.assertEqual(len(body['roles']), 3)
                     self.assertTrue(all(r['permissions'] == [] for r in body['roles'][1:]))
                 missing = copy.deepcopy(body)
                 missing['roles'] = missing['roles'][1:]; missing['members'] = []; missing['owner_bot_id'] = None

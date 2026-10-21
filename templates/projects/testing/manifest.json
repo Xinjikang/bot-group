@@ -1,0 +1,44 @@
+{
+  "id": "testing",
+  "version": "1.0.0",
+  "owner_role_id": "lead",
+  "name": "测试项目",
+  "description": "以 PRD 和产品原型为依据，维护用例与脚本映射，执行独立测试、核验证据并交付质量报告。",
+  "workflow": "{{ROLE_LEAD}}确认 PRD、原型、被测版本和范围，建立需求并拆解任务 → {{ROLE_TESTER}}设计用例及脚本 → {{ROLE_REVIEWER}}评审覆盖与预期，修订后复审 → {{ROLE_TESTER}}执行测试并记录缺陷与证据 → {{ROLE_REVIEWER}}核验结果及报告 → {{ROLE_LEAD}}汇总报告供用户查阅，按报告交付验收关闭任务和需求。产品修复与下一轮测试由用户另行安排。",
+  "roles": [
+    {
+      "id": "lead", "name": "测试负责人",
+      "responsibilities": "确认测试依据、版本、范围与标准，制定计划、管理需求和任务、协调资源与阻塞、汇总报告并验收关闭",
+      "permissions": ["req.create", "req.update", "req.resume", "req.complete", "req.cancel", "task.create", "task.update", "task.resume", "task.complete", "task.cancel"],
+      "required": true, "soul_reference": "references/souls/lead.md"
+    },
+    {
+      "id": "tester", "name": "测试工程师",
+      "responsibilities": "设计并维护用例、自动化脚本及映射，准备环境数据，执行测试、复现缺陷、保存证据和编写分项报告",
+      "permissions": [], "required": true, "soul_reference": "references/souls/tester.md"
+    },
+    {
+      "id": "reviewer", "name": "测试评审员",
+      "responsibilities": "独立评审需求覆盖、用例和脚本断言，核验缺陷、执行证据及报告统计，复审修订并说明质量结论的边界",
+      "permissions": [], "required": true, "soul_reference": "references/souls/reviewer.md"
+    }
+  ],
+  "directory_modes": ["shared", "worktree"],
+  "files": [
+    {"source": "AGENTS.md.tmpl", "target": "AGENTS.md"},
+    {"source": "README.md.tmpl", "target": "README.md"},
+    {"source": "files/docs/INDEX.md.tmpl", "target": "docs/INDEX.md"},
+    {"source": "files/docs/product/PRD.md.tmpl", "target": "docs/product/PRD.md"},
+    {"source": "files/docs/product/PROTOTYPE.md.tmpl", "target": "docs/product/PROTOTYPE.md"},
+    {"source": "files/docs/plan/PLAN.md.tmpl", "target": "docs/plan/PLAN.md"},
+    {"source": "files/docs/cases/CASE.md.tmpl", "target": "docs/cases/CASE.md"},
+    {"source": "files/docs/cases/COVERAGE.md.tmpl", "target": "docs/cases/COVERAGE.md"},
+    {"source": "files/docs/environment/ENVIRONMENT.md.tmpl", "target": "docs/environment/ENVIRONMENT.md"},
+    {"source": "files/scripts/TEST_INDEX.md.tmpl", "target": "scripts/TEST_INDEX.md"},
+    {"source": "files/reports/gitignore.tmpl", "target": "reports/.gitignore"},
+    {"source": "files/reports/INDEX.md.tmpl", "target": "reports/INDEX.md"},
+    {"source": "files/reports/REPORT.md.tmpl", "target": "reports/REPORT.md"},
+    {"source": "files/reports/DEFECT.md.tmpl", "target": "reports/DEFECT.md"},
+    {"source": "files/reports/RUN.md.tmpl", "target": "reports/RUN.md"}
+  ]
+}

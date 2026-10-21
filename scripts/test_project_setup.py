@@ -111,7 +111,7 @@ class SetupTests(unittest.TestCase):
         self.assertFalse((self.base / 'fresh' / '.git').exists())
 
     def test_new_templates_omit_import_reminder_in_result_and_receipt(self):
-        for template in ('research', 'software', 'writing', 'product-prototype', 'algorithm', 'blank'):
+        for template in ('research', 'software', 'writing', 'product-prototype', 'algorithm', 'testing', 'blank'):
             with self.subTest(template=template):
                 root = self.base / ('new-' + template)
                 body = {**self.configured(template), 'root': str(root),

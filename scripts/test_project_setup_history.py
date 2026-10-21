@@ -143,6 +143,20 @@ class SetupHistoryTests(unittest.TestCase):
         self.app.dependency_overrides[api._resolve_identity] = lambda: ('bot', 'bot')
         self.assertEqual(self.prepare().status_code, 403)
 
+    def test_removed_testing_project_restores_template_selection(self):
+        created = self.client.post('/projects/import', json=self.body).json()['project']
+        self.conn.execute(
+            "INSERT INTO project_config_events(project,actor,action,detail,created_at) "
+            "VALUES(?,'user','project.import',?,'now')",
+            (created, json.dumps({'template': {'id': 'testing', 'version': '1.0.0'}})))
+        self.conn.commit()
+        self.assertEqual(self.client.post(f'/projects/{created}/remove').status_code, 200)
+        response = self.prepare()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['template']['id'], 'testing')
+        self.assertEqual(response.json()['owner_role'], '测试负责人')
+        self.assertEqual(self.prepare(template_explicit=True).json()['template']['id'], 'software')
+
     def test_removed_algorithm_project_restores_template_selection(self):
         created = self.client.post('/projects/import', json=self.body).json()['project']
         self.conn.execute(
