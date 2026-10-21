@@ -107,7 +107,23 @@ Invoke-WebRequest -UseBasicParsing https://github.com/Xinjikang/bot-group/releas
 curl.exe -fL https://github.com/Xinjikang/bot-group/releases/latest/download/install.ps1 -o "%TEMP%\bot-group-install.ps1" && powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\bot-group-install.ps1"
 ```
 
-安装器自动下载最新正式版本源码、校验 SHA256、创建专用 `.venv`、安装锁定依赖并自检。它优先复用 64 位 Python 3.11–3.13，缺失时自动下载并校验 Python 官方安装程序，安装到当前用户目录。默认安装位置为 `%LOCALAPPDATA%\bot-group\app`，完成后显示实际路径；整个流程无需 Git。可先设置 `INSTALL_DIR` 环境变量指定安装位置。
+安装器自动下载最新正式版本源码、校验 SHA256、创建专用 `.venv`、安装锁定依赖并自检。它优先复用 64 位 Python 3.11–3.13，缺失时自动下载并校验 Python 官方安装程序，安装到当前用户目录。默认安装位置为 `%LOCALAPPDATA%\bot-group\app`，完成后显示实际路径；整个流程无需 Git。
+
+**自定义安装目录：**选择下面对应终端的一条命令，把 `D:\Apps\bot-group` 换成你想要的绝对路径。保留路径两侧的双引号，以支持含空格的目录。
+
+PowerShell：
+
+```powershell
+Invoke-WebRequest -UseBasicParsing https://github.com/Xinjikang/bot-group/releases/latest/download/install.ps1 -OutFile "$env:TEMP\bot-group-install.ps1"; if ($?) { powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\bot-group-install.ps1" -InstallDir "D:\Apps\bot-group" }
+```
+
+CMD：
+
+```cmd
+curl.exe -fL https://github.com/Xinjikang/bot-group/releases/latest/download/install.ps1 -o "%TEMP%\bot-group-install.ps1" && powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\bot-group-install.ps1" -InstallDir "D:\Apps\bot-group"
+```
+
+源码和专属 `.venv` 都放在指定目录，安装后运行 `D:\Apps\bot-group\start.bat` 启动。需要自动补装 Python 时，基础运行时单独存放在 `%LOCALAPPDATA%\bot-group-runtime\Python313`。也可以在运行默认命令前设置 `INSTALL_DIR` 环境变量；显式传入的 `-InstallDir` 参数优先。
 
 安装完成后，双击安装目录里的 **`start.bat`**，打开 `http://127.0.0.1:8180/app/`。日常停止使用 **`stop.bat`**，升级使用 **`upgrade.bat`**；升级会自动查询本仓库最新正式版本并保留配置与数据，成功后再次运行 `start.bat`。
 
