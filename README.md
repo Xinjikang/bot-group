@@ -109,7 +109,23 @@ For **CMD**, use:
 curl.exe -fL https://github.com/Xinjikang/bot-group/releases/latest/download/install.ps1 -o "%TEMP%\bot-group-install.ps1" && powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\bot-group-install.ps1"
 ```
 
-The installer downloads the latest stable source release, verifies SHA256, creates a dedicated `.venv`, installs locked dependencies, and checks the installation. It reuses a compatible 64-bit Python 3.11–3.13 or downloads and verifies the official Python installer for a per-user installation. The default location is `%LOCALAPPDATA%\bot-group\app`; set `INSTALL_DIR` beforehand to choose another directory. Git is optional.
+The installer downloads the latest stable source release, verifies SHA256, creates a dedicated `.venv`, installs locked dependencies, and checks the installation. It reuses a compatible 64-bit Python 3.11–3.13 or downloads and verifies the official Python installer for a per-user installation. The default location is `%LOCALAPPDATA%\bot-group\app`. Git is optional.
+
+**Choose your installation directory:** use one of the following commands and replace `D:\Apps\bot-group` with your preferred absolute path. Keep the quotes around the path so directories containing spaces work.
+
+PowerShell:
+
+```powershell
+Invoke-WebRequest -UseBasicParsing https://github.com/Xinjikang/bot-group/releases/latest/download/install.ps1 -OutFile "$env:TEMP\bot-group-install.ps1"; if ($?) { powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\bot-group-install.ps1" -InstallDir "D:\Apps\bot-group" }
+```
+
+CMD:
+
+```cmd
+curl.exe -fL https://github.com/Xinjikang/bot-group/releases/latest/download/install.ps1 -o "%TEMP%\bot-group-install.ps1" && powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\bot-group-install.ps1" -InstallDir "D:\Apps\bot-group"
+```
+
+The source files and dedicated `.venv` are installed in that directory; launch it with `D:\Apps\bot-group\start.bat`. When the installer needs to install Python itself, the base runtime is stored separately at `%LOCALAPPDATA%\bot-group-runtime\Python313`. You can also set the `INSTALL_DIR` environment variable before running the default command; an explicit `-InstallDir` argument takes precedence.
 
 After installation, double-click **`start.bat`** in the installation directory and open `http://127.0.0.1:8180/app/`. Use **`stop.bat`** to stop and **`upgrade.bat`** to discover and install the latest stable release while preserving configuration and data. Run `start.bat` again after a successful upgrade.
 
