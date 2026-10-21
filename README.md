@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md) | **English**
 
-A group chat and task management engine for collaboration between multiple bots. It supports messaging, task assignment, progress tracking, review, acceptance, and delivery. Built-in project templates cover software development, product research, content writing, and product prototyping, with roles, workflows, and project documentation for each scenario.
+A group chat and task management engine for collaboration between multiple bots. It supports messaging, task assignment, progress tracking, review, acceptance, and delivery. Built-in project templates cover software development, product research, content writing, product prototyping, algorithm research and development, and testing, with roles, workflows, and project documentation for each scenario.
 
 ## Design Philosophy
 
@@ -28,7 +28,7 @@ The design follows five principles:
 
 5. **Separate coordination from execution tools**
 
-   The engine organizes collaboration. Members carry out their work through their own runtimes and tools. Configurable roles, rules, and project templates apply the same coordination mechanisms to software development, product research, content writing, and product prototyping.
+   The engine organizes collaboration. Members carry out their work through their own runtimes and tools. Configurable roles, rules, and project templates apply the same coordination mechanisms to software development, product research, content writing, product prototyping, algorithm research and development, and testing.
 
 ## Documentation
 
@@ -43,6 +43,9 @@ Requirements, designs, engineering references, and user guides live in [`docs/`]
 | [docs/engineering/PROFILE-EDITOR.md](docs/engineering/PROFILE-EDITOR.md) | Member configuration editing, backup, and recovery |
 | [docs/guides/RELEASE-GUIDE.md](docs/guides/RELEASE-GUIDE.md) | Windows source installation, service control, release discovery, upgrades, and recovery |
 | [docs/guides/DOCUMENT-STORAGE.md](docs/guides/DOCUMENT-STORAGE.md) | Storage conventions for development materials and public technical documentation |
+| [Product prototyping template](docs/engineering/PRODUCT-PROTOTYPE-TEMPLATE.md) | Product requirements, interaction design, prototype delivery, and role SOUL references |
+| [Algorithm research and development template](docs/engineering/ALGORITHM-TEMPLATE.md) | Traditional algorithms and machine learning: literature, designs with experiment plans, experiment records, and final reports; users manage code and configuration locations |
+| [Testing template](docs/engineering/TESTING-TEMPLATE.md) | PRD and prototype inputs, test cases, scripts in `scripts/`, case-to-script mappings and maintenance in `scripts/TEST_INDEX.md`, and test reports |
 
 ## Directory Structure
 
@@ -185,7 +188,7 @@ See [MCP integration and maintenance](mcp/README.md#连接成员) and [member cr
 
 After installation and member setup, open `http://127.0.0.1:8180/app/`. If an administrator password is configured, sign in as prompted. Chinese labels are included below to help locate controls in the current UI.
 
-1. **Create or import a project.** In the project selector, click **＋ New project** (＋ 新建项目). Choose **New project: blank or template** (新建项目（空白或场景模板）) or **Import an existing project for the first time** (首次导入已有项目). For a new project, choose software development, product research, content writing, product prototyping, or a blank project, then enter its name and local directory.
+1. **Create or import a project.** In the project selector, click **＋ New project** (＋ 新建项目). Choose **New project: blank or template** (新建项目（空白或场景模板）) or **Import an existing project for the first time** (首次导入已有项目). For a new project, choose software development, product research, content writing, product prototyping, algorithm research and development, testing, or a blank project, then enter its name and local directory.
 2. **Configure the team.** Follow the wizard to select a collaboration mode, confirm roles, permissions, and the collaboration rules in `AGENTS.md`, and assign Codex / Hermes members and workspace resources. Review the preview and confirm creation or import. Afterwards, click the project tab and use **Members & directories** (成员与目录) to add members and check their enabled state and model settings. Adjust authorization under **Project permissions** (项目权限) and click **Save permissions** (保存权限). See the [project wizard](docs/engineering/PROJECT-SETUP-WIZARD-2026-10-14.md) and [project configuration](docs/engineering/PROJECT-CONFIGURATION.md).
 3. **Confirm the environment and start a discussion.** For software projects, use the checklist below to confirm resources and engineering conventions. Select the project, click **＋ New topic** (＋ 新话题) on the left, enter a title, select participants, write an opening message, and click **Create** (创建). For example: “Discuss a product research plan to understand user needs. Start by listing the research scope and deliverables.” Topics support ongoing discussions. To contact a member directly, type `@` in the group chat composer, select the member, and send a message.
 4. **Turn the discussion into tasks.** Once the goal and acceptance criteria are agreed, ask a member with the required permissions to create a requirement, break it into tasks, and assign recipients. For example: “Create a requirement for the scope we agreed on, break it into tasks, specify deliverables and acceptance criteria, and arrange execution.” The engine schedules members according to task state, dependencies, and project authorization. The selected template and project rules define responsibilities and handoffs.
