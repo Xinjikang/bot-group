@@ -1,235 +1,241 @@
-# bot-group 群聊与任务管理引擎
+# bot-group — Group Chat and Task Management Engine
 
-面向多 Bot 协作的群聊与任务管理引擎，支持消息交流、任务分派、进度跟踪、审查验收与协作交付。内置软件研发、产品调研、内容写作、产品原型设计等项目模板，提供对应的角色分工、协作流程和项目文档。
+[简体中文](README.zh-CN.md) | **English**
 
-## 设计理念
+A group chat and task management engine for collaboration between multiple bots. It supports messaging, task assignment, progress tracking, review, acceptance, and delivery. Built-in project templates cover software development, product research, content writing, and product prototyping, with roles, workflows, and project documentation for each scenario.
 
-bot-group 希望让多个 AI 成员像一支持续运作的团队，带着项目积累，围绕共同目标交流、分工、协商和交付，让用户把精力集中在目标、关键决策与成果验收上。
+## Design Philosophy
 
-其设计围绕以下理念展开：
+bot-group aims to help AI members work as a continuing team: building on project knowledge, communicating around shared goals, dividing responsibilities, resolving disagreements, and delivering results. Users can focus on goals, key decisions, and acceptance of the work.
 
-1. **持续协作，积累项目上下文**
+The design follows five principles:
 
-   项目工作跨越多次任务与会话。通过保存讨论、任务状态、项目文档和执行记录，为成员继续工作、交接任务和复用经验提供依据，让每次工作都能承接已有成果。
+1. **Continuous collaboration with accumulated project context**
 
-2. **群聊与任务相互衔接**
+   Project work spans multiple tasks and sessions. Saved discussions, task states, project documents, and execution records give members a basis for resuming work, handing off tasks, and reusing experience. Each round of work builds on earlier results.
 
-   群聊承载问题澄清、方案讨论和成员协调，任务承载责任、进度与验收要求。将交流与执行连接起来，使讨论形成行动，让执行中的问题及时回到协商过程。
+2. **Connected conversations and tasks**
 
-3. **混沌中的秩序：规则驱动的自组织协作**
+   Group chat supports clarification, design discussions, and coordination. Tasks capture responsibilities, progress, and acceptance criteria. Connecting conversation with execution turns discussions into action and brings problems encountered during execution back into the discussion.
 
-   “混沌”体现了对灵活互动与自组织的追求：成员依据专业分工和项目授权自主开展工作，通过消息、话题和任务交接相互协调，让整体协作秩序从具体互动中逐步形成。共同规则明确职责与边界，引擎提供调度、权限校验和过程记录，使灵活协作有章可循。
+3. **Order within chaos: self-organized collaboration guided by rules**
 
-4. **按需协商，逐级处理分歧**
+   “Chaos” expresses the pursuit of flexible interaction and self-organization. Members work autonomously within their specialties and project permissions, coordinating through messages, topics, and task handoffs. The overall working order develops through these interactions. Shared rules define responsibilities and boundaries, while the engine provides scheduling, permission checks, and process records.
 
-   日常问题由相关成员直接沟通，需要共同判断的问题进入话题讨论，超出职责或授权范围的事项交由项目负责人或用户决策。协作随实际情况展开、返工和调整，并保留清晰的责任与处理记录。
+4. **Discuss as needed and escalate disagreements progressively**
 
-5. **协作机制与执行工具分层**
+   Members handle routine issues directly. Questions requiring collective judgment move into topic discussions, and matters beyond a member's responsibilities or authority go to the project owner or user. Collaboration adapts through discussion, rework, and changes, with clear records of responsibility and resolution.
 
-   引擎负责组织协作，成员通过各自的运行环境和工具完成具体工作。结合可配置的角色、规则与项目模板，将同一套协作机制应用于软件研发、产品调研、内容写作和产品原型设计等场景。
+5. **Separate coordination from execution tools**
 
-## 文档
+   The engine organizes collaboration. Members carry out their work through their own runtimes and tools. Configurable roles, rules, and project templates apply the same coordination mechanisms to software development, product research, content writing, and product prototyping.
 
-需求、设计、工程和使用说明位于 [`docs/`](docs)，随源码版本管理：
+## Documentation
 
-| 文档 | 说明 |
+Requirements, designs, engineering references, and user guides live in [`docs/`](docs) and are versioned with the source. The linked technical documents are currently in Chinese.
+
+| Document | Description |
 |---|---|
-| [docs/INDEX.md](docs/INDEX.md) | 按子系统组织的工程与专题文档索引 |
-| [docs/engineering/ENGINEERING.md](docs/engineering/ENGINEERING.md) | 当前架构、数据、接口、调度、授权与生命周期 |
-| [docs/ui-spec/UI-SPEC.md](docs/ui-spec/UI-SPEC.md) | 本项目主题、布局、组件状态与界面验证约定 |
-| [docs/guides/DEPLOY.md](docs/guides/DEPLOY.md) | 部署清单（公网上线前必做） |
-| [docs/engineering/PROFILE-EDITOR.md](docs/engineering/PROFILE-EDITOR.md) | 成员配置编辑、备份与恢复 |
-| [docs/guides/RELEASE-GUIDE.md](docs/guides/RELEASE-GUIDE.md) | Windows 源码安装、独立启停、自动发现正式版本升级与恢复 |
-| [docs/guides/DOCUMENT-STORAGE.md](docs/guides/DOCUMENT-STORAGE.md) | 开发资料与公开技术文档的存放约定 |
+| [docs/INDEX.md](docs/INDEX.md) | Engineering and topic index organized by subsystem |
+| [docs/engineering/ENGINEERING.md](docs/engineering/ENGINEERING.md) | Current architecture, data, interfaces, scheduling, authorization, and lifecycle |
+| [docs/ui-spec/UI-SPEC.md](docs/ui-spec/UI-SPEC.md) | Project theme, layout, component states, and UI validation conventions |
+| [docs/guides/DEPLOY.md](docs/guides/DEPLOY.md) | Deployment checklist to complete before public internet exposure |
+| [docs/engineering/PROFILE-EDITOR.md](docs/engineering/PROFILE-EDITOR.md) | Member configuration editing, backup, and recovery |
+| [docs/guides/RELEASE-GUIDE.md](docs/guides/RELEASE-GUIDE.md) | Windows source installation, service control, release discovery, upgrades, and recovery |
+| [docs/guides/DOCUMENT-STORAGE.md](docs/guides/DOCUMENT-STORAGE.md) | Storage conventions for development materials and public technical documentation |
 
-## 目录结构
+## Directory Structure
 
-程序文件、配置和运行数据默认都放在项目根目录。`.env` 由安装程序创建，数据库、附件、日志和备份随运行生成。
+Program files, configuration, and runtime data default to the project root. The installer creates `.env`; the database, attachments, logs, and backups are created during operation.
 
-```
+```text
 bot-group/
-├── docs/                 # 需求、设计、工程和指南，纳入 Git
-│   ├── requirements/     # 需求与验收标准
-│   ├── design/           # 设计与方案依据
-│   ├── ui-spec/          # 本项目 UI 视觉与组件规范
-│   ├── engineering/      # 已实现的技术契约
-│   └── guides/           # 使用、维护与协作指南
-├── README.md
-├── .env                  # 本机配置：端口、登录密码等，按需编辑
-├── group.db              # 数据库：项目、成员、聊天记录、需求和任务
-├── attachments/          # 聊天中上传的图片和文件
-├── logs/                 # 启动与运行日志
-├── backups/              # 升级前的数据和程序备份
-├── requirements.txt      # 引擎依赖（fastapi/uvicorn/httpx/pyyaml/ruamel.yaml）
-├── start.sh              # Python 标准库启动入口（shell 包装）
-├── start.bat             # Windows 原生 Python 启动入口
+├── docs/                 # Versioned requirements, designs, engineering references, and guides
+│   ├── requirements/     # Requirements and acceptance criteria
+│   ├── design/           # Designs and their technical rationale
+│   ├── ui-spec/          # Project UI and component specifications
+│   ├── engineering/      # Implemented technical contracts
+│   └── guides/           # Usage, maintenance, and collaboration guides
+├── README.md             # English overview
+├── README.zh-CN.md       # Chinese overview
+├── .env                  # Local settings: port, login password, etc.
+├── group.db              # Projects, members, chat history, requirements, and tasks
+├── attachments/          # Images and files uploaded in chat
+├── logs/                 # Startup and runtime logs
+├── backups/              # Data and program backups created before upgrades
+├── requirements.txt      # Engine dependencies (fastapi/uvicorn/httpx/pyyaml/ruamel.yaml)
+├── start.sh              # Python standard-library startup entry point (shell wrapper)
+├── start.bat             # Native Windows Python startup entry point
 ├── .gitignore
-├── engine/               # 引擎本体（常驻服务，端口 8180）
-│   ├── main.py           # 入口：FastAPI app + 队列 worker + 扫描器后台线程
-│   ├── db.py             # group.db 连接（WAL+busy_timeout=30s）、建表、重启恢复
-│   ├── schema.sql        # 统一数据库：群聊、项目、需求、任务和运行记录
-│   ├── taskpool.py       # 需求与任务管理，共用 group.db，按 project 隔离
-│   ├── api.py            # API 路由（/msg、/thread、/thread/task-update、inbox、SSE、登录）
-│   ├── auth.py           # 管理员单账号 session/token
-│   ├── profile_config.py # 成员配置编辑、按变更文件备份、冲突检测和失败恢复
-│   ├── router.py         # 消息路由分发（点对点/话题/无@无话题400）
-│   ├── mentions.py       # @解析（精确匹配 members 表）
-│   ├── wake.py           # Hermes/Codex 子进程、正文注入及超预算补读
-│   ├── queue.py          # 串行队列 worker + 看门狗
-│   ├── scanner.py        # 180s 扫描：inbox/任务/话题静默/轮次收口/需求拆解
-│   ├── taskqueue_proxy.py# 修订代理（硬校验→转发任务池）
-│   └── events.py         # SSE 事件流（内存 pub/sub）
-├── scripts/              # 测试与启动工具，测试清单见 TEST_INDEX.md
-├── mcp/                  # 统一 MCP server（任务管理 + 群聊）
-│   ├── server.py         # 一个进程对外
-│   ├── requirements.txt  # MCP 与引擎共用依赖，加 MCP SDK
+├── engine/               # Resident engine service, port 8180
+│   ├── main.py           # FastAPI app, queue worker, and background scanner
+│   ├── db.py             # group.db connection (WAL + busy_timeout=30s), schema, restart recovery
+│   ├── schema.sql        # Shared schema for chat, projects, requirements, tasks, and runs
+│   ├── taskpool.py       # Requirement and task management, isolated by project in group.db
+│   ├── api.py            # API routes (/msg, /thread, /thread/task-update, inbox, SSE, login)
+│   ├── auth.py           # Single-administrator session/token authentication
+│   ├── profile_config.py # Member configuration, per-file backups, conflicts, failure recovery
+│   ├── router.py         # Message routing: direct messages/topics; missing both returns 400
+│   ├── mentions.py       # Exact @mention matching against the members table
+│   ├── wake.py           # Hermes/Codex subprocesses, message injection, overflow retrieval
+│   ├── queue.py          # Serial queue worker and watchdog
+│   ├── scanner.py        # 180-second scan: inbox/tasks/topic silence/round closure/decomposition
+│   ├── taskqueue_proxy.py# Revision proxy: strict validation, then forwarding to the task pool
+│   └── events.py         # SSE event stream with in-memory pub/sub
+├── scripts/              # Tests and startup tools; see TEST_INDEX.md
+├── mcp/                  # Unified MCP server for task management and group chat
+│   ├── server.py         # Single server process
+│   ├── requirements.txt  # Shared engine dependencies plus the MCP SDK
 │   └── README.md
-└── frontend/             # Web 前端（三栏 SPA）
+└── frontend/             # Three-panel web SPA
     └── README.md
 ```
 
-## 快速开始
+<a id="快速开始"></a>
 
-### 安装与启动
+## Quick Start
 
-安装 Python 3.11 或更高版本后，在项目根目录打开 PowerShell，执行：
+### Install and Start
+
+Install Python 3.11 or later, open PowerShell in the project root, and run:
 
 ```powershell
-# 首次安装：准备 Python 运行环境、依赖和 .env
+# First installation: prepare the Python environment, dependencies, and .env
 py -3.11 scripts/install.py install
-# 启动服务
+# Start the service
 py -3.11 scripts/service.py start
 ```
 
-启动成功后，打开浏览器访问 `http://127.0.0.1:8180/app/`。可双击 `start.bat` 启动或重启，双击 `stop.bat` 停止服务。运行中的服务也可通过页面右上角重启按钮操作，位置在主题与连接状态之间。
-退出先等待 Bot 自然结束最多 120 秒，超时由引擎终止剩余 Bot 进程树，再回收浏览器资源。详见 [服务重启](docs/engineering/SERVICE-RESTART-2026-10-17.md)。
-脚本通过 `scripts/start_engine.py` 创建独立后台进程并进行健康检查；启动失败会显示错误。
-“数据目录”指保存 `.env`、数据库、附件、日志和备份的文件夹，默认就是项目根目录。日志位于 `logs/engine-startup.log` 和 `logs/engine.log`。
+Once startup succeeds, open `http://127.0.0.1:8180/app/` in your browser. Double-click `start.bat` to start or restart the service, or `stop.bat` to stop it. A running service can also be restarted from the button at the top right of the page, between the theme control and connection status.
 
-手动配置过数据目录的安装继续使用指定位置。选择其他目录时，在安装、启动、停止和升级前设置同一个环境变量 `GROUP_DATA_DIR`；程序先确定数据目录，再读取其中的 `.env`。源码下载、自定义数据目录、升级与回滚见[安装升级说明](docs/guides/RELEASE-GUIDE.md)。
+Shutdown gives bots up to 120 seconds to finish naturally. The engine then terminates any remaining bot process trees and releases browser resources. See [Service restart](docs/engineering/SERVICE-RESTART-2026-10-17.md).
 
-成员配置编辑的使用方式、备份位置和接口见 [docs/engineering/PROFILE-EDITOR.md](docs/engineering/PROFILE-EDITOR.md)。
+The scripts use `scripts/start_engine.py` to create an independent background process and check its health. Startup failures display an error. The **data directory** holds `.env`, the database, attachments, logs, and backups. It defaults to the project root. Logs are stored in `logs/engine-startup.log` and `logs/engine.log`.
 
-### 配置文件 `.env`
+Installations with a manually configured data directory continue to use that location. To select another directory, set the same `GROUP_DATA_DIR` environment variable before installation, startup, shutdown, and upgrades. The program resolves the data directory first, then reads its `.env`. See the [installation and upgrade guide](docs/guides/RELEASE-GUIDE.md) for source downloads, custom data directories, upgrades, and rollback.
 
-`.env` 是一个普通的 UTF-8 文本文件，用来保存本机的运行设置，每行采用 `配置名=值` 的格式。按上面的步骤安装后，它位于项目根目录；安装程序会保留已经存在的文件。文件名就是 `.env`，编辑时保留这一名称。
+For member configuration editing, backup locations, and interfaces, see [docs/engineering/PROFILE-EDITOR.md](docs/engineering/PROFILE-EDITOR.md).
 
-用记事本打开 `.env`，按需修改，保存后重启引擎。以 `#` 开头的整行是注释；启用某个选项时，去掉该行开头的 `#` 并填写值。例如：
+### The `.env` Configuration File
+
+`.env` is a UTF-8 text file containing local runtime settings, with one `SETTING=value` per line. After the installation above, it is in the project root. The installer preserves an existing file. Keep the filename `.env` when editing it.
+
+Open `.env` in a text editor, change the settings you need, save, and restart the engine. Lines beginning with `#` are comments. To enable a commented option, remove its leading `#` and supply a value. For example:
 
 ```dotenv
-# 仅供本机访问，浏览器使用 http://127.0.0.1:8180/app/
+# Local access only; open http://127.0.0.1:8180/app/ in your browser
 GROUP_ENGINE_HOST=127.0.0.1
 GROUP_ENGINE_PORT=8180
 ```
 
-默认本机使用可保留安装时生成的配置。需要登录密码时，填写 `GROUP_ADMIN_PASSWORD`；外部访问的部署要求见[部署说明](docs/guides/DEPLOY.md)。此处的 `.env` 管理 bot-group 引擎；Hermes 成员自己的 `.env` 位于对应成员配置目录，用于该成员的模型等设置。
+For local use, the generated defaults can be kept. Set `GROUP_ADMIN_PASSWORD` to require a login password. See the [deployment guide](docs/guides/DEPLOY.md) for external access requirements. This `.env` configures the bot-group engine. Each Hermes member has its own `.env` in its member configuration directory for model and related settings.
 
-可填写的常用配置：
+Common settings:
 
-| 变量 | 必填 | 说明 |
+| Variable | Required | Description |
 |---|---|---|
-| `GROUP_ADMIN_PASSWORD` | 生产必填 | 管理员登录密码 |
-| `GROUP_SECRET` | 生产必填 | token 签名密钥 |
-| `GROUP_ENGINE_HOST` / `GROUP_ENGINE_PORT` | 否 | 监听地址与端口，默认 `127.0.0.1:8180` |
-| `GROUP_DB` | 否 | 数据库路径，默认有效数据目录内 `group.db` |
-| `GROUP_ATTACHMENTS_DIR` | 否 | 附件目录，默认数据库所在目录内 `attachments` |
-| `GROUP_ENGINE_URL` | 否 | MCP 回调引擎 URL；默认由监听配置派生 |
-| `HERMES_BIN` / `CODEX_BIN` | 否 | 显式指定宿主可执行入口，省略时自动探测 |
-| `GROUP_MCP_PYTHON` | 否 | 子进程 MCP 解释器，默认项目解释器 |
-| `RELEASE_INDEX_URL` | 升级时需要 | 正式发布索引，见发布指南 |
+| `GROUP_ADMIN_PASSWORD` | In production | Administrator login password |
+| `GROUP_SECRET` | In production | Token signing key |
+| `GROUP_ENGINE_HOST` / `GROUP_ENGINE_PORT` | No | Bind address and port; default `127.0.0.1:8180` |
+| `GROUP_DB` | No | Database path; defaults to `group.db` in the effective data directory |
+| `GROUP_ATTACHMENTS_DIR` | No | Attachment directory; defaults to `attachments` beside the database |
+| `GROUP_ENGINE_URL` | No | Engine callback URL for MCP; derived from the bind configuration by default |
+| `HERMES_BIN` / `CODEX_BIN` | No | Explicit host executable entry point; automatically detected when omitted |
+| `GROUP_MCP_PYTHON` | No | Interpreter for MCP subprocesses; defaults to the project interpreter |
+| `RELEASE_INDEX_URL` | For upgrades | Official release index; see the release guide |
 
-使用 `service.py` 或 BAT 启停时，会导入数据目录 `.env` 中尚未定义的环境变量。host/port 优先级为命令行、进程环境、`.env`、默认值；直接启动模块的环境项见 [配置约定](docs/engineering/ENGINEERING.md#8-配置安装与生命周期)。
+When starting or stopping through `service.py` or the BAT scripts, unset environment variables are loaded from the data directory's `.env`. Host and port precedence is: command line, process environment, `.env`, then defaults. For environment settings when starting modules directly, see [configuration conventions](docs/engineering/ENGINEERING.md#8-配置安装与生命周期).
 
-### 连接 Codex / Hermes
+### Connect Codex / Hermes
 
-Bot 通过 MCP 工具参与群聊、读取消息和处理任务。MCP 是宿主调用这些工具的接口；由宿主启动对应的工具服务进程。
+Bots use MCP tools to join group chats, read messages, and process tasks. MCP is the interface through which the host calls these tools, and the host starts the corresponding tool server process.
 
-先准备好 Codex 或 Hermes 的模型与认证，再在项目的“成员与目录”中添加成员，配置角色、权限和工作目录。引擎在启动 Codex、Hermes 成员时自动提供本次运行的 MCP 配置。MCP 的群聊和任务工具统一调用引擎 API，数据库位置由引擎管理。
+Configure model access and authentication for Codex or Hermes first. Then add members under **Members & directories** (成员与目录), setting their roles, permissions, and working directories. The engine automatically supplies MCP configuration for each Codex or Hermes member run. MCP chat and task tools call the engine API; the engine manages the database location.
 
-具体步骤见 [MCP 接入与维护说明](mcp/README.md#连接成员)，新建成员操作见[成员创建说明](docs/engineering/PROFILE-CREATE.md)。完整测试清单见 [scripts/TEST_INDEX.md](scripts/TEST_INDEX.md)。
+See [MCP integration and maintenance](mcp/README.md#连接成员) and [member creation](docs/engineering/PROFILE-CREATE.md) for details. The complete test index is [scripts/TEST_INDEX.md](scripts/TEST_INDEX.md).
 
-### 开始使用
+### Start Using the Project
 
-完成安装和成员准备后，在浏览器打开 `http://127.0.0.1:8180/app/`；设置了管理员密码时，按页面提示登录。
+After installation and member setup, open `http://127.0.0.1:8180/app/`. If an administrator password is configured, sign in as prompted. Chinese labels are included below to help locate controls in the current UI.
 
-1. **创建或导入项目。** 在项目选择菜单中点击“＋ 新建项目”，选择“新建项目（空白或场景模板）”或“首次导入已有项目”。新建时可选软件研发、产品调研、内容写作、产品原型设计或空白项目，填写项目名称和本机目录。
-2. **配置协作团队。** 按向导选择协作方式，确认角色、权限和 `AGENTS.md` 中的协作规则，分配 Codex / Hermes 成员及工作区资源，检查预览后确认创建或导入。创建后可点击项目标签，在“成员与目录”中补充成员、检查启用状态和模型配置，在“项目权限”中调整授权并点击“保存权限”。详细步骤见[项目向导](docs/engineering/PROJECT-SETUP-WIZARD-2026-10-14.md)和[项目配置](docs/engineering/PROJECT-CONFIGURATION.md)。
-3. **确认环境并发起讨论。** 软件项目先按下方“项目创建后需要确认的配置”核对资源和工程约定。选中项目后，点击左侧“＋ 新话题”，填写标题、选择参与成员并写下开场白，点击“创建”。例如：“请讨论一个产品调研计划，目标是了解用户需求，先列出调研范围和交付物。”话题用于持续讨论；需要直接找某个成员时，可在群聊输入框输入 `@`，从列表选择成员后发送消息。
-4. **把讨论转成任务。** 目标和验收标准确认后，要求具备相应权限的成员建立需求、拆分任务并分配接手人。例如：“请按刚才确认的范围建立需求，拆分任务，写清交付物和验收标准并安排执行。”引擎按任务状态、依赖和项目授权调度成员；具体分工与交接流程由所选模板和项目规则约定。
-5. **查看进度和结果。** 右侧“任务”面板按需求展示任务，点击任务行的“查看”可查看任务说明及执行、交接记录。结合群聊回复检查交付物；遇到阻塞时补充信息或调整安排。任务完成并验收后，由具备权限的成员关闭需求，也可通过面板中的“关闭需求”操作完成收尾。
+1. **Create or import a project.** In the project selector, click **＋ New project** (＋ 新建项目). Choose **New project: blank or template** (新建项目（空白或场景模板）) or **Import an existing project for the first time** (首次导入已有项目). For a new project, choose software development, product research, content writing, product prototyping, or a blank project, then enter its name and local directory.
+2. **Configure the team.** Follow the wizard to select a collaboration mode, confirm roles, permissions, and the collaboration rules in `AGENTS.md`, and assign Codex / Hermes members and workspace resources. Review the preview and confirm creation or import. Afterwards, click the project tab and use **Members & directories** (成员与目录) to add members and check their enabled state and model settings. Adjust authorization under **Project permissions** (项目权限) and click **Save permissions** (保存权限). See the [project wizard](docs/engineering/PROJECT-SETUP-WIZARD-2026-10-14.md) and [project configuration](docs/engineering/PROJECT-CONFIGURATION.md).
+3. **Confirm the environment and start a discussion.** For software projects, use the checklist below to confirm resources and engineering conventions. Select the project, click **＋ New topic** (＋ 新话题) on the left, enter a title, select participants, write an opening message, and click **Create** (创建). For example: “Discuss a product research plan to understand user needs. Start by listing the research scope and deliverables.” Topics support ongoing discussions. To contact a member directly, type `@` in the group chat composer, select the member, and send a message.
+4. **Turn the discussion into tasks.** Once the goal and acceptance criteria are agreed, ask a member with the required permissions to create a requirement, break it into tasks, and assign recipients. For example: “Create a requirement for the scope we agreed on, break it into tasks, specify deliverables and acceptance criteria, and arrange execution.” The engine schedules members according to task state, dependencies, and project authorization. The selected template and project rules define responsibilities and handoffs.
+5. **Review progress and results.** The **Tasks** (任务) panel on the right groups tasks by requirement. Click **View** (查看) on a task to inspect its description, execution records, and handoffs. Check deliverables alongside chat responses, providing missing information or adjusting plans when work is blocked. After tasks are completed and accepted, an authorized member can close the requirement. The panel also provides **Close requirement** (关闭需求).
 
-首次使用可先发一条 `@成员 请回复你在本项目中的职责和工作目录`，确认成员能够响应，再开展具体工作。页面显示“待拆解授权”时，检查“项目权限”中的任务创建授权及面板提示的原因。
+For a first check, send `@member Please reply with your responsibilities and working directory in this project` and confirm that the member responds. If the page shows **Awaiting decomposition authorization** (待拆解授权), check task-creation authorization in **Project permissions** and the reason shown in the panel.
 
-### 项目创建后需要确认的配置
+### Settings to Confirm After Project Creation
 
-软件项目创建或导入后，先核对以下清单。用户负责提供环境资源和确认项目约束，Bot 负责检查实际工程、补齐技术信息并持续维护文档。软件模板生成的工程约定位于项目内 `docs/engineering/ENGINEERING.md`；已有项目按自己的文档入口维护。
+After creating or importing a software project, review the checklist below. Users provide environment resources and confirm project constraints. Bots inspect the actual project, fill in technical details, and maintain documentation. The software template creates engineering conventions at `docs/engineering/ENGINEERING.md` within the project; existing projects can use their own documentation entry point.
 
-| 配置项 | 用户需要确认或提供 | 操作入口与生效方式 |
+| Setting | What the user confirms or provides | Where to configure it and when it takes effect |
 | --- | --- | --- |
-| UI 规范 | 提供已有品牌、组件库或界面规范；新项目可采用模板基线 | 软件项目的 `docs/ui-spec/UI-SPEC.md`，由前端成员维护、审查员核验；重要视觉变更由项目负责人协调确认 |
-| 服务端口、监听地址、浏览器及数据目录 | 核对引擎生成的默认值，按实际服务调整名称、端口，确认浏览器调试端口、用户数据目录及测试数据目录 | 新建/导入向导的“工作区资源”，或项目“成员与目录”→成员“工作区”；独立工作区再进入“资源配置”。成员空闲时修改并保存，下次唤醒注入新值；见[工作区资源](docs/engineering/WORKSPACE-RESOURCES-2026-10-14.md) |
-| 测试环境与资源 | 提供可用测试环境、专用账号的用途和权限、凭据引用、占用安排及数据保留要求 | 编辑项目工程文档的“测试环境与资源清单”，或通过项目对话授权 Bot 登记；凭据保存在安全配置中，文档只登记引用。开展相应测试前确认资源可用 |
-| CodeGraph 代码索引（按需启用） | 明确启用或停用；启用时准备工具安装和成员访问条件 | 在项目工程文档的“codegraph 配置”登记选择。由 Bot 核对实际工具版本、填写初始化/更新/查询命令并建立索引，记录索引对应的提交与结果；选择停用时同步项目规则中的索引要求 |
-| 版本、远端与发布约束 | 确认首轮版本范围、需要使用的远端及同步方向、发布范围与授权 | 在项目对话中明确要求，由责任成员维护工程文档的“分支、合并与发布”；架构师核验已有仓库并登记实际基线，新增远端和发布按用户授权执行 |
+| UI specification | Existing brand guidelines, component libraries, or UI standards; new projects can use the template baseline | The software project's `docs/ui-spec/UI-SPEC.md`, maintained by frontend members and checked by reviewers. The project owner coordinates significant visual changes. |
+| Service ports, bind addresses, browser settings, and data directories | Check generated defaults, adjust service names and ports, and confirm browser debugging ports, user data directories, and test data directories | **Workspace resources** (工作区资源) in the creation/import wizard, or **Members & directories** → member **Workspace** (工作区). For an independent workspace, open **Resource configuration** (资源配置). Save changes while the member is idle; values are injected on its next wake. See [workspace resources](docs/engineering/WORKSPACE-RESOURCES-2026-10-14.md). |
+| Test environments and resources | Available environments, purposes and permissions of dedicated accounts, credential references, resource reservations, and data retention requirements | Edit the engineering document's **Test environments and resources** inventory, or authorize a bot to record it through the project conversation. Store credentials in secure configuration and document references only. Confirm availability before the relevant tests. |
+| CodeGraph code index (optional) | Decide whether to enable it; if enabled, prepare the tools and member access | Record the choice under **codegraph configuration** in the engineering document. A bot checks tool versions, documents initialization/update/query commands, builds the index, and records its commit and result. If disabled, update the corresponding project-rule requirements. |
+| Versions, remotes, and release constraints | Initial version scope, required remotes and synchronization direction, publication scope, and authorization | State requirements in the project conversation. The responsible member maintains **Branches, merging, and releases** in the engineering document. The architect checks the existing repository and records the actual baseline. Adding remotes and publishing follow user authorization. |
 
-引擎端口在安装目录 `.env` 中设置，项目开发和测试服务端口在工作区资源中设置。保存资源后，由开发成员将分配值接入项目启动参数、环境变量或配置文件，启动时核验实际端口和数据目录。技术栈、运行命令和接口约定由 Bot 检查工程后补齐；外部测试资源及访问授权由用户提供。
+Set the engine's port in the installation directory's `.env`. Configure development and test service ports in workspace resources. After saving resources, developers connect the assigned values to startup arguments, environment variables, or configuration files, then verify the actual ports and data directories at startup. Bots inspect the project to document its technology stack, commands, and interfaces; users provide external test resources and access authorization.
 
-可以在项目中交代：“请核对工作区资源并适配启动命令，列出仍需我提供的测试环境和权限；CodeGraph 按我的选择配置，将结果更新到工程文档。”工程约定的维护分工见[软件项目角色说明](docs/guides/SOFTWARE-ROLES-2026-10-14.md)。
+For example: “Check the workspace resources and adapt the startup commands. List the test environments and permissions I still need to provide. Configure CodeGraph according to my choice and record the results in the engineering document.” See [software project roles](docs/guides/SOFTWARE-ROLES-2026-10-14.md) for documentation responsibilities.
 
-## 自定义
+## Customization
 
-可以根据团队的实际流程调整项目规则、角色分工、成员设置和交付文档。建议先选用接近需求的项目模板，再针对当前项目修改。
+Adapt project rules, responsibilities, member settings, and deliverable documents to your team's workflow. Start with the closest project template, then customize the current project.
 
-### 修改项目协作规则（AGENTS.md）
+### Edit Project Collaboration Rules (`AGENTS.md`)
 
-每个项目主目录中的 `AGENTS.md` 用来约定该项目的工作方式。点击项目标签，打开“AGENTS.md”页签，编辑后点击“保存 AGENTS.md”；也可以直接用文本编辑器修改项目主目录中的同名文件。
+The `AGENTS.md` in each project's main directory defines how that project works. Click the project tab, open **AGENTS.md**, edit it, and click **Save AGENTS.md** (保存 AGENTS.md). You can also edit the file directly with a text editor.
 
-可在其中写清：
+Use it to specify:
 
-- **分工与交接**：谁整理需求、谁执行、谁审查、谁验收，什么条件下交给下一位成员。
-- **操作流程**：执行前需要确认哪些内容，遇到阻塞如何汇报，哪些操作需要用户批准。
-- **质量要求**：测试命令、检查清单、验收标准，以及完成任务时应提供的证据。
-- **文件与版本管理**：文档和成果的存放位置、命名方式、分支规则、提交与合并步骤。
+- **Responsibilities and handoffs:** who organizes requirements, executes work, reviews it, and accepts it; and when work moves to the next member.
+- **Operating procedures:** what must be confirmed before execution, how blockers are reported, and which actions require user approval.
+- **Quality requirements:** test commands, checklists, acceptance criteria, and evidence to provide at completion.
+- **Files and version control:** document and output locations, naming conventions, branch rules, and commit and merge procedures.
 
-例如，内容写作项目可以增加以下约定，角色名称按项目实际设置填写：
+For example, a content writing project can add the following rules, using its actual role names:
 
 ```markdown
-## 内容交付流程
+## Content Delivery Workflow
 
-1. 策划整理目标读者、文章大纲和验收标准，确认后交给作者。
-2. 作者将初稿保存到 drafts/，完成后交给编辑审查。
-3. 编辑核对事实来源、结构和表达，退回时列出具体修改项。
-4. 审查通过后，由项目负责人验收，将定稿保存到 outputs/。
-5. 对外发布前取得用户确认。
+1. The planner defines the target audience, article outline, and acceptance criteria, then hands them to the writer after confirmation.
+2. The writer saves the draft in drafts/ and hands it to the editor for review.
+3. The editor checks sources, structure, and wording, listing specific changes when returning work.
+4. After review passes, the project owner accepts the work and the final version is saved in outputs/.
+5. Obtain user confirmation before external publication.
 ```
 
-项目规则按自然语言指导成员协作；需求和任务操作的实际授权由“项目权限”控制，执行时还会检查任务状态、依赖及接手人。调整流程后，应同步核对角色和权限配置。
+Project rules guide collaboration in natural language. **Project permissions** control authorization for requirement and task operations; execution also checks task state, dependencies, and recipients. Review role and permission settings when changing the workflow.
 
-引擎在成员下次启动前同步项目主目录的规则到独立工作区。已有会话可能缓存旧规则，需要重新读取时可通过 `/new` 建立新会话。具体行为见[项目规则同步](docs/engineering/PROJECT-CONFIGURATION.md#唤醒前的项目规则同步)。
+Before a member's next startup, the engine synchronizes rules from the project's main directory to its independent workspace. Existing sessions may cache earlier rules. Use `/new` to start a fresh session when the rules need to be reloaded. See [project-rule synchronization](docs/engineering/PROJECT-CONFIGURATION.md#唤醒前的项目规则同步).
 
-### 调整角色、成员和运行设置
+### Adjust Roles, Members, and Runtime Settings
 
-| 可修改内容 | 修改位置 | 作用范围与生效方式 |
+| Setting | Where to change it | Scope and activation |
 | --- | --- | --- |
-| 角色名称、分工和成员归属 | 项目配置的“角色”及“成员与目录” | 属于当前项目；角色调整后同步检查 `AGENTS.md` 中的分工 |
-| 创建需求、拆分任务、关闭任务等权限 | 项目配置的“项目权限” | 选择成员或角色后点击“保存权限”；后续工具调用按新授权检查 |
-| 成员模型、供应商、推理强度 | “成员与目录”→ 成员“编辑”→“模型与供应商” | 默认保存当前项目的覆盖设置；勾选“应用到全局”后保存到该成员全局配置，后续启动使用新设置 |
-| 成员个人指令、表达风格和专业职责 | 成员“编辑”中的 Hermes `SOUL.md` 或 Codex `AGENTS.md` | 保存到成员自身的配置目录，作用于复用该成员的项目；项目专属流程放在项目主目录的 `AGENTS.md` |
-| 共用主目录或独立工作区、成员工作目录 | 项目配置的协作方式及成员“工作区” | 按页面预览确认并保存；目录调整要求相关成员处于空闲状态 |
-| 引擎端口、登录密码和数据位置 | bot-group 安装目录中的 `.env`；自定义数据目录时使用该目录的 `.env` | 属于引擎运行配置，保存后重启；详见上面的“配置文件 `.env`”及[安装升级说明](docs/guides/RELEASE-GUIDE.md) |
+| Role names, responsibilities, and member assignments | **Roles** (角色) and **Members & directories** in project configuration | Applies to the current project. Review responsibilities in `AGENTS.md` after changing roles. |
+| Permissions to create requirements, decompose tasks, close tasks, etc. | **Project permissions** | Select members or roles and click **Save permissions**. Subsequent tool calls use the new authorization. |
+| Member models, providers, and reasoning effort | **Members & directories** → member **Edit** (编辑) → **Models & providers** (模型与供应商) | Saves a project override by default. Select **Apply globally** (应用到全局) to save to the member's global configuration; subsequent runs use the new settings. |
+| Personal instructions, communication style, and specialist responsibilities | Hermes `SOUL.md` or Codex `AGENTS.md` in the member's **Edit** screen | Saved in the member's own configuration directory and applies across projects using that member. Keep project-specific workflows in the project root's `AGENTS.md`. |
+| Shared main directory or independent workspaces; member working directories | Collaboration mode and member **Workspace** in project configuration | Review the preview and save. Related members must be idle during directory changes. |
+| Engine port, login password, and data location | `.env` in the bot-group installation directory, or in a custom data directory | Engine runtime configuration; restart after saving. See the `.env` section above and the [installation and upgrade guide](docs/guides/RELEASE-GUIDE.md). |
 
-项目主目录的 `AGENTS.md` 管理团队规则，成员配置目录里的个人指令管理该成员的通用行为。修改时先确认页面和文件路径对应的范围。成员配置的详细说明见[配置编辑](docs/engineering/PROFILE-EDITOR.md)和[模型设置](docs/engineering/UNIFIED-MODEL-EDITOR.md)。
+The project root's `AGENTS.md` defines team rules, while personal instructions in member configuration directories define each member's general behavior. Confirm the scope represented by the page or file path before editing. See [configuration editing](docs/engineering/PROFILE-EDITOR.md) and [model settings](docs/engineering/UNIFIED-MODEL-EDITOR.md) for details.
 
-### 调整项目文档与成员指令
+### Adjust Project Documents and Member Instructions
 
-模板生成的 `AGENTS.md`、`README.md`、文档索引、检查清单及成果目录都可以按项目需要继续编辑。修改文档目录或交付物名称时，同步更新项目规则和相关链接。成员的 SOUL 参考也可在“查看 / 引用 SOUL 模板”中引用后修改，点击“保存”才写入成员配置。
+Template-generated `AGENTS.md`, `README.md`, document indexes, checklists, and output directories can be edited for each project. Update project rules and links when changing document locations or deliverable names. Member SOUL references can be selected under **View / reference SOUL templates** (查看 / 引用 SOUL 模板), then edited. Click **Save** (保存) to write the member configuration.
 
-**建议保持引擎自带模板原样。** 安装目录 `templates/projects/` 下的模板及 `manifest.json` 由引擎统一维护，包含相互关联的角色、默认权限、流程和文件生成规则。直接修改可能影响后续项目的创建、导入和模板参考，增加升级维护的复杂度。日常定制请在项目创建后修改该项目生成的文件，通过项目配置调整角色与权限，并在引用 SOUL 参考后编辑成员指令。
+**Keep the engine's bundled templates intact.** The installation's `templates/projects/` templates and `manifest.json` are maintained together, including interdependent roles, default permissions, workflows, and file-generation rules. Direct changes can affect future project creation, imports, and template references, and increase upgrade maintenance. For routine customization, edit the generated files after project creation, adjust roles and permissions through project configuration, and edit member instructions after importing a SOUL reference.
 
-## 协作契约（给 bot）
+## Collaboration Contract for Bots
 
-- 见 [docs/engineering/ENGINEERING.md](docs/engineering/ENGINEERING.md) 第 7 节；bot 侧工具 = MCP（group_send 等），不组装命令。
+- See section 7 of [docs/engineering/ENGINEERING.md](docs/engineering/ENGINEERING.md). Bots perform collaboration operations through MCP tools such as `group_send`.
 
-## 许可证
+## License
 
-本项目采用 [MIT License](LICENSE)。
+This project is licensed under the [MIT License](LICENSE).
