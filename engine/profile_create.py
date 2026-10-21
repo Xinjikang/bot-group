@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import uuid
 
 from fastapi import HTTPException
@@ -18,8 +19,10 @@ _MARKER = '.bot-group-profile.json'
 _CODEX_KEYS = (
     'model', 'model_provider', 'model_providers', 'openai_base_url',
     'model_reasoning_effort', 'model_reasoning_summary', 'model_verbosity',
-    'approval_policy', 'approvals_reviewer', 'sandbox_mode', 'sandbox_workspace_write',
-    'default_permissions', 'permissions', 'shell_environment_policy',
+    'shell_environment_policy', 'windows',
+)
+_CODEX_SANDBOX_FEATURES = (
+    'prefer_mxc', 'experimental_windows_sandbox', 'elevated_windows_sandbox',
 )
 _DEVICE = re.compile(r'^(con|prn|aux|nul|com[0-9]|lpt[0-9])$', re.I)
 
@@ -56,13 +59,39 @@ def _codex(home, selector, body):
     config = tomlkit.document()
     if home:
         parent = tomlkit.parse(files._text(_read(home, 'config.toml')))
+        selector = selector or parent.get('profile')
         if selector:
+            if not isinstance(selector, str) or any(c in selector for c in '/\\\0') or selector in ('.', '..'):
+                raise ValueError('Invalid profile selector')
             named = _read(home, f'{selector}.config.toml')
             overrides = tomlkit.parse(files._text(named)) if named is not None else parent.get('profiles', {}).get(selector, {})
             _merge(parent, overrides)
         for key in _CODEX_KEYS:
             if key in parent:
                 config[key] = parent[key]
+        features = parent.get('features', {})
+        if not isinstance(features, dict):
+            raise ValueError('Invalid features table')
+        selected_features = {key: features[key] for key in _CODEX_SANDBOX_FEATURES if key in features}
+        if selected_features:
+            config['features'] = selected_features
+    # New homes use one execution policy, independently of the selected source.
+    config['approval_policy'] = 'on-request'
+    config['approvals_reviewer'] = 'auto_review'
+    config['sandbox_mode'] = 'workspace-write'
+    if sys.platform == 'win32':
+        windows = config.setdefault('windows', tomlkit.table())
+        if not isinstance(windows, dict):
+            raise ValueError('Invalid windows table')
+        # Independent background homes need a sandbox selection that requires no UAC setup.
+        features = config.get('features', {})
+        if windows.get('sandbox') not in ('elevated', 'unelevated', 'mxc'):
+            windows['sandbox'] = 'elevated' if features.get('elevated_windows_sandbox') is True else 'unelevated'
+        # The explicit implementation replaces legacy switches, including disabled ones.
+        for key in ('experimental_windows_sandbox', 'elevated_windows_sandbox'):
+            features.pop(key, None)
+        if not features:
+            config.pop('features', None)
     if body['model']:
         config['model'] = body['model']
     result = {}

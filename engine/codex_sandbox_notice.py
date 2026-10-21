@@ -1,4 +1,4 @@
-"""Read-only Windows sandbox configuration hints for discovered Codex homes."""
+"""Read-only sandbox and automatic approval hints for discovered Codex homes."""
 import sys
 import tomllib
 from pathlib import Path
@@ -28,31 +28,40 @@ def _merge(base, override):
             base[key] = value
 
 
-def for_candidate(candidate):
-    """Describe explicit local settings; runtime defaults and setup remain untested."""
-    if sys.platform != 'win32' or candidate['host_type'] != 'codex':
-        return None
-    try:
-        home, selector = bot_identity.codex_settings(candidate)
-        home = Path(home)
-        config = _read(home / 'config.toml')
-        selector = selector or config.get('profile')
-        if selector:
-            if not isinstance(selector, str) or not selector or any(c in selector for c in '/\\\0') or selector in ('.', '..'):
-                raise ValueError('Invalid profile selector')
-            path = home / f'{selector}.config.toml'
-            override = _read(path) if path.is_file() else config.get('profiles', {}).get(selector, {})
-            if not isinstance(override, dict):
-                raise ValueError('Invalid profile table')
-            _merge(config, override)
-        windows = config.get('windows', {})
-        features = config.get('features', {})
-        if not isinstance(windows, dict) or not isinstance(features, dict):
-            raise ValueError('Invalid sandbox settings')
-    except (OSError, ValueError, TypeError, AttributeError):
-        return {'code': 'unreadable', 'message': '沙箱配置待确认：读取该 Bot 的 Codex 配置失败，请检查文件格式和读取权限。' + _GUIDANCE}
+def _configuration(candidate):
+    home, selector = bot_identity.codex_settings(candidate)
+    home = Path(home)
+    config = _read(home / 'config.toml')
+    selector = selector or config.get('profile')
+    if selector:
+        if not isinstance(selector, str) or any(c in selector for c in '/\\\0') or selector in ('.', '..'):
+            raise ValueError('Invalid profile selector')
+        path = home / f'{selector}.config.toml'
+        override = _read(path) if path.is_file() else config.get('profiles', {}).get(selector, {})
+        if not isinstance(override, dict):
+            raise ValueError('Invalid profile table')
+        _merge(config, override)
+    return config
 
-    if config.get('sandbox_mode') == 'danger-full-access' or config.get('default_permissions') == ':danger-full-access':
+
+def _unreadable(label):
+    return {'code': 'unreadable', 'message': label + '配置待确认：读取该 Bot 的 Codex 配置失败，请检查文件格式和读取权限。' + _GUIDANCE}
+
+
+def _sandbox(config):
+    windows = config.get('windows', {})
+    features = config.get('features', {})
+    if not isinstance(windows, dict) or not isinstance(features, dict):
+        raise ValueError('Invalid sandbox settings')
+    active = config.get('default_permissions')
+    visited = set()
+    while isinstance(active, str) and not active.startswith(':'):
+        if active in visited:
+            raise ValueError('Cyclic permission inheritance')
+        visited.add(active)
+        active = config.get('permissions', {}).get(active, {}).get('extends')
+
+    if config.get('sandbox_mode') == 'danger-full-access' or active == ':danger-full-access':
         return {'code': 'disabled', 'message': '沙箱配置提醒：该 Bot 配置了完全访问，命令执行可能访问项目以外的文件和资源。' + _GUIDANCE}
     implementation = windows.get('sandbox')
     if implementation in ('elevated', 'unelevated', 'mxc'):
@@ -63,3 +72,40 @@ def for_candidate(candidate):
             'prefer_mxc', 'experimental_windows_sandbox', 'elevated_windows_sandbox')):
         return None
     return {'code': 'unspecified', 'message': '沙箱配置待确认：该 Bot 未显式指定 Windows 沙箱实现，实际启用情况取决于 Codex 版本和默认设置，加入后可能出现命令执行失败。' + _GUIDANCE}
+
+
+def _approval(config):
+    policy = config.get('approval_policy')
+    granular = policy.get('granular', {}) if isinstance(policy, dict) else {}
+    allows_sandbox = policy == 'on-request' or isinstance(granular, dict) and granular.get('sandbox_approval') is True
+    if config.get('approvals_reviewer') == 'auto_review' and allows_sandbox:
+        return None
+    return {'code': 'not_enabled', 'message': '智能审批提醒：该 Bot 未显式启用可用于终端命令的“帮我审批”，遇到需要审批的操作时可能无法继续。建议在该 Bot 的 Codex 配置中开启“帮我审批”。' + _GUIDANCE}
+
+
+def for_candidate_notices(candidate):
+    """Read the effective local configuration once; joining remains unrestricted."""
+    result = {'sandbox_notice': None, 'approval_notice': None}
+    if candidate['host_type'] != 'codex':
+        return result
+    try:
+        config = _configuration(candidate)
+    except (OSError, ValueError, TypeError, AttributeError):
+        result['approval_notice'] = _unreadable('智能审批')
+        if sys.platform == 'win32':
+            result['sandbox_notice'] = _unreadable('沙箱')
+        return result
+    result['approval_notice'] = _approval(config)
+    if sys.platform == 'win32':
+        try:
+            result['sandbox_notice'] = _sandbox(config)
+        except (ValueError, TypeError, AttributeError):
+            result['sandbox_notice'] = _unreadable('沙箱')
+    return result
+
+
+def for_candidate(candidate):
+    """Return only the Windows sandbox hint for callers checking that capability."""
+    if sys.platform != 'win32' or candidate['host_type'] != 'codex':
+        return None
+    return for_candidate_notices(candidate)['sandbox_notice']

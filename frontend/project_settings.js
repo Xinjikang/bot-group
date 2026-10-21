@@ -166,7 +166,7 @@ function renderMemberCreate(steps) {
   source.value = draft.source;
   const updateAuth = () => {
     if (memberAdd.host === 'codex') {
-      form.querySelector('#member-create-auth-help').textContent = '自动使用主账户认证，配置来源仅用于选择模型与运行设置。';
+      form.querySelector('#member-create-auth-help').textContent = '自动使用主账户认证；新 Bot 统一开启智能审批（帮我审批）和沙箱，并获得项目目录授权。';
       return;
     }
     auth.disabled = source.value === '';
@@ -280,13 +280,17 @@ function renderMemberAdd() {
       if (memberAdd.candidate.already_member) hint.textContent += ' 注意：该 profile 已在全局花名册中。';
       hint.style.color = 'var(--accent-2)';
       steps.appendChild(hint);
-      if (memberAdd.host === 'codex' && memberAdd.candidate.sandbox_notice?.message) {
-        const notice = document.createElement('p');
-        notice.id = 'member-add-sandbox-notice';
-        notice.className = 'profile-help member-sandbox-notice';
-        notice.setAttribute('role', 'status');
-        notice.textContent = memberAdd.candidate.sandbox_notice.message;
-        steps.appendChild(notice);
+      if (memberAdd.host === 'codex') {
+        for (const kind of ['sandbox', 'approval']) {
+          const message = memberAdd.candidate[`${kind}_notice`]?.message;
+          if (!message) continue;
+          const notice = document.createElement('p');
+          notice.id = `member-add-${kind}-notice`;
+          notice.className = 'profile-help member-sandbox-notice';
+          notice.setAttribute('role', 'status');
+          notice.textContent = message;
+          steps.appendChild(notice);
+        }
       }
     }
   }

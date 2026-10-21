@@ -194,12 +194,13 @@ class DiscoveryTests(unittest.TestCase):
         from engine import codex_sandbox_notice
         import tomllib
         path = self.croot / 'coco' / 'config.toml'
-        path.write_text('sandbox_mode = "workspace-write"\napproval_policy = "never"\n', encoding='utf-8')
+        path.write_text('sandbox_mode = "workspace-write"\napproval_policy = "never"\napprovals_reviewer = "user"\n', encoding='utf-8')
         before = path.read_bytes()
         with patch.object(codex_sandbox_notice.sys, 'platform', 'win32'):
             candidates = self.client.get('/discovery/scan').json()['candidates']
         candidate = next(c for c in candidates if c['host_type'] == 'codex' and c['profile'] == 'coco')
         self.assertEqual(candidate['sandbox_notice']['code'], 'unspecified')
+        self.assertEqual(candidate['approval_notice']['code'], 'not_enabled')
         self.assertEqual(path.read_bytes(), before)
         conn = db.get_connection()
         try:
@@ -214,8 +215,10 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         config = tomllib.loads(path.read_text(encoding='utf-8'))
         self.assertEqual(config['approval_policy'], 'never')
+        self.assertEqual(config['approvals_reviewer'], 'user')
         self.assertEqual(config['sandbox_mode'], 'workspace-write')
         self.assertNotIn('windows', config)
+        self.assertEqual(config['sandbox_workspace_write']['writable_roots'], [(Path(self.tmp.name) / 'project').as_posix()])
 
     def test_no_hosts_returns_empty(self):
         # 双根都不可用 → 空列表不报错（冷启动文案由前端渲染）

@@ -37,9 +37,12 @@ def main():
                 data = {'candidates': [] if state['empty'] else [
                     {'host_type': 'codex', 'profile': 'default', 'config_root': 'E:/test/codex',
                      'display_name': '基础配置', 'already_project_member': True},
-                    {'host_type': 'codex', 'profile': 'other', 'config_root': 'E:/test/codex/profiles/other', 'sandbox_notice': notice},
+                    {'host_type': 'codex', 'profile': 'other', 'config_root': 'E:/test/codex/profiles/other', 'sandbox_notice': notice,
+                     'approval_notice': {'code': 'not_enabled', 'message': '智能审批提醒：该 Bot 未显式启用可用于终端命令的“帮我审批”，遇到需要审批的操作时可能无法继续。建议在该 Bot 的 Codex 配置中开启“帮我审批”。建议先检查配置，或使用本页的“创建新 profile”准备独立 Bot 并核对配置。你也可以继续加入已有 Bot。'}},
                     {'host_type': 'hermes', 'profile': 'default', 'config_root': 'E:/test/hermes'}]}
                 if state['extra']:
+                    data['candidates'].append({'host_type': 'codex', 'profile': 'approval-only', 'config_root': 'E:/test/codex/profiles/approval-only',
+                                               'approval_notice': {'code': 'not_enabled', 'message': '智能审批提醒：请开启帮我审批。你也可以继续加入已有 Bot。'}})
                     data['candidates'].append({'host_type': 'codex', 'profile': 'ready', 'config_root': 'E:/test/codex/profiles/ready', 'sandbox_notice': None})
             elif path == '/profiles/create':
                 calls.append(req.request.post_data_json)
@@ -176,12 +179,21 @@ def main():
         page.locator('#member-add-next').click()
         page.locator('[name=member-add-profile]').first.check()
         assert '继续加入' in page.locator('#member-add-sandbox-notice').inner_text()
+        assert '帮我审批' in page.locator('#member-add-approval-notice').inner_text()
         assert not page.locator('#member-add-join').is_disabled()
+        join_box = page.locator('#member-add-join').bounding_box()
+        assert join_box and join_box['y'] >= 0 and join_box['y'] + join_box['height'] <= page.viewport_size['height']
         page.screenshot(path=str(out / 'sandbox-notice-mobile.png'))
+        page.locator('[name=member-add-profile]').nth(1).check()
+        assert page.locator('#member-add-sandbox-notice').count() == 0
+        assert page.locator('#member-add-approval-notice').is_visible()
+        assert not page.locator('#member-add-join').is_disabled()
         page.locator('[name=member-add-profile]').last.check()
         assert page.locator('#member-add-sandbox-notice').count() == 0
+        assert page.locator('#member-add-approval-notice').count() == 0
         page.locator('[name=member-add-profile]').first.check()
         assert page.locator('#member-add-sandbox-notice').is_visible()
+        assert page.locator('#member-add-approval-notice').is_visible()
         page.locator('#member-add-join').click()
         page.wait_for_function("!document.querySelector('#dlg-member-add').open")
         assert joins == [{'project': 'p', 'host_type': 'codex', 'profile': 'other',
@@ -193,11 +205,14 @@ def main():
         page.locator('#member-add-next').click()
         page.locator('[name=member-add-profile]').first.check()
         assert page.locator('#member-add-sandbox-notice').is_visible()
+        assert page.locator('#member-add-approval-notice').is_visible()
         page.locator('[name=member-add-mode][value=create]').check()
         assert page.locator('#member-add-sandbox-notice').count() == 0
+        assert page.locator('#member-add-approval-notice').count() == 0
         page.locator('#member-create-source').select_option('')
         assert page.locator('#member-create-auth').count() == 0
         assert '主账户认证' in page.locator('#member-create-auth-help').inner_text()
+        assert '智能审批（帮我审批）和沙箱' in page.locator('#member-create-auth-help').inner_text()
         assert page.locator('.dialog-field-error').count() == 0
         page.locator('#member-add-close').click()
         page.evaluate('openProjectImport()')

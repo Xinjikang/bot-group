@@ -121,7 +121,7 @@ def scan_candidates(conn: sqlite3.Connection, project: str = '') -> list[dict]:
             "member_profile": members.get(bot['id']) if bot else None,
             "already_member": bot is not None and bot['id'] in members,
             "already_project_member": bot is not None and bot['id'] in project_bots,
-            "sandbox_notice": codex_sandbox_notice.for_candidate(cand),
+            **codex_sandbox_notice.for_candidate_notices(cand),
         })
     return out
 

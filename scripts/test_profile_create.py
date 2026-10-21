@@ -43,8 +43,9 @@ class ProfileCreateTests(unittest.TestCase):
         config = tomlkit.parse((home / 'config.toml').read_text())
         self.assertEqual(config['model'], 'base-model')
         self.assertEqual(config['approval_policy'], 'on-request')
-        policy = config['permissions'][config['default_permissions']]
-        self.assertEqual(policy['filesystem'][self.root.as_posix()], 'write')
+        self.assertEqual(config['approvals_reviewer'], 'auto_review')
+        self.assertEqual(config['sandbox_mode'], 'workspace-write')
+        self.assertEqual(config['sandbox_workspace_write']['writable_roots'], [self.root.as_posix()])
         self.assertNotIn('agents', config)
         self.assertIn('新成员', (home / 'AGENTS.md').read_text(encoding='utf-8'))
         self.assertTrue((home / 'skills').is_dir())
@@ -67,10 +68,8 @@ class ProfileCreateTests(unittest.TestCase):
         self.conn.commit()
         result = self.create(body).json()
         config = tomlkit.parse((Path(result['home']) / 'config.toml').read_text())
-        policy = config['permissions'][config['default_permissions']]
-        self.assertEqual(policy['filesystem'], {
-            (trees / result['member_profile']).as_posix(): 'write',
-            (self.root / 'reports').as_posix(): 'write'})
+        self.assertEqual(config['sandbox_workspace_write']['writable_roots'], [
+            (trees / result['member_profile']).as_posix(), (self.root / 'reports').as_posix()])
 
     def test_codex_named_config_merges_runtime_defaults(self):
         root, body = self.fixture()
@@ -80,6 +79,139 @@ class ProfileCreateTests(unittest.TestCase):
         config = tomlkit.parse((Path(result['home']) / 'config.toml').read_text())
         self.assertEqual(config['model'], 'review-model')
         self.assertEqual(config['approval_policy'], 'on-request')
+
+    def test_windows_default_creation_has_sandbox_and_only_project_grants(self):
+        root, body = self.fixture()
+        (root / 'config.toml').write_text(
+            'model="private-model"\napproval_policy="never"\n'
+            'sandbox_mode="danger-full-access"\n[windows]\nsandbox="mxc"\n', encoding='utf-8')
+        before = (root / 'config.toml').read_bytes()
+        with patch.object(profile_create.sys, 'platform', 'win32'):
+            result = self.create({**body, 'source': None}).json()
+        home = Path(result['home'])
+        config = tomlkit.parse((home / 'config.toml').read_text())
+        self.assertEqual(config['windows']['sandbox'], 'unelevated')
+        self.assertEqual(config['approval_policy'], 'on-request')
+        self.assertEqual(config['approvals_reviewer'], 'auto_review')
+        self.assertNotIn('model', config)
+        self.assertEqual(config['sandbox_mode'], 'workspace-write')
+        self.assertEqual(config['sandbox_workspace_write'], {'writable_roots': [self.root.as_posix()]})
+        self.assertNotIn('default_permissions', config)
+        self.assertNotIn('permissions', config)
+        self.assertEqual((root / 'config.toml').read_bytes(), before)
+        created = (home / 'config.toml').read_bytes()
+        self.create({**body, 'source': None})
+        self.assertEqual((home / 'config.toml').read_bytes(), created)
+
+    def test_windows_source_sandbox_choices_and_features_survive_creation(self):
+        root, body = self.fixture()
+        cases = [
+            '[windows]\nsandbox="elevated"\n',
+            '[windows]\nsandbox="unelevated"\n',
+            '[windows]\nsandbox="mxc"\n',
+            '[features]\nprefer_mxc=true\n',
+            '[features]\nexperimental_windows_sandbox=true\n',
+            '[features]\nelevated_windows_sandbox=true\n',
+            '[windows]\nsandbox="elevated"\n[features]\nprefer_mxc=false\n',
+        ]
+        for i, settings in enumerate(cases):
+            with self.subTest(settings=settings), patch.object(profile_create.sys, 'platform', 'win32'):
+                source = ('approval_policy="never"\nsandbox_mode="workspace-write"\n'
+                          '[sandbox_workspace_write]\nnetwork_access=false\n' + settings)
+                (root / 'config.toml').write_text(source, encoding='utf-8')
+                result = self.create({**body, 'profile': f'sandbox-{i}'}).json()
+                config = tomlkit.parse((Path(result['home']) / 'config.toml').read_text())
+                expected = tomlkit.parse(source)
+                expected_windows = expected.get('windows', {'sandbox': 'elevated' if i == 5 else 'unelevated'})
+                self.assertEqual(config['windows'], expected_windows)
+                expected_features = {k: v for k, v in expected.get('features', {}).items() if k == 'prefer_mxc'}
+                self.assertEqual(config.get('features', {}), expected_features)
+                self.assertEqual(config['approval_policy'], 'on-request')
+                self.assertEqual(config['approvals_reviewer'], 'auto_review')
+                self.assertEqual(config['sandbox_mode'], 'workspace-write')
+                self.assertEqual(config['sandbox_workspace_write']['writable_roots'], [self.root.as_posix()])
+                self.assertEqual((root / 'config.toml').read_text(encoding='utf-8'), source)
+
+    def test_windows_named_and_default_selectors_keep_sandbox_overrides(self):
+        root, body = self.fixture()
+        for i, (selected, named_file) in enumerate(((True, True), (True, False), (False, True), (False, False))):
+            with self.subTest(selected=selected, named_file=named_file):
+                base = ('profile="review"\n[windows]\nsandbox="elevated"\n'
+                        '[features]\nprefer_mxc=true\nunrelated_feature=true\n')
+                override = '[windows]\nsandbox="unelevated"\n[features]\nprefer_mxc=false\n'
+                named = root / 'review.config.toml'
+                if named_file:
+                    named.write_text(override, encoding='utf-8')
+                else:
+                    named.unlink(missing_ok=True)
+                    base += '[profiles.review.windows]\nsandbox="unelevated"\n[profiles.review.features]\nprefer_mxc=false\n'
+                (root / 'config.toml').write_text(base, encoding='utf-8')
+                source = {'profile': 'review' if selected else 'default', 'config_root': str(root)}
+                with patch.object(profile_create.sys, 'platform', 'win32'):
+                    result = self.create({**body, 'source': source, 'profile': f'layer-{i}'}).json()
+                config = tomlkit.parse((Path(result['home']) / 'config.toml').read_text())
+                self.assertEqual(config['windows']['sandbox'], 'unelevated')
+                self.assertEqual(config['features'], {'prefer_mxc': False})
+                self.assertNotIn('profile', config)
+                self.assertNotIn('profiles', config)
+                self.assertEqual((root / 'config.toml').read_text(encoding='utf-8'), base)
+
+    def test_sandbox_defaults_are_platform_scoped_and_independent_home_isolated(self):
+        root, body = self.fixture()
+        (root / 'config.toml').write_text('[windows]\nsandbox="mxc"\n', encoding='utf-8')
+        other = root / 'profiles' / 'isolated'
+        other.mkdir(parents=True)
+        (other / 'config.toml').write_text('approval_policy="never"\n', encoding='utf-8')
+        with patch.object(profile_create.sys, 'platform', 'win32'):
+            result = self.create({**body, 'source': {'profile': 'isolated', 'config_root': str(other)}}).json()
+        config = tomlkit.parse((Path(result['home']) / 'config.toml').read_text())
+        self.assertEqual(config['windows']['sandbox'], 'unelevated')
+        self.assertEqual(config['approval_policy'], 'on-request')
+        self.assertEqual(config['approvals_reviewer'], 'auto_review')
+        with patch.object(profile_create.sys, 'platform', 'linux'):
+            result = self.create({**body, 'source': None, 'profile': 'linux-default'}).json()
+        config = tomlkit.parse((Path(result['home']) / 'config.toml').read_text())
+        self.assertNotIn('windows', config)
+        self.assertEqual(config['sandbox_mode'], 'workspace-write')
+        self.assertEqual(config['approvals_reviewer'], 'auto_review')
+
+    def test_source_permissions_cannot_disable_new_home_sandbox_or_auto_review(self):
+        root, body = self.fixture()
+        sources = (
+            'approval_policy="never"\napprovals_reviewer="user"\nsandbox_mode="danger-full-access"\n',
+            'approval_policy="never"\ndefault_permissions=":danger-full-access"\n',
+            'default_permissions="open"\n[permissions.open]\nextends=":danger-full-access"\n',
+            'sandbox_mode="read-only"\n[windows]\nsandbox="disabled"\n'
+            '[features]\nexperimental_windows_sandbox=false\nelevated_windows_sandbox=false\n',
+            'sandbox_mode="workspace-write"\n[sandbox_workspace_write]\n'
+            'writable_roots=["C:/unrelated"]\nnetwork_access=true\n',
+            '[approval_policy.granular]\nsandbox_approval=false\nrules=false\n',
+        )
+        for i, source in enumerate(sources):
+            with self.subTest(source=source), patch.object(profile_create.sys, 'platform', 'win32'):
+                (root / 'config.toml').write_text(source, encoding='utf-8')
+                result = self.create({**body, 'profile': f'policy-{i}'}).json()
+                config = tomlkit.parse((Path(result['home']) / 'config.toml').read_text())
+                self.assertEqual(config['approval_policy'], 'on-request')
+                self.assertEqual(config['approvals_reviewer'], 'auto_review')
+                self.assertEqual(config['sandbox_mode'], 'workspace-write')
+                self.assertEqual(config['windows']['sandbox'], 'unelevated')
+                self.assertEqual(config['sandbox_workspace_write'], {'writable_roots': [self.root.as_posix()]})
+                self.assertNotIn('permissions', config)
+                self.assertNotIn('default_permissions', config)
+                self.assertNotIn('experimental_windows_sandbox', config.get('features', {}))
+                self.assertEqual((root / 'config.toml').read_text(encoding='utf-8'), source)
+
+    def test_invalid_sandbox_source_rolls_back_without_exposing_contents(self):
+        root, body = self.fixture()
+        for source in ('windows="synthetic-secret"', 'features="synthetic-secret"',
+                       'profile="../synthetic-secret"'):
+            with self.subTest(source=source), patch.object(profile_create.sys, 'platform', 'win32'):
+                (root / 'config.toml').write_text(source, encoding='utf-8')
+                response = self.create(body, 400)
+                self.assertNotIn('synthetic-secret', response.text)
+                self.assertFalse((root / 'profiles' / body['profile']).exists())
+                self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM bots WHERE profile='new-dev'").fetchone()[0], 0)
 
     def test_hermes_model_auth_without_persistent_engine_mcp(self):
         root, body = self.fixture('hermes')

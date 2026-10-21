@@ -2,6 +2,8 @@
 
 Subprofiles live in `$CODEX_HOME/profiles/<name>/`. Each directory is an independent Codex home with its own `config.toml`, `AGENTS.md`, `memories/`, and `skills/`. Authentication must be provisioned for that home before model execution.
 
+Wizard-created Codex homes always start with `approval_policy = "on-request"`, `approvals_reviewer = "auto_review"`, and `sandbox_mode = "workspace-write"`, including when copying an existing configuration source. Their writable roots come from the selected project directories. Windows homes receive an explicit sandbox implementation. See [creation policy](../engineering/PROFILE-CREATE.md). Existing-Bot enrollment preserves approval and sandbox settings, shows advisory notices when either needs attention, and still grants the assigned project directories.
+
 ## File authentication synchronization
 
 New Codex profiles inherit `auth.json` from the engine's primary Codex home (`CODEX_HOME`, default `~/.codex`). Selecting a configuration source affects model and runtime configuration; authentication comes from the primary home. A copied file uses `cli_auth_credentials_store = "file"`.

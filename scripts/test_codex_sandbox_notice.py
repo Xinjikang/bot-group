@@ -97,6 +97,69 @@ class CodexSandboxNoticeTests(unittest.TestCase):
             with patch.object(notices.sys, 'platform', 'linux'):
                 self.assertIsNone(self.notice())
 
+    def test_approval_and_sandbox_notices_are_independent_and_read_only(self):
+        cases = (
+            ('', True, True),
+            ('[windows]\nsandbox="unelevated"\n', False, True),
+            ('approval_policy="on-request"\napprovals_reviewer="auto_review"\n', True, False),
+            ('approval_policy="on-request"\napprovals_reviewer="auto_review"\n'
+             '[windows]\nsandbox="unelevated"\n', False, False),
+        )
+        for content, sandbox, approval in cases:
+            with self.subTest(content=content):
+                path = self.write(content)
+                before = path.read_bytes()
+                with patch.object(notices, '_read', wraps=notices._read) as read:
+                    result = notices.for_candidate_notices(self.candidate)
+                self.assertEqual(read.call_count, 1)
+                self.assertEqual(result['sandbox_notice'] is not None, sandbox)
+                self.assertEqual(result['approval_notice'] is not None, approval)
+                if approval:
+                    self.assertIn('继续加入', result['approval_notice']['message'])
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_approval_policy_must_allow_sandbox_requests(self):
+        for policy in ('approval_policy="never"', 'approval_policy="on-request"\napprovals_reviewer="user"',
+                       'approvals_reviewer="auto_review"\n[approval_policy.granular]\nsandbox_approval=false'):
+            with self.subTest(policy=policy):
+                self.write(policy)
+                self.assertEqual(notices.for_candidate_notices(self.candidate)['approval_notice']['code'], 'not_enabled')
+        self.write('approvals_reviewer="auto_review"\n[approval_policy.granular]\nsandbox_approval=true')
+        self.assertIsNone(notices.for_candidate_notices(self.candidate)['approval_notice'])
+        self.write('approval_policy="never"\napprovals_reviewer="auto_review"')
+        self.assertEqual(notices.for_candidate_notices(self.candidate)['approval_notice']['code'], 'not_enabled')
+
+    def test_named_approval_overrides_and_independent_home(self):
+        self.candidate['profile'] = 'worker'
+        self.write('approval_policy="on-request"\napprovals_reviewer="auto_review"\n'
+                   '[profiles.worker]\napproval_policy="never"\n')
+        self.assertIsNotNone(notices.for_candidate_notices(self.candidate)['approval_notice'])
+        self.write('approval_policy="on-request"\n', 'worker.config.toml')
+        self.assertIsNone(notices.for_candidate_notices(self.candidate)['approval_notice'])
+        child = self.home / 'profiles' / 'worker'
+        child.mkdir(parents=True)
+        self.candidate['config_root'] = str(child)
+        self.assertIsNotNone(notices.for_candidate_notices(self.candidate)['approval_notice'])
+
+    def test_approval_unreadable_and_cross_platform_behavior(self):
+        self.write('[invalid')
+        result = notices.for_candidate_notices(self.candidate)
+        self.assertEqual(result['approval_notice']['code'], 'unreadable')
+        self.assertEqual(result['sandbox_notice']['code'], 'unreadable')
+        self.write('approval_policy="never"')
+        with patch.object(notices.sys, 'platform', 'linux'):
+            result = notices.for_candidate_notices(self.candidate)
+            self.assertIsNone(result['sandbox_notice'])
+            self.assertIsNotNone(result['approval_notice'])
+        self.candidate['host_type'] = 'hermes'
+        with patch.object(notices, '_read', side_effect=AssertionError('unexpected read')):
+            self.assertEqual(notices.for_candidate_notices(self.candidate), {'sandbox_notice': None, 'approval_notice': None})
+
+    def test_named_full_access_is_detected(self):
+        self.write('default_permissions="custom"\n[permissions.custom]\nextends="parent"\n'
+                   '[permissions.parent]\nextends=":danger-full-access"\n[windows]\nsandbox="elevated"')
+        self.assertEqual(self.notice()['code'], 'disabled')
+
 
 if __name__ == '__main__':
     unittest.main()
