@@ -266,3 +266,36 @@ Template-generated `AGENTS.md`, `README.md`, document indexes, checklists, and o
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+
+## Troubleshooting
+
+### The page disconnects after closing Codex / Hermes
+
+When Codex / Hermes runs `start.bat`, the service may remain subject to the host's child-process lifecycle management. Closing that host may stop the service and disconnect the page.
+
+1. On the computer running bot-group, open the installation directory in File Explorer and double-click **`start.bat`** yourself. You can also open PowerShell, enter the installation directory, and run `.\start.bat`.
+2. Wait for the startup check to succeed, then refresh `http://127.0.0.1:8180/app/` and confirm the connection returns. Use your configured address and port when customized.
+3. If the page still cannot connect, retain the error shown in the startup window and check `logs/engine-startup.log` and `logs/engine.log` in the data directory. The installation directory is the default data directory.
+
+For everyday use, start the service directly yourself. The page's **Restart service** button requires a responsive service; use the installation's `start.bat` to recover after the service has exited.
+
+### Codex reports `CreateProcess ... blocked by policy` during its first task
+
+A task record may show `CreateProcess Rejected: blocked by policy` when `exec_command` tries to start `pwsh.exe`, followed by a `blocked` task status. This indicates that command startup was rejected by an execution policy. Identifying the cause requires that computer's Codex configuration and complete error.
+
+1. Expand **Full record** (完整记录) in the task history and retain the original tool error, failed command, and timestamp.
+2. On the affected computer, start Codex separately with **the same executable, configuration directory, and working directory as the Bot**. Ask it to run read-only checks such as `Get-Location`, reading a project file, and `git status`. Independent members use their own `CODEX_HOME`; named configurations also require the matching `--profile`. See [Codex profile homes](docs/guides/CODEX-PROFILE-HOMES.md).
+3. If the standalone checks fail, inspect Codex sandbox setup, active permissions, and system policy. Complete initialization as prompted by the installed version; on managed devices, ask an administrator to review the full error. See [OpenAI's Windows sandbox troubleshooting guide](https://developers.openai.com/codex/windows/windows-sandbox). If the standalone checks succeed, compare the executable, configuration directory, named configuration, and working directory with the bot-group member settings.
+4. After correcting the configuration, wait until the member is idle, then open **Project label → Members & directories → Reset session** (重置会话) for that Bot so subsequent execution loads the new settings. Verify basic commands again before resuming the blocked task through the task workflow. Session reset and task resumption are separate operations.
+
+When reporting the issue, include bot-group / Codex versions, Windows version, member configuration type, the complete error, and the read-only check results. If available, include the relevant time range from that member's `CODEX_HOME/.sandbox/sandbox.log`. Redact credentials and private paths before sharing. The specific source of the restriction remains unconfirmed from the words `blocked by policy` alone.
+
+### Where do I assign Bot roles after creating a project?
+
+**Click the current project label → Members & directories (成员与目录) → find the Bot → click Set role (设置角色) or its current role name → select a role.** A successful selection saves immediately and shows “本项目角色已保存”.
+
+- **The required role is missing:** Open **Roles** (角色) in the same project configuration window, enter a name, and click **Create role** (创建角色). Return to **Members & directories** to assign it. If the member list is empty, use **Add member** (添加成员) first.
+- **Configure role permissions:** Open **Project permissions** (项目权限), select the required members or roles, and click **Save permissions** (保存权限). Review existing template grants here; subsequent tool calls use the saved permissions.
+- **Configure responsibilities and personal instructions:** Put project responsibilities in the project's `AGENTS.md`. For personal instructions, open **Members & directories → Edit** (编辑): Hermes uses `SOUL.md`, and Codex uses the member's own `AGENTS.md`. Click **Save** (保存) after editing. Personal instructions affect other projects that reuse the member.
+
+Role assignments belong to each project, so the same Bot can hold different roles across projects. See [project configuration](docs/engineering/PROJECT-CONFIGURATION.md) and [member configuration editing](docs/engineering/PROFILE-EDITOR.md).

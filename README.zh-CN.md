@@ -263,3 +263,36 @@ Bot 通过 MCP 工具参与群聊、读取消息和处理任务。MCP 是宿主�
 ## 许可证
 
 本项目采用 [MIT License](LICENSE)。
+
+## 故障排查（Troubleshooting）
+
+### 关闭 Codex / Hermes 后，页面显示“断开连接”
+
+通过 Codex / Hermes 执行 `start.bat` 时，启动的服务可能受到宿主的子进程生命周期管理影响。关闭宿主后，服务可能随之退出，页面会显示断开连接。
+
+1. 在运行 bot-group 的电脑上，用文件资源管理器打开安装目录，手动双击 **`start.bat`**；也可以自行打开 PowerShell，进入安装目录执行 `.\start.bat`。
+2. 等待启动检查成功，刷新 `http://127.0.0.1:8180/app/`，确认页面恢复连接。使用自定义地址或端口时，访问对应地址。
+3. 仍然无法连接时，保留启动窗口中的错误，并查看数据目录下的 `logs/engine-startup.log` 和 `logs/engine.log`。默认数据目录就是安装目录。
+
+建议日常由用户直接启动服务。页面右上角的“重启服务”适用于服务仍可响应的情况；服务已退出时，通过安装目录中的 `start.bat` 恢复。
+
+### Codex 首次执行任务时出现 `CreateProcess ... blocked by policy`
+
+任务记录可能显示 `exec_command` 启动 `pwsh.exe` 时返回 `CreateProcess Rejected: blocked by policy`，随后任务进入 `blocked`。这表明命令启动被执行策略拒绝；具体原因需要结合该电脑上的 Codex 配置和完整错误判断。
+
+1. 展开任务记录的“完整记录”，保存原始工具错误、失败命令及发生时间。
+2. 在发生问题的电脑上，使用**该 Bot 相同的 Codex 可执行程序、配置目录和工作目录**单独启动 Codex，让它执行 `Get-Location`、读取项目中的一个文件、运行 `git status` 等只读检查。独立成员使用自己的 `CODEX_HOME`，命名配置还需匹配 `--profile`；配置位置见 [Codex 成员配置目录](docs/guides/CODEX-PROFILE-HOMES.md)。
+3. 单独运行也失败时，检查 Codex 的沙箱初始化、当前权限配置和系统策略。按所用版本提示完成初始化；设备受组织管理时，将完整错误交给管理员核查。操作参考 [OpenAI Windows 沙箱排查文档](https://developers.openai.com/codex/windows/windows-sandbox)。单独运行成功时，对照 bot-group 成员的可执行程序、配置目录、命名配置和工作目录，查明差异。
+4. 配置修正后，等待成员空闲，在“项目标签 → 成员与目录”中对该 Bot 点击 **“重置会话”**，让后续执行加载新配置。重新验证基本命令通过后，再通过任务流程恢复受阻任务；重置会话和恢复任务分别执行。
+
+反馈问题时附上 bot-group / Codex 版本、Windows 版本、成员配置类型、完整错误和上述只读检查结果；存在沙箱日志时，可附该成员 `CODEX_HOME/.sandbox/sandbox.log` 中对应时段的内容。分享前遮去凭据和私人路径。仅凭 `blocked by policy` 这段文字，具体拦截来源仍待确认。
+
+### 项目建好后，在哪里给 Bot 配置角色？
+
+**分配角色的入口：点击当前项目标签 →“成员与目录”→ 找到 Bot → 点击“设置角色”或已有角色名称 → 选择角色。** 选择成功后自动保存，页面显示“本项目角色已保存”。
+
+- **列表缺少需要的角色**：在同一项目配置窗口切换到“角色”，输入名称并点击“创建角色”，再回到“成员与目录”分配。成员列表为空时，先通过“添加成员”加入 Bot。
+- **配置角色权限**：切换到“项目权限”，按需勾选成员或角色，点击 **“保存权限”**。已有模板授权可在此核对，后续工具调用使用保存后的权限。
+- **配置职责与个人指令**：项目分工写在项目的 `AGENTS.md`；Bot 的个人指令从“成员与目录 → 编辑”进入，Hermes 对应 `SOUL.md`，Codex 对应成员自己的 `AGENTS.md`，编辑后点击“保存”。个人指令会影响复用该成员的其他项目。
+
+角色归属按项目保存，同一 Bot 在不同项目中可以承担不同角色。详细说明见 [项目配置](docs/engineering/PROJECT-CONFIGURATION.md) 和 [成员配置编辑](docs/engineering/PROFILE-EDITOR.md)。
