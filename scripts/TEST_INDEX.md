@@ -1,5 +1,9 @@
 # 测试脚本索引
 
+公开安装入口：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_public_installer scripts.test_bootstrap scripts.test_release_upgrade scripts.test_windows_bat -q`。覆盖真实 PowerShell 5.1 执行、Python 探测、固定版本与摘要、失败退出及环境恢复、发布资产和默认升级源；下载使用隔离夹具。公开发布后还须从 README 命令经匿名 HTTPS 下载，在空白目录完成真实依赖安装、BAT 启停、HTTP 页面和默认升级检查，并把证据保存在主目录 `reports/tests/`。
+
+公开端到端：`python -X utf8 -B scripts/verify_public_install.py --shell powershell --port <隔离端口> --evidence <新的报告目录>`，CMD 入口使用 `--shell cmd`。从 README 读取用户命令，真实匿名下载正式 Release、创建 venv、安装依赖、同版本重装、空 Python PATH 下 BAT 启停、HTTP 及默认升级查询；脚本隔离实例、数据和运行时目录并在结束时清理测试服务。运行目录必须为空，避开生产端口 8180。
+
 Codex 进程探针 `spike_codex_mcp_residual.py`、`spike_codex_wait_semantics.py` 从 `CODEX_BIN` 或 `PATH` 定位可执行文件。`--help` 可检查参数入口；`--live` 会调用真实模型。目录选择器浏览器回归使用通用 `developer` 用户目录夹具。
 
 访问控制回归：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_access_contract scripts.test_requirement_lifecycle -q`。覆盖所有业务路由匿名拒绝、成员凭据绑定、管理员边界、项目/话题/收件箱/心跳范围、Unicode 密码、登录限流、SSE cookie 和终态任务门禁。均使用隔离 SQLite。

@@ -95,14 +95,25 @@ bot-group/
 
 ### 安装与启动
 
-安装 Python 3.11 或更高版本后，在项目根目录打开 PowerShell，执行：
+Windows 10/11（64 位）用户打开 **PowerShell**，复制执行这一条命令：
 
 ```powershell
-# 首次安装：准备 Python 运行环境、依赖和 .env
-py -3.11 scripts/install.py install
-# 启动服务
-py -3.11 scripts/service.py start
+Invoke-WebRequest -UseBasicParsing https://github.com/Xinjikang/bot-group/releases/latest/download/install.ps1 -OutFile "$env:TEMP\bot-group-install.ps1"; if ($?) { powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\bot-group-install.ps1" }
 ```
+
+使用 **CMD** 时，执行：
+
+```cmd
+curl.exe -fL https://github.com/Xinjikang/bot-group/releases/latest/download/install.ps1 -o "%TEMP%\bot-group-install.ps1" && powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\bot-group-install.ps1"
+```
+
+安装器自动下载最新正式版本源码、校验 SHA256、创建专用 `.venv`、安装锁定依赖并自检。它优先复用 64 位 Python 3.11–3.13，缺失时自动下载并校验 Python 官方安装程序，安装到当前用户目录。默认安装位置为 `%LOCALAPPDATA%\bot-group\app`，完成后显示实际路径；整个流程无需 Git。可先设置 `INSTALL_DIR` 环境变量指定安装位置。
+
+安装完成后，双击安装目录里的 **`start.bat`**，打开 `http://127.0.0.1:8180/app/`。日常停止使用 **`stop.bat`**，升级使用 **`upgrade.bat`**；升级会自动查询本仓库最新正式版本并保留配置与数据，成功后再次运行 `start.bat`。
+
+Codex / Hermes 的运行环境与模型认证由使用者准备，接入步骤见下方“连接 Codex / Hermes”。服务本身可以先安装并打开。
+
+维护者从已有源码目录安装时，可执行 `py -3.11 scripts/install.py install`，随后执行 `py -3.11 scripts/service.py start`。
 
 启动成功后，打开浏览器访问 `http://127.0.0.1:8180/app/`。可双击 `start.bat` 启动或重启，双击 `stop.bat` 停止服务。运行中的服务也可通过页面右上角重启按钮操作，位置在主题与连接状态之间。
 退出先等待 Bot 自然结束最多 120 秒，超时由引擎终止剩余 Bot 进程树，再回收浏览器资源。详见 [服务重启](docs/engineering/SERVICE-RESTART-2026-10-17.md)。

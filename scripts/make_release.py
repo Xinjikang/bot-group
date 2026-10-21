@@ -38,7 +38,7 @@ _MANAGED_TOP = (
     "requirements.txt", "requirements.lock", "install.py", "install.sh",
     "install.bat", "bootstrap.py", "bootstrap.sh", "bootstrap.bat",
     "start.bat", "start.sh", "stop.bat", "stop.sh", "upgrade.py",
-    "AGENTS.md", "README.md", "LICENSE",
+    "AGENTS.md", "README.md", "README.zh-CN.md", "LICENSE", "install.ps1", "upgrade.bat",
 )
 
 # 受管目录内的排除模式（测试/缓存/运行期产物不入清单不入包）
@@ -75,7 +75,7 @@ def _managed_files(root: Path) -> list[str]:
     return sorted(set(files))
 
 
-def make_release(root: Path, out_dir: Path, name: str, version: str) -> int:
+def make_release(root: Path, out_dir: Path, name: str, version: str, base_url: str = "") -> int:
     # 限制输出文件名，版本正式性由 --formal 入口验证。
     if any(c in name + version for c in '/\\:') or name in ('.', '..') or version in ('.', '..'):
         raise ValueError("发布名称和版本须为单个文件名段")
@@ -103,16 +103,25 @@ def make_release(root: Path, out_dir: Path, name: str, version: str) -> int:
     manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
     checksums = f"{sha}  {archive.name}\n{manifest_sha}  {manifest_path.name}\n"
     bootstrap = root / "scripts" / "bootstrap.py"
+    installer_assets = {}
     if bootstrap.is_file():
         bootstrap_bytes = bootstrap.read_bytes()
         (out_dir / "bootstrap.py").write_bytes(bootstrap_bytes)
         checksums += f"{hashlib.sha256(bootstrap_bytes).hexdigest()}  bootstrap.py\n"
+        installer_assets = {"bootstrap": base_url + "bootstrap.py",
+                            "bootstrap_sha256": hashlib.sha256(bootstrap_bytes).hexdigest()}
+    installer = root / "install.ps1"
+    if installer.is_file():
+        installer_bytes = installer.read_bytes()
+        (out_dir / "install.ps1").write_bytes(installer_bytes)
+        checksums += f"{hashlib.sha256(installer_bytes).hexdigest()}  install.ps1\n"
     (out_dir / "SHA256SUMS").write_text(
         checksums, encoding="utf-8")
     (out_dir / "releases.json").write_text(json.dumps({"releases": [{
         "version": version, "prerelease": False, "draft": False,
-        "source": archive.name, "sha256": sha,
-        "manifest": manifest_path.name, "manifest_sha256": manifest_sha,
+        "source": base_url + archive.name, "sha256": sha,
+        "manifest": base_url + manifest_path.name, "manifest_sha256": manifest_sha,
+        **installer_assets,
     }]}, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[make_release] 归档：{archive}")
     print(f"[make_release] 受管文件 {len(files)} 项（文件级清单已随包）")
@@ -126,13 +135,16 @@ def main(argv=None) -> int:
     parser.add_argument("--name", default="bot-group", help="归档名（默认 bot-group）")
     parser.add_argument("--version", default="dev", help="版本号（默认 dev）")
     parser.add_argument("--formal", action="store_true", help="正式发布，版本必须符合 v1.2.3")
+    parser.add_argument("--base-url", default="", help="固定版本资产 URL 前缀，以 / 结尾")
     args = parser.parse_args(argv)
+    if args.base_url and (not args.base_url.startswith("https://") or not args.base_url.endswith("/")):
+        parser.error("--base-url 必须为以 / 结尾的 HTTPS 地址")
     if args.formal:
         from scripts import releases
         if releases.version_key(args.version) is None:
             parser.error("正式版本格式为 v1.2.3，预发布请使用独立目录与索引")
     root = Path(__file__).resolve().parent.parent
-    return make_release(root, Path(args.out), args.name, args.version)
+    return make_release(root, Path(args.out), args.name, args.version, args.base_url)
 
 
 if __name__ == "__main__":

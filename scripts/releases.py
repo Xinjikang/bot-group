@@ -8,6 +8,8 @@ import re
 import urllib.parse
 import urllib.request
 
+DEFAULT_INDEX_URL = "https://github.com/Xinjikang/bot-group/releases/latest/download/releases.json"
+
 
 @dataclass(frozen=True)
 class Release:

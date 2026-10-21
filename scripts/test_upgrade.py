@@ -1219,11 +1219,11 @@ class ReleaseDiscoveryTest(UpgradeTestBase):
         with self.assertRaises(RuntimeError):
             upgrade._resolve_upgrade_target(None, "ab" * 32)
 
-    def test_missing_index_url_fails_closed(self):
-        # 未配置 RELEASE_INDEX_URL → 明确失败（上层保留当前版本）
-        with mock.patch.dict(os.environ, {"RELEASE_INDEX_URL": ""}):
-            with self.assertRaises(RuntimeError):
-                upgrade._fetch_release_index()
+    def test_missing_index_url_uses_public_release_source(self):
+        with mock.patch.dict(os.environ, {"RELEASE_INDEX_URL": ""}), \
+             mock.patch.object(upgrade.releases, "fetch_index", return_value=[]) as fetch:
+            self.assertEqual(upgrade._fetch_release_index(), [])
+            fetch.assert_called_once_with(upgrade.releases.DEFAULT_INDEX_URL)
 
     def test_main_upgrade_no_update_exits_zero(self):
         # main 无参：无更新 → 0（真实入口）
