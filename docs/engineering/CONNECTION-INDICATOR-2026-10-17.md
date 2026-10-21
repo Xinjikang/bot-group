@@ -1,0 +1,15 @@
+# 连接状态灯修复（2026-10-17）
+
+顶栏状态灯原先固定使用绿色，`setConn()` 切换的 `off` 类缺少对应样式，导致 SSE 断线重连期间仍显示绿色。
+
+`frontend/index.html` 统一以 `data-state` 控制状态灯和文字：
+
+| 状态 | 颜色与动效 | 文案 |
+| --- | --- | --- |
+| connecting | 黄色呼吸灯，无绿色光晕 | 连接中… / 断线重连中… |
+| connected | 绿色呼吸灯与光晕 | 已连接 |
+| disconnected | 灰色静态灯 | 已断开 |
+
+初始 HTML 和每次创建 EventSource 都进入 connecting；onopen 进入 connected；onerror 根据 readyState 区分自动重连与 CLOSED；退出登录主动关闭连接时进入 disconnected。
+
+验证时在隔离 Chrome 页面注入合成 EventSource 事件，检查两套主题的初始加载、刷新、连接、重连、关闭及替换连接，并核对计算后的背景色、动画与光晕。部署后刷新页面加载新资源。

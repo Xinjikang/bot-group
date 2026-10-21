@@ -1,0 +1,95 @@
+{
+  "id": "writing",
+  "version": "1.2.2",
+  "owner_role_id": "editor",
+  "name": "内容写作",
+  "description": "读者目的、提纲稿件、引用事实核查、编辑定稿。",
+  "workflow": "{{ROLE_EDITOR}}确定选题、读者与目的并建需求拆任务 → {{ROLE_RESEARCHER}}提供来源 → {{ROLE_WRITER}}提交提纲与稿件 → {{ROLE_PROOFREADER}}核查事实、引用和语言 → {{ROLE_WRITER}}修订 → {{ROLE_EDITOR}}验收定稿并关闭任务和需求。",
+  "roles": [
+    {
+      "id": "editor",
+      "name": "主编",
+      "responsibilities": "明确选题、读者和发布目标、建需求拆任务、协调成员、接收阻塞通知、验收定稿并关闭任务和需求",
+      "permissions": [
+        "req.create",
+        "req.update",
+        "req.resume",
+        "req.complete",
+        "req.cancel",
+        "task.create",
+        "task.update",
+        "task.resume",
+        "task.complete",
+        "task.cancel"
+      ],
+      "required": true,
+      "soul_reference": "references/souls/editor.md"
+    },
+    {
+      "id": "researcher",
+      "name": "资料研究员",
+      "responsibilities": "收集可信资料、记录事实和出处、核对引用范围",
+      "permissions": [],
+      "required": true,
+      "soul_reference": "references/souls/researcher.md"
+    },
+    {
+      "id": "writer",
+      "name": "作者",
+      "responsibilities": "形成论点和提纲、依据来源撰稿、按审校意见修订",
+      "permissions": [],
+      "required": true,
+      "soul_reference": "references/souls/writer.md"
+    },
+    {
+      "id": "proofreader",
+      "name": "审校",
+      "responsibilities": "独立检查事实引用、结构逻辑、语气和语言一致性",
+      "permissions": [],
+      "required": true,
+      "soul_reference": "references/souls/proofreader.md"
+    }
+  ],
+  "directory_modes": [
+    "shared",
+    "worktree"
+  ],
+  "files": [
+    {
+      "source": "AGENTS.md.tmpl",
+      "target": "AGENTS.md"
+    },
+    {
+      "source": "README.md.tmpl",
+      "target": "README.md"
+    },
+    {
+      "source": "files/docs/INDEX.md.tmpl",
+      "target": "docs/INDEX.md"
+    },
+    {
+      "source": "files/docs/BRIEF.md.tmpl",
+      "target": "docs/BRIEF.md"
+    },
+    {
+      "source": "files/materials/SOURCES.md.tmpl",
+      "target": "materials/SOURCES.md"
+    },
+    {
+      "source": "files/drafts/OUTLINE.md.tmpl",
+      "target": "drafts/OUTLINE.md"
+    },
+    {
+      "source": "files/drafts/ARTICLE.md.tmpl",
+      "target": "drafts/ARTICLE.md"
+    },
+    {
+      "source": "files/outputs/README.md.tmpl",
+      "target": "outputs/README.md"
+    },
+    {
+      "source": "files/docs/CHECKLIST.md.tmpl",
+      "target": "docs/CHECKLIST.md"
+    }
+  ]
+}

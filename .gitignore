@@ -1,0 +1,29 @@
+__pycache__/
+attachments/
+backups/
+*.pyc
+group.db
+group.db-wal
+group.db-shm
+.venv/
+venv/
+node_modules/
+dist/
+.env
+frontend/index.html.bak
+logs/
+engine_start.log
+*.log
+# 运行时本地 DB 备份（验收/解卡前快照，不入库）
+group.db.bak_*
+# CodeGraph 本地索引（不入库）
+.codegraph/
+/runtime/
+
+# Test/research reports and development/runtime artifacts
+/reports/
+.hermes-tmp.*
+/appearance/
+/cache/
+/scratch/
+/install.json

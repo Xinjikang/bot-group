@@ -1,0 +1,118 @@
+{
+  "id": "software",
+  "version": "1.5.1",
+  "owner_role_id": "owner",
+  "name": "软件研发",
+  "description": "开发自测、审查合并与验收关闭；用户指令启动独立的 release 版本测试流程。",
+  "workflow": "开发流程：{{ROLE_OWNER}}建需求 → {{ROLE_ARCHITECT}}拆解 → 开发自测交付 → {{ROLE_REVIEWER}}独立审查 → {{ROLE_ARCHITECT}}核对并合并 → {{ROLE_ARCHITECT}}验收关闭任务 → {{ROLE_OWNER}}关闭需求。审查修订交回具体开发成员再复审。测试流程：整个 release 开发合并完成 → 用户发出测试指令 → {{ROLE_OWNER}}创建独立测试需求 → {{ROLE_ARCHITECT}}拆解测试任务 → {{ROLE_TESTER}}版本验证并提交报告 → {{ROLE_ARCHITECT}}按报告交付验收关闭测试任务 → {{ROLE_OWNER}}关闭测试需求。测试发现问题只记录报告；用户发出修复指令后新建开发需求，走完整开发流程；下一轮测试由用户单独发令并新建测试需求。按开发 → 测试 → 开发 → 测试逐轮推进。",
+  "roles": [
+    {
+      "id": "owner",
+      "name": "项目负责人",
+      "responsibilities": "确认范围和版本、创建和管理需求、确认交付成果并关闭需求",
+      "permissions": [
+        "req.create",
+        "req.update",
+        "req.resume",
+        "req.complete",
+        "req.cancel"
+      ],
+      "required": true,
+      "soul_reference": "references/souls/owner.md"
+    },
+    {
+      "id": "architect",
+      "name": "架构师",
+      "responsibilities": "设计接口和数据约束、拆解前置依赖、协调修订和合并、验收关闭及撤回任务",
+      "permissions": [
+        "task.create",
+        "task.update",
+        "task.resume",
+        "task.complete",
+        "task.cancel"
+      ],
+      "required": true,
+      "soul_reference": "references/souls/architect.md"
+    },
+    {
+      "id": "backend",
+      "name": "后端开发",
+      "responsibilities": "实现接口和数据层、隔离自测并交付代码及验证证据",
+      "permissions": [],
+      "required": true,
+      "soul_reference": "references/souls/backend.md"
+    },
+    {
+      "id": "frontend",
+      "name": "前端开发",
+      "responsibilities": "实现页面交互、状态和可访问性、浏览器自测",
+      "permissions": [],
+      "required": true,
+      "soul_reference": "references/souls/frontend.md"
+    },
+    {
+      "id": "reviewer",
+      "name": "审查员",
+      "responsibilities": "独立核验设计、代码、数据边界与测试证据",
+      "permissions": [],
+      "required": true,
+      "soul_reference": "references/souls/reviewer.md"
+    },
+    {
+      "id": "tester",
+      "name": "测试员",
+      "responsibilities": "制定测试策略、独立环境版本回归、提交风险和测试报告",
+      "permissions": [],
+      "required": true,
+      "soul_reference": "references/souls/tester.md"
+    }
+  ],
+  "directory_modes": [
+    "shared",
+    "worktree"
+  ],
+  "files": [
+    {
+      "source": "files/reports/gitignore.tmpl",
+      "target": "reports/.gitignore"
+    },
+    {
+      "source": "files/reports/INDEX.md.tmpl",
+      "target": "reports/INDEX.md"
+    },
+    {"source": "files/reports/tests/README.md.tmpl", "target": "reports/tests/README.md"},
+    {"source": "files/reports/research/README.md.tmpl", "target": "reports/research/README.md"},
+    {
+      "source": "AGENTS.md.tmpl",
+      "target": "AGENTS.md"
+    },
+    {
+      "source": "README.md.tmpl",
+      "target": "README.md"
+    },
+    {
+      "source": "files/docs/INDEX.md.tmpl",
+      "target": "docs/INDEX.md"
+    },
+    {
+      "source": "files/docs/engineering/ENGINEERING.md.tmpl",
+      "target": "docs/engineering/ENGINEERING.md"
+    },
+    {"source": "files/docs/requirements/README.md.tmpl", "target": "docs/requirements/README.md"},
+    {"source": "files/docs/design/README.md.tmpl", "target": "docs/design/README.md"},
+    {"source": "files/docs/ui-spec/UI-SPEC.md.tmpl", "target": "docs/ui-spec/UI-SPEC.md"},
+    {"source": "files/docs/guides/README.md.tmpl", "target": "docs/guides/README.md"},
+    {
+      "source": "files/docs/PITFALLS.md.tmpl",
+      "target": "docs/PITFALLS.md"
+    },
+    {
+      "source": "files/scripts/TEST_INDEX.md.tmpl",
+      "target": "scripts/TEST_INDEX.md"
+    },
+    {
+      "source": "files/scripts/TEST_CASE.md.tmpl",
+      "target": "scripts/TEST_CASE.md"
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const html = fs.readFileSync('frontend/index.html', 'utf8');
+const start = html.indexOf('let selectedMembers = new Set();');
+const source = html.slice(start, html.indexOf('function renderMemberOptions()', start));
+const requests = [];
+const S = {currentProject: 'a', members: [{profile: 'old'}]};
+let renders = 0;
+const context = {S, renderMemberOptions() { renders++; }, api(url) {
+  return new Promise((resolve, reject) => requests.push({url, resolve, reject}));
+}};
+vm.createContext(context);
+vm.runInContext(source, context);
+
+(async () => {
+  const first = context.loadMembers();
+  assert.equal(S.members.length, 0, 'old candidates disappear during a project switch');
+  S.currentProject = 'b';
+  const second = context.loadMembers();
+  requests[1].resolve({members: [{profile: 'b-member'}]});
+  await second;
+  requests[0].resolve({members: [{profile: 'a-member'}]});
+  await first;
+  assert.equal(S.members[0].profile, 'b-member');
+  const previous = context.loadMembers();
+  const latest = context.loadMembers();
+  requests[3].resolve({members: [{profile: 'new-b-member'}]});
+  await latest;
+  requests[2].resolve({members: [{profile: 'stale-b-member'}]});
+  await previous;
+  assert.equal(S.members[0].profile, 'new-b-member', 'same-project requests obey completion generation');
+  const count = renders;
+  const failure = context.loadMembers();
+  requests[4].reject(new Error('offline'));
+  await failure;
+  assert.equal(renders, count);
+  assert.equal(S.members[0].profile, 'new-b-member');
+  S.currentProject = 'a';
+  const back = context.loadMembers();
+  requests[5].resolve({members: [{profile: 'new-a-member'}]});
+  await back;
+  assert.equal(S.members[0].profile, 'new-a-member');
+  console.log('member loading races: PASS');
+})().catch(error => { console.error(error); process.exitCode = 1; });

@@ -1,0 +1,69 @@
+{
+  "id": "product-prototype",
+  "version": "1.2.1",
+  "owner_role_id": "pm",
+  "name": "产品原型设计",
+  "description": "用户研究、需求与体验设计、HTML 交互原型、独立评审返修及用户走查验收。",
+  "workflow": "{{ROLE_PM}}澄清目标并建立需求、拆解任务 → {{ROLE_UX}}开展用户研究、信息架构和体验设计 → {{ROLE_PM}}形成 PRD，与{{ROLE_UX}}共同确认方案并取得用户确认 → {{ROLE_PROTOTYPER}}实现 HTML 原型并自测 → {{ROLE_REVIEWER}}独立评审，问题交回对应成员修订后复审 → {{ROLE_PM}}组织用户走查，{{ROLE_UX}}分析反馈 → {{ROLE_PM}}定稿 PRD，{{ROLE_UX}}同步体验设计文档 → {{ROLE_PM}}验收关闭任务和需求。",
+  "roles": [
+    {
+      "id": "pm",
+      "name": "产品经理",
+      "responsibilities": "澄清目标与范围、编写 PRD 和验收标准、管理需求与任务、协调成员和阻塞、组织用户确认与走查、验收关闭",
+      "permissions": [
+        "req.create",
+        "req.update",
+        "req.resume",
+        "req.complete",
+        "req.cancel",
+        "task.create",
+        "task.update",
+        "task.resume",
+        "task.complete",
+        "task.cancel"
+      ],
+      "required": true,
+      "soul_reference": "references/souls/pm.md"
+    },
+    {
+      "id": "ux",
+      "name": "UX 设计师",
+      "responsibilities": "用户研究、信息架构、操作流程和体验设计，维护 UI 规范，跟进实现并分析走查反馈",
+      "permissions": [],
+      "required": true,
+      "soul_reference": "references/souls/ux.md"
+    },
+    {
+      "id": "prototyper",
+      "name": "原型工程师",
+      "responsibilities": "依据 PRD、体验方案和 UI 规范实现 HTML/CSS/JS 可操作原型，维护模拟数据、覆盖表和预览说明，完成自测及返修",
+      "permissions": [],
+      "required": true,
+      "soul_reference": "references/souls/prototyper.md"
+    },
+    {
+      "id": "reviewer",
+      "name": "原型评审员",
+      "responsibilities": "独立操作验证需求覆盖、业务规则、交互和 UI 规范一致性及可用性，记录问题与证据，复审修改并给出结论",
+      "permissions": [],
+      "required": true,
+      "soul_reference": "references/souls/reviewer.md"
+    }
+  ],
+  "directory_modes": ["shared", "worktree"],
+  "files": [
+    {"source": "AGENTS.md.tmpl", "target": "AGENTS.md"},
+    {"source": "README.md.tmpl", "target": "README.md"},
+    {"source": "files/docs/INDEX.md.tmpl", "target": "docs/INDEX.md"},
+    {"source": "files/docs/preview.md.tmpl", "target": "docs/preview.md"},
+    {"source": "files/docs/validation/CHECKLIST.md.tmpl", "target": "docs/validation/CHECKLIST.md"},
+    {"source": "files/outputs/prototype/README.md.tmpl", "target": "outputs/prototype/README.md"},
+    {"source": "files/docs/BRIEF.md.tmpl", "target": "docs/BRIEF.md"},
+    {"source": "files/outputs/PRD.md.tmpl", "target": "outputs/PRD.md"},
+    {"source": "files/materials/RESEARCH.md.tmpl", "target": "materials/RESEARCH.md"},
+    {"source": "files/materials/references/README.md.tmpl", "target": "materials/references/README.md"},
+    {"source": "files/docs/design/UX.md.tmpl", "target": "docs/design/UX.md"},
+    {"source": "files/ui-spec/UI-SPEC.md.tmpl", "target": "ui-spec/UI-SPEC.md"},
+    {"source": "files/docs/validation/COVERAGE.md.tmpl", "target": "docs/validation/COVERAGE.md"}
+  ]
+}
