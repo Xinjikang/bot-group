@@ -1,10 +1,10 @@
 # 本机源码安装、启停与正式版本升级
 
-采用源码安装，协作与交付流程见项目 [AGENTS.md](../../AGENTS.md)。
+采用源码安装。Windows 用户入口见 [README 快速开始](../../README.zh-CN.md#安装与启动)，一条命令下载并安装最新正式版本，默认位置为 `%LOCALAPPDATA%\bot-group\app`。协作与交付流程见项目 [AGENTS.md](../../AGENTS.md)。
 
 ## 支持环境与版本
 
-发布锁定依赖要求 Python 3.11+。Windows 使用 Python 标准库入口和程序专用 `.venv`；下载源码 ZIP 后可直接安装。Hermes/Codex 使用各自运行环境；安装时探测并报告缺项，配置完整后才可执行相应模型任务。其他平台发布前需完成对应环境的安装验证。
+公开安装入口支持 64 位 Windows 10/11 和 PowerShell 5.1。安装器自动选择 64 位 Python 3.11–3.13，缺失时从 Python 官方下载并核验安装程序，安装到 `%LOCALAPPDATA%\bot-group-runtime\Python313`。源码开发安装要求 Python 3.11+。Hermes/Codex 使用各自运行环境；安装时探测并报告缺项，配置完整后才可执行相应模型任务。其他平台发布前需完成对应环境的安装验证。
 
 `VERSION` 是安装版本，正式版本格式为 `v1.2.3`，由发布负责人分配版本号和发布地址。
 
@@ -13,10 +13,12 @@
 从已通过审查与验收的源码目录执行：
 
 ```powershell
-py -3.11 scripts\make_release.py --formal --version v1.2.3 --out dist\v1.2.3
+py -3.11 scripts\make_release.py --formal --version v1.2.3 --out dist\v1.2.3 --base-url https://github.com/Xinjikang/bot-group/releases/download/v1.2.3/
 ```
 
-输出目录包含：`bot-group-v1.2.3.zip`、`release_manifest.json`、`SHA256SUMS`、`releases.json`，以及独立标准库安装入口 `bootstrap.py`。ZIP 包含引擎、MCP、前端静态资源、scripts、templates、依赖锁定清单、文档与入口。`VERSION` 纳入文件级受管清单，随源码更新与恢复。数据、凭据、`.venv`、运行缓存及单元测试保持在安装环境或仓库中。
+输出目录包含六个文件：`bot-group-v1.2.3.zip`、`release_manifest.json`、`SHA256SUMS`、`releases.json`、独立标准库安装入口 `bootstrap.py` 和 Windows 下载入口 `install.ps1`。ZIP 包含引擎、MCP、前端静态资源、scripts、templates、依赖锁定清单、双语 README、文档与入口。`VERSION` 纳入文件级受管清单，随源码更新与恢复。数据、凭据、`.venv`、运行缓存及单元测试保持在安装环境或仓库中。
+
+从干净的 Git 提交构建，将六个文件上传到对应 tag 的 GitHub Release，完成资产核对后发布为正式版本。`--base-url` 将索引中资产地址固定到该版本，bootstrap 的 SHA256 也写入索引。发布后从匿名客户端执行 README 命令完成实际安装；验收证据记录 tag、提交、资产摘要、安装位置、退出码与页面结果。
 
 每个正式版本使用独立且固定的资产目录。将这些文件放到配置的可信 HTTPS/内网发布源；将索引中相对地址转换为相对于稳定索引 URL 的正确地址。稳定索引可以包含多条 Release；客户端选择数值最大的正式三段版本，跳过 `draft=true` 和 `prerelease=true`。发布前核对资产 SHA256，再更新稳定索引。命令生成本地资产，发布操作由发布负责人执行。
 
@@ -35,6 +37,22 @@ py -3.11 scripts\make_release.py --formal --version v1.2.3 --out dist\v1.2.3
 外置清单和 ZIP 内清单字节内容对应相同 JSON 对象，包含必填 `version: string` 和 `program_files: string[]` 文件级相对路径。索引地址及摘要应从同一可信发布渠道获得。摘要校验用于验证内容完整性。
 
 ## 首次安装
+
+在 PowerShell 执行：
+
+```powershell
+Invoke-WebRequest -UseBasicParsing https://github.com/Xinjikang/bot-group/releases/latest/download/install.ps1 -OutFile "$env:TEMP\bot-group-install.ps1"; if ($?) { powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\bot-group-install.ps1" }
+```
+
+在 CMD 执行：
+
+```cmd
+curl.exe -fL https://github.com/Xinjikang/bot-group/releases/latest/download/install.ps1 -o "%TEMP%\bot-group-install.ps1" && powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\bot-group-install.ps1"
+```
+
+安装器显示最终目录，日常使用其中的 `start.bat`、`stop.bat`、`upgrade.bat`。可先设置 `INSTALL_DIR` 环境变量，或在已下载脚本上使用 `-InstallDir` 参数指定目录。同版本重复执行保留数据与配置；已有不同版本时使用升级入口。安装失败返回非零退出码并显示具体错误，修复后可重跑。
+
+### 自定义发布源
 
 安装 Python 3.11+ 后，从可信发布页下载独立 `bootstrap.py`，核对发布页提供的入口摘要。发布页也可提供已解压源码包；解压后执行 `install.bat`。
 
@@ -59,7 +77,8 @@ py -3.11 C:\Downloads\bootstrap.py
 # 数据目录 .env，按本机实例填写
 GROUP_ENGINE_HOST=127.0.0.1
 GROUP_ENGINE_PORT=8180
-RELEASE_INDEX_URL=https://releases.example.org/releases.json
+# 默认连接 Xinjikang/bot-group；自定义发布源时取消下一行注释。
+# RELEASE_INDEX_URL=https://releases.example.org/releases.json
 ```
 
 在安装目录运行 `start.bat` / `stop.bat`；也可用 `py -3.11 scripts\service.py start` / `stop`。启动执行轻量就绪检查和同实例优雅停机，随后创建独立后台进程并核验 `/health`。默认浏览器地址 `http://127.0.0.1:8180/app/`，未配置密码时直接进入应用；已有密码配置沿用。前端由同一后端进程静态托管。
@@ -72,13 +91,13 @@ Windows 四个 BAT 入口使用 ASCII 注释/提示与 CRLF，兼容默认及 UT
 
 ## 默认升级与恢复
 
-在安装目录使用系统 Python 执行：
+在安装目录双击 `upgrade.bat`，它自动定位基础 Python，允许升级和恢复时重建 venv。已有系统 Python 的维护者也可执行：
 
 ```powershell
 py -3.11 scripts\upgrade.py upgrade
 ```
 
-配置发布索引后，每次升级自动显示当前与最新正式 Release；用户直接执行同一条命令。当前版本等于或高于索引最新版本时显示“无需更新”。`--index-url <URL>` 可覆盖本次索引地址，数据目录 `.env` 与环境变量同样支持 `RELEASE_INDEX_URL`。`--url <归档> --sha256 <摘要>` 保留指定归档的维护入口。
+默认发布索引为 `https://github.com/Xinjikang/bot-group/releases/latest/download/releases.json`。每次升级自动显示当前与最新正式 Release；用户直接执行同一条命令。当前版本等于或高于索引最新版本时显示“无需更新”。`--index-url <URL>` 可覆盖本次索引地址，数据目录 `.env` 与环境变量同样支持 `RELEASE_INDEX_URL`。`--url <归档> --sha256 <摘要>` 保留指定归档的维护入口。
 
 升级先解析并固定版本与全部资产，再下载校验源码、外置/包内清单、文件集合和 VERSION。查询、下载、缺资产、校验失败时旧实例继续可用。校验通过后：确认旧实例及写入方安全退出 → SQLite backup API 数据快照与程序快照 → 文件级更新 → 依赖同步 → 独立副本迁移验证 → 就绪检查。成功后运行 `start.bat` 恢复服务；真实数据库迁移在新引擎启动时执行。
 

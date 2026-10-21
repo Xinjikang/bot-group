@@ -97,14 +97,25 @@ bot-group/
 
 ### Install and Start
 
-Install Python 3.11 or later, open PowerShell in the project root, and run:
+On **64-bit Windows 10/11**, open **PowerShell** and run this single command:
 
 ```powershell
-# First installation: prepare the Python environment, dependencies, and .env
-py -3.11 scripts/install.py install
-# Start the service
-py -3.11 scripts/service.py start
+Invoke-WebRequest -UseBasicParsing https://github.com/Xinjikang/bot-group/releases/latest/download/install.ps1 -OutFile "$env:TEMP\bot-group-install.ps1"; if ($?) { powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\bot-group-install.ps1" }
 ```
+
+For **CMD**, use:
+
+```cmd
+curl.exe -fL https://github.com/Xinjikang/bot-group/releases/latest/download/install.ps1 -o "%TEMP%\bot-group-install.ps1" && powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\bot-group-install.ps1"
+```
+
+The installer downloads the latest stable source release, verifies SHA256, creates a dedicated `.venv`, installs locked dependencies, and checks the installation. It reuses a compatible 64-bit Python 3.11–3.13 or downloads and verifies the official Python installer for a per-user installation. The default location is `%LOCALAPPDATA%\bot-group\app`; set `INSTALL_DIR` beforehand to choose another directory. Git is optional.
+
+After installation, double-click **`start.bat`** in the installation directory and open `http://127.0.0.1:8180/app/`. Use **`stop.bat`** to stop and **`upgrade.bat`** to discover and install the latest stable release while preserving configuration and data. Run `start.bat` again after a successful upgrade.
+
+Prepare your chosen Codex / Hermes runtime and model authentication separately, then follow the connection instructions below. The service can be installed and opened before connecting a bot.
+
+Maintainers with an existing source checkout can run `py -3.11 scripts/install.py install`, followed by `py -3.11 scripts/service.py start`.
 
 Once startup succeeds, open `http://127.0.0.1:8180/app/` in your browser. Double-click `start.bat` to start or restart the service, or `stop.bat` to stop it. A running service can also be restarted from the button at the top right of the page, between the theme control and connection status.
 

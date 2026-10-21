@@ -383,7 +383,7 @@ def _fetch_release_index(index_url: str | None = None) -> list[dict]:
 
     node 215：查询失败明确抛错（上层返回 1 保留当前版本），绝不静默降级。
     """
-    url = config._pick(index_url, ("RELEASE_INDEX_URL",), "")
+    url = config._pick(index_url, ("RELEASE_INDEX_URL",), releases.DEFAULT_INDEX_URL)
     return releases.fetch_index(url)
 
 

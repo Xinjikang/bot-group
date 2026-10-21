@@ -267,6 +267,17 @@ sys.exit(int(os.environ['BAT_PROBE_EXIT']))
                 with self.subTest(codepage=cp, case=case):
                     self.assert_invocation(case, cp, 'py')
 
+    def test_installed_venv_precedes_system_python_and_needs_no_path_python(self):
+        venv = self.work / '.venv' / 'Scripts'
+        venv.mkdir(parents=True)
+        (venv / 'python.exe').write_bytes(self.native)
+        for names in ((), ('python', 'py')):
+            self.interpreters(*names)
+            for case in CASES:
+                if case[0] != 'bootstrap.bat':
+                    with self.subTest(path_interpreters=names, case=case):
+                        self.assert_invocation(case, 65001)
+
     def test_nonzero_exit_propagates_for_both_interpreters(self):
         for interpreter in ('python', 'py'):
             self.interpreters(interpreter)
