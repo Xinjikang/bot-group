@@ -23,7 +23,7 @@ def execution_for(request, supplied):
 
 def credential_for(execution, supplied):
     if execution is None:
-        return supplied
+        return None if supplied == "" else supplied
     expected = f"exec:{execution['session']}"
     if supplied and supplied != expected:
         raise HTTPException(403, "Decomposition credential does not match the execution")

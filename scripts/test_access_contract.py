@@ -160,10 +160,10 @@ class AccessContractTests(unittest.TestCase):
             self.assertFalse(auth.verify_bot("architect", token))
         with patch.dict(os.environ, {"GROUP_ENGINE_KEY": "isolated-key-two"}):
             self.assertFalse(auth.verify_bot("default", token))
-        from engine.main import app
-        with TestClient(app) as client:
-            self.assertNotIn("db_path", client.get("/health").json())
-            self.assertIn("db_path", client.get("/health", headers=self.admin).json())
+        from engine.main import health
+        self.app.add_api_route("/health", health)
+        self.assertNotIn("db_path", self.client.get("/health").json())
+        self.assertIn("db_path", self.client.get("/health", headers=self.admin).json())
 
 
 if __name__ == "__main__":

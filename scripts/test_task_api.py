@@ -129,6 +129,57 @@ class TaskApiTest(unittest.TestCase):
         self.assertNotIn('decompose_credential', status['requirement'])
         self.assertNotIn('decompose_stale_credentials', status['requirement'])
 
+    def test_manual_decomposition_normalizes_optional_credentials(self):
+        for supplied in ({}, {'credential': ''}, {'credential': None}):
+            with self.subTest(supplied=supplied):
+                rid = self.call('req_create', {'project': 'alpha', 'title': 'Manual decomposition',
+                               **confirmed_requirement_fields()}).json()['requirement_id']
+                response = self.call('task_create', {'project': 'alpha', 'requirement_id': rid,
+                                     'tasks': [{'title': 'Draft', 'draft': True}], **supplied})
+                self.assertEqual(response.status_code, 200, response.text)
+                created = response.json()
+                credential = created['credential']
+                self.assertTrue(credential)
+                args = {'project': 'alpha', 'task_id': created['task_ids'][0], 'title': 'Updated'}
+                for actor, values in [('default', supplied), ('architect', supplied),
+                                      ('architect', {'credential': credential})]:
+                    denied = self.call('task_update', {**args, **values}, actor=actor)
+                    self.assertEqual(denied.status_code, 200, denied.text)
+                    self.assertEqual(denied.json().get('code'), 'decompose_credential_stale')
+                updated = self.call('task_update', {**args, 'credential': credential, 'publish': True, **BRIEF})
+                self.assertTrue(updated.json().get('updated'), updated.text)
+                finished = self.call('task_create', {'project': 'alpha', 'requirement_id': rid,
+                                     'tasks': [], 'complete': True, 'credential': credential})
+                self.assertEqual(finished.json().get('decompose_state'), 'done', finished.text)
+
+    def test_legacy_empty_lock_requires_owner_to_reacquire(self):
+        rid = self.call('req_create', {'project': 'alpha', 'title': 'Legacy lock',
+                       **confirmed_requirement_fields()}).json()['requirement_id']
+        created = taskpool.task_create('alpha', 'default', rid, [{'title': 'Draft', 'draft': True}])
+        conn = db.get_connection()
+        try:
+            conn.execute("UPDATE requirements SET decompose_credential='' WHERE id=?", (rid,))
+            conn.commit()
+        finally:
+            conn.close()
+        args = {'project': 'alpha', 'task_id': created['task_ids'][0], 'title': 'Updated', 'credential': ''}
+        for actor in ('default', 'architect'):
+            self.assertEqual(self.call('task_update', args, actor=actor).json().get('code'),
+                             'decompose_credential_stale')
+        retried = self.call('task_create', {'project': 'alpha', 'requirement_id': rid,
+                            'tasks': [{'title': 'Next draft', 'draft': True}], 'credential': ''}).json()
+        self.assertTrue(retried.get('credential'), retried)
+        updated = self.call('task_update', {**args, 'credential': retried['credential']})
+        self.assertTrue(updated.json().get('updated'), updated.text)
+
+    def test_invalid_manual_credential_types_are_rejected(self):
+        for credential in (0, False, [], {}):
+            for operation, args in [('task_create', {'requirement_id': 1, 'tasks': []}),
+                                    ('task_update', {'task_id': 1})]:
+                with self.subTest(credential=credential, operation=operation):
+                    response = self.call(operation, {'project': 'alpha', **args, 'credential': credential})
+                    self.assertEqual(response.status_code, 422, response.text)
+
     def execution(self, chat=False, session='bound-work', start=100):
         conn = db.get_connection()
         tid = None

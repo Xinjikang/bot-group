@@ -69,6 +69,73 @@ class ReleaseUpgradeTests(UpgradeTestBase):
             self.assertEqual(self.execute(), 0)
         self.assertEqual(upgrade.current_version(), "v2.0.0")
 
+    def _check_custom_data_upgrade(self, nested, fail):
+        import shutil
+        import sqlite3
+        self._dp.stop()
+        self._bp.stop()
+        self._hp.stop()
+        self._pt.stop()
+        if nested:
+            target = self.prog / 'custom data'
+            shutil.copytree(self.data, target)
+            self.data = target
+        (self.data / '.env').write_text('GROUP_ENGINE_PORT=19321\n', encoding='utf-8')
+        (self.data / 'install.json').write_text('{"fixture":true}', encoding='utf-8')
+        preserved = {name: (self.data / name).read_bytes()
+                     for name in ('.env', 'install.json', 'attachments/a.txt')}
+        with mock.patch.dict(os.environ, {'GROUP_DATA_DIR': str(self.data), 'DATA_DIR': '',
+                                         'GROUP_ENGINE_PORT': '', 'PORT': ''}), \
+             mock.patch.object(upgrade.config, '_cli', {'host': None, 'port': None, 'data_dir': None}), \
+             mock.patch.object(upgrade.config, '_dotenv_cache', {}), \
+             mock.patch.object(upgrade, '_stop_independent', return_value=0), \
+             mock.patch.object(upgrade, '_sync_deps', return_value=int(fail)), \
+             mock.patch.object(upgrade, '_verify_migration', return_value=0), \
+             mock.patch.object(upgrade, '_verify_ready', return_value=0), \
+             mock.patch.object(upgrade.subprocess, 'run', return_value=mock.Mock(returncode=0)):
+            self.assertEqual(upgrade.config.data_dir(), self.data)
+            self.assertEqual(upgrade.config.port(), 19321)
+            self.assertEqual(self.execute(), int(fail))
+            self.assertEqual(upgrade.current_version(), 'v1.0.0' if fail else 'v2.0.0')
+            backup = upgrade.latest_backup()
+            self.assertEqual(backup.parent, self.data / 'backups')
+            self.assertTrue((backup / 'data/group.db').exists())
+            self.assertEqual((backup / 'data/.env').read_bytes(), preserved['.env'])
+            self.assertEqual(upgrade.config.data_dir(), self.data)
+            self.assertEqual(upgrade.config.port(), 19321)
+        for name, content in preserved.items():
+            self.assertEqual((self.data / name).read_bytes(), content)
+        with closing(sqlite3.connect(self.data / 'group.db')) as conn:
+            self.assertEqual(conn.execute('SELECT v FROM t').fetchall(), [('dbdata',)])
+        self.assertFalse((self.prog / 'group.db').exists())
+
+    def test_external_custom_data_survives_upgrade(self):
+        self._check_custom_data_upgrade(nested=False, fail=False)
+
+    def test_nested_custom_data_survives_upgrade(self):
+        self._check_custom_data_upgrade(nested=True, fail=False)
+
+    def test_external_custom_data_survives_rollback(self):
+        self._check_custom_data_upgrade(nested=False, fail=True)
+
+    def test_nested_custom_data_survives_rollback(self):
+        self._check_custom_data_upgrade(nested=True, fail=True)
+
+    def test_dependency_subprocess_inherits_custom_data_directory(self):
+        import shutil
+        from engine import config
+        shutil.copyfile(config.__file__, self.prog / 'engine/config.py')
+        (self.prog / 'engine/__init__.py').touch()
+        (self.prog / 'scripts/install.py').write_text(
+            'import sys\nfrom pathlib import Path\n'
+            'sys.path.insert(0, str(Path(__file__).resolve().parents[1]))\n'
+            'from engine import config\n'
+            '(config.data_dir() / "child-directory.txt").write_text(str(config.data_dir()), encoding="utf-8")\n',
+            encoding='utf-8')
+        with mock.patch.dict(os.environ, {'GROUP_DATA_DIR': str(self.data)}):
+            self.assertEqual(upgrade._sync_deps(), 0)
+        self.assertEqual((self.data / 'child-directory.txt').read_text(encoding='utf-8'), str(self.data))
+
     def test_no_update_or_older_release_keeps_running_instance(self):
         for current in ("v2.0.0", "2.0.0", "v3.0.0"):
             with self.subTest(current=current):

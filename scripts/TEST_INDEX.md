@@ -1,5 +1,9 @@
 # 测试脚本索引
 
+手工拆解凭据与鉴权测试隔离：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_task_api scripts.test_access_contract scripts.test_codex_driver_regressions scripts.test_hermes_transport scripts.test_requirement_lifecycle scripts.test_task_brief -q`。同进程串联验证健康接口鉴权与后续 Bot 启动，覆盖缺省/null/空凭据生成、非法类型拒绝、跨成员修订、已有空锁恢复、发布及完成提交。真实手工 stdio MCP 链路运行 `.venv\Scripts\python.exe -X utf8 -B scripts/test_mcp_e2e.py`；自动执行和手工成员分别使用隔离凭据。
+
+自定义数据目录升级：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_release_upgrade scripts.test_config scripts.test_upgrade -q`。使用隔离发布包、真实环境变量和临时数据库，覆盖程序目录内外的自定义数据目录、成功升级、失败回滚、数据库/附件/配置保留，以及依赖子进程继承目录。网络、生产停机与真实依赖安装使用模拟边界。
+
 Codex 新建执行配置与入组双提醒：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_profile_create scripts.test_codex_sandbox_notice scripts.test_discovery scripts.test_codex_project_access -q`。覆盖默认/来源创建统一 `on-request + auto_review + workspace-write`、Windows 实现选择、命名配置覆盖、来源只读、重试、两条路径目录授权，以及已有 Bot 只提醒并保留审批/沙箱设置。`python -X utf8 -B scripts/test_profile_create_browser.py --evidence <报告目录>` 检查双提醒、单独智能审批提醒、切换与刷新、可直接加入、创建规则文案和窄屏布局。Windows 原生探针：`.venv\Scripts\python.exe -X utf8 -B scripts/verify_codex_profile_sandbox.py --evidence <全新报告子目录>`，使用已安装 Codex CLI、Git 和 PowerShell，在隔离 home/仓库内验证生成配置下的沙箱命令启动、文件读取和 Git 状态；无需认证和模型调用，命令原始输出保存在 `commands.json`。嵌套受限宿主可能返回 `no home dir`，此时需在允许启动子沙箱的宿主运行；探针保持现有 Bot 配置原样。
 
 Codex 入组沙箱提示与对话框校验：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_codex_sandbox_notice scripts.test_discovery scripts.test_codex_project_access -q`，使用临时配置与 SQLite 验证独立 home、命名继承、缺省/异常/完全访问、读取不写配置及提示后正常加入。`python -X utf8 -B scripts/test_profile_create_browser.py --evidence <报告目录>` 使用已安装 Playwright 的 Python 和 Chrome，覆盖中文/保留 Profile 标识的红色错误、修正清除、必填与端口校验、服务端错误、沙箱提醒后直接加入、切换候选、刷新、390px 深浅主题。`python -X utf8 -B scripts/test_alert_dialog.py` 回归通用弹窗队列与焦点。受限环境将 TEMP/TMP 指向已授权的隔离临时目录。

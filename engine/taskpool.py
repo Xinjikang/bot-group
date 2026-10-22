@@ -785,6 +785,8 @@ def _acquire_decompose(conn, req, role, credential, ts):
     owner = req["decompose_owner"]
     expires = req["decompose_expires_at"]
     expired = not expires or expires < ts
+    if credential == "":
+        credential = None
     if credential is not None:
         # 显式执行凭证路径
         if state == DECOMPOSE_PENDING:
@@ -848,6 +850,10 @@ def _acquire_decompose(conn, req, role, credential, ts):
                 return None, _occupied_result(conn, req["id"])
             return new_cred, None
         if owner == role:
+            if not stored_cred:
+                stored_cred = uuid.uuid4().hex
+                conn.execute("UPDATE requirements SET decompose_credential=? WHERE id=?",
+                             (stored_cred, req["id"]))
             return stored_cred, None
         return None, _occupied_result(conn, req["id"])
     return None, {"error": f"unknown decompose_state {state}", "code": "decompose_state_invalid"}
@@ -880,7 +886,7 @@ def _finalize_decompose(conn, project, requirement_id):
 
 
 def task_create(project: str, role: str, requirement_id: int, tasks: list, *,
-                credential: str = None, idempotency_key: str = None, complete: bool = False) -> dict:
+                credential: str | None = None, idempotency_key: str = None, complete: bool = False) -> dict:
     if not isinstance(tasks, list):
         return {"error": "tasks must be a list"}
     # req#118 #201：complete=true 且 tasks 空 = 独立提交拆解完成（分批建任务补依赖后零新增提交），
@@ -1316,7 +1322,7 @@ def task_list(project: str, role: str, status: str = "") -> dict:
 def task_update(project: str, role: str, task_id: int, title: str = "",
                 priority: int | None = None, next_bot: str = "", description=None,
                 design_basis=None, acceptance_criteria=None, prerequisites=None,
-                publish: bool | None = None, credential: str = None) -> dict:
+                publish: bool | None = None, credential: str | None = None) -> dict:
     conn = _conn()
     try:
         from .project_permissions import check
@@ -1342,7 +1348,6 @@ def task_update(project: str, role: str, task_id: int, title: str = "",
             (task["requirement_id"], project)).fetchone()
         if req_row:
             if (req_row["decompose_state"] == DECOMPOSE_DECOMPOSING
-                    and req_row["decompose_credential"]
                     and (not credential or req_row["decompose_credential"] != credential
                          or req_row["decompose_owner"] != role)):
                 return {"error": "decompose credential invalid or expired", "code": "decompose_credential_stale",

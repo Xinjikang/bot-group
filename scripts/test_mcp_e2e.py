@@ -95,7 +95,27 @@ async def main(tasks_only=False):
                         response = await other.call_tool('req_create', {
                             'project': 'beta', 'title': 'Separate project, shared table',
                             **confirmed_requirement_fields('beta')})
-                        assert 'requirement_id' in json.loads(response.content[0].text)
+                        manual_rid = json.loads(response.content[0].text)['requirement_id']
+
+                        async def manual_call(name, **arguments):
+                            response = await other.call_tool(name, arguments)
+                            assert not response.isError, response
+                            result = json.loads(response.content[0].text)
+                            assert 'error' not in result, result
+                            return result
+
+                        manual = await manual_call('task_create', project='beta', requirement_id=manual_rid,
+                            tasks=[{'title': 'Manual draft', 'draft': True}])
+                        assert manual['credential'], manual
+                        await manual_call('task_update', project='beta', task_id=manual['task_ids'][0],
+                            credential=manual['credential'], description='Manual host task flow',
+                            design_basis='Isolated member credential contract',
+                            acceptance_criteria='Publish and complete with the returned credential',
+                            prerequisites=[], publish=True)
+                        completed = await manual_call('task_create', project='beta', requirement_id=manual_rid,
+                            tasks=[], credential=manual['credential'], complete=True)
+                        assert completed['decompose_state'] == 'done', completed
+                        print('PASS: manual MCP generates a credential and preserves it through publish and completion')
                 if tasks_only:
                     print('PASS: real MCP draft gate, publish, full claim/task_get context, handoff and completion')
                     return
