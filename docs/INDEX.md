@@ -2,6 +2,8 @@
 
 当前发布说明：[v0.1.2](releases/v0.1.2.md)。
 
+项目成员更多菜单、移出与状态保留契约见 [项目成员移除](engineering/PROJECT-MEMBER-REMOVAL.md)。
+
 访问认证、成员凭据及需求终态门禁见 [访问控制契约](engineering/ACCESS-CONTROL.md)。
 
 当前系统说明从 [ENGINEERING.md](engineering/ENGINEERING.md) 开始，源码安装从 [RELEASE-GUIDE.md](guides/RELEASE-GUIDE.md) 开始。本索引收录版本化需求、设计、工程和使用文档，文件名中的日期用于定位专题。

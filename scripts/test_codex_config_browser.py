@@ -118,6 +118,7 @@ def main():
         ]:
             untouched = deepcopy(configs[other])
             card = page.locator(f'#pj-member-list [data-profile="{handle}"]')
+            card.locator('.member-more').click()
             card.locator('.edit').click()
             loaded()
             name = next(m['display_name'] for m in members if m['profile'] == handle)

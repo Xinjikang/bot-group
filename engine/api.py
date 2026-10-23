@@ -2116,6 +2116,20 @@ def put_workspace_resources(name: str, profile: str, body: dict[str, Any], ident
     return workspace_resources.member(name, profile, body, identity[0] or identity[1])
 
 
+@router_api.get('/projects/{name}/members/{profile}/removal')
+def preview_project_member_removal(name: str, profile: str, identity=Depends(_resolve_identity)):
+    _admin_only(identity, '仅管理员可移出项目成员')
+    from . import project_membership
+    return project_membership.preview(name, profile)
+
+
+@router_api.delete('/projects/{name}/members/{profile}')
+def remove_project_member(name: str, profile: str, identity=Depends(_resolve_identity)):
+    _admin_only(identity, '仅管理员可移出项目成员')
+    from . import project_membership
+    return project_membership.remove(name, profile, identity[0] or identity[1])
+
+
 @router_api.post('/projects/{name}/members/{profile}/reset-session')
 def reset_project_member_session(name: str, profile: str, identity=Depends(_resolve_identity)):
     _admin_only(identity, '管理员可重置项目成员会话')

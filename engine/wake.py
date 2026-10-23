@@ -729,10 +729,12 @@ def enqueue(
     trigger_msg_id: int | None = None,
     thread_id: int | None = None,
     project: str = "xjk",
+    *, commit: bool = True,
 ) -> bool:
     """入队一个唤醒 job。同 profile 同 kind 已在 queued/running 则不重复入队。
 
     返回 True 表示新入队，False 表示已存在（去重命中）或跳过（user 不唤醒）。
+    commit=False 时保留调用方事务，入队与相关状态变更统一提交。
     """
     # 内置 user 代表用户，排除在 Bot 唤醒范围之外。
     if db.is_builtin_user(profile):
@@ -752,7 +754,8 @@ def enqueue(
             "WHERE pm.project=? AND pm.profile=? AND pm.active=1)",
             (profile, project, kind, trigger, trigger_msg_id, thread_id, db.now_iso(), project, project, profile),
         )
-        conn.commit()
+        if commit:
+            conn.commit()
         return cur.rowcount == 1
     except sqlite3.IntegrityError:
         # partial unique index 命中：同 profile 同 kind 已在队列

@@ -387,6 +387,7 @@ function bindMemberNameEditor(row, member) {
 
 function renderProjectMembers(project, data) {
   const box = $('#pj-member-list'), scroll = box.scrollTop;
+  box.querySelectorAll('.project-member-menu:popover-open').forEach(menu => menu.hidePopover());
   box.replaceChildren();
   for (const member of data.members) {
     const reset = sessionResetButton(member);
@@ -399,9 +400,12 @@ function renderProjectMembers(project, data) {
     row.innerHTML = `<div class="project-member-header"><div class="project-member-identity">
       <div class="project-member-name"><button type="button" class="member-name-edit" title="点击编辑显示名（所有项目共用）">${esc(memberDisplayName(member))}</button><small>${esc(memberHostProfile(member))}</small>
       <button type="button" role="switch" aria-checked="${!!member.active}" aria-label="成员启用状态" title="${member.active ? '点击停用' : '点击启用'}" class="project-member-badge ${member.active ? 'enabled' : ''}">${member.active ? '启用' : '停用'}</button></div></div>
-      <div class="project-member-actions"><button type="button" class="edit">编辑</button>
-      ${member.profile !== 'user' ? `<button type="button" class="reset-session" title="${reset.title}" ${reset.disabled ? 'disabled' : ''}>${reset.label}</button>` : ''}
-      <button type="button" class="workspace">工作区</button></div></div>
+      <div class="project-member-actions"><button type="button" class="workspace">工作区</button>
+      <button type="button" class="member-more" aria-label="成员更多操作" aria-haspopup="menu" aria-expanded="false">⋯</button>
+      <div class="project-member-menu" popover="auto" role="menu">
+      <button type="button" role="menuitem" class="edit" title="修改将影响共用此 profile 的项目">编辑 profile</button>
+      ${member.profile !== 'user' ? `<button type="button" role="menuitem" class="reset-session" title="${reset.title}" ${reset.disabled ? 'disabled' : ''}>${reset.label}</button><button type="button" role="menuitem" class="member-remove">移出项目</button>` : ''}
+      </div></div></div>
       <div class="project-member-workspace ${state.valid && !state.head ? 'compact-status' : ''}"><span class="project-member-caption">${independent ? '独立 worktree' : '项目主目录'}</span>
       <div class="project-member-path" title="${esc(path)}">${esc(path)}</div>
       <p class="project-member-state ${state.valid ? 'valid' : 'invalid'}">${state.valid ? esc(state.head ? `${state.detached ? 'detached' : state.branch} · ${state.head.slice(0, 12)}${state.dirty ? ' · 有未提交改动' : ' · 工作区干净'}` : '目录可用') : esc(state.error || '目录不可用')}</p></div>`;
@@ -417,6 +421,8 @@ function renderProjectMembers(project, data) {
     resetStatus.setAttribute('role', 'status');
     resetStatus.hidden = true;
     row.appendChild(resetStatus);
+    bindMemberMoreMenu(row);
+    row.querySelector('.member-remove')?.addEventListener('click', () => openMemberRemoval(project, member));
     row.querySelector('.reset-session')?.addEventListener('click', e => resetMemberSession(project, member.profile, e.currentTarget, resetStatus));
     row.querySelector('.project-member-badge').addEventListener('click', async e => {
       const button = e.currentTarget, active = !member.active;
@@ -462,6 +468,117 @@ function renderProjectMembers(project, data) {
 const projectRolesCache = new Map();   // project -> roles 数组（req#96 #165 角色实体化）
 
 // 成员卡片角色下拉：候选改从「角色 tab 定义的实体角色」取（req#96 五），不再从已分配 role 文本 DISTINCT。
+function bindMemberMoreMenu(row) {
+  const button = row.querySelector('.member-more'), menu = row.querySelector('.project-member-menu');
+  let listeners;
+  const close = () => { if (menu.matches(':popover-open')) menu.hidePopover(); };
+  button.addEventListener('click', () => {
+    if (menu.matches(':popover-open')) { close(); return; }
+    menu.showPopover();
+    const rect = button.getBoundingClientRect();
+    const above = rect.top - 8, below = innerHeight - rect.bottom - 8;
+    const upwards = menu.scrollHeight > below && above > below;
+    menu.style.maxHeight = `${Math.max(0, upwards ? above : below)}px`;
+    menu.style.left = `${Math.max(8, Math.min(rect.right - menu.offsetWidth, innerWidth - menu.offsetWidth - 8))}px`;
+    menu.style.top = `${upwards ? Math.max(8, rect.top - menu.offsetHeight - 4) : rect.bottom + 4}px`;
+    button.setAttribute('aria-expanded', 'true');
+    menu.querySelector('button:not(:disabled)')?.focus();
+    listeners?.abort(); listeners = new AbortController();
+    window.addEventListener('resize', close, {signal: listeners.signal});
+    window.addEventListener('scroll', event => { if (!menu.contains(event.target)) close(); }, {capture: true, signal: listeners.signal});
+  });
+  menu.addEventListener('toggle', event => {
+    if (event.newState === 'closed') { listeners?.abort(); button.setAttribute('aria-expanded', 'false'); }
+  });
+  menu.addEventListener('click', event => { if (event.target.closest('button')) close(); });
+  menu.addEventListener('keydown', event => {
+    const items = [...menu.querySelectorAll('button:not(:disabled)')];
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+      event.preventDefault();
+      const index = items.indexOf(document.activeElement);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+        : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+      items[next]?.focus();
+    } else if (event.key === 'Escape') { event.preventDefault(); close(); button.focus(); }
+  });
+}
+
+function openMemberRemoval(project, member) {
+  if (document.querySelector('#dlg-member-remove')) return;
+  const dialog = document.createElement('dialog');
+  dialog.id = 'dlg-member-remove'; dialog.setAttribute('aria-labelledby', 'member-remove-title');
+  dialog.innerHTML = '<h3 id="member-remove-title">移出项目</h3><p class="member-remove-summary"></p><p class="profile-help">移出后将解除本项目成员关系、角色与权限，并退出话题参与名单。历史消息、任务记录、profile 和工作目录保留，其他项目中的成员关系保持原样。后续可通过“添加成员”重新加入，并重新配置角色与权限。</p><p class="profile-help">请根据剩余成员的角色分工调整协作流程，明确相关职责的承担者。</p><p class="member-remove-status" role="status"></p><div class="member-remove-blockers"></div><div class="dlg-btns"><button type="button" class="cancel">取消</button><button type="button" class="recheck">重新检查</button><button type="button" class="confirm" disabled>移出项目</button></div>';
+  const projectName = S.projects.find(item => item.name === project)?.display_name || project;
+  dialog.querySelector('.member-remove-summary').textContent = `将「${memberLabel(member)}」移出「${projectName}」？`;
+  const status = dialog.querySelector('.member-remove-status'), blockers = dialog.querySelector('.member-remove-blockers');
+  const confirm = dialog.querySelector('.confirm'), cancel = dialog.querySelector('.cancel'), recheck = dialog.querySelector('.recheck');
+  const endpoint = `/projects/${encodeURIComponent(project)}/members/${encodeURIComponent(member.profile)}`;
+  let busy = false;
+  function showBlockers(items) {
+    blockers.replaceChildren();
+    for (const item of items) {
+      const line = document.createElement('div'), text = document.createElement('span');
+      line.className = 'member-remove-blocker'; text.textContent = item.title; line.append(text);
+      if (item.kind !== 'session') {
+        const action = document.createElement('button'); action.type = 'button';
+        action.textContent = item.kind === 'runtime' ? '停止运行' : item.kind === 'owner' ? '更换负责人' : '查看并处理';
+        action.addEventListener('click', async () => {
+          dialog.close();
+          if (item.kind === 'owner') { selectProjectTab('basic'); $('#pj-d-owner')?.focus(); }
+          else if (item.kind === 'runtime') await stopBot(member.profile, project);
+          else {
+            closeDialogAnchored($('#dlg-project-detail'));
+            if (item.kind === 'task') await openTaskHistory(item.id, project);
+            else if (item.kind === 'requirement') await openRequirementDetails(item.id, project);
+            else if (item.kind === 'thread') { if (S.currentProject !== project) selectProject(project); await selectThread(item.id); }
+          }
+        });
+        line.append(action);
+      }
+      blockers.append(line);
+    }
+  }
+  async function check() {
+    confirm.disabled = true; recheck.disabled = true; status.textContent = '正在检查职责与运行状态…';
+    try {
+      const result = await api(endpoint + '/removal');
+      if (!dialog.isConnected) return;
+      showBlockers(result.blockers);
+      confirm.disabled = !result.can_remove;
+      status.textContent = result.can_remove ? '检查通过，可以移出项目。' : '请先处理以下事项，再重新检查：';
+    } catch (error) { if (dialog.isConnected) status.textContent = `检查失败：${error.message}`; }
+    finally { recheck.disabled = false; }
+  }
+  cancel.addEventListener('click', () => dialog.close()); recheck.addEventListener('click', check);
+  dialog.addEventListener('cancel', event => { if (busy) event.preventDefault(); });
+  dialog.addEventListener('close', () => dialog.remove());
+  confirm.addEventListener('click', async () => {
+    busy = true; confirm.disabled = cancel.disabled = recheck.disabled = true;
+    status.textContent = '正在移出项目…';
+    try {
+      await api(endpoint, {method: 'DELETE'});
+      projectMembersVersions.set(project, (projectMembersVersions.get(project) || 0) + 1);
+      projectMembersCache.delete(project); projectMembersPending.delete(project); projectRolesCache.delete(project);
+      dialog.close();
+      if (S.currentProject === project) {
+        S.members = S.members.map(item => item.profile === member.profile ? {...item, active: 0, role: '', role_id: null} : item);
+        selectedMembers.delete(member.profile); renderMemberOptions(); renderChips();
+      }
+      const refreshed = await Promise.allSettled([loadMembers(), loadThreads()]);
+      if ($('#pj-detail-form').dataset.origName === project) {
+        await loadProjectMembers();
+        const failed = !projectMembersCache.has(project) || refreshed.some(result => result.status === 'rejected');
+        $('#pj-members-status').textContent = failed
+          ? '已移出项目，工作目录已保留。部分列表刷新失败，请刷新状态。' : '已移出项目，工作目录已保留。';
+      }
+    } catch (error) {
+      status.textContent = `移出失败：${error.message}`;
+      if (Array.isArray(error.detail?.blockers)) showBlockers(error.detail.blockers);
+    } finally { busy = false; cancel.disabled = recheck.disabled = false; }
+  });
+  document.body.append(dialog); dialog.showModal(); cancel.focus(); check();
+}
+
 function renderMemberRoleMenu(row, project, member, roleBtn, resetStatus) {
   const menu = document.createElement('div');
   menu.className = 'project-member-role-menu';

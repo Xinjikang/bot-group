@@ -474,7 +474,7 @@ TURN_TIMEOUT_SECONDS = 180  # 顺序唤醒超时：轮到谁 3 分钟没表态 �
 
 
 def advance_past_profile(
-    conn: sqlite3.Connection, profile: str, project: str = ""
+    conn: sqlite3.Connection, profile: str, project: str = "", *, commit: bool = True
 ) -> int:
     """把卡在该 profile 身上的 turn 立即推进（弃权该发言位 → 唤醒下一个）。
 
@@ -485,6 +485,7 @@ def advance_past_profile(
     与 advance_timed_out_turns / heartbeat._advance_turn_on_exit 复用同一套
     弃权语义：弃权单位 = 发言位（turn_parent_id 区分 @ 边 / 轮次发言）。
     返回推进的话题数。
+    commit=False 时，话题推进与后续唤醒入队由调用方统一提交。
     """
     if project:
         rows = conn.execute(
@@ -515,11 +516,12 @@ def advance_past_profile(
         if nxt is not None:
             _set_turn(conn, r["id"], nxt["profile"], nxt["parent_id"], nxt["round"])
             wake.enqueue(conn, nxt["profile"], "chat", "scan:group",
-                         thread_id=r["id"], project=r["project"])
+                         thread_id=r["id"], project=r["project"], commit=False)
         else:
             settle_thread(conn, r["id"])
         advanced += 1
-    conn.commit()
+    if commit:
+        conn.commit()
     return advanced
 
 

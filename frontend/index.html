@@ -811,6 +811,21 @@ dialog .primary{border:1px solid var(--accent);letter-spacing:2px;color:var(--ac
 .project-member-role-menu button.current{color:var(--accent-2);background:rgba(201,162,75,.12)}
 .project-member-role-menu button:disabled{opacity:.5;cursor:wait}
 .project-member-role-empty{padding:7px 10px;font-size:12px;color:var(--fg-3)}
+.project-member-menu{position:fixed;inset:auto;margin:0;padding:6px;width:200px;max-width:calc(100vw - 16px);overflow:auto;box-sizing:border-box;border:1px solid var(--border);border-radius:10px;background:var(--card-2);color:var(--fg);box-shadow:0 8px 24px #0004}
+.project-member-menu:popover-open{display:flex;flex-direction:column;gap:2px}
+.project-member-menu button{display:block;text-align:left;background:transparent;border:0;padding:8px 10px;color:var(--fg);font-size:12px;border-radius:8px}
+.project-member-menu button:hover,.project-member-menu button:focus-visible{background:var(--hover);outline:1px solid var(--border)}
+.project-member-menu button:disabled{opacity:.5;cursor:default}
+.project-member-menu .member-remove{color:var(--danger);border-top:1px solid var(--border-soft);border-radius:0;margin-top:4px;padding-top:10px}
+#dlg-member-remove{width:520px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 32px);box-sizing:border-box;overflow:auto;overflow-wrap:anywhere}
+#dlg-member-remove .member-remove-summary{margin-bottom:12px}
+#dlg-member-remove .member-remove-status{font-size:12px;margin:12px 0;color:var(--fg-2)}
+#dlg-member-remove .member-remove-blocker{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--border-soft);font-size:12px}
+#dlg-member-remove .member-remove-blocker span{flex:1;min-width:0}
+#dlg-member-remove .member-remove-blocker button{flex-shrink:0;font-size:12px}
+#dlg-member-remove .dlg-btns{position:sticky;bottom:-1px;background:var(--card);padding-top:12px;flex-wrap:wrap}
+#dlg-member-remove .confirm{color:var(--danger);border-color:var(--danger)}
+#dlg-member-remove .confirm:disabled{opacity:.45;cursor:default}
 /* req#96 #165：角色 tab 角色行 */
 .pj-role-row{display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border-soft)}
 .pj-role-row .profile-help{flex:1;min-width:0}
@@ -3146,7 +3161,7 @@ function openDialogAnchored(dlg, triggerEl) {
     // req#96 #165：showConfirm/showAlert 的 app-alert modal 弹层点击不算「点外面」，
     // 否则在锚定弹窗里触发确认框时，点确认会顺带把宿主弹窗关掉
     if (e.target.closest('#app-alert')) return;
-    if (e.target.closest('#dlg-member-add, #dlg-member-picker')) return;
+    if (e.target.closest('#dlg-member-add, #dlg-member-picker, #dlg-member-remove')) return;
     // req#110 #189：子弹层 dialog（网页内目录选择器等 body 直属独立弹窗）点击同样豁免——
     // 选择器是从宿主弹窗触发的，点它属于宿主交互链，不能当「点外面」关掉宿主
     if (e.target.closest('dialog[dir-picker-layer]')) return;

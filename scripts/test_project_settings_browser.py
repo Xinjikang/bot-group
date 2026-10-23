@@ -285,6 +285,7 @@ def main():
         failures['workspace'] = False
         page.locator('#pj-members-refresh').click()
         page.wait_for_function("document.querySelector('#pj-members-status').textContent === '状态已更新'")
+        page.locator('#pj-member-list .member-more').first.click()
         page.locator('#pj-member-list .edit').first.click()
         assert page.locator('#profile-tabs [role=tab]').count() == 4
         page.locator('#profile-tab-model').click()

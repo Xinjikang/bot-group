@@ -51,7 +51,8 @@ def main():
           selectProjectTab('members');
         }""")
         assert page.locator('#pj-member-list .project-model').count() == 0
-        assert page.locator('#pj-member-list .edit').inner_text() == '编辑'
+        page.locator('#pj-member-list .member-more').click()
+        assert page.locator('#pj-member-list .edit').inner_text() == '编辑 profile'
         page.locator('#pj-member-list .edit').click()
         page.wait_for_function('profileEditor?.revision != null')
         page.evaluate('profileProjectReturn = null')
