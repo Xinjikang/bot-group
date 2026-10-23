@@ -45,6 +45,8 @@ python -X utf8 -B scripts/test_project_templates_browser.py
 
 ## Python 单元与隔离集成
 
+场景模板执行请求入口：复用 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_templates scripts.test_template_role_rename scripts.test_product_prototype_template scripts.test_algorithm_template scripts.test_testing_template scripts.test_project_import_supplement scripts.test_project_setup_history -q`。覆盖六类模板生成、角色变量替换、预览与落盘一致、shared/worktree、角色授权和历史快照；人工核对执行请求、已有任务续做、接收成员转交、话题规划及 work 执行条款与各模板原流程一致。以上验证范围为模板与接口，模型实际遵循另行通过隔离行为场景验证。
+
 调研、写作和产品原型 worktree 说明：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_templates scripts.test_template_role_rename scripts.test_product_prototype_template -q`。使用仓库外临时目录及隔离 Git/SQLite，覆盖三类项目的阶段分支、实际角色名称、审查与合并交接、预览到落盘及初始化快照，并回归软件模板和共享目录模式。
 
 软件 UI 规范：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_templates scripts.test_template_role_rename scripts.test_project_import_supplement scripts.test_project_setup scripts.test_project_rules -q`。使用隔离数据库、项目目录与宿主配置，覆盖 `docs/ui-spec/UI-SPEC.md` 生成、角色替换、Git 初始化及 worktree 文件同步、导入补齐和已有规范保留、旧 `doc/` 复用，以及 work/chat 项目路径注入。
