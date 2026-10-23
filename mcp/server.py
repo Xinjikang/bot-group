@@ -576,9 +576,10 @@ def group_send(text: str | None, need_reply: bool) -> dict:
     [收口] settles a topic without requiring a conclusion. Closing and its
     conclusion are a separate user action.
     A closed topic rejects messages until reopened by the user.
-    need_reply（req#57 去默认值改必填）：每次发消息必须显式填 true/false。
-    True=需要对方回复（窄闸门照旧）；False=「不需要回复」——被 @ 者可静默标已读、
-    窄闸门豁免，不再卡 pending 打枪。确认类/收口类消息必须传 False。
+    need_reply 必填：请求对方确认、回答或行动结果时传 True；确认回执、收口和
+    无需回应的告知传 False。点对点回复须 @ 原发送人。
+    检查返回的 error 与 message_id（话题跳过检查对应结果），确认发送成功。
+    点对点发送成功后仍须 group_mark_seen 确认已处理的入站消息；发送失败时保留待办。
     """
     # req#60：按进程身份推导 thread_id（fail-closed，与 group_read_inbox 同路径）。
     _kind, _self_tid, _err = _session_resolve()
@@ -624,7 +625,7 @@ def group_read_image(attachment_id: str) -> Image:
 @mcp.tool()
 def group_read_inbox(after_id: int = 0, upper_id: int = None) -> dict:
     """拉自己的未读消息。无参：按本进程身份强制分流——work 进程只读点对点消息，
-    chat 进程只读话题（自动带出 thread_id）。bot 一律调 group_read_inbox() 不带参数。
+    chat 进程只读话题（自动带出 thread_id）。默认调用不带参数，纯信号补读使用下述分页参数。
 
     req#53 task#98（收参数）：去掉 kind/thread_id 显式参数——引擎无法区分同 profile 的
     work/chat 进程（/inbox 无状态 HTTP），只有 MCP 进程自己知道身份（父进程命令行）。
@@ -636,7 +637,10 @@ def group_read_inbox(after_id: int = 0, upper_id: int = None) -> dict:
     pending，读完（has_more=false）统一处理。非退化调用不传这两个参数，行为不变。
 
     req#42（一次读完）：work 一次拉回当前项目未读（最多 100），逐条带 project/mentioned_you，
-    处理完主动再拉一条直到 pending_total 归零为止；chat 仍单 thread 现场（唤醒即 thread 粒度）。"""
+    处理并确认后再读下一批；chat 仍单 thread 现场（唤醒即 thread 粒度）。
+    读取和正文注入都保留 pending，可重复读取；has_more=false 仅表示快照分页结束。
+    空页也可能仍有待处理或待确认消息，以 pending_total 和 group_mark_seen 结果核对。
+    点对点回复成功后检查已读确认结果；话题由实际发言或合法跳过推进自己的已读水位。"""
     _start_heartbeat()  # 读取执行消息时启动心跳，常驻服务空闲时保持静默。
     # req#54 task#99：进程身份强制分流，解析失败直接报错、不做任何 fallback。
     # （req#53 task#98 曾把「解析失败」落 work，那是软兜底，把串台根留成了异常路径
@@ -674,8 +678,11 @@ def group_read_inbox(after_id: int = 0, upper_id: int = None) -> dict:
     if kind == "work" and any(m.get("project") != project or m.get("thread_id") is not None for m in msgs):
         return {"error": "work inbox 返回了当前项目以外的消息，请检查引擎版本与项目过滤"}
     if not msgs:
+        pending = inbox.get("pending_total", 0)
         return {"kind": "empty", "messages": [], "count": 0,
-                "note": "无未读消息", "pending_total": inbox.get("pending_total", 0),
+                "note": ("当前分页范围已读完，仍有待处理或待确认消息" if upper_id is not None
+                         else "本次未返回消息，仍有待处理或待确认消息") if pending else "无未读消息",
+                "pending_total": pending,
                 **{key: inbox[key] for key in ('has_more', 'after_id', 'upper_id') if key in inbox}}
 
     first = msgs[0]
@@ -707,7 +714,12 @@ def group_read_inbox(after_id: int = 0, upper_id: int = None) -> dict:
 
 @mcp.tool()
 def group_mark_seen(message_ids: list) -> dict:
-    """标已读（只许标自己的 inbox 行）。"""
+    """确认自己已处理的 inbox 消息 ID，检查 error、seen 数量和 blocked 列表。
+    need_reply=true 的点对点消息须先在同项目成功回复并 @ 原发送人；
+    无需回复的消息处理后可直接确认。blocked 中的 ID 仍待处理，按原因补齐后再确认。
+    seen=0 可能已确认或 ID 无效，应回读收件箱核对；确认失败保留待办，避免重复发送已成功的回复。
+    Bot 话题消息由实际发言或合法跳过推进水位，手动确认会返回 blocked。
+    """
     return _post("/inbox/seen", {"message_ids": message_ids})
 
 

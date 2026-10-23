@@ -129,6 +129,10 @@ MCP 独立入口：`test_mcp_handshake.py`、`test_mcp_e2e.py`、`test_mcp_messa
 
 ## 维护
 
+应用设置与消息确认：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_app_updates scripts.test_message_execution scripts.test_inbox_seen_gate scripts.test_message_degrade_pagination scripts.test_read_inbox_batch scripts.test_group_send_thread_id -q`。覆盖正式版索引/未知版本/失败重试/管理员鉴权，以及 MCP→HTTP 读取重入、空分页 pending、发送失败、发送成功仍 pending、确认失败与成功清除。
+
+`python -X utf8 -B scripts/test_app_settings_browser.py --evidence <主目录报告路径>` 验证打开/刷新、12 小时计时、休眠后补查、并发去重、安静重试、未知版本、菜单/主题/背景与 390px 深浅主题。`test_member_switch_browser.py --evidence <主目录报告路径>` 验证启停等待/缓存/失败恢复/键盘和角色删除、改名、权限提示。`test_project_setup_browser.py --role-notices-only` 验证向导角色提示、规则审阅、隔离 Git/SQLite 提交和刷新恢复；省略参数继续完整套件。复用 `test_user_display_name_browser.py` 与 `test_service_restart_browser.py` 验证称呼持久化与重启回执。浏览器解释器为 Python 3.10 时可在测试启动器中用 `sys.modules['tomllib']=tomli` 提供兼容，后端使用项目 Python 3.11。
+
 用户显示称呼：`test_user_display_name.py` 使用隔离 SQLite 和真实 API 验证持久化、旧值保留、身份隔离和输入校验；运行 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_user_display_name -q`。`test_user_display_name_browser.py` 使用已安装 Playwright 的 Python 和 Chrome，验证右上角设置、刷新及独立浏览器上下文、保存失败恢复和窄屏布局；运行 `python -X utf8 -B scripts/test_user_display_name_browser.py`，称呼读写转接隔离 API，其余页面接口使用测试数据。
 
 新增或重命名脚本时更新所属分类、运行条件与命令。用 `rg --files scripts -g 'test_*' -g 'verify_*' -g 'spike_*'` 核对当前文件集合。完整 unittest discovery 会收集可选环境用例，按任务范围执行相关集合即可。测试报告记录被测提交、实际命令、结果、跳过原因和遗留问题。

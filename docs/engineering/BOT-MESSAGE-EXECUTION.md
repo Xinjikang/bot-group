@@ -8,7 +8,15 @@
 
 引擎通过 `XDG_GROUP_ENGINE_EXECUTION` JSON 传入 profile/project/thread_id/session/wake_started_at；Hermes 当前环境过滤器保留 XDG_*，MCP 校验 profile 与自身身份一致后读取。系统提示词中的项目说明继续用于模型理解任务。
 
-## HTTP 写入契约
+## 读取、回复与已读确认
+
+唤醒可注入待处理正文和消息 ID，或提供纯信号供 `group_read_inbox` 补读。读取与注入保留 pending，遗漏确认后仍可重读。默认无参读取当前执行范围；work 纯信号包含 `upper_id` 时固定该上界，以前页最后一条 `message_id` 作为 `after_id` 分页。`has_more=false` 表示快照分页结束，`pending_total` 表示仍待处理或待确认数量；空页且 pending 大于零时提示当前范围已读完、仍有待办。
+
+请求对方确认、回答或行动结果使用 `need_reply=true`；确认回执、收口和无需回应的告知使用 `false`。需回复的点对点消息先在同项目成功回复并精确 `@原发送人`，检查 `group_send` 的 `error` 和 `message_id` 后，用原入站消息 ID 调用 `group_mark_seen`。无需回复的消息处理后可直接确认。发送成功保留入站 pending，确认成功才清除。
+
+确认结果检查 `error`、`seen` 数量和 `blocked` 列表。被拦 ID 继续保留待办；`seen=0` 时回读核对已确认或无效 ID。发送失败保留待办；确认失败按原因处理，并避免重复发送已成功的回复。Bot 话题消息通过实际发言或合法跳过推进自己的已读水位，手动确认返回 blocked。外部重复唤醒需结合目标部署的消息、执行和确认日志诊断。
+
+## HTTP 写入与执行归属
 
 Bot `/msg` 请求必须带 project/thread_id/text/need_reply/execution；execution 含 session 和 wake_started_at。后端核对执行存在、仍未结束、未被后续执行替代，且发送者、项目、话题一致；同时核对项目启用成员与话题归属。
 

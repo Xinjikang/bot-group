@@ -60,6 +60,7 @@ def main():
             page = context.new_page()
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.goto('http://user-name.test/app/index.html')
+            page.locator('#btn-settings').click()
             page.locator('#btn-user-name').wait_for()
             page.locator('.sender').first.wait_for()
             return page
@@ -108,6 +109,7 @@ def main():
         fresh_field.fill('Cancelled')
         fresh_field.press('Escape')
         assert len(writes) == 1
+        fresh_page.locator('#btn-settings').click()
         fresh_page.locator('#btn-user-name').click()
         fresh_page.wait_for_function('!document.querySelector("#user-name-input").disabled')
         fresh_field.fill('Retry name')
@@ -124,6 +126,7 @@ def main():
         page.wait_for_function('S.userDisplayName === "Retry name"')
 
         state['fail_read'] = True
+        fresh_page.locator('#btn-settings').click()
         fresh_page.locator('#btn-user-name').click()
         fresh_page.wait_for_function('document.querySelector("#user-name-status").dataset.error === "true"')
         assert fresh_page.locator('#user-name-save').is_disabled()

@@ -176,6 +176,8 @@ def main():
             row = page.locator(f'[data-permission="{key}"]')
             row.locator('summary').click()
             row.locator('input[value="role:2"]').check()
+            assert '派工、审查、验收' in page.locator('#app-alert-message').inner_text()
+            page.get_by_role('button', name='确定', exact=True).click()
             row.locator('input[value="custom-dev"]').check()
             row.locator('summary').click()
         # req#96 #166：授权对象=bot ∪ 角色——task.create 预授权 role:2（数据分析 2 名成员）
@@ -185,6 +187,7 @@ def main():
         assert tc_row.locator('input[value="role:1"]').count() == 1      # 角色项与 bot 项同列可选
         assert tc_row.locator('input[value="role:2"]').locator('xpath=..').inner_text() == '角色：数据分析（2 名成员）'
         tc_row.locator('input[value="role:2"]').uncheck()                # 取消角色授权（多选改动不影响 bot 项）
+        page.get_by_role('button', name='确定', exact=True).click()
         tc_row.locator('input[value="custom-lead"]').check()             # 同一项权限可同时勾角色和 bot
         page.locator('#pj-permissions-save').click()
         page.wait_for_function("document.querySelector('#pj-permissions-status').textContent.includes('权限已保存')")
@@ -409,6 +412,7 @@ def main():
         row = page.locator('.pj-role-row').first
         # 改名（走 id：稳定关联）
         row.locator('button', has_text='改名').click()
+        page.get_by_role('button', name='确定', exact=True).click()
         rename = page.locator('.pj-role-rename')
         rename.wait_for(state='visible')
         rename.fill('orchestrator-v2')

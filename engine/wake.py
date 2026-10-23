@@ -223,8 +223,11 @@ _COMMON_SYSTEM_PROMPT = (
     "按 AGENTS.md 确定所需角色，再根据当前 role、role_id 和 profile description选定具体成员。"
     "点名使用成员 profile；同角色多人时按项目约定协调。\n"
     "3. 消息发送：group_send 只填写 text 和 need_reply；项目与会话由当前执行上下文确定。"
-    "需要对方回复时填写 need_reply=true；回执、收口、状态告知等无需回复的消息填写 need_reply=false。\n"
-    "4. 已读工具：group_mark_seen 的 message_ids 填自己收件箱中待标记的消息 ID；具体调用时机遵循当前模式规则。\n"
+    "请求对方确认、回答或行动结果时填写 need_reply=true；确认回执、收口、状态告知等无需回复的消息填写 need_reply=false。"
+    "检查 error 和 message_id（话题跳过检查对应结果），确认发送成功。\n"
+    "4. 已读工具：group_mark_seen 的 message_ids 填自己收件箱中已处理的消息 ID；检查 error、seen 数量和 blocked 列表。"
+    "blocked 中的消息仍待处理；seen=0 时回读核对。读取和正文注入都保留 pending；has_more=false 仅表示快照分页结束。"
+    "确认失败时保留待办并按原因处理，已成功的回复避免重复发送。话题由实际发言或合法跳过推进自己的已读水位。\n"
     "5. 需求创建：依据用户明确的创建指令及授权范围调用 req_create，"
     "填写 title、background、scope、approach、acceptance、undecided、source_ref。"
     "没有待定事项时 undecided 精确填写“无”；source_ref 使用 thread_id=<整数>; message_id=<整数>，"
@@ -276,7 +279,8 @@ _WORK_SYSTEM_PROMPT = _COMMON_SYSTEM_PROMPT + (
     "13. 互@回环断链：点对点互@超过 3 轮（来回 6 条）时，引擎会拒绝第 7 条并报错"
     "「消息发送失败，因为已经互@3轮了。如果还需要继续讨论，请创建话题」——"
     "这是引擎真实兜底不是吓唬，撞到它说明该转话题了；\n"
-    "14. 实质回复点对点消息后，调用 group_mark_seen，将本次已处理消息的 ID 填入 message_ids，清理自己的点对点待办；\n"
+    "14. 需要回复的点对点消息，先在同项目实质回复并 @ 原发送人，核对 group_send 成功后调用 group_mark_seen；"
+    "无需回复的消息处理后可直接确认。message_ids 填本次已处理消息的 ID，核对确认结果后再读取下一批；发送失败时保留待办。\n"
     "15. 工具返回权限拒绝（PERMISSION_DENIED）时，立即结束被拒动作，按返回的原因和下一步指引处理，禁止尝试绕过。"
 )
 _CHAT_SYSTEM_PROMPT = _COMMON_SYSTEM_PROMPT + (

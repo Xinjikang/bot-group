@@ -31,6 +31,51 @@ class MessageExecutionTests(unittest.TestCase):
         return dict(text='@dev-2 response', project='p', thread_id=None, need_reply=False,
                     execution=dict(session='dev-1-p-work', wake_started_at=100), **extra)
 
+    def test_mcp_read_send_confirm_cycle_and_empty_page(self):
+        cur = self.conn.execute("INSERT INTO messages(project,ts,sender,sender_type,content,mentions,need_reply) "
+                                "VALUES('p',?,'user','user','@dev-1 reply','[\"dev-1\"]',1)", (db.now_iso(),))
+        mid = cur.lastrowid
+        self.conn.execute("INSERT INTO inbox(message_id,profile,status) VALUES(?,'dev-1','pending')", (mid,))
+        self.conn.commit()
+        headers = {'X-Group-Profile': 'dev-1', 'X-Group-Key': auth.bot_token('dev-1')}
+        def request(method, path, **kwargs):
+            response = self.client.request(method, path, headers=headers, **kwargs)
+            return response.json() if response.is_success else {'error': response.json()}
+        scope = dict(_profile=lambda: 'dev-1', _start_heartbeat=lambda: None,
+                     _session_resolve=lambda: ('work', None, ''), _work_project=lambda: ('p', ''),
+                     _execution_context=lambda: self.context,
+                     _get=lambda path, params: request('GET', path, params=params),
+                     _post=lambda path, body: request('POST', path, json=body))
+        tree = ast.parse(Path('mcp/server.py').read_text(encoding='utf-8'))
+        functions = [n for n in tree.body if isinstance(n, ast.FunctionDef)
+                     and n.name in {'group_read_inbox', 'group_send', 'group_mark_seen'}]
+        for node in functions:
+            node.decorator_list = []
+        exec(compile(ast.Module(body=functions, type_ignores=[]), '<mcp>', 'exec'), scope)
+        read, send, seen = (scope[name] for name in ('group_read_inbox', 'group_send', 'group_mark_seen'))
+        first = read()
+        self.assertEqual(first, read())
+        self.assertEqual(first['pending_total'], 1)
+        empty = read(after_id=mid, upper_id=mid)
+        self.assertEqual(empty['messages'], [])
+        self.assertFalse(empty['has_more'])
+        self.assertEqual(empty['pending_total'], 1)
+        self.assertIn('待确认', empty['note'])
+        self.assertEqual(seen([mid])['blocked'], [mid])
+        self.assertIn('error', send('x' * 2001, False))
+        self.assertEqual(read()['pending_total'], 1)
+        self.assertIn('message_id', send('@user 已处理', False))
+        self.assertEqual(read()['pending_total'], 1)
+        post = scope['_post']
+        scope['_post'] = lambda path, body: {'error': 'confirmation unavailable'}
+        self.assertIn('error', seen([mid]))
+        self.assertEqual(read()['pending_total'], 1)
+        scope['_post'] = post
+        self.assertEqual(seen([mid]), {'seen': 1})
+        self.assertEqual(read()['pending_total'], 0)
+        self.assertEqual(read()['note'], '无未读消息')
+        self.assertEqual(seen([mid]), {'seen': 0})
+
     def send(self, body, profile='dev-1'):
         return self.client.post('/msg', json=body, headers={'X-Group-Profile': profile, 'X-Group-Key': auth.bot_token(profile)})
 

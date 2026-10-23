@@ -7,6 +7,8 @@ function applyUserDisplayName(data) {
     throw new Error('称呼读取失败，请确认引擎已更新并重启');
   const changed = S.userDisplayName !== data.display_name;
   S.userDisplayName = data.display_name;
+  document.querySelector('#topbar-user-name').textContent = data.display_name;
+  document.querySelector('#topbar-user-name').title = data.display_name;
   document.querySelector('#btn-user-name').title = `我的称呼：${data.display_name}`;
   if (changed) {
     renderMessages();
@@ -44,6 +46,7 @@ document.addEventListener('DOMContentLoaded', () => {
   };
   function updateVisibility() {
     button.hidden = !S.isUserIdentity || !document.querySelector('#login').hidden;
+    document.querySelector('#topbar-user-name').hidden = button.hidden;
     if (button.hidden) {
       ++userNameRequest;
       closeDialogAnchored(dialog);

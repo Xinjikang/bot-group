@@ -216,13 +216,17 @@
       const header = document.createElement('div'); header.className = 'import-card-header';
       title.textContent = role.name; header.append(title);
       if (role.name !== ownerRole) header.append(button('移除角色', () => {
+        showAlert(`移除角色「${role.name}」会清除已选成员的角色绑定，派工、审查、验收等职责可能缺少执行人。请在规则审阅步骤自行核对协作正文中的角色引用与职责。`);
         roles = roles.filter(r => r !== role);
         for (const member of members.values()) if (member.role === role.name) member.role = '';
         renderRoles(); renderMembers();
       }));
       const details = document.createElement('details'), summary = document.createElement('summary');
       const caption = () => { summary.textContent = `调整权限 · 已启用 ${role.permissions.length} 项`; };
-      caption(); details.append(summary, permissionEditor(role.permissions, values => { role.permissions = values; invalidateRules(); caption(); }));
+      caption(); details.append(summary, permissionEditor(role.permissions, values => {
+        role.permissions = values; invalidateRules(); caption();
+        showAlert(`角色「${role.name}」的权限已调整，派工、审查、验收等职责可能缺少有权限的执行人。请在规则审阅步骤自行核对协作正文与角色授权。`);
+      }));
       box.append(header);
       if (role.name === ownerRole) {
         const duty = document.createElement('small');

@@ -69,6 +69,20 @@ def _admin_only(identity: tuple[str, str], message: str) -> None:
 # 写
 # --------------------------------------------------------------------------
 
+@router_api.get("/system/version")
+def get_app_version(identity=Depends(_resolve_identity)):
+    _admin_only(identity, '版本信息仅限管理员使用')
+    from .app_updates import version_info
+    return JSONResponse(version_info(), headers={"Cache-Control": "no-store"})
+
+
+@router_api.get("/system/updates")
+def get_app_updates(identity=Depends(_resolve_identity)):
+    _admin_only(identity, '更新检查仅限管理员使用')
+    from .app_updates import check_update
+    return JSONResponse(check_update(), headers={"Cache-Control": "no-store"})
+
+
 class DirectoryPickerBody(BaseModel):
     initial: str = Field(default='', max_length=32767)
 

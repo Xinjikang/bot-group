@@ -56,6 +56,7 @@ function renderProjectPermissions(data) {
     for (const role of roles) {
       const label = document.createElement('label'), input = document.createElement('input'), text = document.createElement('span');
       input.type = 'checkbox'; input.value = `role:${role.id}`; input.checked = selected.includes(`role:${role.id}`);
+      input.addEventListener('change', () => showAlert(`角色「${role.name}」的权限选择已调整，派工、审查、验收等职责可能缺少有权限的执行人。请自行核对项目协作正文与角色授权。`));
       text.textContent = `角色：${role.name}（${role.member_count} 名成员）`;
       label.append(input, text); options.appendChild(label);
     }
@@ -533,7 +534,7 @@ function renderProjectMembers(project, data) {
     row.dataset.profile = member.profile;
     row.innerHTML = `<div class="project-member-header"><div class="project-member-identity">
       <div class="project-member-name"><button type="button" class="member-name-edit" title="点击编辑显示名（所有项目共用）">${esc(memberDisplayName(member))}</button><small>${esc(memberHostProfile(member))}</small>
-      <button type="button" role="switch" aria-checked="${!!member.active}" aria-label="成员启用状态" title="${member.active ? '点击停用' : '点击启用'}" class="project-member-badge ${member.active ? 'enabled' : ''}">${member.active ? '已启用' : '已停用'}</button></div></div>
+      <button type="button" role="switch" aria-checked="${!!member.active}" aria-label="成员启用状态" title="${member.active ? '点击停用' : '点击启用'}" class="project-member-badge ${member.active ? 'enabled' : ''}">${member.active ? '启用' : '停用'}</button></div></div>
       <div class="project-member-actions"><button type="button" class="edit">编辑</button>
       ${member.profile !== 'user' ? `<button type="button" class="reset-session" title="${reset.title}" ${reset.disabled ? 'disabled' : ''}>${reset.label}</button>` : ''}
       <button type="button" class="workspace">工作区</button></div></div>
@@ -561,7 +562,7 @@ function renderProjectMembers(project, data) {
         member.active = active;
         const latest = projectMembersCache.get(project)?.members.find(m => m.profile === member.profile);
         if (latest) latest.active = active;
-        button.textContent = active ? '已启用' : '已停用';
+        button.textContent = active ? '启用' : '停用';
         button.classList.toggle('enabled', active);
         button.setAttribute('aria-checked', String(active));
         button.title = active ? '点击停用' : '点击启用';
@@ -581,7 +582,7 @@ function renderProjectMembers(project, data) {
     roleBtn.textContent = member.role ? member.role : '设置角色';
     roleBtn.setAttribute('aria-haspopup', 'menu');
     roleBtn.setAttribute('aria-label', `${member.display_name || member.profile}的项目角色${member.role ? `：${member.role}` : '（未设置）'}`);
-    // 角色按钮位于 .project-member-name 内，紧接「已启用」badge。
+    // 角色按钮位于 .project-member-name 内，紧接启停胶囊。
     row.querySelector('.project-member-badge').after(roleBtn);
     roleBtn.addEventListener('click', e => {
       e.stopPropagation();
@@ -731,7 +732,7 @@ function renderProjectRoles(project, roles) {
     nameBtn.addEventListener('click', () => startRoleRename(project, role, row, nameBtn));
     edit.addEventListener('click', () => startRoleRename(project, role, row, nameBtn));  // req#96 #165：改名按钮此前漏绑监听
     del.addEventListener('click', async () => {
-      if (!await showConfirm(`删除角色「${role.name}」？该角色下成员将回到未分配角色状态。`)) return;
+      if (!await showConfirm(`删除角色「${role.name}」？派工、审查、验收等职责可能缺少执行人。请自行核对项目协作正文中的角色引用与职责。`)) return;
       del.disabled = true;
       try {
         await api(`/projects/${encodeURIComponent(project)}/roles/${role.id}`, {method: 'DELETE'});
@@ -741,8 +742,10 @@ function renderProjectRoles(project, roles) {
     });
   }
 }
-function startRoleRename(project, role, row, nameBtn) {
+async function startRoleRename(project, role, row, nameBtn) {
   if (row.querySelector('.pj-role-rename')) return;
+  await showAlert('角色改名后，请自行核对项目协作正文中的角色引用，确保派工、审查和验收职责对应的执行人清晰。');
+  if (!row.isConnected || row.querySelector('.pj-role-rename')) return;
   const input = document.createElement('input');
   input.className = 'pj-role-rename';
   input.type = 'text'; input.maxLength = 100;

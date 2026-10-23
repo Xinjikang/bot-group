@@ -78,6 +78,19 @@ def main():
             assert page.locator('#dlg-project-import').is_visible()
             assert page.locator('#import-role-name').input_value() == '自定义角色'
             page.locator('#import-role-add').click()
+            custom = page.locator('#import-roles .import-card').filter(has_text='自定义角色')
+            custom.locator('summary').click()
+            custom.locator('input[type=checkbox]').first.check()
+            assert '派工、审查、验收' in page.locator('#app-alert-message').inner_text()
+            page.get_by_role('button', name='确定', exact=True).click()
+            custom.locator('input[type=checkbox]').first.uncheck()
+            page.get_by_role('button', name='确定', exact=True).click()
+            custom.get_by_role('button', name='移除角色').click()
+            assert '角色绑定' in page.locator('#app-alert-message').inner_text()
+            page.get_by_role('button', name='确定', exact=True).click()
+            assert page.locator('#import-roles .import-card').filter(has_text='自定义角色').count() == 0
+            page.locator('#import-role-name').fill('自定义角色')
+            page.locator('#import-role-add').click()
             page.locator('#import-next').click()
             page.locator('#import-agents-step').wait_for(state='visible')
             page.locator('#import-agents-content').fill(page.locator('#import-agents-content').input_value() + '\nReviewed custom rule.\n')
@@ -151,6 +164,12 @@ def main():
             page.wait_for_function('p => S.currentProject === p', arg=project)
             assert fixture.conn.execute('SELECT COUNT(*) FROM projects').fetchone()[0] == 1
             assert state['submits'] == 1
+
+            if '--role-notices-only' in sys.argv:
+                assert not errors, errors
+                browser.close()
+                print('PASS: role removal/permission notices, rule review, real isolated Git/SQLite submission, reload and 390px themes')
+                return
 
             # Existing independent workspace uses the same editor, with persisted values.
             page.evaluate('''async project => {

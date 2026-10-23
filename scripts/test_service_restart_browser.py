@@ -48,16 +48,15 @@ def run():
         page.route('**/*', route)
         page.goto('http://restart.test/app/')
         button = page.locator('#btn-restart')
+        page.locator('#btn-settings').click()
         button.wait_for(state='visible')
-        order = page.locator('#topbar-right').evaluate('(e) => [...e.children].map(c => c.id)')
-        assert order == ['btn-background', 'btn-theme-top', 'btn-restart', 'conn'], order
-        boxes = [page.locator(selector).bounding_box() for selector in ('#btn-theme-top', '#btn-restart', '#conn')]
-        assert boxes[0]['x'] + boxes[0]['width'] <= boxes[1]['x']
-        assert boxes[1]['x'] + boxes[1]['width'] <= boxes[2]['x']
+        order = page.locator('#app-settings-menu').evaluate('(e) => [...e.children].map(c => c.id)')
+        assert order == ['btn-user-name', 'btn-background', 'btn-theme-top', 'btn-restart', 'btn-about'], order
         button.click()
         page.get_by_role('button', name='取消', exact=True).click()
         page.wait_for_function('!document.querySelector("#btn-restart").disabled')
         assert state['posts'] == 0
+        page.locator('#btn-settings').click()
         button.click()
         assert '120 秒' in page.locator('#app-alert-message').inner_text()
         page.get_by_role('button', name='确定', exact=True).click()
@@ -78,6 +77,7 @@ def run():
         page.get_by_role('button', name='确定', exact=True).click()
         assert button.is_enabled()
         state['fail'] = True
+        page.locator('#btn-settings').click()
         button.click()
         page.get_by_role('button', name='确定', exact=True).click()
         page.wait_for_function('document.querySelector("#app-alert-message")?.textContent.includes("启动失败")')

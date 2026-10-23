@@ -14,7 +14,8 @@ SSE 实时上屏（反代关 proxy_buffering），登录页，人侧写入（发
 - **成员配置**：项目详情的“成员与目录”管理成员，编辑支持 Hermes/Codex。模型默认保存项目覆盖，“应用到全局”更新全局并清空当前项目覆盖。见 [成员配置编辑](../docs/engineering/PROFILE-EDITOR.md) 和 [模型编辑](../docs/engineering/UNIFIED-MODEL-EDITOR.md)。
 - **新建/导入项目**：共用七步向导，预览与最终提交分离，使用 revision 校验；见 [向导](../docs/engineering/PROJECT-SETUP-WIZARD-2026-10-14.md)。
 - **观察与缓存**：SSE 状态灯显示连接状态；推理按具体执行读取，浏览器快照有期限、数量与体积限制；背景由服务端保存。见 [缓存生命周期](../docs/engineering/BROWSER-CACHE-LIFECYCLE-2026-10-17.md)。
-- **重启服务**：主题右侧、连接状态左侧的按钮调用管理员重启接口，刷新可续查同一操作。见 [重启流程](../docs/engineering/SERVICE-RESTART-2026-10-17.md)。
+- **设置菜单**：集中提供称呼、背景、主题、重启与关于。更新提示位于用户称呼之前，网页打开及每 12 小时检查，恢复可见时到期补查。见 [应用设置](../docs/engineering/APP-SETTINGS.md)。
+- **重启服务**：设置菜单入口调用管理员重启接口，连接状态显示进度，刷新可续查同一操作。见 [重启流程](../docs/engineering/SERVICE-RESTART-2026-10-17.md)。
 
 ## 模块与验证
 
