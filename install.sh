@@ -15,4 +15,4 @@ else
   exit 1
 fi
 
-"$PY" scripts/install.py install
+"$PY" tools/install.py install

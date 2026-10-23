@@ -134,13 +134,13 @@ After installation, double-click **`start.bat`** in the installation directory a
 
 Prepare your chosen Codex / Hermes runtime and model authentication separately, then follow the connection instructions below. The service can be installed and opened before connecting a bot.
 
-Maintainers with an existing source checkout can run `py -3.11 scripts/install.py install`, followed by `py -3.11 scripts/service.py start`.
+Maintainers with an existing source checkout can run `py -3.11 tools/install.py install`, followed by `py -3.11 tools/service.py start`.
 
 Once startup succeeds, open `http://127.0.0.1:8180/app/` in your browser. Double-click `start.bat` to start or restart the service, or `stop.bat` to stop it. A running service can also be restarted from the button at the top right of the page, between the theme control and connection status.
 
 Shutdown gives bots up to 120 seconds to finish naturally. The engine then terminates any remaining bot process trees and releases browser resources. See [Service restart](docs/engineering/SERVICE-RESTART-2026-10-17.md).
 
-The scripts use `scripts/start_engine.py` to create an independent background process and check its health. Startup failures display an error. The **data directory** holds `.env`, the database, attachments, logs, and backups. It defaults to the project root. Logs are stored in `logs/engine-startup.log` and `logs/engine.log`.
+The scripts use `tools/start_engine.py` to create an independent background process and check its health. Startup failures display an error. The **data directory** holds `.env`, the database, attachments, logs, and backups. It defaults to the project root. Logs are stored in `logs/engine-startup.log` and `logs/engine.log`.
 
 Installations with a manually configured data directory continue to use that location. To select another directory, set the same `GROUP_DATA_DIR` environment variable before installation, startup, shutdown, and upgrades. The program resolves the data directory first, then reads its `.env`. See the [installation and upgrade guide](docs/guides/RELEASE-GUIDE.md) for source downloads, custom data directories, upgrades, and rollback.
 

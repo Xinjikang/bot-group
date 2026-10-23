@@ -132,11 +132,11 @@ curl.exe -fL https://github.com/Xinjikang/bot-group/releases/latest/download/ins
 
 Codex / Hermes 的运行环境与模型认证由使用者准备，接入步骤见下方“连接 Codex / Hermes”。服务本身可以先安装并打开。
 
-维护者从已有源码目录安装时，可执行 `py -3.11 scripts/install.py install`，随后执行 `py -3.11 scripts/service.py start`。
+维护者从已有源码目录安装时，可执行 `py -3.11 tools/install.py install`，随后执行 `py -3.11 tools/service.py start`。
 
 启动成功后，打开浏览器访问 `http://127.0.0.1:8180/app/`。可双击 `start.bat` 启动或重启，双击 `stop.bat` 停止服务。运行中的服务也可通过页面右上角重启按钮操作，位置在主题与连接状态之间。
 退出先等待 Bot 自然结束最多 120 秒，超时由引擎终止剩余 Bot 进程树，再回收浏览器资源。详见 [服务重启](docs/engineering/SERVICE-RESTART-2026-10-17.md)。
-脚本通过 `scripts/start_engine.py` 创建独立后台进程并进行健康检查；启动失败会显示错误。
+脚本通过 `tools/start_engine.py` 创建独立后台进程并进行健康检查；启动失败会显示错误。
 “数据目录”指保存 `.env`、数据库、附件、日志和备份的文件夹，默认就是项目根目录。日志位于 `logs/engine-startup.log` 和 `logs/engine.log`。
 
 手动配置过数据目录的安装继续使用指定位置。选择其他目录时，在安装、启动、停止和升级前设置同一个环境变量 `GROUP_DATA_DIR`；程序先确定数据目录，再读取其中的 `.env`。源码下载、自定义数据目录、升级与回滚见[安装升级说明](docs/guides/RELEASE-GUIDE.md)。

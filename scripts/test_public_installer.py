@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from scripts import make_release, releases, upgrade
+from tools import make_release, releases, upgrade
 
 ROOT = Path(__file__).resolve().parents[1]
 PS = shutil.which('powershell')
@@ -20,8 +20,8 @@ class PublicReleaseTests(unittest.TestCase):
     def test_release_contains_installer_and_fixed_bootstrap_addresses(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            (root / 'scripts').mkdir()
-            (root / 'scripts/bootstrap.py').write_text('pass\n')
+            (root / 'tools').mkdir()
+            (root / 'tools/bootstrap.py').write_text('pass\n')
             (root / 'install.ps1').write_text('Write-Host done\n')
             (root / 'README.zh-CN.md').write_text('Chinese\n')
             base = 'https://github.com/Xinjikang/bot-group/releases/download/v1.2.3/'
@@ -29,7 +29,7 @@ class PublicReleaseTests(unittest.TestCase):
             entry = json.loads((root / 'out/releases.json').read_text())['releases'][0]
             self.assertEqual(entry['bootstrap'], base + 'bootstrap.py')
             self.assertEqual(entry['source'], base + 'bot-group-v1.2.3.zip')
-            self.assertEqual(entry['bootstrap_sha256'], hashlib.sha256((root / 'scripts/bootstrap.py').read_bytes()).hexdigest())
+            self.assertEqual(entry['bootstrap_sha256'], hashlib.sha256((root / 'tools/bootstrap.py').read_bytes()).hexdigest())
             self.assertEqual((root / 'out/install.ps1').read_bytes(), (root / 'install.ps1').read_bytes())
             manifest = json.loads((root / 'out/release_manifest.json').read_text())
             self.assertIn('README.zh-CN.md', manifest['program_files'])
@@ -103,8 +103,8 @@ if ((Install-PrivatePython $env:TEMP) -ne 'verified-python.exe') { throw 'Instal
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / 'installed with spaces'
             subprocess.run([sys.executable, '-m', 'venv', '--without-pip', str(root / '.venv')], check=True)
-            (root / 'scripts').mkdir()
-            (root / 'scripts/upgrade.py').write_text(
+            (root / 'tools').mkdir()
+            (root / 'tools/upgrade.py').write_text(
                 "import sys\nassert sys.prefix == sys.base_prefix, 'upgrade must run outside venv'\n"
                 "assert sys.argv[1:] == ['upgrade', '--index-url', 'https://example.org/index.json']\nsys.exit(37)\n")
             shutil.copyfile(ROOT / 'upgrade.bat', root / 'upgrade.bat')

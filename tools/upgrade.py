@@ -53,8 +53,8 @@ if str(PROGRAM_ROOT) not in sys.path:
     sys.path.insert(0, str(PROGRAM_ROOT))
 
 from engine import config  # noqa: E402
-from scripts import bootstrap as _bs  # noqa: E402
-from scripts import releases  # noqa: E402
+from tools import bootstrap as _bs  # noqa: E402
+from tools import releases  # noqa: E402
 
 # 固定数据项：升级只换程序，这些跳过（保留在数据目录/程序根存量环境）。
 # .git 纳入保护（VCS 元数据不是程序文件，不得被正向删除/回滚残留清理当程序删掉）。
@@ -513,11 +513,17 @@ def _new_program_files(src_root: Path) -> set[str]:
     return names
 
 
+def _installer() -> Path:
+    """Resolve the current or restored release's installation entry."""
+    current = config.program_root() / "tools" / "install.py"
+    return current if current.is_file() else config.program_root() / "scripts" / "install.py"
+
+
 def _sync_deps() -> int:
     """同步依赖：复用 install.py install（失效旧状态 + 重建/更新 venv + 装新 requirements.lock + 自检）。"""
-    install_py = config.program_root() / "scripts" / "install.py"
+    install_py = _installer()
     if not install_py.exists():
-        print("[upgrade] 未找到 scripts/install.py，落地新源码不完整", file=sys.stderr)
+        print("[upgrade] 未找到安装入口，落地新源码不完整", file=sys.stderr)
         return 1
     return subprocess.run([sys.executable, str(install_py), "install"]).returncode
 
@@ -553,7 +559,7 @@ def _verify_migration(backup_db: Path) -> int:
 
 def _verify_ready() -> int:
     """就绪验证：install.py check（venv/状态/Python 版本/依赖摘要/锁定清单摘要）。"""
-    install_py = config.program_root() / "scripts" / "install.py"
+    install_py = _installer()
     return subprocess.run([sys.executable, str(install_py), "check"]).returncode
 
 
@@ -645,7 +651,7 @@ def _rollback(backup_dir: Path) -> int:
                 shutil.copy2(s, dst)
 
     # 依赖恢复可验证：重建旧解释器/依赖集合（不原样复用 venv），失败隔离证据 + 传播返回码
-    install_py = config.program_root() / "scripts" / "install.py"
+    install_py = _installer()
     if install_py.exists():
         args = [sys.executable, str(install_py), "install", "--rebuild"]
         base = manifest.get("instance", {}).get("venv_base_python")
@@ -680,9 +686,9 @@ def _mark_rollback_evidence(backup_dir: Path, status: str) -> None:
 
 def _admin_headers() -> dict:
     """Load the installation environment and sign a local maintenance request."""
-    from scripts.service import _load_env
     from engine import auth
-    _load_env()
+    for key, value in config._parse_dotenv(config.data_dir() / ".env").items():
+        os.environ.setdefault(key, value)
     if not auth.configured():
         return {}
     return {"Authorization": "Bearer " + auth.login(auth._password())["token"]}
@@ -925,6 +931,8 @@ def do_rollback() -> int:
 def main(argv=None) -> int:
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--program-root', type=Path,
+                        help='使用当前升级器维护指定安装目录（迁移旧 scripts 布局）')
     sub = parser.add_subparsers(dest="command")
     up = sub.add_parser("upgrade", help="完整升级（默认自动发现最新正式 Release，无需填 commit）")
     up.add_argument("--url", default=os.environ.get("UPGRADE_URL", "").strip(),
@@ -936,12 +944,21 @@ def main(argv=None) -> int:
     sub.add_parser("rollback", help="回滚到最近一次升级备份")
     args = parser.parse_args(argv)
 
-    if args.command == "upgrade":
-        return do_upgrade(args.url or None, args.sha256 or None, args.index_url)
-    if args.command == "rollback":
-        return do_rollback()
-    parser.print_help()
-    return 2
+    original_root = config._PROGRAM_ROOT
+    try:
+        if args.program_root:
+            target = args.program_root.resolve()
+            if not (target / 'engine/config.py').is_file() or not (target / RELEASE_MANIFEST).is_file():
+                parser.error('--program-root 必须指向包含引擎和发布清单的现有安装目录')
+            config._PROGRAM_ROOT = target
+        if args.command == "upgrade":
+            return do_upgrade(args.url or None, args.sha256 or None, args.index_url)
+        if args.command == "rollback":
+            return do_rollback()
+        parser.print_help()
+        return 2
+    finally:
+        config._PROGRAM_ROOT = original_root
 
 
 if __name__ == "__main__":

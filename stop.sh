@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 优雅停止 group-engine 引擎：原生 Python 入口 scripts/service.py stop（不依赖 Git Bash）。
+# 优雅停止 group-engine 引擎：原生 Python 入口 tools/service.py stop（不依赖 Git Bash）。
 # 读同一份数据目录 .env（统一 dotenv 解析，剥引号/CR，环境>.env），按同一配置停止。
 cd "$(dirname "$0")" || exit 1
 
@@ -11,4 +11,4 @@ else
   exit 1
 fi
 
-"$PY" scripts/service.py stop
+"$PY" tools/service.py stop

@@ -2,7 +2,7 @@
 
 ## 文件归属
 
-`release_manifest.json` 的 `program_files` 保存文件级完整相对路径，例如 `engine/main.py` 和 `scripts/install.py`。打包过程随源码资产生成清单，升级以旧持久化清单识别受管文件。
+`release_manifest.json` 的 `program_files` 保存文件级完整相对路径，例如 `engine/main.py` 和 `tools/install.py`。打包过程随源码资产生成清单，升级以旧持久化清单识别受管文件。旧版清单中的 `scripts/install.py` 按原文件归属处理，迁移入口见发布指南。
 
 备份中的文件集合仅用于恢复。将备份扫描结果或顶层目录名视作受管清单，会把用户自建文件混入升级范围。
 

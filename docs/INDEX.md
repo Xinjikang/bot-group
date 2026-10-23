@@ -34,6 +34,7 @@
 | [停机隔离](engineering/SHUTDOWN-ISOLATION-FIX-2026-10-17.md) | 实例绑定、升级回滚隔离与停机失败处理 |
 | [Windows BAT](engineering/WINDOWS-BAT-COMPATIBILITY-2026-10-17.md) | 编码、换行、参数和退出码 |
 | [测试索引](../scripts/TEST_INDEX.md) | Python、Node、Chromium、MCP 及现场探针入口 |
+| [维护工具](../tools/README.md) | 安装、发布、升级、服务启停与身份修复 |
 | [升级清单](engineering/UPGRADE-MANIFEST-SEMANTICS-2026-10-17.md) | 文件归属、冲突保护及恢复 |
 | [临时目录污染](engineering/HERMES-TMP-PATH-INVESTIGATION-2026-10-17.md) | Windows 环境变量边界与处理方法 |
 | [重复拆解边界](engineering/REQ97-DUPLICATE-DECOMPOSE-ROOTCAUSE-2026-09-30.md) | 并发控制及现行授权依据 |

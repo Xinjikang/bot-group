@@ -33,7 +33,7 @@ browser-harness 按以下事件回收：
 
 SSE 在最终停止事件设置后结束。`GET /admin/shutdown` 返回 draining/terminating/releasing/stopping/failed 状态。清理失败且最终退出尚未开始时恢复入口，管理员处理占用后可重试。系统强制终止或断电可能跳过进程内清理。
 
-`stop.sh` 加载本地凭据后调用 `scripts/stop_engine.py`，仅发出管理员退出请求并验证原引擎进程和端口退出，默认最多等待 180 秒。`start.sh` 先复用 `stop.sh`，退出失败就停止启动。脚本中已撤下 `taskkill` 和父进程树遍历。
+`stop.sh` 经服务入口加载本地凭据并调用 `tools/stop_engine.py`，发出管理员退出请求并验证原引擎进程和端口退出，默认最多等待 180 秒。`start.sh` 复用同一停止流程，退出失败就停止启动。
 
 首次从缺少退出接口的旧版升级时，由用户手动停止旧服务。引擎代码需重启加载；Hermes 网关内已有 MCP 进程需用户重启网关。
 

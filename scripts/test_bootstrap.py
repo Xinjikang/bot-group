@@ -19,7 +19,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-import bootstrap  # noqa: E402
+from tools import bootstrap  # noqa: E402
 
 
 def _make_source_tree(root: Path) -> None:
@@ -117,6 +117,22 @@ class BootstrapLandTest(unittest.TestCase):
 
 
 class BootstrapMainTest(unittest.TestCase):
+    def test_tools_layout_downloads_and_executes_installer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            src = root / 'src'
+            (src / 'tools').mkdir(parents=True)
+            (src / 'tools/install.py').write_text(
+                "from pathlib import Path\nPath(__file__).with_suffix('.ran').write_text('ok')\n")
+            archive = root / 'source.zip'
+            _zip_tree(src, archive)
+            target = root / 'installed'
+            with mock.patch.dict(os.environ, {'BOOTSTRAP_URL': archive.as_uri(),
+                    'BOOTSTRAP_SHA256': bootstrap._sha256_file(archive), 'INSTALL_DIR': str(target)}):
+                self.assertEqual(bootstrap.main(), 0)
+            self.assertEqual((target / 'tools/install.ran').read_text(), 'ok')
+            self.assertFalse((target / 'scripts').exists())
+
     def test_main_full_flow_lands_and_runs_install(self):
         # 完整流程：下载(mock)→校验(真实)→解压(真实 zipfile)→落地(真实)→install(mock subprocess)
         with tempfile.TemporaryDirectory() as d:

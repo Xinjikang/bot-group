@@ -2,7 +2,7 @@
 
 ## 项目文档
 
-需求、设计和技术文档放在当前工作区的 `docs/`，入口为 `docs/INDEX.md`，随任务分支提交、审查和合并。可复用测试放在 `scripts/`，增加、执行测试前先读 `scripts/TEST_INDEX.md`。代码索引使用 CodeGraph 管理。
+需求、设计和技术文档放在当前工作区的 `docs/`，入口为 `docs/INDEX.md`，随任务分支提交、审查和合并。可复用测试及测试支持放在 `scripts/`，增加、执行测试前先读 `scripts/TEST_INDEX.md`。安装、发布和运行维护工具放在 `tools/`。代码索引使用 CodeGraph 管理。
 
 | 资料 | 相对当前工作目录的位置 |
 | --- | --- |

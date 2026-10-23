@@ -20,7 +20,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from scripts import make_release
+from tools import make_release
 
 
 def main():
@@ -93,12 +93,12 @@ def main():
     def start():
         nonlocal running
         running = True  # 启动命令部分成功时也须经身份核验清理本次实例。
-        run([args.install_python, program / 'scripts/service.py', 'start'])
+        run([args.install_python, program / 'tools/service.py', 'start'])
         return health()
 
     def stop():
         nonlocal running
-        run([args.install_python, program / 'scripts/service.py', 'stop'])
+        run([args.install_python, program / 'tools/service.py', 'stop'])
         running = False
 
     def assert_data(task_id, migrated=False):
@@ -131,8 +131,8 @@ def main():
         archive = v1out / 'bot-group-v0.1.0.zip'
         env.update(BOOTSTRAP_URL=archive.as_uri(), BOOTSTRAP_SHA256=hashlib.sha256(archive.read_bytes()).hexdigest(),
                    INSTALL_DIR=str(program))
-        run([args.install_python, ROOT / 'scripts/bootstrap.py'], cwd=ROOT)
-        run([args.install_python, program / 'scripts/install.py', 'install'])
+        run([args.install_python, ROOT / 'tools/bootstrap.py'], cwd=ROOT)
+        run([args.install_python, program / 'tools/install.py', 'install'])
         first = start()
         assert api('/auth/status') == {'configured': False}
         project_root = base / '验收 项目'
@@ -206,10 +206,10 @@ print(json.dumps({'task_id':tid,'requirement_id':rid}))
         # 查询/下载/校验失败期间实际旧服务仍提供同一 instance_id。
         for change in ({'source': (base / 'missing.zip').as_uri()}, {'sha256': '0' * 64}, {'manifest': ''}):
             publish({**entry, **change})
-            run([args.install_python, program / 'scripts/upgrade.py', 'upgrade'], expected=1)
+            run([args.install_python, program / 'tools/upgrade.py', 'upgrade'], expected=1)
             assert health()['instance_id'] == second['instance_id']
         publish(entry)
-        run([args.install_python, program / 'scripts/upgrade.py', 'upgrade'])
+        run([args.install_python, program / 'tools/upgrade.py', 'upgrade'])
         running = False
         assert (program / 'VERSION').read_text().strip() == 'v0.2.0'
         start()
@@ -217,18 +217,18 @@ print(json.dumps({'task_id':tid,'requirement_id':rid}))
         state = json.loads((data / 'install.json').read_text())
         assert state['lock_sha256'] == hashlib.sha256((program / 'requirements.lock').read_bytes()).hexdigest()
         before = health()['instance_id']
-        text = run([args.install_python, program / 'scripts/upgrade.py', 'upgrade'])
+        text = run([args.install_python, program / 'tools/upgrade.py', 'upgrade'])
         assert '无需更新' in text and health()['instance_id'] == before
         results.append('最新正式Release发现、资产失败旧实例继续服务、锁定依赖同步、真实迁移、无更新')
         # 实际安装子进程故障，触发真实旧依赖重建及回滚校验。
-        (stage / 'scripts/install.py').write_text('import sys\nsys.exit(7)\n', encoding='utf-8')
+        (stage / 'tools/install.py').write_text('import sys\nsys.exit(7)\n', encoding='utf-8')
         out3 = base / 'v3'
         make_release.make_release(stage, out3, 'bot-group', 'v0.3.0')
         failed = json.loads((out3 / 'releases.json').read_text())['releases'][0]
         for k in ('source', 'manifest'):
             failed[k] = (out3 / failed[k]).as_uri()
         publish(failed)
-        run([args.install_python, program / 'scripts/upgrade.py', 'upgrade'], expected=1)
+        run([args.install_python, program / 'tools/upgrade.py', 'upgrade'], expected=1)
         running = False
         assert (program / 'VERSION').read_text().strip() == 'v0.2.0'
         start()

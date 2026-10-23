@@ -17,18 +17,18 @@ import tempfile
 import unittest
 import zipfile
 
-from scripts import make_release
+from tools import make_release
 
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRIES = ('start.bat', 'stop.bat', 'install.bat', 'bootstrap.bat')
 CASES = (
-    ('start.bat', '', ['scripts\\service.py', 'start']),
-    ('stop.bat', '', ['scripts\\service.py', 'stop']),
-    ('install.bat', '', ['scripts\\install.py', 'install']),
-    ('install.bat', 'install', ['scripts\\install.py', 'install']),
-    ('install.bat', 'repair', ['scripts\\install.py', 'repair']),
-    ('bootstrap.bat', '', ['scripts\\bootstrap.py']),
+    ('start.bat', '', ['tools\\service.py', 'start']),
+    ('stop.bat', '', ['tools\\service.py', 'stop']),
+    ('install.bat', '', ['tools\\install.py', 'install']),
+    ('install.bat', 'install', ['tools\\install.py', 'install']),
+    ('install.bat', 'repair', ['tools\\install.py', 'repair']),
+    ('bootstrap.bat', '', ['tools\\bootstrap.py']),
 )
 # Exact pre-fix UTF-8/LF entry bodies (2d8da3f); no production target is copied.
 LEGACY_START = '''@echo off
@@ -77,7 +77,7 @@ def copy_entries(destination):
     destination.mkdir(parents=True, exist_ok=True)
     for name in ENTRIES:
         shutil.copyfile(ROOT / name, destination / name)
-    scripts = destination / 'scripts'
+    scripts = destination / 'tools'
     scripts.mkdir(exist_ok=True)
     for name in ('service.py', 'install.py', 'bootstrap.py'):
         (scripts / name).write_text('raise AssertionError("probe target must stay inert")\n',

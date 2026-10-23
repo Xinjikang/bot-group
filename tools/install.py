@@ -272,7 +272,7 @@ def do_check() -> int:
         # 旧环境（已有 .venv 但无安装记录）：给出可操作迁移提示，而非只叫用户重跑 install
         print(
             "[check] 检测到已有 .venv 但缺少安装记录（旧版本环境）。\n"
-            "       请运行 install.bat repair（或 scripts/install.py repair）验证并迁移现有环境（不重装依赖）；\n"
+            "       请运行 install.bat repair（或 tools/install.py repair）验证并迁移现有环境（不重装依赖）；\n"
             "       或运行 install.bat 重新安装。",
             file=sys.stderr,
         )

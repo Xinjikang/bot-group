@@ -6,17 +6,17 @@
 
 公开安装入口支持 64 位 Windows 10/11 和 PowerShell 5.1。安装器自动选择 64 位 Python 3.11–3.13，缺失时从 Python 官方下载并核验安装程序，安装到 `%LOCALAPPDATA%\bot-group-runtime\Python313`。源码开发安装要求 Python 3.11+。Hermes/Codex 使用各自运行环境；安装时探测并报告缺项，配置完整后才可执行相应模型任务。其他平台发布前需完成对应环境的安装验证。
 
-`VERSION` 是安装版本，正式版本格式为 `v1.2.3`，由发布负责人分配版本号和发布地址。
+`VERSION` 是 Release 源码包的安装版本，正式版本格式为 `v1.2.3`，由发布负责人分配版本号和发布地址。Git 源码运行时，页面读取本地 tag、提交号与修改状态；没有本地 tag 时显示开发版提交号。维护工具统一放在 `tools/`，`scripts/` 保存测试及测试支持。
 
 ## 发布负责人：生成完整资产
 
 从已通过审查与验收的源码目录执行：
 
 ```powershell
-py -3.11 scripts\make_release.py --formal --version v1.2.3 --out dist\v1.2.3 --base-url https://github.com/Xinjikang/bot-group/releases/download/v1.2.3/
+py -3.11 tools\make_release.py --formal --version v1.2.3 --out dist\v1.2.3 --base-url https://github.com/Xinjikang/bot-group/releases/download/v1.2.3/
 ```
 
-输出目录包含六个文件：`bot-group-v1.2.3.zip`、`release_manifest.json`、`SHA256SUMS`、`releases.json`、独立标准库安装入口 `bootstrap.py` 和 Windows 下载入口 `install.ps1`。ZIP 包含引擎、MCP、前端静态资源、scripts、templates、依赖锁定清单、双语 README、文档与入口。`VERSION` 纳入文件级受管清单，随源码更新与恢复。数据、凭据、`.venv`、运行缓存及单元测试保持在安装环境或仓库中。
+输出目录包含六个文件：`bot-group-v1.2.3.zip`、`release_manifest.json`、`SHA256SUMS`、`releases.json`、独立标准库安装入口 `bootstrap.py` 和 Windows 下载入口 `install.ps1`。ZIP 包含引擎、MCP、前端静态资源、tools、templates、依赖锁定清单、双语 README、文档与入口。`VERSION` 纳入文件级受管清单，随源码更新与恢复。数据、凭据、`.venv`、运行缓存和 `scripts/` 下的测试保持在安装环境或仓库中。
 
 从干净的 Git 提交构建，将六个文件上传到对应 tag 的 GitHub Release，完成资产核对后发布为正式版本。`--base-url` 将索引中资产地址固定到该版本，bootstrap 的 SHA256 也写入索引。发布后从匿名客户端执行 README 命令完成实际安装；验收证据记录 tag、提交、资产摘要、安装位置、退出码与页面结果。
 
@@ -65,7 +65,7 @@ $env:BOOTSTRAP_SHA256 = '<发布页给出的 ZIP SHA256>'
 py -3.11 C:\Downloads\bootstrap.py
 ```
 
-入口自动下载、校验、解压、创建专用 venv、安装 `requirements.lock`、检查关键导入并生成就绪记录。重复安装同一源码可补齐中断文件，同时保留用户文件；安装位置出现内容冲突时提示使用升级流程。依赖安装失败后可重新运行 `py -3.11 scripts\install.py install`；首次数据目录配置 `.env` 保留原内容。
+入口自动下载、校验、解压、创建专用 venv、安装 `requirements.lock`、检查关键导入并生成就绪记录。重复安装同一源码可补齐中断文件，同时保留用户文件；安装位置出现内容冲突时提示使用升级流程。依赖安装失败后可重新运行 `py -3.11 tools\install.py install`；首次数据目录配置 `.env` 保留原内容。
 
 ## 配置与独立启停
 
@@ -88,7 +88,7 @@ GROUP_ENGINE_PORT=8180
 # RELEASE_INDEX_URL=https://releases.example.org/releases.json
 ```
 
-在安装目录运行 `start.bat` / `stop.bat`；也可用 `py -3.11 scripts\service.py start` / `stop`。启动执行轻量就绪检查和同实例优雅停机，随后创建独立后台进程并核验 `/health`。默认浏览器地址 `http://127.0.0.1:8180/app/`，未配置密码时直接进入应用；已有密码配置沿用。前端由同一后端进程静态托管。
+在安装目录运行 `start.bat` / `stop.bat`；也可用 `py -3.11 tools\service.py start` / `stop`。启动执行轻量就绪检查和同实例优雅停机，随后创建独立后台进程并核验 `/health`。默认浏览器地址 `http://127.0.0.1:8180/app/`，未配置密码时直接进入应用；已有密码配置沿用。前端由同一后端进程静态托管。
 
 运行中的服务可使用页面主题按钮右侧的“重启服务”。后台助手复用 `start.bat`，旧实例停止及浏览器资源回收由引擎负责：最多等待 Bot 自然结束 120 秒，超时终止剩余进程树后继续收尾。停机客户端默认等待 180 秒，页面每次轮询等待 300 秒。成功以新 instance_id 和相同程序根/数据库为依据；失败查看 `logs/service-restart.json`、`logs/service-restart.log`。详见 [服务重启](../engineering/SERVICE-RESTART-2026-10-17.md)。
 
@@ -101,7 +101,7 @@ Windows 四个 BAT 入口使用 ASCII 注释/提示与 CRLF，兼容默认及 UT
 在安装目录双击 `upgrade.bat`，它自动定位基础 Python，允许升级和恢复时重建 venv。已有系统 Python 的维护者也可执行：
 
 ```powershell
-py -3.11 scripts\upgrade.py upgrade
+py -3.11 tools\upgrade.py upgrade
 ```
 
 默认发布索引为 `https://github.com/Xinjikang/bot-group/releases/latest/download/releases.json`。每次升级自动显示当前与最新正式 Release；用户直接执行同一条命令。当前版本等于或高于索引最新版本时显示“无需更新”。`--index-url <URL>` 可覆盖本次索引地址，数据目录 `.env` 与环境变量同样支持 `RELEASE_INDEX_URL`。`--url <归档> --sha256 <摘要>` 保留指定归档的维护入口。
@@ -113,11 +113,22 @@ py -3.11 scripts\upgrade.py upgrade
 落地后失败自动恢复匹配的旧程序、VERSION、数据库/附件/配置，并用旧基础解释器重建依赖。恢复结果见备份的 `rollback_evidence.json`，随后启动旧服务。手动回滚最近一次完整快照：
 
 ```powershell
-py -3.11 scripts\upgrade.py rollback
+py -3.11 tools\upgrade.py rollback
 start.bat
 ```
 
 升级与回滚外层使用系统 Python，可在恢复时安全重建安装目录的 `.venv`。损坏快照或绑定路径变化会中止恢复，保留现场供核对。SQLite 备份在写入方退出后获取一致快照；业务流程测试走真实任务池事务（`BEGIN IMMEDIATE`）和 SQLite WAL，写锁在每次提交后释放。
+
+## 旧 scripts 布局首次迁移
+
+v0.1.0/v0.1.1 升级器固定调用 `scripts/install.py`。迁往 `tools/` 布局时，从经过校验的新 Release 源码包解压目录启动新版升级器，明确指定原安装目录。新版工具读取该目录的版本、发布清单和实例配置，沿用下载校验、停机、备份和失败回滚流程。新源码解压目录与原安装目录分别保存；迁移成功后日常使用原安装目录的新 `upgrade.bat`。
+
+```powershell
+# 在已校验的新 Release 解压目录运行；有自定义数据目录时先设置相同 GROUP_DATA_DIR。
+py -3.11 tools\upgrade.py --program-root D:\Apps\bot-group upgrade
+```
+
+`--program-root` 在子命令之前使用，目标必须包含引擎与发布清单；回滚可将子命令改为 `rollback`。恢复旧版时安装入口自动回到旧布局。Git 开发目录通过 Git 更新源码，Release 升级器继续要求真实文件归属清单。
 
 ## 发布范围与验证
 

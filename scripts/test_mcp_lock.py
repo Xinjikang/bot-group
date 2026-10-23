@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts import install  # noqa: E402
+from tools import install  # noqa: E402
 from engine import wake  # noqa: E402
 
 PROGRAM_ROOT = Path(__file__).resolve().parents[1]

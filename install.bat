@@ -19,5 +19,5 @@ if not defined PY (
 
 set "CMD=%~1"
 if "%CMD%"=="" set "CMD=install"
-%PY% scripts\install.py %CMD%
+%PY% tools\install.py %CMD%
 exit /b %errorlevel%

@@ -10,7 +10,7 @@ from contextlib import closing
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
-from scripts import make_release, upgrade, releases
+from tools import make_release, upgrade, releases
 from scripts.test_upgrade import UpgradeTestBase
 
 
@@ -26,9 +26,9 @@ class ReleaseUpgradeTests(UpgradeTestBase):
     def build(self, version):
         src = self.root / ("src-" + version)
         (src / "engine").mkdir(parents=True)
-        (src / "scripts").mkdir()
+        (src / "tools").mkdir()
         (src / "engine" / "main.py").write_text(version, encoding="utf-8")
-        (src / "scripts" / "install.py").write_text("pass\n", encoding="utf-8")
+        (src / "tools" / "install.py").write_text("pass\n", encoding="utf-8")
         (src / "requirements.lock").write_text("fastapi==2\n", encoding="utf-8")
         out = self.root / ("assets-" + version)
         make_release.make_release(src, out, "bot-group", version)
@@ -42,6 +42,28 @@ class ReleaseUpgradeTests(UpgradeTestBase):
 
     def execute(self):
         return upgrade.main(["upgrade", "--index-url", self.index.as_uri()])
+
+    def _migrate_layout(self, fail):
+        self._pp.stop()
+        (self.prog / 'engine/config.py').write_text('')
+        (self.prog / 'scripts/install.py').write_text('pass\n')
+        self._seed_manifest({'VERSION', 'engine/config.py'})
+        original_root = upgrade.config._PROGRAM_ROOT
+        with mock.patch.object(upgrade, '_stop_independent', return_value=0), \
+             mock.patch.object(upgrade, '_verify_migration', return_value=int(fail)):
+            result = upgrade.main(['--program-root', str(self.prog), 'upgrade', '--index-url', self.index.as_uri()])
+        self.assertEqual(result, int(fail))
+        self.assertEqual(upgrade.config._PROGRAM_ROOT, original_root)
+        self.assertEqual((self.prog / 'VERSION').read_text(), 'v1.0.0' if fail else 'v2.0.0')
+        self.assertEqual((self.prog / 'scripts/install.py').exists(), fail)
+        self.assertEqual((self.prog / 'tools/install.py').exists(), not fail)
+        self.assertEqual((self.data / 'attachments/a.txt').read_text(), 'att')
+
+    def test_external_upgrader_migrates_old_layout_with_real_installer_subprocess(self):
+        self._migrate_layout(False)
+
+    def test_external_upgrader_restores_old_layout_after_migration_failure(self):
+        self._migrate_layout(True)
 
     def test_real_discovery_download_landing_and_pinned_audit(self):
         # 仅模拟进程停机、pip 与迁移/就绪子进程；文件下载、校验、备份、落地均真实。
@@ -211,7 +233,7 @@ class ReleaseUpgradeTests(UpgradeTestBase):
             self.assertTrue(upgrade._pid_alive(os.getpid()))
 
     def test_stop_client_rejects_foreign_binding_before_post(self):
-        from scripts import stop_engine
+        from tools import stop_engine
         from contextlib import nullcontext
         import io
         other = {'graceful_shutdown': 1, 'instance_id': 'other', 'pid': 123,
@@ -229,6 +251,8 @@ class ReleaseUpgradeTests(UpgradeTestBase):
         root = self.root / 'publication-source'
         public = {
             'engine/main.py': 'pass\n',
+            'tools/install.py': 'pass\n',
+            'tools/__init__.py': '',
             'doc/INDEX.md': '# Existing documentation directory\n',
             'docs/engineering/ENGINEERING.md': '# Technical documentation\n',
             'docs/requirements/req-1.md': '# Versioned requirement\n',
@@ -249,6 +273,9 @@ class ReleaseUpgradeTests(UpgradeTestBase):
             'templates/projects/product-prototype/files/materials/references/README.md.tmpl': '# References\n',
         }
         private = {
+            'scripts/test_example.py': 'INTERNAL_ONLY',
+            'scripts/background_test_support.py': 'INTERNAL_ONLY',
+            'scripts/TEST_INDEX.md': 'INTERNAL_ONLY',
             'frontend/index.html.bak': 'INTERNAL_ONLY',
             'engine/main.py.BAK': 'INTERNAL_ONLY',
             'scripts/tool.py.bak_20261020': 'INTERNAL_ONLY',
@@ -285,10 +312,10 @@ class ReleaseUpgradeTests(UpgradeTestBase):
 
     def test_formal_builder_exports_standalone_bootstrap_and_checksums(self):
         root = self.root / 'formal-source'
-        (root / 'scripts').mkdir(parents=True)
-        (root / 'scripts/bootstrap.py').write_text('print("standalone")\n')
+        (root / 'tools').mkdir(parents=True)
+        (root / 'tools/bootstrap.py').write_text('print("standalone")\n')
         out = self.root / 'formal-assets'
-        with mock.patch.object(make_release, '__file__', str(root / 'scripts/make_release.py')):
+        with mock.patch.object(make_release, '__file__', str(root / 'tools/make_release.py')):
             self.assertEqual(make_release.main(['--formal', '--version', 'v1.2.3', '--out', str(out)]), 0)
         raw = (out / 'bootstrap.py').read_bytes()
         self.assertIn(hashlib.sha256(raw).hexdigest() + '  bootstrap.py',

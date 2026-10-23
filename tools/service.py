@@ -43,7 +43,7 @@ def _load_env() -> None:
 
 def _run_install_check() -> int:
     return subprocess.run(
-        [str(venv_python()), "-X", "utf8", str(PROGRAM_ROOT / "scripts" / "install.py"), "check"]
+        [str(venv_python()), "-X", "utf8", str(PROGRAM_ROOT / "tools" / "install.py"), "check"]
     ).returncode
 
 
@@ -76,7 +76,7 @@ def do_start() -> int:
     host = config.host()
     port = config.port()
     print(f"[start-engine] 启动引擎，监听 {host}:{port}")
-    r = subprocess.run([str(venv_python()), str(PROGRAM_ROOT / "scripts" / "start_engine.py")])
+    r = subprocess.run([str(venv_python()), str(PROGRAM_ROOT / "tools" / "start_engine.py")])
     if r.returncode != 0:
         return r.returncode
     return _health_check(host, port)
@@ -99,7 +99,7 @@ def do_stop() -> int:
               f"（检查 GROUP_ENGINE_URL/XDG_GROUP_ENGINE_URL 环境变量），拒绝执行", file=sys.stderr)
         return 1
     return subprocess.run(
-        [str(venv_python()), "-X", "utf8", str(PROGRAM_ROOT / "scripts" / "stop_engine.py")]
+        [str(venv_python()), "-X", "utf8", str(PROGRAM_ROOT / "tools" / "stop_engine.py")]
     ).returncode
 
 

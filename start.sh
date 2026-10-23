@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 启动 group-engine 引擎：原生 Python 入口 scripts/service.py start（不依赖 Git Bash）。
+# 启动 group-engine 引擎：原生 Python 入口 tools/service.py start（不依赖 Git Bash）。
 # 端口/监听/数据目录/.env 均由统一配置层（engine/config.py）解析，优先级 命令行>环境>.env>默认；
 # .env 统一 dotenv 解析（剥引号/CR/LF/export 前缀），只把进程环境未定义的键导入（环境>.env）。
 cd "$(dirname "$0")" || exit 1
@@ -12,4 +12,4 @@ else
   exit 1
 fi
 
-"$PY" scripts/service.py start
+"$PY" tools/service.py start

@@ -4,7 +4,7 @@
 
 入口先选 PATH 中的 `python`，缺少时使用 `py -3`；两者均缺少时提示安装 Python 3.11+ 并返回 1。`cd /d "%~dp0"` 保证在程序目录运行，install 默认执行 install，显式 install/repair 参数及子进程退出码继续传递。
 
-`.gitattributes` 使用 `*.bat -text whitespace=cr-at-eol`，使 CRLF 作为原始字节进入 Git blob，检出与 `git archive` 保留这些字节。维护时保持 ASCII 和纯 CRLF。`scripts/make_release.py` 原样复制文件到源码 ZIP，发布方式见 [源码安装指南](../guides/RELEASE-GUIDE.md)。
+`.gitattributes` 使用 `*.bat -text whitespace=cr-at-eol`，使 CRLF 作为原始字节进入 Git blob，检出与 `git archive` 保留这些字节。维护时保持 ASCII 和纯 CRLF。`tools/make_release.py` 原样复制文件到源码 ZIP，发布方式见 [源码安装指南](../guides/RELEASE-GUIDE.md)。
 
 ## 回归
 

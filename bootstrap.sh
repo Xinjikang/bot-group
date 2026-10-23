@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bootstrap 下载校验执行入口（req#122 task#213）：探测 Python 后调 scripts/bootstrap.py。
+# bootstrap 下载校验执行入口：探测 Python 后调 tools/bootstrap.py。
 # 下载/校验/解压/落地/install 全在 bootstrap.py（Python 标准库）实现，无 Git Bash 也能跑；
 # 临时目录只存下载/解压，install 装到持久目录 INSTALL_DIR（默认当前目录）。
 # 发布页通过环境变量注入：BOOTSTRAP_URL、BOOTSTRAP_SHA256、（可选）INSTALL_DIR。
@@ -16,4 +16,4 @@ else
   exit 1
 fi
 
-"$PY" scripts/bootstrap.py
+"$PY" tools/bootstrap.py

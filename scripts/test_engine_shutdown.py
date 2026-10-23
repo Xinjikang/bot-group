@@ -19,7 +19,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from engine import browser_resources as br, db, wake
 from engine.lifecycle import Shutdown
-from scripts.stop_engine import stop
+from tools.stop_engine import stop
 from scripts.test_browser_resources import scope, launch_harness
 from scripts.unified_test_support import isolated_database
 
@@ -195,10 +195,10 @@ class ShutdownTests(unittest.TestCase):
             return result
         opener = Mock()
         opener.open.side_effect = [response(health), response(health), RemoteDisconnected()]
-        with patch('scripts.stop_engine.urllib.request.build_opener', return_value=opener), \
-             patch('scripts.stop_engine.auth._password', return_value=''), \
-             patch('scripts.stop_engine._pid_alive', return_value=False), \
-             patch('scripts.stop_engine.socket.create_connection', side_effect=ConnectionRefusedError):
+        with patch('tools.stop_engine.urllib.request.build_opener', return_value=opener), \
+             patch('tools.stop_engine.auth._password', return_value=''), \
+             patch('tools.stop_engine._pid_alive', return_value=False), \
+             patch('tools.stop_engine.socket.create_connection', side_effect=ConnectionRefusedError):
             self.assertIn('优雅退出', stop('http://127.0.0.1:1', timeout=1))
 
     def test_stop_client_preserves_old_server_without_shutdown_support(self):
@@ -230,7 +230,7 @@ class ShutdownTests(unittest.TestCase):
             server.server_close()
 
     def test_upgrade_refuses_foreign_engine_before_posting(self):
-        from scripts import upgrade
+        from tools import upgrade
         requests = []
         class ForeignEngine(BaseHTTPRequestHandler):
             def do_GET(self):

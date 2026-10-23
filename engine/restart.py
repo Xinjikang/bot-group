@@ -72,7 +72,7 @@ class Restart:
                 executable = executable.with_name('python.exe')
             try:
                 with (config.logs_dir() / 'service-restart.log').open('ab', buffering=0) as output:
-                    subprocess.Popen([str(executable), '-X', 'utf8', str(root / 'scripts' / 'restart_engine.py'),
+                    subprocess.Popen([str(executable), '-X', 'utf8', str(root / 'tools' / 'restart_engine.py'),
                                       receipt['id']], cwd=root, env=env, stdin=subprocess.DEVNULL,
                                      stdout=output, stderr=subprocess.STDOUT, close_fds=True, **options)
             except OSError as exc:

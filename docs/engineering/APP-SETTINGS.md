@@ -4,15 +4,15 @@
 
 右上角“设置”集中提供我的称呼、背景、主题、重启服务和关于。称呼保持服务端持久化，重启沿用管理员鉴权、确认、操作回执与刷新续查；连接状态持续显示重启进度。菜单支持点击外部、Escape 和焦点离开关闭，通过 `aria-expanded` 暴露展开状态。
 
-“关于”读取程序根目录 `VERSION`，缺失或不可读时显示“开发版 / 版本未知”。仅管理员身份可以请求 `GET /system/version` 和 `GET /system/updates`，响应使用 `Cache-Control: no-store`。
+“关于”通过 `engine/version.py` 识别运行代码。Git 仓库和 worktree 优先读取本地 Git：正式三段 tag 显示版本号，后续提交显示 tag、提交距离和提交号，本地改动加“本地有修改”；没有本地正式 tag 时显示“开发版 · 提交号”。Git 查询保持只读，整个查询预算为 4 秒。普通源码安装读取包内有效的 `VERSION`；Git 信息读取失败时保留失败状态，避免使用过时包版本。仅管理员身份可以请求 `GET /system/version` 和 `GET /system/updates`，响应使用 `Cache-Control: no-store`。
 
 ## 自动更新检查
 
 `frontend/app_settings.js` 在每次网页打开并取得管理员身份后检查一次，成功后每 12 小时检查。每分钟核对到期时间；页面重新可见、获得焦点或 pageshow 时执行到期补查。单页只允许一个在途请求；身份改变后丢弃旧响应。失败安静处理，5 分钟后允许重试，客户端 35 秒超时。
 
-`engine/app_updates.py` 复用 `scripts/upgrade.py` 的 `current_version`、`discover_release` 及 `scripts/releases.py` 的版本比较。默认源为 GitHub latest 下的 `releases.json`，支持已有 `RELEASE_INDEX_URL` 配置，正式版选择排除 draft/prerelease 并校验现有资产字段。检查只读取索引；升级由管理员按发布指南手动执行。
+`engine/app_updates.py` 使用 `engine/version.py` 获取当前源码身份，复用 `tools/upgrade.py` 的 `discover_release` 及 `tools/releases.py` 的版本比较。默认源为 GitHub latest 下的 `releases.json`，支持已有 `RELEASE_INDEX_URL` 配置，正式版选择排除 draft/prerelease 并校验现有资产字段。检查只读取索引；升级由管理员按发布指南手动执行。
 
-响应状态：`ok` 表示当前与最新版本均可比较，`unknown` 表示版本无法比较，`unavailable` 表示发布查询失败。仅确定最新正式版更高时，在右上角用户称呼之前显示更新提示。查询失败保留已知更新提示；版本未知时“关于”显示最新正式版与无法比较的原因。
+响应状态：`ok` 表示当前正式基线与最新版本均可比较，`development` 表示 Git 源码缺少可比较的正式 tag，`unknown` 表示源码副本缺少版本信息，`unavailable` 表示发布查询失败。Git 开发版以最近正式 tag 为版本基线，提交差异同时显示在版本标签中；无基线时提示按提交记录核对。仅确定最新正式版更高时，在右上角用户称呼之前显示更新提示。查询失败保留已知更新提示。
 
 ## 角色与成员
 

@@ -33,7 +33,8 @@
       if (!allowed()) return;
       const detail = info?.status === 'ok' ? (info.update_available
         ? `可用正式版本：${info.latest_version}。请由管理员按发布指南手动升级。` : '暂无更高正式版本。')
-        : info?.status === 'unknown' ? `可用正式版本：${info.latest_version}；当前版本未知，暂时无法比较。`
+        : info?.status === 'development' ? `可用正式版本：${info.latest_version}；当前为 Git 开发版，请按提交记录核对版本差异。`
+        : info?.status === 'unknown' ? `可用正式版本：${info.latest_version}；当前源码缺少版本信息，暂时无法比较。`
         : '更新检查暂不可用，将自动重试。';
       showAlert(`BOT GROUP\n当前版本：${version.version_label}\n${detail}`);
     } catch { showAlert('版本信息读取失败，请稍后重试。'); }

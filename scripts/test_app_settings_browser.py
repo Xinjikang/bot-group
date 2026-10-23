@@ -30,7 +30,7 @@ def run(evidence):
                 return
             data = {'status': 'unavailable', 'update_available': False} if state['failure'] else update
         elif path == '/system/version':
-            data = {'current_version': state['version'], 'version_label': state['version'] or '开发版 / 版本未知'}
+            data = {'current_version': state['version'], 'version_label': state.get('label') or state['version'] or '源码副本 · 缺少版本信息'}
         elif path == '/user/display-name':
             data = {'profile': 'user', 'display_name': '很长的用户称呼，用于窄屏验证'}
         elif path == '/appearance/background':
@@ -120,13 +120,24 @@ def run(evidence):
             page.screenshot(path=str(evidence / f'settings-390-{theme}.png'))
             page.keyboard.press('Escape')
         state['version'] = None
+        state['label'] = '开发版 · abc123456789 · 本地有修改'
+        update.update(status='development', update_available=False)
+        page.reload()
+        page.wait_for_timeout(100)
+        page.locator('#btn-settings').click()
+        page.locator('#btn-about').click()
+        page.wait_for_function('document.querySelector("#app-alert-message").textContent.includes("abc123456789")')
+        assert '按提交记录核对' in page.locator('#app-alert-message').inner_text()
+        page.screenshot(path=str(evidence / 'about-git-development.png'))
+        page.get_by_role('button', name='确定', exact=True).click()
+        state['label'] = None
         update.update(status='unknown', update_available=False)
         page.reload()
         page.wait_for_timeout(100)
         assert notice.is_hidden()
         page.locator('#btn-settings').click()
         page.locator('#btn-about').click()
-        page.wait_for_function('document.querySelector("#app-alert-message").textContent.includes("开发版 / 版本未知")')
+        page.wait_for_function('document.querySelector("#app-alert-message").textContent.includes("源码副本 · 缺少版本信息")')
         assert '暂时无法比较' in page.locator('#app-alert-message').inner_text()
         page.get_by_role('button', name='确定', exact=True).click()
         page.evaluate('logout()')

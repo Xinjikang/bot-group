@@ -1,14 +1,6 @@
 """Read-only application version and formal release discovery."""
-from scripts import releases, upgrade
-
-
-def version_info() -> dict:
-    try:
-        version = upgrade.current_version()
-    except (OSError, UnicodeError):
-        version = None
-    return {"current_version": version,
-            "version_label": version or "开发版 / 版本未知"}
+from tools import releases, upgrade
+from .version import version_info
 
 
 def check_update() -> dict:
@@ -20,5 +12,5 @@ def check_update() -> dict:
     current = releases.version_key(result["current_version"] or "")
     latest = releases.version_key(target.version or "")
     return {**result, "latest_version": target.version,
-            "status": "ok" if current and latest else "unknown",
+            "status": "ok" if current and latest else "development" if result.get('version_source') == 'git' else "unknown",
             "update_available": bool(current and latest and latest > current)}

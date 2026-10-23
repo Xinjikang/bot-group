@@ -22,7 +22,7 @@ def run(operation_id):
     try:
         # start.bat already performs install check -> stop -> start -> health.
         command = ([os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', str(ROOT / 'start.bat')]
-                   if os.name == 'nt' else [sys.executable, str(ROOT / 'scripts' / 'service.py'), 'start'])
+                   if os.name == 'nt' else [sys.executable, str(ROOT / 'tools' / 'service.py'), 'start'])
         options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
         result = subprocess.run(command, cwd=ROOT, **options)
         if result.returncode:

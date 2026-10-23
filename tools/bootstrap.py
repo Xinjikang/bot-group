@@ -57,7 +57,7 @@ def _extract(archive: Path, dest: Path, archive_type: str) -> None:
 
 
 def _find_source_root(extracted: Path) -> Path | None:
-    """定位含 install.sh 或 scripts/install.py 的源码根目录（归档可能包一层顶层目录）。"""
+    """Locate a source root, including releases with the legacy scripts layout."""
     candidates = [extracted]
     for root, dirs, files in os.walk(extracted):
         if "install.sh" in files or "install.py" in files:
@@ -66,7 +66,7 @@ def _find_source_root(extracted: Path) -> Path | None:
         if Path(root) != extracted:
             dirs[:] = []
     for c in candidates:
-        if (c / "scripts" / "install.py").exists() or (c / "install.sh").exists():
+        if (c / "tools" / "install.py").exists() or (c / "scripts" / "install.py").exists() or (c / "install.sh").exists():
             return c
     return None
 
@@ -128,7 +128,10 @@ def main(argv=None) -> int:
         print(f"[bootstrap] 落地到持久安装目录 {install_dir}")
         _land(src_root, install_dir)
         print("[bootstrap] 执行 install")
-        r = subprocess.run([sys.executable, str(install_dir / "scripts" / "install.py"), "install"])
+        installer = install_dir / "tools" / "install.py"
+        if not installer.is_file():
+            installer = install_dir / "scripts" / "install.py"
+        r = subprocess.run([sys.executable, str(installer), "install"])
         return r.returncode
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         print(f"[bootstrap] 失败：{exc}", file=sys.stderr)

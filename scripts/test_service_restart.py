@@ -17,7 +17,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from engine import auth, config, restart
-from scripts import restart_engine
+from tools import restart_engine
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -106,7 +106,7 @@ class RestartTests(unittest.TestCase):
             wake._shutting_down.clear()
 
     def test_wrong_instance_never_receives_stop_request(self):
-        from scripts import stop_engine
+        from tools import stop_engine
         health = {'status': 'ok', 'instance_id': 'different', 'graceful_shutdown': 1, 'pid': 12345}
         opener = Mock()
         opener.open.return_value = io.StringIO(json.dumps(health))
@@ -125,10 +125,10 @@ class RestartIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='restart space ') as tmp:
             root = Path(tmp)
             shutil.copytree(ROOT / 'engine', root / 'engine', ignore=shutil.ignore_patterns('__pycache__', '.hermes-tmp*'))
-            (root / 'scripts').mkdir()
+            (root / 'tools').mkdir()
             for name in ('service.py', 'start_engine.py', 'stop_engine.py', 'restart_engine.py'):
-                shutil.copy2(ROOT / 'scripts' / name, root / 'scripts' / name)
-            (root / 'scripts' / 'install.py').write_text('import sys\nsys.exit(0)\n', encoding='utf-8')
+                shutil.copy2(ROOT / 'tools' / name, root / 'tools' / name)
+            (root / 'tools' / 'install.py').write_text('import sys\nsys.exit(0)\n', encoding='utf-8')
             shutil.copy2(ROOT / 'start.bat', root / 'start.bat')
             venv = root / '.venv'
             (venv / 'Scripts').mkdir(parents=True)

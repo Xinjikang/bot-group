@@ -22,7 +22,7 @@ for _p in (str(_PROGRAM_ROOT), str(_SCRIPTS_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import install  # noqa: E402
+from tools import install  # noqa: E402
 
 
 class InstallCheckTest(unittest.TestCase):
@@ -89,7 +89,7 @@ class InstallCheckTest(unittest.TestCase):
 
 class FreshInstallLocationTest(unittest.TestCase):
     def test_first_config_and_service_share_root_before_database_exists(self):
-        from scripts import service
+        from tools import service
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "program"
@@ -322,16 +322,16 @@ class BatEntryTest(unittest.TestCase):
 
     def test_install_bat_passthrough_repair(self):
         text = (install.PROGRAM_ROOT / "install.bat").read_text(encoding="utf-8")
-        self.assertIn("scripts\\install.py %CMD%", text)
+        self.assertIn("tools\\install.py %CMD%", text)
         self.assertIn('if "%CMD%"=="" set "CMD=install"', text)
 
     def test_start_bat_calls_service(self):
         text = (install.PROGRAM_ROOT / "start.bat").read_text(encoding="utf-8")
-        self.assertIn("scripts\\service.py start", text)
+        self.assertIn("tools\\service.py start", text)
 
     def test_stop_bat_calls_service(self):
         text = (install.PROGRAM_ROOT / "stop.bat").read_text(encoding="utf-8")
-        self.assertIn("scripts\\service.py stop", text)
+        self.assertIn("tools\\service.py stop", text)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ node 1089 缺陷3：release_manifest.json 是区分「受管程序文件」与�
 node 215：包内 VERSION 文件记录版本号（upgrade 自动发现「当前版本」口径）。
 
 用法（在项目根执行）：
-    python scripts/make_release.py [--out dist] [--name bot-group] [--version <ver>]
+    python tools/make_release.py [--out dist] [--name bot-group] [--version <ver>]
 
 行为：
 1. 收集受管程序文件（默认清单 = 引擎/脚本/前端/文档/入口脚本等，排除数据项与
@@ -34,7 +34,7 @@ if str(Path(__file__).resolve().parents[1]) not in sys.path:
 # templates/projects/<id>/manifest.json + .tmpl + references），漏收会导致解包后
 # catalogue() 抛 invalid_template、/projects/templates 入口 400。
 _MANAGED_TOP = (
-    "engine", "scripts", "frontend", "doc", "docs", "mcp", "templates",
+    "engine", "tools", "frontend", "doc", "docs", "mcp", "templates",
     "requirements.txt", "requirements.lock", "install.py", "install.sh",
     "install.bat", "bootstrap.py", "bootstrap.sh", "bootstrap.bat",
     "start.bat", "start.sh", "stop.bat", "stop.sh", "upgrade.py",
@@ -102,7 +102,7 @@ def make_release(root: Path, out_dir: Path, name: str, version: str, base_url: s
     manifest_path.write_bytes(manifest_bytes)
     manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
     checksums = f"{sha}  {archive.name}\n{manifest_sha}  {manifest_path.name}\n"
-    bootstrap = root / "scripts" / "bootstrap.py"
+    bootstrap = root / "tools" / "bootstrap.py"
     installer_assets = {}
     if bootstrap.is_file():
         bootstrap_bytes = bootstrap.read_bytes()
@@ -140,7 +140,7 @@ def main(argv=None) -> int:
     if args.base_url and (not args.base_url.startswith("https://") or not args.base_url.endswith("/")):
         parser.error("--base-url 必须为以 / 结尾的 HTTPS 地址")
     if args.formal:
-        from scripts import releases
+        from tools import releases
         if releases.version_key(args.version) is None:
             parser.error("正式版本格式为 v1.2.3，预发布请使用独立目录与索引")
     root = Path(__file__).resolve().parent.parent

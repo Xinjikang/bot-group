@@ -49,7 +49,7 @@ bot-group 是常驻协作服务：保存项目、需求、任务、消息和执�
 | 内容与观察 | `attachments.py`、`reasoning.py`、`codex_reasoning.py`、`appearance.py` | 图片附件、双宿主推理读取、服务端背景；[附件](IMAGE-ATTACHMENTS.md)、[缓存与背景](BROWSER-CACHE-LIFECYCLE-2026-10-17.md) |
 | 生命周期 | `lifecycle.py`、`process_tree.py`、`browser_resources.py`、`restart.py` | 退出排空、进程树终止、专属浏览器回收、重启回执；[服务重启](SERVICE-RESTART-2026-10-17.md) |
 
-表内 Python 模块均位于 `engine/`；MCP 位于 `mcp/`，前端位于 `frontend/`，安装、发布、启停和测试入口位于 `scripts/`。
+表内 Python 模块均位于 `engine/`；MCP 位于 `mcp/`，前端位于 `frontend/`，安装、发布和运行维护工具位于 `tools/`，测试、测试支持与验证探针位于 `scripts/`。
 
 ## 3. HTTP 与 MCP 契约
 

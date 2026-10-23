@@ -1,6 +1,6 @@
 @echo off
 setlocal
-rem Native Windows stop entry. Python runs scripts/service.py.
+rem Native Windows stop entry. Python runs tools/service.py.
 cd /d "%~dp0"
 set "PY="
 if exist ".venv\Scripts\python.exe" set "PY="%~dp0.venv\Scripts\python.exe""
@@ -14,5 +14,5 @@ if not defined PY (
   echo [stop-engine] Python not found. Install Python 3.11+ and retry.
   exit /b 1
 )
-%PY% scripts\service.py stop
+%PY% tools\service.py stop
 exit /b %errorlevel%

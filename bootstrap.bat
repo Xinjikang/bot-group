@@ -1,6 +1,6 @@
 @echo off
 setlocal
-rem Bootstrap entry: detect Python and run scripts/bootstrap.py.
+rem Bootstrap entry: detect Python and run tools/bootstrap.py.
 rem Download, verify, extract and install use the Python standard library.
 rem Set BOOTSTRAP_URL, BOOTSTRAP_SHA256 and optionally INSTALL_DIR.
 cd /d "%~dp0"
@@ -13,5 +13,5 @@ if not defined PY (
   exit /b 1
 )
 
-%PY% scripts\bootstrap.py
+%PY% tools\bootstrap.py
 exit /b %errorlevel%
