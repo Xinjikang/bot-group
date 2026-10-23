@@ -2,6 +2,8 @@
 
 **简体中文** | [English](README.md)
 
+发布说明：[v0.1.2](docs/releases/v0.1.2.md)。
+
 面向多 Bot 协作的群聊与任务管理引擎，支持消息交流、任务分派、进度跟踪、审查验收与协作交付。内置软件研发、产品调研、内容写作、产品原型设计、算法研发、测试项目六类模板，提供对应的角色分工、协作流程和项目文档。
 
 ## 设计理念
@@ -85,7 +87,8 @@ bot-group/
 │   ├── scanner.py        # 180s 扫描：inbox/任务/话题静默/轮次收口/需求拆解
 │   ├── taskqueue_proxy.py# 修订代理（硬校验→转发任务池）
 │   └── events.py         # SSE 事件流（内存 pub/sub）
-├── scripts/              # 测试与启动工具，测试清单见 TEST_INDEX.md
+├── scripts/              # 测试与测试支持，测试清单见 TEST_INDEX.md
+├── tools/                # 安装、发布、升级及服务维护工具
 ├── mcp/                  # 统一 MCP server（任务管理 + 群聊）
 │   ├── server.py         # 一个进程对外
 │   ├── requirements.txt  # MCP 与引擎共用依赖，加 MCP SDK
@@ -130,11 +133,13 @@ curl.exe -fL https://github.com/Xinjikang/bot-group/releases/latest/download/ins
 
 安装完成后，双击安装目录里的 **`start.bat`**，打开 `http://127.0.0.1:8180/app/`。日常停止使用 **`stop.bat`**，升级使用 **`upgrade.bat`**；升级会自动查询本仓库最新正式版本并保留配置与数据，成功后再次运行 `start.bat`。
 
+从 v0.1.2 起，也可在页面右上角 **设置 → 关于 → 检查新版本**，点击升级按钮并确认。右上角出现“新版本 vX.X.X”时，点击同样打开升级确认框。网页升级自动备份、更新并启动服务，完成后刷新界面；v0.1.0/v0.1.1 用户通过原目录 `upgrade.bat` 升级到本版本。Git 源码工作区通过 Git 更新。
+
 Codex / Hermes 的运行环境与模型认证由使用者准备，接入步骤见下方“连接 Codex / Hermes”。服务本身可以先安装并打开。
 
 维护者从已有源码目录安装时，可执行 `py -3.11 tools/install.py install`，随后执行 `py -3.11 tools/service.py start`。
 
-启动成功后，打开浏览器访问 `http://127.0.0.1:8180/app/`。可双击 `start.bat` 启动或重启，双击 `stop.bat` 停止服务。运行中的服务也可通过页面右上角重启按钮操作，位置在主题与连接状态之间。
+启动成功后，打开浏览器访问 `http://127.0.0.1:8180/app/`。可双击 `start.bat` 启动或重启，双击 `stop.bat` 停止服务。运行中的服务也可通过页面右上角“设置 → 重启服务”操作。
 退出先等待 Bot 自然结束最多 120 秒，超时由引擎终止剩余 Bot 进程树，再回收浏览器资源。详见 [服务重启](docs/engineering/SERVICE-RESTART-2026-10-17.md)。
 脚本通过 `tools/start_engine.py` 创建独立后台进程并进行健康检查；启动失败会显示错误。
 “数据目录”指保存 `.env`、数据库、附件、日志和备份的文件夹，默认就是项目根目录。日志位于 `logs/engine-startup.log` 和 `logs/engine.log`。

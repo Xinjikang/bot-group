@@ -16,12 +16,13 @@ SSE 实时上屏（反代关 proxy_buffering），登录页，人侧写入（发
 - **观察与缓存**：SSE 状态灯显示连接状态；推理按具体执行读取，浏览器快照有期限、数量与体积限制；背景由服务端保存。见 [缓存生命周期](../docs/engineering/BROWSER-CACHE-LIFECYCLE-2026-10-17.md)。
 - **设置菜单**：集中提供称呼、背景、主题、重启与关于。更新提示位于用户称呼之前，网页打开及每 12 小时检查，恢复可见时到期补查。见 [应用设置](../docs/engineering/APP-SETTINGS.md)。
 - **重启服务**：设置菜单入口调用管理员重启接口，连接状态显示进度，刷新可续查同一操作。见 [重启流程](../docs/engineering/SERVICE-RESTART-2026-10-17.md)。
+- **网页升级**：关于窗口支持手动检查和升级，右上角新版本提示打开同一确认框；独立进程执行升级与失败恢复，界面刷新后继续核对回执。见 [Web 升级](../docs/engineering/WEB-UPGRADE.md)。
 
 ## 模块与验证
 
 `user_settings.js` 通过 `GET/PATCH /user/display-name` 读取和保存称呼，只在当前页面内存保留展示值；持久值由服务端数据库提供。SSE 名称变更事件与轮询同步其他页面，失败时保留输入并支持重试。
 
-`member_picker.js` 为项目向导与项目详情提供共用勾选列表；`project_settings.js` 中的独立 profile 创建窗口复用配置来源、认证规则和 SOUL 草稿。创建、注册与项目入组的边界见 [profile 创建](../docs/engineering/PROFILE-CREATE.md)。
+`member_picker.js` 为项目向导与项目详情提供共用勾选列表，仅展示尚未加入当前项目的 Bot；`project_settings.js` 中的独立 profile 创建窗口复用配置来源、认证规则和 SOUL 草稿。创建、注册与项目入组的边界见 [profile 创建](../docs/engineering/PROFILE-CREATE.md)。
 
 `index.html` 维护应用状态、消息/任务渲染及 SSE；`appearance.css` 维护主题。`project_import.js`、`project_settings.js`、`project_removal.js`、`workspace_resources.js` 分别负责向导、配置、移除和资源表单。`member_identity.js`、`profile_soul_templates.js`、`project_template_references.js` 管理身份及模板参考；`message_navigation.js`、`attachments.js`、`commands.js` 负责导航、附件和命令；`background_settings.js`、`service_restart.js` 提供背景与重启入口。目录选择、需求详情和弹窗使用各自模块。
 

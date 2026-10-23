@@ -2,6 +2,8 @@
 
 [简体中文](README.zh-CN.md) | **English**
 
+Release notes: [v0.1.2](docs/releases/v0.1.2.md).
+
 A group chat and task management engine for collaboration between multiple bots. It supports messaging, task assignment, progress tracking, review, acceptance, and delivery. Built-in project templates cover software development, product research, content writing, product prototyping, algorithm research and development, and testing, with roles, workflows, and project documentation for each scenario.
 
 ## Design Philosophy
@@ -85,7 +87,8 @@ bot-group/
 │   ├── scanner.py        # 180-second scan: inbox/tasks/topic silence/round closure/decomposition
 │   ├── taskqueue_proxy.py# Revision proxy: strict validation, then forwarding to the task pool
 │   └── events.py         # SSE event stream with in-memory pub/sub
-├── scripts/              # Tests and startup tools; see TEST_INDEX.md
+├── scripts/              # Tests and test support; see TEST_INDEX.md
+├── tools/                # Installation, releases, upgrades, and service maintenance
 ├── mcp/                  # Unified MCP server for task management and group chat
 │   ├── server.py         # Single server process
 │   ├── requirements.txt  # Shared engine dependencies plus the MCP SDK
@@ -132,11 +135,13 @@ The source files and dedicated `.venv` are installed in that directory; launch i
 
 After installation, double-click **`start.bat`** in the installation directory and open `http://127.0.0.1:8180/app/`. Use **`stop.bat`** to stop and **`upgrade.bat`** to discover and install the latest stable release while preserving configuration and data. Run `start.bat` again after a successful upgrade.
 
+Starting with v0.1.2, open **Settings → About → Check for updates** and confirm the upgrade. Clicking the new-version notice at the top right opens the same confirmation. Web upgrades back up the installation, apply the release, and restart the service; refresh the page when complete. Existing v0.1.0/v0.1.1 installations can reach this version using their original `upgrade.bat`. Git workspaces update through Git.
+
 Prepare your chosen Codex / Hermes runtime and model authentication separately, then follow the connection instructions below. The service can be installed and opened before connecting a bot.
 
 Maintainers with an existing source checkout can run `py -3.11 tools/install.py install`, followed by `py -3.11 tools/service.py start`.
 
-Once startup succeeds, open `http://127.0.0.1:8180/app/` in your browser. Double-click `start.bat` to start or restart the service, or `stop.bat` to stop it. A running service can also be restarted from the button at the top right of the page, between the theme control and connection status.
+Once startup succeeds, open `http://127.0.0.1:8180/app/` in your browser. Double-click `start.bat` to start or restart the service, or `stop.bat` to stop it. A running service can also be restarted through **Settings → Restart service** at the top right.
 
 Shutdown gives bots up to 120 seconds to finish naturally. The engine then terminates any remaining bot process trees and releases browser resources. See [Service restart](docs/engineering/SERVICE-RESTART-2026-10-17.md).
 

@@ -10,7 +10,7 @@
 
 `frontend/app_settings.js` 在每次网页打开并取得管理员身份后检查一次，成功后每 12 小时检查。每分钟核对到期时间；页面重新可见、获得焦点或 pageshow 时执行到期补查。单页只允许一个在途请求；身份改变后丢弃旧响应。失败安静处理，5 分钟后允许重试，客户端 35 秒超时。
 
-`engine/app_updates.py` 使用 `engine/version.py` 获取当前源码身份，复用 `tools/upgrade.py` 的 `discover_release` 及 `tools/releases.py` 的版本比较。默认源为 GitHub latest 下的 `releases.json`，支持已有 `RELEASE_INDEX_URL` 配置，正式版选择排除 draft/prerelease 并校验现有资产字段。检查只读取索引；升级由管理员按发布指南手动执行。
+`engine/app_updates.py` 使用 `engine/version.py` 获取当前源码身份，复用 `tools/upgrade.py` 的 `discover_release` 及 `tools/releases.py` 的版本比较。默认源为 GitHub latest 下的 `releases.json`，支持已有 `RELEASE_INDEX_URL` 配置，正式版选择排除 draft/prerelease 并校验现有资产字段。“关于”提供手动检查，绕过周期等待；关于窗口的升级按钮与右上角新版本提示共用确认框。管理员确认后由独立进程执行备份、升级和服务恢复，详见 [Web 升级契约](WEB-UPGRADE.md)。
 
 响应状态：`ok` 表示当前正式基线与最新版本均可比较，`development` 表示 Git 源码缺少可比较的正式 tag，`unknown` 表示源码副本缺少版本信息，`unavailable` 表示发布查询失败。Git 开发版以最近正式 tag 为版本基线，提交差异同时显示在版本标签中；无基线时提示按提交记录核对。仅确定最新正式版更高时，在右上角用户称呼之前显示更新提示。查询失败保留已知更新提示。
 
