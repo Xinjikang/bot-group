@@ -126,7 +126,8 @@ class RestartIntegration(unittest.TestCase):
             root = Path(tmp)
             shutil.copytree(ROOT / 'engine', root / 'engine', ignore=shutil.ignore_patterns('__pycache__', '.hermes-tmp*'))
             (root / 'tools').mkdir()
-            for name in ('service.py', 'start_engine.py', 'stop_engine.py', 'restart_engine.py'):
+            for name in ('service.py', 'start_engine.py', 'stop_engine.py', 'restart_engine.py',
+                         'bootstrap.py', 'releases.py', 'upgrade.py'):
                 shutil.copy2(ROOT / 'tools' / name, root / 'tools' / name)
             (root / 'tools' / 'install.py').write_text('import sys\nsys.exit(0)\n', encoding='utf-8')
             shutil.copy2(ROOT / 'start.bat', root / 'start.bat')

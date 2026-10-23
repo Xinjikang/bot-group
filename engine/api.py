@@ -83,6 +83,33 @@ def get_app_updates(identity=Depends(_resolve_identity)):
     return JSONResponse(check_update(), headers={"Cache-Control": "no-store"})
 
 
+class AppUpgradeBody(BaseModel):
+    request_id: str = Field(pattern=r'^[a-f0-9]{32}$')
+    version: str = Field(min_length=1, max_length=40)
+
+
+@router_api.get('/system/upgrade')
+def get_app_upgrade(identity=Depends(_resolve_identity)):
+    _admin_only(identity, '升级状态仅限管理员使用')
+    from .app_upgrade import status
+    return JSONResponse(status(), headers={'Cache-Control': 'no-store'})
+
+
+@router_api.post('/system/upgrade', status_code=202)
+def start_app_upgrade(body: AppUpgradeBody, request: Request, identity=Depends(_resolve_identity)):
+    _admin_only(identity, '升级应用仅限管理员使用')
+    if getattr(request.app.state, 'server', None) is None:
+        raise HTTPException(503, '请通过 python -m engine.main 启动服务')
+    from .app_upgrade import begin
+    try:
+        return JSONResponse(begin(body.request_id, body.version, request.app.state.instance_id),
+                            status_code=202, headers={'Cache-Control': 'no-store'})
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
 class DirectoryPickerBody(BaseModel):
     initial: str = Field(default='', max_length=32767)
 

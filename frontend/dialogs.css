@@ -1,3 +1,7 @@
+#app-about{width:480px;max-width:calc(100vw - 32px);max-height:calc(100dvh - 32px);overflow:auto;box-sizing:border-box}
+#app-about p{white-space:pre-line;overflow-wrap:anywhere;line-height:1.6}
+#app-about .dlg-btns{flex-wrap:wrap;position:sticky;bottom:-26px;background:var(--card);padding:12px 0 0}
+#app-upgrade-progress{color:var(--accent-2)}
 #app-alert {
   position: fixed;
   inset: 0;

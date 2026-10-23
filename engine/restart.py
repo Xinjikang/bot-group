@@ -13,6 +13,8 @@ import uuid
 from . import config
 from .browser_resources import _pid_alive
 
+maintenance_lock = threading.RLock()
+
 
 def receipt_path():
     return config.logs_dir() / 'service-restart.json'
@@ -48,7 +50,10 @@ class Restart:
         self.lock = threading.Lock()
 
     def begin(self):
-        with self.lock:
+        with self.lock, maintenance_lock:
+            from . import app_upgrade
+            if app_upgrade.status().get('state') in app_upgrade.ACTIVE:
+                raise ValueError('应用正在升级，请完成后再重启。')
             current = status()
             if current.get('state') in ('starting', 'restarting'):
                 return current

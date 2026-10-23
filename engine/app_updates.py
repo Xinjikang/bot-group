@@ -5,6 +5,9 @@ from .version import version_info
 
 def check_update() -> dict:
     result = version_info()
+    from .app_upgrade import blocked_reason
+    reason = blocked_reason(result)
+    result.update(can_upgrade=not reason, upgrade_blocked_reason=reason)
     try:
         target = upgrade.discover_release()
     except Exception:

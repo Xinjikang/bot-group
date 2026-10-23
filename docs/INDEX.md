@@ -28,6 +28,7 @@
 | --- | --- |
 | [工程说明](engineering/ENGINEERING.md) | 子系统、身份、数据、接口、调度、授权和生命周期 |
 | [发布指南](guides/RELEASE-GUIDE.md) | 安装、配置、正式 Release 升级与恢复 |
+| [Web 升级](engineering/WEB-UPGRADE.md) | 关于检查、升级确认、独立进程与失败恢复 |
 | [部署边界](guides/DEPLOY.md) | 本机身份信任、反代与外部访问 |
 | [服务重启](engineering/SERVICE-RESTART-2026-10-17.md) | 页面入口、120 秒排空、进程树收尾、脚本与回执 |
 | [浏览器生命周期](engineering/BROWSER-LIFECYCLE-2026-10-16.md) | 资源登记、归属、IPC 回收及验证 |

@@ -806,15 +806,17 @@ def latest_backup() -> Path | None:
 
 
 def do_upgrade(url: str | None = None, sha256: str | None = None,
-               index_url: str | None = None) -> int:
+               index_url: str | None = None, *, target=None, progress=None) -> int:
+    report = progress or (lambda phase: None)
     backup_dir = config.backups_dir() / f"upgrade-{_ts()}"
     new_src: Path | None = None
     mutation_started = False
     try:
-        target = _resolve_upgrade_target(url, sha256, index_url)
+        target = target or _resolve_upgrade_target(url, sha256, index_url)
         if target is None:
             return 0
         print("[upgrade] 获取固定目标并校验源码、清单与版本")
+        report('downloading')
         new_src = _fetch_and_extract(target.source, target.sha256)
         _validate_release(new_src, target)
         old_managed = _current_release_manifest()
@@ -822,10 +824,12 @@ def do_upgrade(url: str | None = None, sha256: str | None = None,
             raise RuntimeError("当前环境缺受管理发布清单（release_manifest.json），"
                                "请走可核验迁移流程建立旧版本文件归属后重试")
         print("[upgrade] 安全停机（停止引擎/MCP 等写入方）")
+        report('stopping')
         if _safe_stop() != 0:
             print("[upgrade] 旧引擎停止失败，中止升级", file=sys.stderr)
             return 1
         print(f"[upgrade] 备份数据与程序快照到 {backup_dir}")
+        report('backing_up')
         _backup(backup_dir)
         from dataclasses import asdict
         (backup_dir / "upgrade_target.json").write_text(
@@ -849,6 +853,7 @@ def do_upgrade(url: str | None = None, sha256: str | None = None,
             raise RuntimeError("缺旧受管理清单，升级中止（现场保留）")
         old_managed = {r for r in old_managed if str(r).strip()}
         print("[upgrade] 落地新源码（保留数据目录）")
+        report('installing')
         mutation_started = True
         landed = _land_program(new_src, old_managed, backup_dir=backup_dir)
         _write_new_manifest(backup_dir, landed)
@@ -865,12 +870,15 @@ def do_upgrade(url: str | None = None, sha256: str | None = None,
         if target.version is not None and current_version() != target.version:
             raise RuntimeError("VERSION 属于清单外用户文件，保留原文件并恢复旧版本")
         print("[upgrade] 同步依赖（复用 install）")
+        report('dependencies')
         if _sync_deps() != 0:
             raise RuntimeError("依赖同步失败")
         print("[upgrade] 迁移验证（独立工作副本试跑 init_schema）")
+        report('migrating')
         if _verify_migration(backup_dir / "data" / "group.db") != 0:
             raise RuntimeError("数据库迁移验证失败")
         print("[upgrade] 就绪验证（install.py check）")
+        report('checking')
         if _verify_ready() != 0:
             raise RuntimeError("就绪验证失败")
         print("[upgrade] 升级成功，请运行 start 启动新引擎恢复任务派发")
@@ -879,7 +887,8 @@ def do_upgrade(url: str | None = None, sha256: str | None = None,
         print(f"[upgrade] 升级失败：{exc}", file=sys.stderr)
         if mutation_started:
             print("[upgrade] 回滚到升级前快照")
-            _rollback(backup_dir)
+            report('rolling_back')
+            report('rolled_back' if _rollback(backup_dir) == 0 else 'rollback_failed')
         else:
             print("[upgrade] 程序尚未变更，保留现场并退出")
         return 1
