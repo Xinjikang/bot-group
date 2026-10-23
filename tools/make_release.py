@@ -49,6 +49,28 @@ _EXCLUDE_NAMES = {"install.json", "release_manifest.json", "group.db",
                   "group.db-wal", "group.db-shm", ".env"}
 
 
+def _legacy_release_files(files: list[str]) -> dict[str, str]:
+    """为 v0.1.x 升级进程生成旧路径转发入口，随清单接受校验与回滚管理。"""
+    bridges = {}
+    if "tools/install.py" in files:
+        bridges["scripts/install.py"] = (
+            '"""Compatibility entry for v0.1.x upgrades."""\n'
+            'from pathlib import Path\n'
+            'import runpy\n'
+            'import sys\n'
+            'root = Path(__file__).resolve().parents[1]\n'
+            'sys.path.insert(0, str(root))\n'
+            'if __name__ == "__main__":\n'
+            '    runpy.run_path(str(root / "tools" / "install.py"), run_name="__main__")\n'
+        )
+    if "tools/service.py" in files:
+        bridges["scripts/service.py"] = (
+            '"""Environment loader used by v0.1.x rollback requests."""\n'
+            'from tools.service import _load_env\n'
+        )
+    return bridges
+
+
 def _managed_files(root: Path) -> list[str]:
     """枚举受管程序文件（文件级相对路径，正斜杠分隔，排除数据/测试/运行期产物）。"""
     files: list[str] = []
@@ -85,7 +107,8 @@ def make_release(root: Path, out_dir: Path, name: str, version: str, base_url: s
               file=sys.stderr)
         return 1
     # VERSION 属于受管文件，覆盖、正向删除与回滚均走相同的文件归属规则。
-    files = sorted(set(files) | {"VERSION"})
+    bridges = _legacy_release_files(files)
+    files = sorted(set(files) | {"VERSION"} | bridges.keys())
     manifest = {"version": version, "program_files": files}
     manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -95,7 +118,9 @@ def make_release(root: Path, out_dir: Path, name: str, version: str, base_url: s
         z.writestr("release_manifest.json", manifest_bytes)
         z.writestr("VERSION", version)
         for rel in files:
-            if rel != "VERSION":
+            if rel in bridges:
+                z.writestr(rel, bridges[rel])
+            elif rel != "VERSION":
                 z.write(root / rel, rel)
     sha = hashlib.sha256(archive.read_bytes()).hexdigest()
     manifest_path = out_dir / "release_manifest.json"

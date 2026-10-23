@@ -55,7 +55,7 @@ class ReleaseUpgradeTests(UpgradeTestBase):
         self.assertEqual(result, int(fail))
         self.assertEqual(upgrade.config._PROGRAM_ROOT, original_root)
         self.assertEqual((self.prog / 'VERSION').read_text(), 'v1.0.0' if fail else 'v2.0.0')
-        self.assertEqual((self.prog / 'scripts/install.py').exists(), fail)
+        self.assertTrue((self.prog / 'scripts/install.py').exists())
         self.assertEqual((self.prog / 'tools/install.py').exists(), not fail)
         self.assertEqual((self.data / 'attachments/a.txt').read_text(), 'att')
 
@@ -299,9 +299,9 @@ class ReleaseUpgradeTests(UpgradeTestBase):
         out = self.root / 'publication-assets'
         self.assertEqual(make_release.make_release(root, out, 'bot-group', 'v1.2.3'), 0)
         manifest = json.loads((out / 'release_manifest.json').read_text())
-        self.assertEqual(set(manifest['program_files']), set(public) | {'VERSION'})
+        self.assertEqual(set(manifest['program_files']), set(public) | {'VERSION', 'scripts/install.py'})
         with zipfile.ZipFile(out / 'bot-group-v1.2.3.zip') as archive:
-            self.assertEqual(set(archive.namelist()), set(public) | {'VERSION', 'release_manifest.json'})
+            self.assertEqual(set(archive.namelist()), set(public) | {'VERSION', 'release_manifest.json', 'scripts/install.py'})
             for name in archive.namelist():
                 self.assertNotIn(b'INTERNAL_ONLY', archive.read(name))
 

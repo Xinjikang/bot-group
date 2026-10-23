@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+旧版原入口升级兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_legacy_release_upgrade scripts.test_release_upgrade scripts.test_upgrade -q`。从 Git 提交 `098867cdef323f41b2d5f030900aff92aa6b9b52` 读取 v0.1.1 的真实升级器与依赖，在独立 Python 进程中升级新构建源码包；覆盖旧路径安装/就绪子进程、回滚鉴权环境加载、依赖/迁移/就绪失败恢复、清单与用户数据保留。需本地保留该发布提交；下载使用 file URL，停机与数据库迁移边界隔离，安装夹具记录参数与退出码。
+
 维护工具迁移与版本识别：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_app_updates scripts.test_install scripts.test_bootstrap scripts.test_service scripts.test_service_restart scripts.test_release_upgrade scripts.test_upgrade scripts.test_public_installer scripts.test_windows_bat scripts.test_mcp_lock scripts.test_identity_repair -q`。覆盖真实临时 Git 的 tag/提交距离/dirty/worktree、Release VERSION、源码父目录隔离、旧 scripts 布局到 tools 的升级及失败回滚、文件清单、启动入口和安装环境。运行工具位于 `tools/`，测试与测试支持保留在本目录。
 
 手工拆解凭据与鉴权测试隔离：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_task_api scripts.test_access_contract scripts.test_codex_driver_regressions scripts.test_hermes_transport scripts.test_requirement_lifecycle scripts.test_task_brief -q`。同进程串联验证健康接口鉴权与后续 Bot 启动，覆盖缺省/null/空凭据生成、非法类型拒绝、跨成员修订、已有空锁恢复、发布及完成提交。真实手工 stdio MCP 链路运行 `.venv\Scripts\python.exe -X utf8 -B scripts/test_mcp_e2e.py`；自动执行和手工成员分别使用隔离凭据。

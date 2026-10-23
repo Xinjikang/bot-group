@@ -119,16 +119,13 @@ start.bat
 
 升级与回滚外层使用系统 Python，可在恢复时安全重建安装目录的 `.venv`。损坏快照或绑定路径变化会中止恢复，保留现场供核对。SQLite 备份在写入方退出后获取一致快照；业务流程测试走真实任务池事务（`BEGIN IMMEDIATE`）和 SQLite WAL，写锁在每次提交后释放。
 
-## 旧 scripts 布局首次迁移
+## 旧 scripts 布局升级兼容
 
-v0.1.0/v0.1.1 升级器固定调用 `scripts/install.py`。迁往 `tools/` 布局时，从经过校验的新 Release 源码包解压目录启动新版升级器，明确指定原安装目录。新版工具读取该目录的版本、发布清单和实例配置，沿用下载校验、停机、备份和失败回滚流程。新源码解压目录与原安装目录分别保存；迁移成功后日常使用原安装目录的新 `upgrade.bat`。
+v0.1.0/v0.1.1 用户继续在原安装目录双击 `upgrade.bat`。升级器下载并校验新源码包后，通过发布包生成的 `scripts/install.py` 兼容入口调用 `tools/install.py`，完成依赖同步与就绪检查。升级成功后，同一目录的 `upgrade.bat` 自动使用 `tools/upgrade.py`。
 
-```powershell
-# 在已校验的新 Release 解压目录运行；有自定义数据目录时先设置相同 GROUP_DATA_DIR。
-py -3.11 tools\upgrade.py --program-root D:\Apps\bot-group upgrade
-```
+维护实现保存在仓库 `tools/`。构建源码包时生成两个最小兼容文件：`scripts/install.py` 转发安装命令并保留参数和退出码，`scripts/service.py` 提供旧升级进程回滚停机时使用的环境加载接口。两个文件均列入发布清单，参与下载校验、文件归属管理和失败回滚；仓库 `scripts/` 继续保存测试。支持 v0.1.x 直接升级期间保留这两个发布兼容入口。
 
-`--program-root` 在子命令之前使用，目标必须包含引擎与发布清单；回滚可将子命令改为 `rollback`。恢复旧版时安装入口自动回到旧布局。Git 开发目录通过 Git 更新源码，Release 升级器继续要求真实文件归属清单。
+Git 开发目录通过 Git 更新源码，Release 升级器要求真实文件归属清单。维护时可用 `--program-root` 指定包含引擎与发布清单的已有安装目录；常规升级使用安装目录自身的入口。
 
 ## 发布范围与验证
 
