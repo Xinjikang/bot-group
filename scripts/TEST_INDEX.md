@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+未入组候选过滤：复用 `test_profile_create_browser.py --evidence <主目录报告目录>`，验证选择列表隐藏当前项目成员、刷新后继续过滤并保留选择、批量加入部分成功后移除成功成员，以及创建 profile 和新项目向导选择。
+
 Web 升级：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_app_upgrade scripts.test_app_upgrade_integration scripts.test_app_updates scripts.test_service_restart scripts.test_release_upgrade scripts.test_upgrade -q`。覆盖管理员鉴权、固定版本、重复提交与重启互斥、虚拟环境外升级进程，以及隔离 Windows 实例的真实 API→下载校验→备份→升级→启动；就绪失败及新服务启动失败时恢复旧程序与数据并启动。安装依赖使用受控夹具，其余安装目录、SQLite、端口和进程独立于生产。`python -X utf8 -B scripts/test_app_upgrade_browser.py --evidence <主目录报告目录>` 覆盖关于手动检查、两个升级确认入口、取消、提交响应丢失、刷新续查、失败/成功与 390px 深浅主题；配套 `test_app_settings_browser.py` 回归检查周期和设置菜单。
 
 旧版原入口升级兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_legacy_release_upgrade scripts.test_release_upgrade scripts.test_upgrade -q`。从 Git 提交 `098867cdef323f41b2d5f030900aff92aa6b9b52` 读取 v0.1.1 的真实升级器与依赖，在独立 Python 进程中升级新构建源码包；覆盖旧路径安装/就绪子进程、回滚鉴权环境加载、依赖/迁移/就绪失败恢复、清单与用户数据保留。需本地保留该发布提交；下载使用 file URL，停机与数据库迁移边界隔离，安装夹具记录参数与退出码。

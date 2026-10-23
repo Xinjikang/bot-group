@@ -27,8 +27,9 @@
       } catch (error) { if (active()) status.textContent = `读取失败：${error.message}。可刷新重试。`; }
       finally { if (active()) lock(false); }
     });
-    if (!options.items.length) status.textContent = '暂无候选成员，可创建 profile 或刷新宿主扫描结果。';
-    for (const raw of options.items) {
+    const candidates = options.items.filter(item => !item.already_project_member);
+    if (!candidates.length) status.textContent = '暂无可加入的 Bot，可创建 profile 或刷新列表。';
+    for (const raw of candidates) {
       const item = normalize(raw), row = document.createElement('section'), label = document.createElement('label');
       row.className = 'import-card import-member';
       const selected = options.selected.has(item.bot_id), check = document.createElement('input');

@@ -66,11 +66,19 @@ def main():
             page.evaluate('p => { openProjectDetail(p, document.querySelector("#chip-all")); selectProjectTab("members"); }', project)
             page.locator('#pj-members-add').click()
             candidates = page.locator('#member-picker-list')
-            candidates.locator('input[data-bot-id]').first.wait_for()
-            assert candidates.locator('input:disabled:checked').count() == 2
+            candidates.locator('input[data-profile]').first.wait_for()
+            for bot_id in fixture.ids:
+                assert candidates.locator(f'input[data-bot-id="{bot_id}"]').count() == 0
+            page.locator('#dlg-member-picker').screenshot(path=str(output / 'unjoined-members.png'))
             existing = candidates.locator('input[data-host="hermes"][data-profile="default"]')
             existing.check()
             page.wait_for_function('!document.querySelector("#member-picker-join").disabled')
+            with page.expect_response(lambda response: '/profiles/candidates?' in response.url):
+                candidates.locator('.member-picker-refresh').click()
+            page.wait_for_function('!document.querySelector("#member-picker-list .member-picker-refresh").disabled')
+            assert existing.is_checked()
+            for bot_id in fixture.ids:
+                assert candidates.locator(f'input[data-bot-id="{bot_id}"]').count() == 0
             assert not enrollments
             candidates.locator('.member-picker-create').click()
             assert '会保留' in page.locator('#dlg-member-add').inner_text()
@@ -116,7 +124,7 @@ def main():
             state['join_fail'] = True
             page.locator('#member-picker-join').click()
             page.wait_for_function('document.querySelector("#member-picker-status").textContent.includes("模拟入组失败")')
-            assert candidates.locator('input[data-host="hermes"][data-profile="default"]').is_disabled()
+            assert candidates.locator('input[data-host="hermes"][data-profile="default"]').count() == 0
             assert candidates.locator('input[data-profile="new-codex"]').is_checked()
             assert fixture.conn.execute('SELECT COUNT(*) FROM project_members').fetchone()[0] == count + 1
             state['join_fail'] = False
