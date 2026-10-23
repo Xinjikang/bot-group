@@ -50,7 +50,7 @@ def main():
                 data = template('foreign' if state['mismatch'] else path.split('/')[2])
             elif path.startswith('/projects/templates'):
                 raise AssertionError('Profile editors must never load the global template catalogue')
-            elif path == '/discovery/scan':
+            elif path in ('/discovery/scan', '/profiles/candidates'):
                 data = {'candidates': []}
             elif path.endswith('/config'):
                 handle = path.split('/')[2]
@@ -60,7 +60,7 @@ def main():
                 data = {'project': path.split('/')[2], 'member_profile': path.split('/')[4], 'revision': 'model-revision',
                         'model': '', 'provider': '', 'reasoning_effort': ''}
             elif path == '/profiles/create':
-                data = {'created': True, 'notice': '已创建并加入项目'}
+                data = {'created': True, 'bot_id': 101, 'host_type': 'codex', 'profile': 'new-person', 'config_root': 'E:/test/new-person', 'notice': '已创建 profile'}
             elif path.endswith('/workspaces') or path == '/members':
                 data = {'members': []}
             elif path == '/projects':
@@ -72,10 +72,9 @@ def main():
         page.goto('http://soul.test/app/index.html')
         page.evaluate("() => { showLogin(false); S.currentProject='p'; S.projects=[{name:'p',root:'E:/test',directory_mode:'shared'}]; openProjectDetail('p', $('#chip-all')); selectProjectTab('members'); }")
         page.locator('#pj-members-add').click()
+        page.locator('#member-picker-list .member-picker-create').click()
         page.locator('[name=member-add-host][value=codex]').check()
-        page.locator('#member-add-next').click()
         page.wait_for_function("!memberAdd.scanning")
-        page.locator('[name=member-add-mode][value=create]').check()
         page.locator('#member-create-profile').fill('new-person')
         page.locator('#member-create-soul-templates button').click()
         page.locator('#profile-soul-template-apply').wait_for(state='visible')
@@ -101,6 +100,7 @@ def main():
         page.locator('#member-add-join').click()
         page.locator('#dlg-member-add').wait_for(state='hidden')
         assert writes[-1][1]['instructions'] == soul + '\n补充要求'
+        page.locator('#member-picker-close').click()
         page.evaluate("closeDialogAnchored($('#dlg-project-detail'))")
 
         def edit(project='p', runtime='hermes'):
@@ -180,10 +180,9 @@ def main():
             state['real_client'] = fixture.client
             page.evaluate("p => { S.currentProject=p; S.projects=[{name:p,root:'E:/test',directory_mode:'shared'}]; openProjectDetail(p, $('#chip-all')); selectProjectTab('members'); }", project)
             page.locator('#pj-members-add').click()
+            page.locator('#member-picker-list .member-picker-create').click()
             page.locator('[name=member-add-host][value=codex]').check()
-            page.locator('#member-add-next').click()
             page.wait_for_function('!memberAdd.scanning')
-            page.locator('[name=member-add-mode][value=create]').check()
             page.locator('#member-create-soul-templates button').click()
             page.wait_for_function("!document.querySelector('#profile-soul-template-retry').disabled")
             assert page.locator('#profile-soul-template-role option').all_text_contents() == [r['name'] for r in expected]
@@ -191,6 +190,7 @@ def main():
             page.locator('#profile-soul-template-apply').click()
             assert page.locator('#member-create-instructions').input_value() == expected[0]['content']
             page.locator('#member-add-close').click()
+            page.locator('#member-picker-close').click()
             page.evaluate("closeDialogAnchored($('#dlg-project-detail'))")
             for runtime in ('hermes', 'codex'):
                 edit(project, runtime); picker()

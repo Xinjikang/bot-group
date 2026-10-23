@@ -136,7 +136,7 @@ def main():
             elif path == '/members/dev/config':
                 data = {'description': '测试成员', 'soul': '# Soul', 'env': '', 'model': 'model',
                         'provider': 'provider', 'reasoning_effort': 'medium', 'revision': 'b' * 64}
-            elif path == '/discovery/scan':
+            elif path in ('/discovery/scan', '/profiles/candidates'):
                 if failures['scan']:
                     req.fulfill(status=503, json={'detail': 'scan offline'})
                     return
@@ -440,47 +440,23 @@ def main():
         assert page.locator('.pj-role-row').count() == 2
         permission_writes = len([body for path, body in requests if path.endswith('/permissions') and body])
         page.locator('#pj-tab-members').click()  # 回成员 tab：添加成员入口在成员面板
-        page.locator('#pj-members-add').click()
-        page.wait_for_function("document.querySelector('#member-add-title').textContent.includes('1/2')")
-        # 步1 未选宿主时「下一步」禁用（选中 radio 立即解锁）
-        assert page.locator('#member-add-next').is_disabled()
-        # 扫接口失败降级空态不阻塞（验收②）：上一步可返回重试
         failures['scan'] = True
-        page.locator('[name="member-add-host"][value="hermes"]').check()
-        page.locator('#member-add-next').click()
-        page.wait_for_function("document.querySelector('#member-add-title').textContent.includes('2/2')")
-        page.wait_for_function("document.querySelector('#member-add-status').textContent.includes('扫描失败')")
+        page.locator('#pj-members-add').click()
+        page.get_by_text('读取失败：scan offline。可刷新重试。', exact=True).wait_for()
         failures['scan'] = False
-        # 上一步回步1，换宿主重扫（scan 成功 → codex 候选过滤，验收①）
-        page.locator('#member-add-back').click()
-        page.locator('[name="member-add-host"][value="codex"]').check()
-        page.locator('#member-add-next').click()
-        page.wait_for_function("document.querySelectorAll('input[name=member-add-profile]').length === 1")
-        assert page.locator('input[name="member-add-profile"]').count() == 1  # codex 候选过滤
-        assert '已是花名册成员' in page.locator('#member-add-steps').inner_text()
-        page.locator('#member-add-back').click()
-        page.locator('[name="member-add-host"][value="hermes"]').check()
-        page.locator('#member-add-next').click()
-        page.wait_for_function("document.querySelectorAll('input[name=member-add-profile]').length === 2")
-        # 绑定候选：复用 Bot 提示；未绑定候选：注册新 Bot 提示
-        page.locator('input[name="member-add-profile"]').first.check()
-        page.wait_for_function("document.querySelector('#member-add-steps').textContent.includes('直接复用')")
-        assert '沈清' in page.locator('#member-add-steps').inner_text()
-        page.locator('input[name="member-add-profile"]').nth(1).check()
-        page.wait_for_function("document.querySelector('#member-add-steps').textContent.includes('注册新 Bot')")
-        assert '2/2' in page.locator('#member-add-title').inner_text()
-        assert page.locator('#member-add-role, #member-add-steps input[type="checkbox"]').count() == 0
-        assert not page.locator('#member-add-next').is_visible()
-        # 加入失败上屏不关弹窗（接口报错降级，验收②）
+        page.locator('#member-picker-list .member-picker-refresh').click()
+        page.wait_for_function('document.querySelectorAll("#member-picker-list input[type=checkbox]").length === 3')
+        assert '沈清' in page.locator('#member-picker-list').inner_text()
+        page.locator('#member-picker-list input[data-profile="new-bot"]').check()
+        page.wait_for_function('!document.querySelector("#member-picker-join").disabled')
         failures['register'] = '该 profile 尚未绑定 Bot 且缺少 config_root'
-        page.locator('#member-add-join').click()
-        page.wait_for_function("document.querySelector('#member-add-status').textContent.includes('加入失败')")
-        assert page.locator('#dlg-member-add').evaluate('el => el.open')
+        page.locator('#member-picker-join').click()
+        page.wait_for_function("document.querySelector('#member-picker-status').textContent.includes('加入失败')")
+        assert page.locator('#dlg-member-picker').evaluate('el => el.open')
         failures['register'] = None
-        # 加入成功仅注册身份并加入当前项目，不写入角色或授权。
         page.locator('#pj-panel-members').wait_for(state='attached')
-        page.locator('#member-add-join').click()
-        page.wait_for_function("!document.querySelector('#dlg-member-add').open")
+        page.locator('#member-picker-join').click()
+        page.wait_for_function("!document.querySelector('#dlg-member-picker').open")
         assert register_calls[-1] == {'project': 'p', 'host_type': 'hermes', 'profile': 'new-bot',
                                       'config_root': 'E:/hermes/new-bot'}
         assert len([body for path, body in requests if path.endswith('/permissions') and body]) == permission_writes

@@ -31,7 +31,7 @@ def main():
                 if path.startswith('/app/'):
                     file = ROOT / 'frontend' / (path[5:] or 'index.html')
                     request.fulfill(body=file.read_bytes(), content_type=mimetypes.guess_type(file.name)[0] or 'text/plain')
-                elif path in ('/projects', '/members') or path.startswith('/projects/') or '/workspaces' in path:
+                elif path in ('/projects', '/members', '/profiles/candidates') or path.startswith('/projects/') or '/workspaces' in path:
                     response = fixture.client.request(req.method, req.url, json=req.post_data_json if req.method in ('POST', 'PUT') else None)
                     if path == '/projects/import':
                         state['submits'] += 1

@@ -113,14 +113,12 @@ document.querySelectorAll('[name="project-directory-mode"]').forEach(radio => ra
   if (radio.checked) { $('#pj-d-mode').value = radio.value; $('#pj-worktree-options').hidden = radio.value !== 'worktree'; }
 }));
 $('#pj-members-refresh').addEventListener('click', () => loadProjectMembers());
-// req#87 task#151：添加成员三步向导——步1选宿主、步2选发现的 profile、步3职责权限+加入。
-// 后端接口（task#150 已落地）：GET /discovery/scan 产出全量候选（含双宿主，前端按所选
-// host_type 本地过滤），POST /bots/register 注册/复用 Bot 并可带 project 顺带加入。
-// 接口调用失败时降级空态提示，不阻塞主流程（验收标准：接口未就绪降级空态不阻塞）。
-let memberAdd = null;   // {step, host, candidates:[], candidate, scanning, error}
-function memberAddReset() {
-  memberAdd = {step: 1, host: null, candidates: [], sources: [], candidate: null, scanning: false, error: '',
-    mode: 'existing', busy: false, project: $('#pj-detail-form').dataset.origName,
+// Shared profile creation keeps enrollment in the caller's member selection flow.
+let memberAdd = null;
+function memberAddReset(options) {
+  memberAdd = {host: 'hermes', sources: [], scanning: false, error: '',
+    busy: false, project: options.project || '', template: options.template,
+    onCreated: options.onCreated,
     draft: {profile: '', display_name: '', model: '', instructions: '', source: '', reuse_auth: true},
     requestId: [...crypto.getRandomValues(new Uint8Array(16))].map(n => n.toString(16).padStart(2, '0')).join('')};
 }
@@ -167,7 +165,7 @@ function renderMemberCreate(steps) {
   source.value = draft.source;
   const updateAuth = () => {
     if (memberAdd.host === 'codex') {
-      form.querySelector('#member-create-auth-help').textContent = '自动使用主账户认证；新 Bot 统一开启智能审批（帮我审批）和沙箱，并获得项目目录授权。';
+      form.querySelector('#member-create-auth-help').textContent = '自动使用主账户认证；新 Bot 统一开启智能审批（帮我审批）和沙箱，加入项目时获得项目目录授权。';
       return;
     }
     auth.disabled = source.value === '';
@@ -183,8 +181,8 @@ function renderMemberCreate(steps) {
   if (draft.profileTouched) validateDialogField(form.querySelector('#member-create-profile'));
   const current = memberAdd;
   mountProjectSoulTemplates(form.querySelector('#member-create-soul-templates'), {
-    project: current.project, maxLength: 32000, disabled: current.scanning,
-    isActive: () => memberAdd === current && current.step === 2 && current.mode === 'create' && !current.busy,
+    project: current.project, template: current.template, maxLength: 32000, disabled: current.scanning,
+    isActive: () => memberAdd === current && !current.busy,
     getValue: () => draft.instructions,
     setValue: value => {
       draft.instructions = value; draft.expanded = true; details.open = true;
@@ -195,186 +193,58 @@ function renderMemberCreate(steps) {
 function renderMemberAdd() {
   const steps = $('#member-add-steps'), status = $('#member-add-status');
   status.dataset.error = String(!!memberAdd.error);
-  $('#member-add-back').hidden = memberAdd.step === 1;
-  const join = $('#member-add-join'), next = $('#member-add-next');
-  join.hidden = memberAdd.step !== 2; next.hidden = memberAdd.step === 2;
-  join.disabled = memberAdd.busy || memberAdd.scanning || (memberAdd.mode === 'create' ? !memberCreateValid() : !memberAdd.candidate);
-  join.textContent = memberAdd.mode === 'create' ? '创建并加入项目' : '加入当前项目';
-  next.disabled = memberAdd.step === 1 ? !memberAdd.host : !(memberAdd.candidate && !memberAdd.scanning);
+  const join = $('#member-add-join');
+  join.disabled = memberAdd.busy || memberAdd.scanning || !memberCreateValid();
+  join.textContent = '创建 profile';
   steps.replaceChildren();
-  if (memberAdd.step === 1) {
-    $('#member-add-title').textContent = '添加成员 · 1/2 选择宿主';
-    status.textContent = '';
-    // 步1 用两枚「选项卡片」而非裸 radio：与 project-mode-options 同语言，
-    // 选中态靠 accent 高亮边框，radio 本体只 15px（dialog input 全局规则会拉伸原生控件）。
-    const host = document.createElement('fieldset');
-    host.className = 'project-permission-row';
-    host.style.borderTop = '0'; host.style.borderLeft = '0'; host.style.borderRight = '0'; host.style.paddingTop = '4px';
-    host.innerHTML = `<legend>宿主类型</legend>
-      <div role="radiogroup" aria-label="宿主类型" style="display:flex;gap:10px;flex-wrap:wrap" class="project-mode-options">
-      <label><input type="radio" name="member-add-host" value="hermes" ${memberAdd.host === 'hermes' ? 'checked' : ''}><span>Hermes</span></label>
-      <label><input type="radio" name="member-add-host" value="codex" ${memberAdd.host === 'codex' ? 'checked' : ''}><span>Codex</span></label></div>`;
-    steps.appendChild(host);
-    // 选中宿主立即解锁「下一步」——host 只在下一步点击时从 radio 读取会死锁：
-    // next.disabled 依赖 host，而 host 在点击前不落状态。
-    host.querySelectorAll('input[name="member-add-host"]').forEach(radio => {
-      radio.addEventListener('change', () => { memberAdd.host = radio.value; renderMemberAdd(); });
-    });
+  $('#member-add-title').textContent = '创建 profile';
+  status.textContent = memberAdd.scanning ? '正在读取配置来源…' : memberAdd.error;
+  const host = document.createElement('div');
+  host.className = 'project-mode-options';
+  host.setAttribute('role', 'radiogroup'); host.setAttribute('aria-label', '宿主类型');
+  for (const [value, label] of [['hermes', 'Hermes'], ['codex', 'Codex']]) {
+    const choice = document.createElement('label'), input = document.createElement('input');
+    input.type = 'radio'; input.name = 'member-add-host'; input.value = value;
+    input.checked = memberAdd.host === value;
+    input.addEventListener('change', () => { memberAdd.host = value; loadMemberCreateSources(); });
+    const title = document.createElement('span'); title.textContent = label;
+    choice.append(input, title); host.append(choice);
   }
-  if (memberAdd.step === 2) {
-    $('#member-add-title').textContent = `添加成员 · 2/2 ${memberAdd.mode === 'create' ? '创建' : '选择'} ${memberAdd.host === 'codex' ? 'Codex' : 'Hermes'} profile`;
-    const modes = document.createElement('div');
-    modes.className = 'project-mode-options member-add-modes';
-    modes.setAttribute('role', 'radiogroup'); modes.setAttribute('aria-label', '添加方式');
-    for (const [value, title] of [['existing', '选择已有 profile'], ['create', '创建新 profile']]) {
-      const label = document.createElement('label'), input = document.createElement('input'), text = document.createElement('span');
-      input.type = 'radio'; input.name = 'member-add-mode'; input.value = value;
-      input.checked = memberAdd.mode === value; text.textContent = title;
-      input.addEventListener('change', () => { memberAdd.mode = value; renderMemberAdd(); });
-      label.append(input, text); modes.appendChild(label);
-    }
-    steps.appendChild(modes);
-    if (memberAdd.mode === 'create') {
-      status.textContent = memberAdd.scanning ? '正在读取配置来源…' : memberAdd.error;
-      renderMemberCreate(steps);
-      return;
-    }
-    if (memberAdd.scanning) status.textContent = '正在扫描宿主 profile…';
-    else if (memberAdd.error) status.textContent = memberAdd.error; // catch 写入，由渲染统一出牌（防覆盖竞态）
-    else if (!memberAdd.candidates.length) status.textContent = '暂无可添加成员';
-    else status.textContent = '';
-    const group = document.createElement('div');
-    group.setAttribute('role', 'radiogroup');
-    group.setAttribute('aria-label', '发现的 profile 候选');
-    group.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
-    memberAdd.candidates.forEach((p, i) => {
-      const label = document.createElement('label');
-      // 同 project-mode-options 选项卡片语言：radio 隐身、span 承载选中态
-      label.style.cssText = 'position:relative;margin:0!important;';
-      const input = document.createElement('input');
-      input.type = 'radio'; input.name = 'member-add-profile'; input.value = String(i);
-      // 视觉隐身但保留键盘可达：opacity 0 + 铺满卡片，整卡即热区，方向键/空格照常切换
-      input.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;opacity:0;margin:0;cursor:pointer;';
-      input.checked = memberAdd.candidate === memberAdd.candidates[i];
-      input.disabled = memberAdd.scanning;
-      const text = Object.assign(document.createElement('span'), {
-        textContent: `${p.display_name || p.profile}（${p.profile}）${p.bound ? ` · 复用 Bot${p.bot_id != null ? ` #${p.bot_id}` : ''}` : ''}${p.already_member ? ' · 已是花名册成员' : ''}`});
-      text.style.cssText = 'display:block;padding:9px 12px;text-align:left;border:1px solid var(--border);border-radius:10px;background:var(--card);color:var(--fg-2);font-size:13px;';
-      const paint = () => {
-        // 选中态上卡片：金色描边 + 金字（同步1 Hermes/Codex 的视觉语言）
-        text.style.borderColor = input.checked ? 'var(--accent)' : 'var(--border)';
-        text.style.color = input.checked ? 'var(--accent-2)' : 'var(--fg-2)';
-      };
-      paint();
-      label.append(input, text);
-      group.appendChild(label);
-      input.addEventListener('change', () => { memberAdd.candidate = memberAdd.candidates[i]; renderMemberAdd(); });
-    });
-    steps.appendChild(group);
-    if (memberAdd.candidate) {
-      const hint = document.createElement('p');
-      hint.className = 'profile-help';
-      hint.style.margin = '4px 0 0';
-      hint.textContent = memberAdd.candidate.bound
-        ? `该 profile 已绑定 Bot${memberAdd.candidate.bot_id != null ? ` #${memberAdd.candidate.bot_id}` : ''}「${memberAdd.candidate.display_name || memberAdd.candidate.profile}」，加入时直接复用（显示名随 Bot 全局）。`
-        : '该 profile 尚未绑定 Bot，加入时将注册新 Bot。';
-      if (memberAdd.candidate.already_member) hint.textContent += ' 注意：该 profile 已在全局花名册中。';
-      hint.style.color = 'var(--accent-2)';
-      steps.appendChild(hint);
-      if (memberAdd.host === 'codex') {
-        for (const kind of ['sandbox', 'approval']) {
-          const message = memberAdd.candidate[`${kind}_notice`]?.message;
-          if (!message) continue;
-          const notice = document.createElement('p');
-          notice.id = `member-add-${kind}-notice`;
-          notice.className = 'profile-help member-sandbox-notice';
-          notice.setAttribute('role', 'status');
-          notice.textContent = message;
-          steps.appendChild(notice);
-        }
-      }
-    }
-  }
+  steps.append(host);
+  renderMemberCreate(steps);
 }
 function openMemberAdd() {
-  memberAddReset();
-  $('#dlg-member-add').showModal();
-  renderMemberAdd();
-  focusMemberAdd();
+  MemberPicker.openProject($('#pj-detail-form').dataset.origName);
 }
-// 分步焦点策略：showModal 默认聚焦序列首个 button=「取消」，回车易误触取消；
-// 「下一步」在步1 未选宿主时 disabled（focus 落不上去），先聚焦步内首控件。
-function focusMemberAdd() {
-  const firstControl = document.querySelector('#member-add-steps input:not([disabled]), #member-add-steps input[type=text]');
-  const next = $('#member-add-next');
-  if (firstControl) firstControl.focus();
-  else if (!next.disabled && !next.hidden) next.focus();
+function openProfileCreate(options) {
+  if ($('#dlg-member-add').open) return;
+  memberAddReset(options);
+  $('#dlg-member-add').showModal();
+  loadMemberCreateSources();
 }
 $('#pj-members-add').addEventListener('click', openMemberAdd);
 $('#member-add-close').addEventListener('click', () => { if (!memberAdd?.busy) $('#dlg-member-add').close(); });
 $('#dlg-member-add').addEventListener('cancel', e => { if (memberAdd?.busy) e.preventDefault(); });
 $('#dlg-member-add').addEventListener('close', () => { if (!$('#dlg-member-add').open) memberAdd = null; });
-$('#member-add-back').addEventListener('click', () => {
-  if (memberAdd.busy) return;
-  memberAdd.scanVersion = (memberAdd.scanVersion || 0) + 1;
-  memberAdd.step--; renderMemberAdd();
-});
-$('#member-add-next').addEventListener('click', async () => {
-  if (memberAdd.step === 1) {
-    const chosen = document.querySelector('input[name="member-add-host"]:checked');
-    if (!chosen) { $('#member-add-status').textContent = '请选择宿主类型。'; return; }
-    memberAdd.host = chosen.value;
-    memberAdd.step = 2; memberAdd.scanning = true; memberAdd.candidates = []; memberAdd.sources = []; memberAdd.candidate = null; memberAdd.error = '';
-    memberAdd.draft.source = '';
-    const current = memberAdd, scanVersion = current.scanVersion = (current.scanVersion || 0) + 1;
-    renderMemberAdd();
-    // req#87：宿主 profile 扫描——GET /discovery/scan 全量候选（含双宿主），前端按所选
-    // host_type 过滤。接口失败降级空态提示，不阻塞。
-    try {
-      const project = current.project;
-      const r = await api(`/discovery/scan?project=${encodeURIComponent(project)}`);
-      if (memberAdd !== current || current.scanVersion !== scanVersion) return;
-      current.sources = (r.candidates || []).filter(p => p.host_type === current.host);
-      current.candidates = current.sources.filter(p => !p.already_project_member);
-      const defaultSource = current.sources.findIndex(p => p.profile === 'default');
-      current.draft.source = defaultSource >= 0 ? String(defaultSource) : current.sources.length ? '0' : '';
-    } catch (err) {
-      if (memberAdd !== current || current.scanVersion !== scanVersion) return;
-      memberAdd.candidates = [];
-      memberAdd.error = `扫描失败：${err.message}（可用「上一步」返回后重试）`;
-    } finally {
-      if (memberAdd === current && current.scanVersion === scanVersion) {
-        current.scanning = false;
-        if ($('#dlg-member-add').open && current.step === 2) renderMemberAdd();
-      }
+async function loadMemberCreateSources() {
+  const current = memberAdd, scanVersion = current.scanVersion = (current.scanVersion || 0) + 1;
+  current.scanning = true; current.sources = []; current.draft.source = ''; current.error = '';
+  renderMemberAdd();
+  try {
+    const result = await api(`/discovery/scan?project=${encodeURIComponent(current.project)}`);
+    if (memberAdd !== current || current.scanVersion !== scanVersion) return;
+    current.sources = (result.candidates || []).filter(p => p.host_type === current.host);
+    const defaultSource = current.sources.findIndex(p => p.profile === 'default');
+    current.draft.source = defaultSource >= 0 ? String(defaultSource) : current.sources.length ? '0' : '';
+  } catch (err) {
+    if (memberAdd === current && current.scanVersion === scanVersion) current.error = `配置来源读取失败：${err.message}。可切换宿主重试，或使用默认设置。`;
+  } finally {
+    if (memberAdd === current && current.scanVersion === scanVersion) {
+      current.scanning = false; renderMemberAdd();
     }
   }
-});
-$('#member-add-join').addEventListener('click', async () => {
-  if (memberAdd?.mode === 'create') { await submitMemberCreate(); return; }
-  const project = memberAdd?.project;
-  if (!project || !memberAdd?.candidate) return;
-  const joinBtn = $('#member-add-join');
-  joinBtn.disabled = true;
-  $('#member-add-status').textContent = '正在加入…';
-  $('#member-add-status').dataset.error = 'false';
-  // req#87：扫描命中已绑定（bound=true）→ 复用 Bot；未绑定 → 注册新 Bot。
-  // 契约按 task#150：POST /bots/register 必填 host_type/profile/config_root，
-  // 角色和权限由加入后的项目成员设置管理。
-  const payload = {project, host_type: memberAdd.host, profile: memberAdd.candidate.profile,
-    config_root: memberAdd.candidate.config_root};
-  try {
-    const result = await api('/bots/register', {method: 'POST', body: JSON.stringify(payload)});
-    $('#dlg-member-add').close();
-    await loadProjectMembers();
-    await loadMembers();
-    $('#pj-members-status').textContent = result?.created === false ? '成员已加入（复用已有 Bot）。' : '成员已加入。';
-  } catch (err) {
-    $('#member-add-status').textContent = `加入失败：${err.message}`;
-    $('#member-add-status').dataset.error = 'true';
-    joinBtn.disabled = false;
-  }
-});
+}
+$('#member-add-join').addEventListener('click', submitMemberCreate);
 
 async function submitMemberCreate() {
   const current = memberAdd;
@@ -382,10 +252,10 @@ async function submitMemberCreate() {
   current.busy = true;
   const dialog = $('#dlg-member-add');
   dialog.querySelectorAll('input, select, textarea, button').forEach(el => el.disabled = true);
-  $('#member-add-status').textContent = '正在创建 profile 并加入项目…';
+  $('#member-add-status').textContent = '正在创建 profile…';
   $('#member-add-status').dataset.error = 'false';
   const draft = current.draft, source = current.sources[Number(draft.source)];
-  const payload = {project: current.project, host_type: current.host, profile: draft.profile,
+  const payload = {host_type: current.host, profile: draft.profile,
     display_name: draft.display_name.trim(), model: draft.model.trim(), instructions: draft.instructions,
     source: draft.source !== '' && source ? {profile: source.profile, config_root: source.config_root} : null,
     request_id: current.requestId};
@@ -395,11 +265,7 @@ async function submitMemberCreate() {
     if (memberAdd !== current) return;
     current.busy = false;
     dialog.close();
-    if ($('#pj-detail-form').dataset.origName === current.project) {
-      await loadProjectMembers();
-      $('#pj-members-status').textContent = result.notice;
-    }
-    await loadMembers();
+    await current.onCreated({...result, display_name: draft.display_name.trim(), bound: true});
     if (result.setup_command) {
       await showAlert(`${result.notice}\n\n在引擎所在电脑的终端执行：\n${result.setup_command}\n\nProfile 目录：${result.home}`);
     }
@@ -410,8 +276,6 @@ async function submitMemberCreate() {
     renderMemberAdd();
   } finally {
     $('#member-add-close').disabled = false;
-    $('#member-add-back').disabled = false;
-    $('#member-add-next').disabled = !memberAdd?.host;
   }
 }
 

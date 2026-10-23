@@ -746,7 +746,7 @@ class ProfileSource(BaseModel):
 
 class ProfileCreateBody(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    project: str = Field(min_length=1, max_length=200)
+    project: str | None = Field(default=None, max_length=200)
     host_type: str = Field(pattern='^(codex|hermes)$')
     profile: str = Field(min_length=1, max_length=64)
     display_name: str = Field(default='', max_length=100)
@@ -764,6 +764,26 @@ def post_create_profile(body: ProfileCreateBody, identity: tuple = Depends(_reso
     conn = _conn()
     try:
         return profile_create.create(conn, body.model_dump())
+    finally:
+        conn.close()
+
+
+@router_api.get('/profiles/candidates')
+def get_profile_candidates(project: str = '', identity=Depends(_resolve_identity)):
+    _admin_only(identity, '成员候选仅限管理员使用')
+    conn = _conn()
+    try:
+        candidates = discovery.scan_candidates(conn, project)
+        found = {candidate['bot_id'] for candidate in candidates if candidate['bot_id'] is not None}
+        enrolled = {row['bot_id'] for row in conn.execute('SELECT bot_id FROM project_members WHERE project=?', (project,))}
+        for row in conn.execute("SELECT b.*, m.profile AS member_profile FROM bots b LEFT JOIN members m ON m.bot_id=b.id WHERE b.profile!='user' ORDER BY b.id"):
+            if row['id'] in found:
+                continue
+            candidates.append({'bot_id': row['id'], 'host_type': row['host_type'], 'profile': row['profile'],
+                               'config_root': row['config_root'], 'display_name': row['display_name'],
+                               'member_profile': row['member_profile'], 'bound': True,
+                               'already_project_member': row['id'] in enrolled})
+        return {'candidates': candidates}
     finally:
         conn.close()
 

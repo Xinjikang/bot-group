@@ -42,11 +42,14 @@
     find('apply').disabled = true; find('retry').disabled = true;
     find('status').textContent = '正在读取当前项目的 SOUL 模板…';
     try {
-      const result = await api(`/projects/${encodeURIComponent(state.project)}/template-reference`, {cache: 'no-store'});
+      const result = state.template
+        ? {template: state.template.id === 'blank' ? {...state.template, references: []} : await api(`/projects/templates/${encodeURIComponent(state.template.id)}`, {cache: 'no-store'})}
+        : await api(`/projects/${encodeURIComponent(state.project)}/template-reference`, {cache: 'no-store'});
       if (!live(state) || version !== generation) return;
-      if (result.project !== state.project) throw new Error('模板与当前项目不一致，请重新读取。');
+      if (state.template && result.template.version !== state.template.version) throw new Error('模板版本已变化，请返回项目向导重新读取。');
+      if (!state.template && result.project !== state.project) throw new Error('模板与当前项目不一致，请重新读取。');
       state.references = (result.template?.references || []).filter(ref => typeof ref.content === 'string' && ref.content.trim());
-      find('project').textContent = `项目：${state.project}` + (result.template ? ` · ${result.template.name} · 最新参考` : '');
+      find('project').textContent = state.template ? `项目模板：${state.template.name || state.template.id}` : `项目：${state.project}` + (result.template ? ` · ${result.template.name} · 最新参考` : '');
       find('role').replaceChildren(...state.references.map((ref, i) => new Option(ref.name || ref.role_id, String(i))));
       find('role').disabled = !state.references.length;
       preview();
@@ -89,12 +92,12 @@
     container.replaceChildren();
     const button = document.createElement('button'), status = document.createElement('span');
     button.type = 'button'; button.className = 'profile-soul-template-open';
-    button.textContent = '查看 / 引用 SOUL 模板'; button.disabled = !options.project || !!options.disabled;
+    button.textContent = '查看 / 引用 SOUL 模板'; button.disabled = !(options.project || options.template) || !!options.disabled;
     status.className = 'profile-help'; status.setAttribute('role', 'status');
-    status.textContent = options.project ? '仅显示当前项目的模板。' : '请从当前项目打开成员配置后引用模板。';
+    status.textContent = options.project || options.template ? '仅显示当前项目的模板。' : '请从当前项目打开成员配置后引用模板。';
     container.classList.add('profile-soul-template-toolbar'); container.append(button, status);
     button.addEventListener('click', () => {
-      if (!options.project || !options.isActive()) return;
+      if (!(options.project || options.template) || !options.isActive()) return;
       const owner = container.closest('dialog');
       if (!owner?.open) return;
       release();

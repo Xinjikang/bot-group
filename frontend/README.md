@@ -21,6 +21,8 @@ SSE 实时上屏（反代关 proxy_buffering），登录页，人侧写入（发
 
 `user_settings.js` 通过 `GET/PATCH /user/display-name` 读取和保存称呼，只在当前页面内存保留展示值；持久值由服务端数据库提供。SSE 名称变更事件与轮询同步其他页面，失败时保留输入并支持重试。
 
+`member_picker.js` 为项目向导与项目详情提供共用勾选列表；`project_settings.js` 中的独立 profile 创建窗口复用配置来源、认证规则和 SOUL 草稿。创建、注册与项目入组的边界见 [profile 创建](../docs/engineering/PROFILE-CREATE.md)。
+
 `index.html` 维护应用状态、消息/任务渲染及 SSE；`appearance.css` 维护主题。`project_import.js`、`project_settings.js`、`project_removal.js`、`workspace_resources.js` 分别负责向导、配置、移除和资源表单。`member_identity.js`、`profile_soul_templates.js`、`project_template_references.js` 管理身份及模板参考；`message_navigation.js`、`attachments.js`、`commands.js` 负责导航、附件和命令；`background_settings.js`、`service_restart.js` 提供背景与重启入口。目录选择、需求详情和弹窗使用各自模块。
 
 按改动选择 [测试索引](../scripts/TEST_INDEX.md) 中的 Node VM 和隔离 Chromium 用例；静态资源修改验证刷新后的行为，后端接口更新需先加载新服务。完整工程专题见 [文档索引](../docs/INDEX.md)。

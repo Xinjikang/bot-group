@@ -74,7 +74,7 @@
     </div>
     <div id="import-member-step" hidden>
       <h4 tabindex="-1">选择成员与负责人</h4>
-      <p class="profile-help">可选择已注册 Bot。每位成员选择一个角色，个人授权与角色授权合并生效。</p>
+      <p class="profile-help">勾选已有成员或创建 profile。每位成员选择一个角色，最终确认时统一入组并配置授权。</p>
       <p id="import-member-count" class="import-note"></p>
       <div id="import-members"></div>
     </div>
@@ -240,27 +240,20 @@
   }
   el('supplement').addEventListener('change', renderRoles);
   function renderMembers() {
-    el('members').replaceChildren();
+    const currentPreview = preview;
     el('member-count').textContent = `已选 ${members.size} / ${preview.bots.length} 位成员`;
-    if (!preview.bots.length) el('members').textContent = '暂无已注册 Bot，可先完成登记，再从项目设置添加成员。';
-    for (const bot of preview.bots) {
-      const row = document.createElement('section'), label = document.createElement('label'), check = document.createElement('input');
-      row.className = 'import-card import-member'; row.classList.toggle('selected', members.has(bot.bot_id));
-      check.type = 'checkbox'; check.dataset.botId = bot.bot_id; check.checked = members.has(bot.bot_id);
-      const identity = document.createElement('span'), name = document.createElement('strong'), hint = document.createElement('small');
-      name.textContent = bot.display_name || bot.host_profile; hint.textContent = `${bot.runtime} / ${bot.host_profile}`;
-      identity.append(name, hint); label.append(check, identity);
-      check.addEventListener('change', () => {
-        if (check.checked) members.set(bot.bot_id, {bot_id: bot.bot_id, role: '', permissions: []});
-        else {
-          members.delete(bot.bot_id);
-        }
+    MemberPicker.render(el('members'), {items: preview.bots, selected: members, template: preview.template,
+      isActive: () => dialog.open && preview === currentPreview,
+      onBusy: value => lock(value),
+      onRefresh: items => { preview.bots = items; renderMembers(); },
+      onSelect: (bot, selected) => {
+        if (!preview.bots.some(item => item.bot_id === bot.bot_id)) preview.bots.push(bot);
+        if (selected && !members.has(bot.bot_id)) members.set(bot.bot_id, {bot_id: bot.bot_id, role: '', permissions: []});
+        if (!selected) members.delete(bot.bot_id);
         renderMembers();
-      });
-      const heading = document.createElement('div'); heading.className = 'project-permission-options import-member-heading';
-      heading.append(label); row.append(heading);
-      const member = members.get(bot.bot_id);
-      if (member) {
+      },
+      extra: (row, bot) => {
+        const member = members.get(bot.bot_id);
         const select = document.createElement('select'); select.setAttribute('aria-label', '成员角色');
         select.style.maxWidth = '100%';
         select.replaceChildren(new Option('角色留空', ''));
@@ -277,8 +270,7 @@
         extra.append(title, permissionEditor(member.permissions, values => { member.permissions = values; }));
         row.append(select, extra);
       }
-      el('members').append(row);
-    }
+    });
   }
   async function openProject(project) {
     const current = version;
@@ -502,7 +494,19 @@
     if (step === 3 && (!el('agents-content').value.trim() || !el('agents-reviewed').checked)) {
       status('请编辑并确认 AGENTS.md 与当前角色及流程一致。', true); return;
     }
-    if (step < 4) { showStep(step + 1); status(''); return; }
+    if (step < 4) {
+      showStep(step + 1); status('');
+      if (step === 4) {
+        const current = version, currentPreview = preview;
+        lock(true);
+        try {
+          const items = await MemberPicker.load('');
+          if (current === version && preview === currentPreview && dialog.open) { preview.bots = items; renderMembers(); }
+        } catch (error) { if (current === version) status(`成员读取失败：${error.message}。可使用刷新列表重试。`, true); }
+        finally { if (current === version) lock(false); }
+      }
+      return;
+    }
     if (step === 4) {
       const current = ++version; lock(true); status('正在生成工作区资源方案…');
       try {

@@ -739,8 +739,6 @@ dialog .primary{border:1px solid var(--accent);letter-spacing:2px;color:var(--ac
 .project-mode-options input:checked + span{border-color:var(--accent);background:rgba(201,162,75,.14);color:var(--accent-2)}
 .project-mode-options input:focus-visible + span{outline:2px solid var(--accent-2);outline-offset:3px}
 .project-mode-options label:hover span{border-color:var(--accent)}
-.member-add-modes label{min-width:140px}
-.member-add-modes label > span{display:block;width:100%;box-sizing:border-box}
 .member-create-fields label{display:block;margin:10px 0 5px}
 .member-create-fields input:not([type=checkbox]),.member-create-fields select,.member-create-fields textarea{width:100%;box-sizing:border-box}
 .member-create-fields .member-create-auth{display:flex;align-items:center;gap:8px;font-size:13px}
@@ -749,6 +747,11 @@ dialog .primary{border:1px solid var(--accent);letter-spacing:2px;color:var(--ac
 .member-create-fields summary{cursor:pointer;color:var(--fg-2);font-size:13px}
 #dlg-member-add{max-height:calc(100dvh - 32px);overflow-y:auto}
 #dlg-member-add .dlg-btns{position:sticky;bottom:-1px;background:var(--card);padding-top:12px}
+#dlg-member-picker{width:560px;max-width:calc(100vw - 24px);box-sizing:border-box;max-height:calc(100dvh - 32px);overflow:auto}
+#dlg-member-picker .dlg-btns{position:sticky;bottom:-1px;background:var(--card);padding-top:12px}
+.member-picker-toolbar{display:flex;gap:8px;position:sticky;top:0;background:var(--card);padding:6px 0;z-index:1}
+#dlg-member-picker .import-member > label{display:flex;align-items:center;gap:10px}
+#dlg-member-picker .import-member small{display:block;color:var(--fg-3)}
 .project-permission-row{display:grid;grid-template-columns:88px minmax(0,1fr);gap:12px;padding:14px 0;border:0;border-bottom:1px solid var(--border);margin:0;min-width:0}
 .project-permission-row legend{float:left;width:88px;font-weight:600;padding:5px 0;color:var(--accent-2)}
 .project-permission-options{display:flex;flex-wrap:wrap;gap:7px;min-width:0}
@@ -1055,20 +1058,6 @@ dialog .primary{border:1px solid var(--accent);letter-spacing:2px;color:var(--ac
         </div>
         <div id="pj-member-list" aria-live="polite" style="max-height:45vh;overflow:auto"></div>
       </section>
-      <dialog id="dlg-member-add" style="width:480px;max-width:calc(100vw - 24px);box-sizing:border-box;">
-        <!-- 添加成员向导：角色和权限在加入后的项目配置中设置 -->
-        <div>
-          <h3 style="font-size:15px;margin-bottom:12px;" id="member-add-title">添加成员</h3>
-          <div id="member-add-steps" aria-live="polite"></div>
-          <p id="member-add-status" class="profile-help" role="status" style="min-height:18px;margin:6px 0;"></p>
-          <div class="dlg-btns">
-            <button type="button" id="member-add-back" hidden>上一步</button>
-            <button type="button" id="member-add-close">取消</button>
-            <button type="button" id="member-add-next" class="primary" disabled>下一步</button>
-            <button type="button" id="member-add-join" class="primary" hidden>加入当前项目</button>
-          </div>
-        </div>
-      </dialog>
       <section id="pj-panel-roles" role="tabpanel" aria-labelledby="pj-tab-roles" hidden>
         <!-- req#96 #165：角色实体化前端——项目级角色 CRUD（GET/POST/PATCH/DELETE /projects/{name}/roles） -->
         <p class="profile-help">角色是本项目的固定实体，改用稳定 ID 关联：改角色名不会断成员关联和授权。成员卡片选角色的候选来自这里定义的角色。</p>
@@ -1102,7 +1091,14 @@ dialog .primary{border:1px solid var(--accent);letter-spacing:2px;color:var(--ac
   </div>
 </dialog>
 
-<!-- Profile 编辑：原生模态层覆盖成员列表，四个 Tab 共用一份草稿。 -->
+<!-- 独立创建窗口供项目向导和详情成员列表共用。 -->
+<dialog id="dlg-member-add" aria-labelledby="member-add-title" style="width:480px;max-width:calc(100vw - 24px);box-sizing:border-box;">
+  <h3 id="member-add-title">创建 profile</h3>
+  <p class="profile-help">创建成功后返回成员列表并自动勾选。点击“加入项目”或项目向导最终确认后入组。取消成员选择或向导时，已创建的 profile 会保留。</p>
+  <div id="member-add-steps"></div>
+  <p id="member-add-status" class="profile-help" role="status"></p>
+  <div class="dlg-btns"><button type="button" id="member-add-close">取消</button><button type="button" id="member-add-join" class="primary">创建 profile</button></div>
+</dialog>
 <dialog id="dlg-workspace" aria-labelledby="workspace-title" style="width:520px;max-width:calc(100vw - 24px);max-height:85dvh;overflow:auto;padding:20px">
   <h3 id="workspace-title">工作区</h3>
   <div class="project-mode-options" style="margin-top:14px" role="radiogroup" aria-label="成员目录模式">
@@ -3146,6 +3142,7 @@ function openDialogAnchored(dlg, triggerEl) {
     // req#96 #165：showConfirm/showAlert 的 app-alert modal 弹层点击不算「点外面」，
     // 否则在锚定弹窗里触发确认框时，点确认会顺带把宿主弹窗关掉
     if (e.target.closest('#app-alert')) return;
+    if (e.target.closest('#dlg-member-add, #dlg-member-picker')) return;
     // req#110 #189：子弹层 dialog（网页内目录选择器等 body 直属独立弹窗）点击同样豁免——
     // 选择器是从宿主弹窗触发的，点它属于宿主交互链，不能当「点外面」关掉宿主
     if (e.target.closest('dialog[dir-picker-layer]')) return;
@@ -4583,11 +4580,12 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/background_settings.js?v=20261017-server-storage"></script>
 <script src="/app/directory_picker.js?v=20261011"></script>
 <script src="/app/workspace_resources.js?v=20261021-field-errors"></script>
-<script src="/app/project_import.js?v=20261023-role-notices"></script>
+<script src="/app/project_import.js?v=20261023-shared-profiles"></script>
+<script src="/app/member_picker.js?v=20261023"></script>
 <script src="/app/project_removal.js?v=20261014-hidden-removed"></script>
 <script src="/app/project_template_references.js?v=20261016-latest-soul"></script>
-<script src="/app/profile_soul_templates.js?v=20261016-latest-soul"></script>
-<script src="/app/project_settings.js?v=20261023-member-switch"></script>
+<script src="/app/profile_soul_templates.js?v=20261023-shared-profiles"></script>
+<script src="/app/project_settings.js?v=20261023-shared-profiles"></script>
 <script src="/app/requirement_details.js?v=20261012-controls"></script>
 </body>
 </html>

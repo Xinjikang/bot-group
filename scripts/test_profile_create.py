@@ -61,6 +61,46 @@ class ProfileCreateTests(unittest.TestCase):
         self.assertNotIn('synthetic-key', json.dumps(result))
         self.create({**body, 'request_id': 'another-request'}, 409)
 
+    def test_standalone_creation_then_explicit_enrollment(self):
+        for host in ('codex', 'hermes'):
+            with self.subTest(host=host):
+                root, body = self.fixture(host)
+                body.pop('project')
+                body['profile'] = f'standalone-{host}'
+                before = self.conn.execute('SELECT COUNT(*) FROM project_members').fetchone()[0]
+                result = self.create(body).json()
+                self.assertIsNone(result['project'])
+                self.assertIsNone(result['member_profile'])
+                self.assertTrue(Path(result['home']).is_dir())
+                self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM project_members').fetchone()[0], before)
+                self.assertEqual(self.create(body).json()['bot_id'], result['bot_id'])
+                candidates = self.client.get('/profiles/candidates').json()['candidates']
+                candidate = next(c for c in candidates if c['bot_id'] == result['bot_id'])
+                self.assertFalse(candidate['already_project_member'])
+                if host == 'codex':
+                    config = tomlkit.parse((Path(result['home']) / 'config.toml').read_text())
+                    self.assertEqual(config['approvals_reviewer'], 'auto_review')
+                    self.assertEqual(config['sandbox_mode'], 'workspace-write')
+                    self.assertNotIn('sandbox_workspace_write', config)
+                joined = self.client.post('/bots/register', json={
+                    'project': 'p', 'host_type': host, 'profile': body['profile'], 'config_root': result['config_root']})
+                self.assertEqual(joined.status_code, 200, joined.text)
+                self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM project_members').fetchone()[0], before + 1)
+                candidate = next(c for c in self.client.get('/profiles/candidates?project=p').json()['candidates'] if c['bot_id'] == result['bot_id'])
+                self.assertTrue(candidate['already_project_member'])
+                if host == 'codex':
+                    config = tomlkit.parse((Path(result['home']) / 'config.toml').read_text())
+                    self.assertIn(self.root.as_posix(), config['sandbox_workspace_write']['writable_roots'])
+
+    def test_standalone_invalid_project_and_candidate_auth(self):
+        root, body = self.fixture()
+        for project, status in [('missing', 404), ('   ', 400)]:
+            self.create({**body, 'project': project}, status)
+        self.assertFalse((root / 'profiles' / body['profile']).exists())
+        response = self.client.get('/profiles/candidates', headers={
+            'X-Group-Profile': 'bot-1', 'X-Group-Key': auth.bot_token('bot-1')})
+        self.assertEqual(response.status_code, 403)
+
     def test_codex_worktree_profile_receives_shared_test_reports_directory(self):
         root, body = self.fixture()
         trees = self.root / 'trees'

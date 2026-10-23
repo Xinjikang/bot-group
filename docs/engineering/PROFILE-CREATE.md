@@ -1,27 +1,29 @@
-# 在项目中创建 profile
+# 创建 profile 与选择项目成员
 
-入口为 **项目详情 → 成员与目录 → 添加成员**。选择 Hermes / Codex 后，可切换“选择已有 profile”和“创建新 profile”。项目创建、导入向导维持现有流程。
+项目创建/导入第 5 步“选择成员与负责人”和 **项目详情 → 成员与目录 → 添加成员** 使用同一套勾选列表，顶部均提供“创建 profile”。创建窗口独立于项目详情窗口，内部选择 Hermes / Codex 并填写配置。
+
+`frontend/member_picker.js` 共用候选展示、选择、刷新及创建回调。`GET /profiles/candidates` 合并宿主扫描结果与已注册 Bot，标记已入组成员；同名 profile 通过宿主、配置根目录与 Bot ID 区分。选中尚未注册的宿主 profile 时只注册 Bot。新建成功返回原列表并自动勾选，其他选择与向导角色草稿保留。详情点击“加入项目”才入组；向导最终确认时统一入组和授权。批量加入部分成功后，已成功成员保留，失败及未处理成员仍可重试。
 
 ## 使用
 
 - 填写显示名称和 profile 标识；标识使用 1–64 位小写字母、数字、短横线、下划线。默认选择该宿主的 default 作为配置来源，否则选择第一个可用来源；也可选择“使用默认设置”。已加入当前项目的 profile 也可作为来源。
 - “更多设置”可填写模型和个人指令。空模型沿用来源或宿主默认设置；空个人指令生成基础工作约定。
 - Codex 自动复制引擎主账户目录（`CODEX_HOME`，默认 `~/.codex`）的 `auth.json`。配置来源用于继承模型与运行设置，创建界面省去认证选择。使用默认设置或选择其他 profile 作为配置来源时，文件认证仍来自主账户。
-- 新建 Codex Bot 统一使用智能审批（“帮我审批”）及工作区写入沙箱，并获得本项目工作目录授权；这两项创建规则独立于配置来源。创建表单显示该规则。
+- 新建 Codex Bot 统一使用智能审批（“帮我审批”）及工作区写入沙箱，加入项目时获得项目工作目录授权；创建规则独立于配置来源。创建表单显示该规则。
 - Hermes 保留“同时复用来源的模型认证”选项，勾选后复制 `.env` 中常用模型服务的 API Key/endpoint，以及模型配置中的直接凭据；OAuth 登录需在新 home 中完成。
-- 创建后自动注册 Bot 并加入当前项目。角色、项目权限、工作目录继续通过现有成员设置配置。缺少可复制认证时显示宿主对应的登录/配置命令，并明确目标 home；Codex 指向主账户目录，并提示提供文件认证。系统钥匙串中的凭据保持原生管理方式。
+- 创建后注册 Bot，待显式确认选择后加入项目。取消成员选择或整个项目向导时，已创建 profile 与 Bot 保留；窗口在创建前说明此行为。缺少可复制认证时显示宿主对应的登录/配置命令，并明确目标 home；Codex 指向主账户目录，并提示提供文件认证。系统钥匙串中的凭据保持原生管理方式。
 - “认证已复制”仅说明本地配置准备完成。实际账号权限、模型可用性和认证有效期以运行结果为准；创建过程不发起付费模型调用。
 
 ## 当前项目的 SOUL 模板
 
-“创建新 profile”和“编辑成员 → SOUL.md / AGENTS.md”均提供“查看 / 引用 SOUL 模板”。创建项目向导中的原参考入口保持现状。
+“创建 profile”和“编辑成员 → SOUL.md / AGENTS.md”均提供“查看 / 引用 SOUL 模板”。
 
 成员编辑页的模板按钮位于 SOUL.md / AGENTS.md 标题说明区右侧，提示文字排列在按钮下方，窄屏沿用左右布局并自动换行。
 
-- 模板选择窗只调用当前项目的 `/projects/{project}/template-reference`。服务端从项目创建/导入记录或早期初始化记录中确定模板类型，按类型读取当前最新的角色名称、职责及 SOUL 全文；创建时间和当时的模板版本均不限制参考内容。空白项目或未关联模板的项目显示空态；读取失败可重试，项目不匹配的响应会被拒绝。
+- 已登记项目使用 `/projects/{project}/template-reference`，按项目模板类型读取最新角色参考。创建项目向导使用当前选定的 `/projects/templates/{id}`，核对版本与向导快照一致。空白项目或未关联模板显示空态；读取失败可重试，项目或版本不匹配的响应会被拒绝。
 - 创建入口使用当前项目详情的项目 ID；成员编辑入口使用打开该编辑窗口时的项目上下文。全局花名册有当前选中项目时使用该项目，未选中项目时禁用模板入口。
 - 查看保持正文原样；“引用模板”填入个人指令或 SOUL 编辑框，展开创建表单的更多设置，允许继续修改。替换已有正文前确认，取消确认保留原文。
-- 引用仅更改草稿，实际文件写入仍通过原有“创建并加入项目”或“保存”。Hermes 对应 SOUL.md，Codex 对应 AGENTS.md；既有 profile 的保存范围保持原有全局配置语义。
+- 引用仅更改草稿，实际文件写入通过“创建 profile”或“保存”。Hermes 对应 SOUL.md，Codex 对应 AGENTS.md；既有 profile 的保存范围保持原有全局配置语义。
 - 选择窗跟随所属编辑窗口，处理关闭、重新打开和跨项目响应竞态；预览以纯文本呈现。已有向导的复制、下载、预览功能保持现状。
 
 项目详情的“模板参考”同样展示该类型的最新参考。读取过程保持项目角色、授权、创建记录和已保存的 profile 正文原样；用户引用并保存后才更新 profile。此接口修复需要手动重启引擎并刷新页面。
@@ -49,7 +51,7 @@ Windows 新 home 保留来源中有效的 `windows.sandbox` 选择（`elevated`�
 
 ## 创建接口与文件布局
 
-`POST /profiles/create` 仅供管理员。请求包含 `project`、`host_type`、`profile`、`display_name`、可选 `source: {profile, config_root}`、`reuse_auth`、`model`、`instructions` 和 `request_id`。来源必须匹配当前宿主扫描结果。
+`POST /profiles/create` 仅供管理员。请求包含 `host_type`、`profile`、`display_name`、可选 `source: {profile, config_root}`、`reuse_auth`、`model`、`instructions` 和 `request_id`。来源必须匹配当前宿主扫描结果。`project` 可省略或为 null/空字符串，此时只创建并注册 Bot，响应 `member_profile` 和 `project` 为 null。提供有效 `project` 的旧调用继续创建并入组；非空无效、归档或已移除项目返回错误，纯空白标识返回 400。响应补充 `host_type`、`config_root` 供列表选择复用。
 
 `reuse_auth` 仅控制 Hermes。Codex 为兼容旧客户端接受此字段，其创建行为统一为继承主账户文件认证。运行期间的按需同步见 [Codex profile 认证](../guides/CODEX-PROFILE-HOMES.md#file-authentication-synchronization)。
 
@@ -62,7 +64,7 @@ Windows 新 home 保留来源中有效的 `windows.sandbox` 选择（`elevated`�
 
 ## 验证与生效
 
-使用项目 Python 3.11 环境执行 `scripts.test_codex_auth`、`scripts.test_profile_create`、`scripts.test_codex_profile_config`、`scripts.test_discovery`、`scripts.test_codex_driver_regressions`。浏览器脚本 `scripts/test_profile_create_browser.py` 使用真实 Chrome 和合成接口，覆盖新建/已有、配置来源、Codex 默认认证、Hermes 认证选择、重试、重复提交、关闭重开、登录提示及 390px 深浅主题截图。
+使用项目 Python 3.11 环境执行 `scripts.test_profile_create`、`scripts.test_discovery`，验证独立创建、旧调用兼容、目录授权和认证默认。`scripts/test_profile_create_browser.py --evidence <主目录报告路径>` 使用真实 Chrome 及隔离 HTTP/SQLite/Git，覆盖两处共用列表、已有/未注册候选、创建失败与丢响应重试、取消保留、选择保留、SOUL 引用、最终提交和 390px 深浅主题。配套运行 `test_profile_soul_templates_browser.py`、`test_member_name_browser.py`。
 
 部署引擎更新后，管理员手动重启引擎并刷新页面。
 

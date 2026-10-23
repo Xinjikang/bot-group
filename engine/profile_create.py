@@ -1,4 +1,4 @@
-"""Create independent member homes and enroll them in one project."""
+"""Create independent profile homes, with optional project enrollment."""
 from __future__ import annotations
 
 import hashlib
@@ -134,11 +134,16 @@ def _hermes(home, body, member):
 
 
 def create(conn, body):
-    """Filesystem publication + DB enrollment, with repeat-request recovery."""
+    """Publish files and register a Bot, optionally enrolling it, with request recovery."""
     if body['host_type'] == 'codex':
         # Older clients may still submit the former opt-out field.
         body = {**body, 'reuse_auth': True}
-    name, host, project = body['profile'], body['host_type'], body['project']
+    name, host = body['profile'], body['host_type']
+    raw_project = body.get('project')
+    project = (raw_project or '').strip()
+    if raw_project and not project:
+        raise HTTPException(400, '项目标识不能为空白')
+    body = {**body, 'project': project or None}
     if (not discovery._PROFILE_RE.fullmatch(name) or name in ('default', 'user', 'profiles')
             or _DEVICE.fullmatch(name)):
         raise HTTPException(400, 'Profile 标识须为 1–64 位小写字母、数字、短横线或下划线，并避开系统保留名')
@@ -154,7 +159,7 @@ def create(conn, body):
     with files._LOCK:
         try:
             conn.execute('BEGIN IMMEDIATE')
-            if not conn.execute('SELECT 1 FROM projects WHERE name=? AND archived=0', (project,)).fetchone():
+            if project and not conn.execute('SELECT 1 FROM projects WHERE name=? AND archived=0 AND removed=0', (project,)).fetchone():
                 raise HTTPException(404, '请选择有效的未归档项目')
             if target.exists():
                 marker = _read(target, _MARKER)
@@ -166,10 +171,10 @@ def create(conn, body):
                 home, selector = _source(body)
                 config_root = str(target) if host == 'codex' else str(root)
                 reg = discovery.register_bot(conn, host, name, config_root, body['display_name'])
-                member = bot_identity.enroll(conn, reg['bot_id'], project)
+                member = bot_identity.enroll(conn, reg['bot_id'], project) if project else None
                 content, provisioned = (_codex(home, selector, body) if host == 'codex'
                                         else _hermes(home, body, member))
-                if host == 'codex':
+                if host == 'codex' and project:
                     from . import codex_project_access as access, project_workspaces as ws
                     config = tomlkit.parse(content['config.toml'].decode('utf-8'))
                     project_config = ws.project(conn, project)
@@ -196,13 +201,15 @@ def create(conn, body):
                 stage.rmdir()
             config_root = str(target) if host == 'codex' else str(root)
             reg = discovery.register_bot(conn, host, name, config_root, body['display_name'])
-            member = bot_identity.enroll(conn, reg['bot_id'], project)
+            member = bot_identity.enroll(conn, reg['bot_id'], project) if project else None
             conn.commit()
+            notice = '已创建 profile 并加入项目' if project else '已创建 profile 并注册 Bot；可在成员列表选择后加入项目'
             return {'created': True, 'bot_id': reg['bot_id'], 'member_profile': member,
+                    'host_type': host, 'config_root': config_root, 'project': project or None,
                     'profile': name, 'home': str(target), 'auth_copied': provisioned,
-                    'notice': ('已创建 profile 并加入项目；已复制认证配置，实际可用性以首次运行结果为准。' if provisioned
-                               else '已创建 profile 并加入项目；请完成主账户登录并提供文件认证后再唤醒。' if host == 'codex'
-                               else '已创建 profile 并加入项目；请完成该 profile 的登录或模型认证后再唤醒。'),
+                    'notice': notice + ('；已复制认证配置，实际可用性以首次运行结果为准。' if provisioned
+                               else '；请完成主账户登录并提供文件认证后再唤醒。' if host == 'codex'
+                               else '；请完成该 profile 的登录或模型认证后再唤醒。'),
                     'setup_command': _setup_command(host, root if host == 'codex' else target, name) if not provisioned else ''}
         except Exception as exc:
             conn.rollback()

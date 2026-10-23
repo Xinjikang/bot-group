@@ -39,7 +39,8 @@ class ImportTests(unittest.TestCase):
         (self.root / 'doc' / 'design.md').write_bytes(b'# Original design')
         (self.root / 'code.bin').write_bytes(bytes(range(256)))
         (self.root / 'empty').mkdir()
-        env = patch.dict(os.environ, {'GROUP_DB': str(self.base / 'group.db'), 'HERMES_HOME': str(self.base / 'host')})
+        env = patch.dict(os.environ, {'GROUP_DB': str(self.base / 'group.db'), 'HERMES_HOME': str(self.base / 'host'),
+                                     'CODEX_HOME': str(self.base / 'codex')})
         env.start()
         self.addCleanup(env.stop)
         self.conn = db.get_connection()

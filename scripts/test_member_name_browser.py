@@ -42,10 +42,10 @@ def main():
                 data = {'projects': [project]}
             elif path == '/members':
                 data = {'members': members}
-            elif path == '/discovery/scan':
+            elif path == '/profiles/candidates':
                 scans.append(req.request.url)
                 data = {'candidates': [dict(host_type=host, profile=profile, config_root=f'E:/{host}/{profile}',
-                                           bound=True, already_member=True,
+                                           bot_id=1 + 10 * (host == 'codex') + ['active','disabled','other-project'].index(profile), bound=True, already_member=True,
                                            already_project_member=joined or state['all_joined'])
                                        for host in ('hermes', 'codex')
                                        for profile, joined in [('active', True), ('disabled', True), ('other-project', False)]]}
@@ -113,24 +113,18 @@ def main():
         page.screenshot(path=str(Path(tempfile.gettempdir()) / 'member-name-edit-mobile.png'))
         field.press('Escape')
         page.locator('#pj-members-add').click()
-        for host in ('hermes', 'codex'):
-            page.locator(f'[name="member-add-host"][value="{host}"]').check()
-            page.locator('#member-add-next').click()
-            page.wait_for_function("!memberAdd.scanning")
-            assert page.locator('#member-add-steps input[type=radio]').count() == 1
-            assert 'other-project' in page.locator('#member-add-steps').inner_text()
-            assert 'disabled' not in page.locator('#member-add-steps').inner_text()
-            assert page.locator('#member-add-join').is_disabled()
-            page.locator('#member-add-steps input[type=radio]').check()
-            assert page.locator('#member-add-join').is_enabled()
-            page.locator('#member-add-back').click()
+        page.wait_for_function('document.querySelectorAll("#member-picker-list input[type=checkbox]").length === 6')
+        assert page.locator('#member-picker-list input:disabled:checked').count() == 4
+        assert '已加入项目' in page.locator('#member-picker-list').inner_text()
+        assert page.locator('#member-picker-join').is_disabled()
+        page.locator('#member-picker-list input:not(:disabled)').first.check()
+        assert page.locator('#member-picker-join').is_enabled()
+        page.locator('#member-picker-close').click()
         state['all_joined'] = True
-        page.locator('#member-add-next').click()
-        page.wait_for_function("!memberAdd.scanning")
-        assert page.locator('#member-add-status').inner_text() == '暂无可添加成员'
-        assert page.locator('#member-add-steps input[type=radio]').count() == 0
-        assert page.locator('#member-add-join').is_disabled()
-        assert len(scans) == 3 and all('project=p' in url for url in scans)
+        page.locator('#pj-members-add').click()
+        page.wait_for_function('document.querySelectorAll("#member-picker-list input:disabled:checked").length === 6')
+        assert page.locator('#member-picker-join').is_disabled()
+        assert len(scans) == 2 and all('project=p' in url for url in scans)
         assert not errors, errors
         browser.close()
     print('Member identity browser checks passed')
