@@ -14,6 +14,26 @@ from scripts.test_project_import import ImportTests
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def check_member_cards(page, container, output, name):
+    for theme in ('dark', 'light'):
+        for width in (1280, 390):
+            page.evaluate('applyTheme', theme)
+            page.set_viewport_size({'width': width, 'height': 900})
+            cards = container.locator('.import-member')
+            assert cards.count() > 0
+            assert cards.evaluate_all('''rows => rows.every(row => {
+                const name = row.querySelector('strong').getBoundingClientRect();
+                const hint = row.querySelector('small').getBoundingClientRect();
+                const style = getComputedStyle(row);
+                return hint.top >= name.bottom && Math.abs(hint.left - name.left) < 1
+                    && style.borderRadius === '12px' && style.borderTopWidth === '1px'
+                    && row.scrollWidth <= row.clientWidth;
+            })''')
+            container.screenshot(path=str(output / f'{name}-{width}-{theme}.png'))
+    page.set_viewport_size({'width': 1280, 'height': 900})
+    page.evaluate('applyTheme', 'dark')
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--evidence', type=Path, required=True)
@@ -70,6 +90,7 @@ def main():
             for bot_id in fixture.ids:
                 assert candidates.locator(f'input[data-bot-id="{bot_id}"]').count() == 0
             page.locator('#dlg-member-picker').screenshot(path=str(output / 'unjoined-members.png'))
+            check_member_cards(page, candidates, output, 'picker-cards')
             existing = candidates.locator('input[data-host="hermes"][data-profile="default"]')
             existing.check()
             page.wait_for_function('!document.querySelector("#member-picker-join").disabled')
@@ -143,11 +164,24 @@ def main():
             page.locator('#import-config').wait_for(state='visible')
             page.locator('#import-next').click()
             page.locator('#import-role-step').wait_for(state='visible')
+            page.locator('#import-role-name').fill('临时测试角色')
+            page.locator('#import-role-add').click()
+            removable = page.locator('#import-roles .import-card').filter(has_text='临时测试角色')
+            removable.get_by_role('button', name='移除角色').click()
+            assert '根据调整后的角色分工修改协作流程' in page.locator('#app-alert-message').inner_text()
+            assert removable.count() == 1
+            page.locator('#app-alert').get_by_role('button', name='取消', exact=True).click()
+            assert removable.count() == 1
+            removable.get_by_role('button', name='移除角色').click()
+            page.get_by_role('button', name='确定', exact=True).click()
+            removable.wait_for(state='detached')
+            assert removable.count() == 0
             page.locator('#import-next').click()
             page.locator('#import-agents-step').wait_for(state='visible')
             page.locator('#import-agents-reviewed').check()
             page.locator('#import-next').click()
             wizard = page.locator('#import-members')
+            check_member_cards(page, wizard, output, 'wizard-cards')
             wizard.locator(f'input[data-bot-id="{fixture.ids[0]}"]').check()
             wizard.locator('select[aria-label="成员角色"]').select_option('项目负责人')
             wizard.locator('.member-picker-create').click()

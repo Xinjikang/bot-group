@@ -99,11 +99,10 @@ dialog [data-error="true"] { color: var(--danger) !important; }
 }
 #dlg-project-import .import-member{padding:14px 16px}
 #dlg-project-import .import-member.selected{border-color:var(--border)}
-#dlg-project-import .import-member-heading{display:block}
-#dlg-project-import .import-member-heading label{display:flex;margin:0;padding:0;border:0;background:transparent;color:var(--fg);gap:12px}
-#dlg-project-import .import-member-heading span{min-width:0;display:grid;gap:3px}
-#dlg-project-import .import-member-heading strong{font-weight:500;font-size:14px}
-#dlg-project-import .import-member-heading small{color:var(--fg-3);font-size:11px;font-weight:400}
+#dlg-project-import .import-member > label{display:flex;align-items:center;margin:0;padding:0;border:0;background:transparent;color:var(--fg);gap:12px}
+#dlg-project-import .import-member > label > span{min-width:0;display:grid;gap:3px}
+#dlg-project-import .import-member > label strong{font-weight:500;font-size:14px}
+#dlg-project-import .import-member > label small{color:var(--fg-3);font-size:11px;font-weight:400}
 #dlg-project-import .import-member > select{margin:14px 0 10px}
 #dlg-project-import .import-empty{padding:32px 16px;text-align:center;border:1px dashed var(--border);border-radius:12px;color:var(--fg-3);font-size:12px;line-height:1.8;margin-top:16px}
 #dlg-project-import .import-review-list{border:1px solid var(--border-soft);border-radius:12px;padding:4px 16px;background:var(--card-2)}

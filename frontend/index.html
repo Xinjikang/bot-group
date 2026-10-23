@@ -750,8 +750,12 @@ dialog .primary{border:1px solid var(--accent);letter-spacing:2px;color:var(--ac
 #dlg-member-picker{width:560px;max-width:calc(100vw - 24px);box-sizing:border-box;max-height:calc(100dvh - 32px);overflow:auto}
 #dlg-member-picker .dlg-btns{position:sticky;bottom:-1px;background:var(--card);padding-top:12px}
 .member-picker-toolbar{display:flex;gap:8px;position:sticky;top:0;background:var(--card);padding:6px 0;z-index:1}
-#dlg-member-picker .import-member > label{display:flex;align-items:center;gap:10px}
-#dlg-member-picker .import-member small{display:block;color:var(--fg-3)}
+#dlg-member-picker .import-member{min-width:0;margin-top:12px;padding:14px 16px;border:1px solid var(--border-soft);border-radius:12px;background:var(--card-2);overflow-wrap:anywhere}
+#dlg-member-picker .import-member.selected{border-color:var(--border)}
+#dlg-member-picker .import-member > label{display:flex;align-items:center;margin:0;gap:12px}
+#dlg-member-picker .import-member > label > span{min-width:0;display:grid;gap:3px}
+#dlg-member-picker .import-member strong{font-weight:500;font-size:14px}
+#dlg-member-picker .import-member small{display:block;color:var(--fg-3);font-size:11px;font-weight:400}
 .project-permission-row{display:grid;grid-template-columns:88px minmax(0,1fr);gap:12px;padding:14px 0;border:0;border-bottom:1px solid var(--border);margin:0;min-width:0}
 .project-permission-row legend{float:left;width:88px;font-weight:600;padding:5px 0;color:var(--accent-2)}
 .project-permission-options{display:flex;flex-wrap:wrap;gap:7px;min-width:0}

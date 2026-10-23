@@ -281,6 +281,8 @@ def main(screenshot_dir=None):
             page.locator('#import-next').click()
             assert '调研负责人' in page.locator('#import-roles').inner_text()
             page.locator('#import-roles .import-card').filter(has=page.locator('strong', has_text='资料研究员')).get_by_role('button', name='移除角色').click()
+            page.locator('#app-alert .primary').click()
+            page.locator('#import-roles .import-card').filter(has=page.locator('strong', has_text='资料研究员')).wait_for(state='detached')
             assert '资料研究员' not in page.locator('#import-roles').inner_text()
             page.locator('#import-role-name').fill('LongRole' * 12)
             page.locator('#import-role-add').click()

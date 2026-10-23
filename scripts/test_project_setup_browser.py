@@ -87,7 +87,13 @@ def main():
             page.get_by_role('button', name='确定', exact=True).click()
             custom.get_by_role('button', name='移除角色').click()
             assert '角色绑定' in page.locator('#app-alert-message').inner_text()
+            assert '根据调整后的角色分工修改协作流程' in page.locator('#app-alert-message').inner_text()
+            assert custom.count() == 1
+            page.locator('#app-alert').get_by_role('button', name='取消', exact=True).click()
+            assert custom.count() == 1
+            custom.get_by_role('button', name='移除角色').click()
             page.get_by_role('button', name='确定', exact=True).click()
+            custom.wait_for(state='detached')
             assert page.locator('#import-roles .import-card').filter(has_text='自定义角色').count() == 0
             page.locator('#import-role-name').fill('自定义角色')
             page.locator('#import-role-add').click()

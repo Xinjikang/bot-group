@@ -65,12 +65,12 @@
     </div>
     <div id="import-agents-step" hidden>
       <h4 tabindex="-1">核对角色与协作规则</h4>
-      <p class="profile-help">AGENTS.md 按当前模板重新生成。请检查职责、交接和验收流程；最终保存时备份并覆盖原文件。</p>
+      <p class="profile-help">AGENTS.md 按当前模板重新生成。请根据当前角色分工调整职责、交接和验收流程，明确各项职责的承担者；最终保存时备份并覆盖原文件。</p>
       <p id="import-agents-roles" class="import-note"></p>
       <label for="import-agents-content">AGENTS.md</label>
       <textarea id="import-agents-content" spellcheck="false" style="width:100%;min-height:320px;box-sizing:border-box;font-family:monospace;"></textarea>
       <p class="profile-help">最终确认页展示差异；修改已有 AGENTS.md 时会保留原文备份。</p>
-      <label><input id="import-agents-reviewed" type="checkbox">我已核对当前角色、权限及协作方式，并确认文档中的职责与流程</label>
+      <label><input id="import-agents-reviewed" type="checkbox">我已根据当前角色、权限及协作方式调整文档中的职责与流程，并确认各项职责的承担者</label>
     </div>
     <div id="import-member-step" hidden>
       <h4 tabindex="-1">选择成员与负责人</h4>
@@ -215,8 +215,8 @@
       box.className = 'import-card';
       const header = document.createElement('div'); header.className = 'import-card-header';
       title.textContent = role.name; header.append(title);
-      if (role.name !== ownerRole) header.append(button('移除角色', () => {
-        showAlert(`移除角色「${role.name}」会清除已选成员的角色绑定，派工、审查、验收等职责可能缺少执行人。请在规则审阅步骤自行核对协作正文中的角色引用与职责。`);
+      if (role.name !== ownerRole) header.append(button('移除角色', async () => {
+        if (!await showConfirm(`确认移除角色「${role.name}」？移除后会清除已选成员的角色绑定，派工、审查、验收等职责可能缺少执行人。请在规则审阅步骤根据调整后的角色分工修改协作流程，重新明确各项职责的承担者，并同步更新协作正文中的角色引用与职责。`)) return;
         roles = roles.filter(r => r !== role);
         for (const member of members.values()) if (member.role === role.name) member.role = '';
         renderRoles(); renderMembers();
@@ -225,7 +225,7 @@
       const caption = () => { summary.textContent = `调整权限 · 已启用 ${role.permissions.length} 项`; };
       caption(); details.append(summary, permissionEditor(role.permissions, values => {
         role.permissions = values; invalidateRules(); caption();
-        showAlert(`角色「${role.name}」的权限已调整，派工、审查、验收等职责可能缺少有权限的执行人。请在规则审阅步骤自行核对协作正文与角色授权。`);
+        showAlert(`角色「${role.name}」的权限已调整，派工、审查、验收等职责可能缺少有权限的执行人。请在规则审阅步骤根据当前角色和权限调整协作流程，明确各项职责的承担者，并同步更新协作正文与角色授权。`);
       }));
       box.append(header);
       if (role.name === ownerRole) {
@@ -485,8 +485,8 @@
           agentsDraft = checked.file_plan.agents_draft;
           el('agents-content').value = agentsDraft.content;
         }
-        el('agents-roles').textContent = '当前角色：' + roles.map(r => `${r.name}（${r.permissions.join('、') || '无管理权限'}）`).join('；') + '。请核对正文中的角色引用及职责。';
-        showStep(3); status('角色或权限变化后，请重新核对正文；已有编辑会保留。');
+        el('agents-roles').textContent = '当前角色：' + roles.map(r => `${r.name}（${r.permissions.join('、') || '无管理权限'}）`).join('；') + '。请根据当前角色分工调整协作流程，明确派工、审查、验收等职责的承担者，并同步更新正文中的角色引用及职责。';
+        showStep(3); status('角色或权限变化后，请同步调整协作流程与正文；已有编辑会保留。');
       } catch (err) { if (current === version) status('读取规则失败：' + err.message, true); }
       finally { if (current === version) lock(false); }
       return;
