@@ -13,7 +13,7 @@ def run(evidence):
     member = {'profile': 'dev', 'display_name': '开发成员', 'active': 1, 'role': '开发', 'directory_mode': 'shared',
               'workspace': {'path': 'E:/sample', 'valid': True}}
     roles = [{'id': 1, 'name': '开发', 'member_count': 1}, {'id': 2, 'name': '审查', 'member_count': 0}]
-    state = {'fail': False, 'held': [], 'hold': False, 'posts': 0}
+    state = {'fail': False, 'held': [], 'hold': False, 'posts': 0, 'deletes': 0}
     errors = []
     def route(req):
         path = urlparse(req.request.url).path
@@ -36,6 +36,7 @@ def run(evidence):
         elif path.startswith('/projects/p/roles/'):
             role = next(r for r in roles if r['id'] == int(path.rsplit('/', 1)[1]))
             if method == 'DELETE':
+                state['deletes'] += 1
                 roles.remove(role)
             elif method == 'PATCH':
                 role['name'] = req.request.post_data_json['name']
@@ -107,11 +108,16 @@ def run(evidence):
         assert page.locator('.pj-role-row').first.get_by_role('button', name='删除', exact=True).is_disabled()
         page.locator('.pj-role-row').last.get_by_role('button', name='删除', exact=True).click()
         assert '派工、审查、验收' in page.locator('#app-alert-message').inner_text()
-        page.get_by_role('button', name='取消', exact=True).click()
-        assert len(roles) == 2
+        assert 'AGENTS.md 中根据调整后的角色分工修改协作流程' in page.locator('#app-alert-message').inner_text()
+        assert '重新明确各项职责的承担者' in page.locator('#app-alert-message').inner_text()
+        assert state['deletes'] == 0 and len(roles) == 2
+        page.locator('#app-alert').screenshot(path=str(evidence / 'role-delete-confirm-390.png'))
+        page.locator('#app-alert').get_by_role('button', name='取消', exact=True).click()
+        assert len(roles) == 2 and state['deletes'] == 0
         page.locator('.pj-role-row').last.get_by_role('button', name='删除', exact=True).click()
         page.get_by_role('button', name='确定', exact=True).click()
         page.wait_for_function('document.querySelectorAll(".pj-role-row").length === 1')
+        assert state['deletes'] == 1
         page.locator('.pj-role-row').first.get_by_role('button', name='改名', exact=True).click()
         assert '协作正文' in page.locator('#app-alert-message').inner_text()
         page.get_by_role('button', name='确定', exact=True).click()

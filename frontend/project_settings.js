@@ -596,7 +596,7 @@ function renderProjectRoles(project, roles) {
     nameBtn.addEventListener('click', () => startRoleRename(project, role, row, nameBtn));
     edit.addEventListener('click', () => startRoleRename(project, role, row, nameBtn));  // req#96 #165：改名按钮此前漏绑监听
     del.addEventListener('click', async () => {
-      if (!await showConfirm(`删除角色「${role.name}」？派工、审查、验收等职责可能缺少执行人。请自行核对项目协作正文中的角色引用与职责。`)) return;
+      if (!await showConfirm(`确认删除角色「${role.name}」？删除后，派工、审查、验收等职责可能缺少执行人。请在项目详情的 AGENTS.md 中根据调整后的角色分工修改协作流程，重新明确各项职责的承担者，并同步更新角色引用与职责。`)) return;
       del.disabled = true;
       try {
         await api(`/projects/${encodeURIComponent(project)}/roles/${role.id}`, {method: 'DELETE'});

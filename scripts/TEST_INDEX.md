@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+项目详情角色删除提示：`python -X utf8 -B scripts/test_member_switch_browser.py --evidence <主目录报告目录>` 验证职责缺员与 AGENTS.md 协作流程调整提示、取消时保持角色且发送零次删除请求、确定后发送一次删除请求，并保存 390px 确认框截图；保留已有成员数限制、启停、改名和权限提示回归。
+
 未入组候选过滤与成员卡片：复用 `test_profile_create_browser.py --evidence <主目录报告目录>`，验证选择列表隐藏当前项目成员、刷新后继续过滤并保留选择、批量加入部分成功后移除成功成员，以及创建 profile 和新项目向导选择。检查详情窗口与新建项目向导的圆角成员卡片、名字与宿主 / profile 的两行布局，覆盖 1280px / 390px 深浅主题并保存截图；同时验证向导移除角色的协作流程调整提示、取消保留及确认后移除。
 
 Web 升级：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_app_upgrade scripts.test_app_upgrade_integration scripts.test_app_updates scripts.test_service_restart scripts.test_release_upgrade scripts.test_upgrade -q`。覆盖管理员鉴权、固定版本、重复提交与重启互斥、虚拟环境外升级进程，以及隔离 Windows 实例的真实 API→下载校验→备份→升级→启动；就绪失败及新服务启动失败时恢复旧程序与数据并启动。安装依赖使用受控夹具，其余安装目录、SQLite、端口和进程独立于生产。`python -X utf8 -B scripts/test_app_upgrade_browser.py --evidence <主目录报告目录>` 覆盖关于手动检查、两个升级确认入口、取消、提交响应丢失、刷新续查、失败/成功与 390px 深浅主题；配套 `test_app_settings_browser.py` 回归检查周期和设置菜单。
