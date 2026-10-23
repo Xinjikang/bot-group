@@ -129,6 +129,8 @@ MCP 独立入口：`test_mcp_handshake.py`、`test_mcp_e2e.py`、`test_mcp_messa
 
 测试支持模块：`project_test_support.py`、`background_test_support.py`、`unified_test_support.py`。它们供测试导入，维护时同步检查相关调用方。
 
+`test_background_storage_browser.py` 同时检查设置菜单收起后，背景弹窗在加载、上传和恢复默认完成时保持位于右侧设置按钮下方。
+
 ## 维护
 
 独立 profile 与共用列表：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_profile_create scripts.test_discovery -q` 验证独立创建和重试、显式入组后的目录授权、旧 project 调用兼容、非法项目与鉴权。`python -X utf8 -B scripts/test_profile_create_browser.py --evidence <主目录报告路径>` 使用临时宿主、SQLite/Git 与真实 API，覆盖两处列表、选择保留、创建失败和丢响应重试、部分入组失败、取消保留、SOUL、最终确认及刷新；配套运行 `test_profile_soul_templates_browser.py` 与 `test_member_name_browser.py`。

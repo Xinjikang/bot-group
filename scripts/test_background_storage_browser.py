@@ -18,6 +18,15 @@ def ready(page):
     page.wait_for_function('!document.querySelector("#background-select").disabled')
 
 
+def assert_position(page):
+    assert page.locator('#app-settings-menu').is_hidden()
+    dialog = page.locator('#dlg-background').bounding_box()
+    toggle = page.locator('#btn-settings').bounding_box()
+    assert dialog['x'] > page.viewport_size['width'] / 2, dialog
+    assert abs(dialog['y'] - toggle['y'] - toggle['height'] - 6) < 2, (dialog, toggle)
+    assert dialog['x'] + dialog['width'] <= page.viewport_size['width'], dialog
+
+
 def main():
     photo = io.BytesIO()
     Image.new('RGB', (80, 80), '#446688').save(photo, format='JPEG')
@@ -52,12 +61,15 @@ def main():
             try {localStorage.setItem('quota-probe', 'x'.repeat(4096)); return false;}
             catch(e) {return e.name === 'QuotaExceededError';}
         }''')
+        page.locator('#btn-settings').click()
         page.locator('#btn-background').click()
         ready(page)
+        assert_position(page)
         with page.expect_file_chooser() as chooser:
             page.locator('#background-select').click()
         chooser.value.set_files(upload)
         page.wait_for_function('document.querySelector("#background-status").textContent.includes("背景已保存")')
+        assert_position(page)
         assert appearance.read() == photo.getvalue()
         assert page.evaluate('JSON.parse(localStorage.getItem("group-engine.thinking.v2")).padding.length') == 1000000
         for theme in ('light', 'dark'):
@@ -80,16 +92,19 @@ def main():
         ready(legacy)
         assert appearance.read() == photo.getvalue()
         assert legacy.evaluate('localStorage.getItem("ge_viewport_background")') is None
+        legacy.locator('#btn-settings').click()
         legacy.locator('#btn-background').click()
         ready(legacy)
+        assert_position(legacy)
         legacy.locator('#background-reset').click()
         legacy.wait_for_function('document.querySelector("#background-status").textContent.includes("已恢复默认")')
+        assert_position(legacy)
         legacy.reload()
         ready(legacy)
         assert 'viewport-planet.jpg' in legacy.locator('.col-msgs').evaluate('e => getComputedStyle(e).backgroundImage')
         assert appearance.read() == b''
         browser.close()
-    print('PASS: full localStorage, server JPEG save/reload/fresh context, legacy migration/reset; default planet retained')
+    print('PASS: full localStorage, server JPEG save/reload/fresh context, legacy migration/reset; settings anchor after load/upload/reset; default planet retained')
 
 
 if __name__ == '__main__':

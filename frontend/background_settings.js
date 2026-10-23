@@ -50,7 +50,7 @@
     status.dataset.kind = error ? 'error' : 'info';
     status.setAttribute('role', error ? 'alert' : 'status');
     status.setAttribute('aria-live', error ? 'assertive' : 'polite');
-    if (dialog.open) anchorDialog(dialog, document.querySelector('#btn-background'));
+    if (dialog.open) anchorDialog(dialog, document.querySelector('#btn-settings'));
   }
   async function load() {
     if (busy) return;
@@ -76,8 +76,8 @@
       if (reloadPending) { reloadPending = false; load(); }
     }
   }
-  document.querySelector('#btn-background').onclick = e => {
-    openDialogAnchored(dialog, e.currentTarget);
+  document.querySelector('#btn-background').onclick = () => {
+    openDialogAnchored(dialog, document.querySelector('#btn-settings'));
     load();
   };
   dialog.querySelector('#background-close').onclick = () => closeDialogAnchored(dialog);
