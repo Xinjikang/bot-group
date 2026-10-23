@@ -61,22 +61,6 @@ class ProfileCreateTests(unittest.TestCase):
         self.assertNotIn('synthetic-key', json.dumps(result))
         self.create({**body, 'request_id': 'another-request'}, 409)
 
-    def test_create_without_project_then_enroll(self):
-        root, body = self.fixture()
-        body.pop('project')
-        result = self.create(body).json()
-        self.assertIsNone(result['member_profile'])
-        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM project_members').fetchone()[0], 0)
-        self.assertEqual(self.create(body).json()['bot_id'], result['bot_id'])
-        config = tomlkit.parse((Path(result['home']) / 'config.toml').read_text())
-        self.assertEqual(config['sandbox_mode'], 'workspace-write')
-        response = self.client.post('/bots/register', json={'host_type': 'codex', 'profile': body['profile'],
-                                    'config_root': result['home'], 'project': 'p'})
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertTrue(response.json()['member_profile'])
-        config = tomlkit.parse((Path(result['home']) / 'config.toml').read_text())
-        self.assertIn(self.root.as_posix(), config['sandbox_workspace_write']['writable_roots'])
-
     def test_codex_worktree_profile_receives_shared_test_reports_directory(self):
         root, body = self.fixture()
         trees = self.root / 'trees'

@@ -74,9 +74,7 @@
     </div>
     <div id="import-member-step" hidden>
       <h4 tabindex="-1">选择成员与负责人</h4>
-      <p class="profile-help">可选择已注册 Bot 或创建新 profile。每位成员选择一个角色，个人授权与角色授权合并生效。</p>
-      <button id="import-create-profile" type="button">创建 profile</button>
-      <p class="profile-help">新 profile 创建后保留在宿主中；确认项目时加入团队。取消向导仍可在下次选择该 profile。</p>
+      <p class="profile-help">可选择已注册 Bot。每位成员选择一个角色，个人授权与角色授权合并生效。</p>
       <p id="import-member-count" class="import-note"></p>
       <div id="import-members"></div>
     </div>
@@ -143,16 +141,6 @@
   const needsGitReview = () => el('mode').value === 'worktree' || creationMode === 'new' && el('git-init').checked;
   const invalidateRules = () => { el('agents-reviewed').checked = false; };
   el('agents-content').addEventListener('input', invalidateRules);
-  el('create-profile').addEventListener('click', () => {
-    const current = version;
-    openMemberAdd({onCreated: result => {
-      if (version !== current || !dialog.open) return;
-      if (!preview.bots.some(bot => bot.bot_id === result.bot_id)) preview.bots.push({bot_id: result.bot_id,
-        runtime: result.host_type, host_profile: result.profile, display_name: result.display_name || result.profile});
-      members.set(result.bot_id, {bot_id: result.bot_id, role: '', permissions: []});
-      renderMembers(); status(result.notice);
-    }});
-  });
   function syncProjectName(root = el('root').value) {
     if (nameEdited && el('name').value.trim()) return;
     const basename = root.trim().split(/[\\/]/).filter(Boolean).pop() || '';
@@ -227,24 +215,14 @@
       box.className = 'import-card';
       const header = document.createElement('div'); header.className = 'import-card-header';
       title.textContent = role.name; header.append(title);
-      if (role.name !== ownerRole) header.append(button('移除角色', async () => {
-        const current = version;
-        if (!await showConfirm(`移除“${role.name}”后，相关成员的角色将清空，派工、审查或验收环节可能缺少执行人。请核对 AGENTS.md 中的职责与交接约定，自行同步调整。继续移除？`)) return;
-        if (version !== current || !dialog.open || !roles.includes(role)) return;
+      if (role.name !== ownerRole) header.append(button('移除角色', () => {
         roles = roles.filter(r => r !== role);
         for (const member of members.values()) if (member.role === role.name) member.role = '';
         renderRoles(); renderMembers();
       }));
       const details = document.createElement('details'), summary = document.createElement('summary');
       const caption = () => { summary.textContent = `调整权限 · 已启用 ${role.permissions.length} 项`; };
-      let permissionsNotified = false;
-      caption(); details.append(summary, permissionEditor(role.permissions, values => {
-        role.permissions = values; invalidateRules(); caption();
-        if (!permissionsNotified) {
-          permissionsNotified = true;
-          showAlert(`已调整“${role.name}”的权限。权限变化可能影响派工、审查和验收，请核对 AGENTS.md 中的职责与交接约定，自行同步调整。`);
-        }
-      }));
+      caption(); details.append(summary, permissionEditor(role.permissions, values => { role.permissions = values; invalidateRules(); caption(); }));
       box.append(header);
       if (role.name === ownerRole) {
         const duty = document.createElement('small');

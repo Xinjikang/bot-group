@@ -154,7 +154,7 @@ def create(conn, body):
     with files._LOCK:
         try:
             conn.execute('BEGIN IMMEDIATE')
-            if project and not conn.execute('SELECT 1 FROM projects WHERE name=? AND archived=0 AND removed=0', (project,)).fetchone():
+            if not conn.execute('SELECT 1 FROM projects WHERE name=? AND archived=0', (project,)).fetchone():
                 raise HTTPException(404, '请选择有效的未归档项目')
             if target.exists():
                 marker = _read(target, _MARKER)
@@ -166,10 +166,10 @@ def create(conn, body):
                 home, selector = _source(body)
                 config_root = str(target) if host == 'codex' else str(root)
                 reg = discovery.register_bot(conn, host, name, config_root, body['display_name'])
-                member = bot_identity.enroll(conn, reg['bot_id'], project) if project else None
+                member = bot_identity.enroll(conn, reg['bot_id'], project)
                 content, provisioned = (_codex(home, selector, body) if host == 'codex'
                                         else _hermes(home, body, member))
-                if host == 'codex' and project:
+                if host == 'codex':
                     from . import codex_project_access as access, project_workspaces as ws
                     config = tomlkit.parse(content['config.toml'].decode('utf-8'))
                     project_config = ws.project(conn, project)
@@ -196,15 +196,13 @@ def create(conn, body):
                 stage.rmdir()
             config_root = str(target) if host == 'codex' else str(root)
             reg = discovery.register_bot(conn, host, name, config_root, body['display_name'])
-            member = bot_identity.enroll(conn, reg['bot_id'], project) if project else None
+            member = bot_identity.enroll(conn, reg['bot_id'], project)
             conn.commit()
             return {'created': True, 'bot_id': reg['bot_id'], 'member_profile': member,
-                    'profile': name, 'host_type': host, 'display_name': body['display_name'],
-                    'home': str(target), 'auth_copied': provisioned,
-                    'notice': ('已创建 profile 并加入项目；' if project else '已创建 profile；确认项目时加入团队，取消向导后仍保留。')
-                              + ('已复制认证配置，实际可用性以首次运行结果为准。' if provisioned
-                                 else '请完成主账户登录并提供文件认证后再唤醒。' if host == 'codex'
-                                 else '请完成该 profile 的登录或模型认证后再唤醒。'),
+                    'profile': name, 'home': str(target), 'auth_copied': provisioned,
+                    'notice': ('已创建 profile 并加入项目；已复制认证配置，实际可用性以首次运行结果为准。' if provisioned
+                               else '已创建 profile 并加入项目；请完成主账户登录并提供文件认证后再唤醒。' if host == 'codex'
+                               else '已创建 profile 并加入项目；请完成该 profile 的登录或模型认证后再唤醒。'),
                     'setup_command': _setup_command(host, root if host == 'codex' else target, name) if not provisioned else ''}
         except Exception as exc:
             conn.rollback()

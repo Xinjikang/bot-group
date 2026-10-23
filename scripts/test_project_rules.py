@@ -58,24 +58,6 @@ class RulesTests(unittest.TestCase):
         self.assertEqual(wake.session_name('dev', 'work', project='p'), session)
         self.assertEqual(subprocess.check_output(['git', '-C', str(self.work), 'status', '--porcelain']), b'')
 
-    def test_each_execution_loads_main_rules_independently_of_soul_and_overrides(self):
-        (self.root / 'SOUL.md').write_text('Private persona', encoding='utf-8')
-        (self.root / '.hermes.md').write_text('Legacy solo workflow', encoding='utf-8')
-        before = wake.wake_system_prompt('work', 'p', str(self.root))
-        self.assertIn('Main rules v1', before)
-        self.assertIn('规则版本 SHA256', before)
-        self.assertNotIn('Legacy solo workflow', before)
-        self.source.write_text('Team workflow v2', encoding='utf-8')
-        after = wake.wake_system_prompt('work', 'p', str(self.root))
-        self.assertIn('Team workflow v2', after)
-        self.assertNotIn('Main rules v1', after)
-        self.assertIn('Team workflow v2', wake.wake_system_prompt('chat', 'p', str(self.work)))
-        self.source.write_text('长规则' * 8000, encoding='utf-8')
-        self.assertIn('完整读取', project_rules.prompt(self.root))
-        self.assertLess(len(project_rules.prompt(self.root)), 1000)
-        self.source.unlink()
-        self.assertIn('仅开展规则核查与沟通', project_rules.prompt(self.root))
-
     def test_unmanaged_override_preserved(self):
         self.target.write_text('Personal override', encoding='utf-8')
         with self.assertRaisesRegex(ValueError, '保留原文件'):

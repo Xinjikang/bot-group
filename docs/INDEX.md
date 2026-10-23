@@ -56,8 +56,6 @@
 
 ## 项目、团队与工作区
 
-协作入口与网页设置见 [协议、规则加载及设置更新](engineering/COLLABORATION-ENTRY-2026-10-23.md)，包括角色变更提示、向导创建 profile 和自动更新检查。
-
 | 文档 | 内容 |
 | --- | --- |
 | [项目配置](engineering/PROJECT-CONFIGURATION.md) | 项目身份、角色、权限、目录、规则同步 |

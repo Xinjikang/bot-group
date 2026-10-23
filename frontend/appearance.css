@@ -151,21 +151,3 @@
   #project-bar{order:3;width:100%}
   #conn-text{display:none}
 }
-/* Header settings keep the connection and update status visible. */
-#topbar{position:relative;z-index:20}
-#topbar-right{flex-wrap:wrap;position:relative}
-#topbar-user-name{max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg-2)}
-#btn-update{color:var(--accent-2);border:1px solid var(--accent);border-radius:999px;padding:5px 10px;background:var(--card);font-size:12px}
-#settings-menu{position:relative}
-#settings-menu>summary{cursor:pointer;list-style:none;padding:6px 10px;border:1px solid var(--border);border-radius:8px;color:var(--fg);white-space:nowrap}
-#settings-menu>summary:focus-visible{outline:2px solid var(--accent)}
-#settings-menu .settings-actions{position:absolute;right:0;top:calc(100% + 8px);z-index:1000;display:flex;flex-direction:column;gap:6px;padding:10px;min-width:170px;border:1px solid var(--border);border-radius:12px;background:var(--card);box-shadow:0 10px 28px #0005}
-#settings-menu .settings-actions button{padding:9px 12px;text-align:left;border:0;border-radius:6px;color:var(--fg);background:transparent;cursor:pointer;min-height:36px}
-#settings-menu .settings-actions button:hover{background:var(--hover)}
-#settings-menu #btn-background::after{content:' 更换背景'}
-#settings-menu #btn-theme-top::after{content:' 切换主题';font-size:13px}
-#dlg-about{width:420px;max-width:calc(100vw - 24px);box-sizing:border-box}
-#dlg-about p{color:var(--fg-2);line-height:1.7;overflow-wrap:anywhere}
-@media(max-width:600px){
-  #dlg-project-detail{left:8px!important;max-width:calc(100vw - 16px);box-sizing:border-box}
-}

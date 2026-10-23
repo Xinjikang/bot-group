@@ -199,9 +199,11 @@ def _find_codex_processes(profile, session):
     return pids
 
 
-# 信号携带本次唤醒的动态指令，消息拉取策略由工具管理。
-# 协作规则及主目录 AGENTS.md 当前快照通过本次系统提示词注入。
-# 固定前缀标识系统唤醒来源。
+# 信号模板（纯信号，不带消息内容，不带拉取策略——拉取策略是工具内部的事）。
+# 协作规则通过 HERMES_EPHEMERAL_SYSTEM_PROMPT 注入 system prompt，
+# agents.md 走 --in 项目root 由 Hermes 原生加载进 system prompt——信号瘦身到只剩 per-wake 动态指令。
+# req#45（task#80）：三个信号开头统一加「[系统唤醒信号]」前缀——bot 醒来一眼分清
+# 「系统指令」与「用户消息」，保持唤醒信号的来源清晰。
 # work 信号：只留「有新消息」这个动态事实
 _WORK_SIGNAL = "[系统唤醒信号] 你有新消息（点对点派活），调 group_read_inbox() 看未读。"
 # chat 信号：只留「有新消息」这个动态事实
@@ -216,19 +218,13 @@ _COMMON_SYSTEM_PROMPT = (
     "## 内容归属与通用工具用法\n"
     "1. 内容归属：项目角色分工、协作顺序和项目约定集中维护在项目 AGENTS.md；"
     "Bot 人格、表达偏好和私有内容维护在其人格配置中，SOUL.md 用于承载这类内容；"
-    "引擎工具用法由系统提示词统一提供。专业文档通过引用 AGENTS.md 获取协作流程。"
-    "当前项目规则独立生效，采用任何 SOUL 的新旧 Bot 均须遵循；恢复旧会话时按本次加载的规则版本重新核对职责和流程。"
-    "实施前按项目流程确认需求、任务及执行人已落库；有管理权限的成员完成创建和拆解，执行成员取得任务后调用 task_claim，"
-    "交付通过 task_log 交接，审查与验收由项目指定成员完成。用户仅讨论或咨询时按讨论范围回应；获得实施授权后按上述流程推进。\n"
+    "引擎工具用法由系统提示词统一提供。专业文档通过引用 AGENTS.md 获取协作流程。\n"
     "2. 成员识别：每次选定协作对象前，调用 group_list_members 查询当前项目启用成员。"
     "按 AGENTS.md 确定所需角色，再根据当前 role、role_id 和 profile description选定具体成员。"
     "点名使用成员 profile；同角色多人时按项目约定协调。\n"
     "3. 消息发送：group_send 只填写 text 和 need_reply；项目与会话由当前执行上下文确定。"
     "需要对方回复时填写 need_reply=true；回执、收口、状态告知等无需回复的消息填写 need_reply=false。\n"
-    "4. 消息闭环：普通最终回复文字不会发送到协作系统，发送须调用 group_send 并核对成功结果。"
-    "work 中要求回复的消息：group_send 实质回复并 @原发送者 → 确认发送成功 → group_mark_seen(message_ids=[收到的消息ID])。"
-    "明确无需回复的点对点消息处理完成后可直接 group_mark_seen。检查返回 seen 和 blocked；blocked 中的消息仍未完成确认，按原因处理。"
-    "chat 中成功 group_send（实质发言或允许的跳过）会自动清理本话题未读并完成发言轮次；group_mark_seen 仅用于点对点。\n"
+    "4. 已读工具：group_mark_seen 的 message_ids 填自己收件箱中待标记的消息 ID；具体调用时机遵循当前模式规则。\n"
     "5. 需求创建：依据用户明确的创建指令及授权范围调用 req_create，"
     "填写 title、background、scope、approach、acceptance、undecided、source_ref。"
     "没有待定事项时 undecided 精确填写“无”；source_ref 使用 thread_id=<整数>; message_id=<整数>，"
@@ -280,8 +276,7 @@ _WORK_SYSTEM_PROMPT = _COMMON_SYSTEM_PROMPT + (
     "13. 互@回环断链：点对点互@超过 3 轮（来回 6 条）时，引擎会拒绝第 7 条并报错"
     "「消息发送失败，因为已经互@3轮了。如果还需要继续讨论，请创建话题」——"
     "这是引擎真实兜底不是吓唬，撞到它说明该转话题了；\n"
-    "14. 每批点对点消息处理后执行上述已读闭环，再 group_read_inbox 拉下一批；发送成功本身仍保留点对点未读。"
-    "收件箱为空时按本次唤醒来源检查任务或需求；没有可执行工作则结束本轮。读取报错时依据错误处理，保留原消息 ID，避免反复空读；\n"
+    "14. 实质回复点对点消息后，调用 group_mark_seen，将本次已处理消息的 ID 填入 message_ids，清理自己的点对点待办；\n"
     "15. 工具返回权限拒绝（PERMISSION_DENIED）时，立即结束被拒动作，按返回的原因和下一步指引处理，禁止尝试绕过。"
 )
 _CHAT_SYSTEM_PROMPT = _COMMON_SYSTEM_PROMPT + (
@@ -326,7 +321,7 @@ def wake_system_prompt(kind: str, project: str, workdir: str) -> str:
     import json
     from .project_workspaces import project as get_project
     from .task_retry import project_owner
-    from . import workspace_resources, project_rules
+    from . import workspace_resources
     from .project_workspaces import LOCK
     conn = db.get_connection()
     try:
@@ -346,8 +341,7 @@ def wake_system_prompt(kind: str, project: str, workdir: str) -> str:
         '当前工作目录': workdir,
         '工作区配置': resources,
     }
-    return (system_prompt_for(kind) + '\n\n' + workspace_resources.RULE
-            + '\n\n' + project_rules.prompt(row['root']) + '\n\n## 当前项目\n'
+    return (system_prompt_for(kind) + '\n\n' + workspace_resources.RULE + '\n\n## 当前项目\n'
             + json.dumps(context, ensure_ascii=False, indent=2)
             + '\n群聊和任务工具的 project 参数使用项目稳定 ID。')
 
@@ -720,6 +714,9 @@ def _workdir_for(profile: str, project: str) -> str:
         conn.close()
 
 
+# （原 _agents_md_path 已删：方案B终案后 agents.md 走 --in 原生加载，引擎不再需要路径）
+
+
 def enqueue(
     conn: sqlite3.Connection,
     profile: str,
@@ -826,9 +823,10 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
     """subprocess 唤醒的公共实现。
 
     项目规则与协作提示词的加载方式：
-    - `--in <工作目录>`：设置当前工作目录并保留宿主原生规则发现。
-    - HERMES_EPHEMERAL_SYSTEM_PROMPT：每次 spawn 注入公共协作规则、主目录
-      AGENTS.md 当前快照及项目配置；Codex 通过 developer instructions 接收同一内容。
+    - `--in <项目root>`：cwd 指项目目录，Hermes 原生加载项目 agents.md 进 system prompt
+      （byte-stable、缓存命中），替代「信号带路径 + bot 每次 read_file 堆历史」；
+    - HERMES_EPHEMERAL_SYSTEM_PROMPT：协作规则 env 注入（subprocess 通道每次 spawn
+      重新注入，无 gateway safe_env 过滤）。静态协作规则后追加当前项目配置，格式和字段顺序固定。
     """
     session = session_name(profile, kind, thread_id, project)
     # --in 按 profile 派生：default 落主目录，其他 bot 落各自 worktree（不踩主目录红线）

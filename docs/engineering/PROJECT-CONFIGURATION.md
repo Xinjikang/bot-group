@@ -86,17 +86,17 @@ Git 与 SQLite 分属两套存储。Git 已创建而后续登记失败时保留�
 
 每次 spawn 根据本次项目 ID 读取当前数据库配置，调用 `wake_system_prompt`，在 WORK/CHAT 协作规则后追加公共项目段。Hermes 通过 `HERMES_EPHEMERAL_SYSTEM_PROMPT` 加载，Codex 通过 developer_instructions 加载。内容包括项目稳定 ID、显示名、描述、负责人、主目录、实际目录模式、工作目录和分配资源；任务工具 project 使用稳定 ID，群聊发送项目由执行上下文填充。工作目录沿用本次唤醒已校验的路径。负责人未配置、已删除或在该项目停用时为 `user`。负责人自身唤醒仍收到自己的 profile，自行协调及升级规则由 WORK/CHAT 提示词规定。
 
-这段内容不包含当前 profile、规则文件来源或任务/话题编号和时间戳。格式与字段顺序固定；配置未变时生成结果一致，配置变化在下次 spawn 更新。主目录 AGENTS.md 当前快照在独立段落中逐次注入，原有会话标识和历史继续保留。
+这段内容不包含当前 profile、规则文件来源或任务/话题编号和时间戳。格式与字段顺序固定；配置未变时生成结果一致，配置变化在下次 spawn 更新。它与 AGENTS.md 原生缓存的生效时机独立，保持原有会话标识和历史，Hermes 源码保持原样。
 
 提示词提供项目主目录和当前工作目录，文档存放规则由项目 `AGENTS.md` 管理。软件项目的 shared/worktree 成员使用“项目主目录”拼接 `reports/` 共享测试报告；源码、需求、设计和技术文档在分配工作区随分支维护，交接记录路径与提交。目录授权与忽略规则见 [文档存放约定](../guides/DOCUMENT-STORAGE.md)。
 
 ## 唤醒前的项目规则同步
 
-引擎每次 spawn 前读取主目录 `AGENTS.md`，在独立工作目录维护 `AGENTS.override.md`，并将当前规则快照加入本次系统提示词。直接用编辑器修改主目录文件也会在下次唤醒生效。shared 与 worktree 成员采用相同的逐次快照机制；主目录和 worktree 已有的 `AGENTS.md` 正文保持原样。
+引擎每次 spawn 前读取主目录 `AGENTS.md`，在独立工作目录维护 `AGENTS.override.md`。因此直接用编辑器修改主目录文件也会在下次唤醒前同步，无需经设置页面保存。共用主目录的 bot 继续由 Hermes 原生读取该目录。主目录和 worktree 已有的 `AGENTS.md` 正文保持原样。
 
 副本只包含规则正文；数据库 `project_rule_copies` 记录来源、项目 ID、内容 SHA-256 和待写入指纹，以支持跨文件/数据库写入中断后的重试。内容未变时保持文件不动。已有非受管理 override、被手动改动的副本、已跟踪或符号链接 override 会保留并阻止本次唤醒。主目录规则缺失、空白、编码错误、过大，以及工作目录中更高优先级的 `.hermes.md/HERMES.md`，也会明确报错。生成文件通过 Git 本地 `info/exclude` 排除，保持 worktree 状态和提交内容不受副本影响。已有个人 override 需要用户处理后才能接管。
 
-Hermes 原生继续发现 override；引擎同时通过 ephemeral system prompt 提供本次主目录规则，Codex 使用 developer instructions。恢复会话可取得当前快照，已有 Bot 的 SOUL 选择保持独立。超长文件采用路径、指纹与本轮完整读取要求，边界见 [协作入口](COLLABORATION-ENTRY-2026-10-23.md)。
+Hermes 原生自动发现 override，仍在原项目规则位置拼接，并继续执行原生安全扫描与长度限制。同步成功表示磁盘副本更新；已有会话可能继续使用已缓存的系统提示词，规则随 Hermes 后续新建或自然重建提示词生效。引擎保持会话名、消息历史、WORK/CHAT 提示和刷新机制；Hermes 源码保持原样。
 
 需要新会话读取最新规则时，通过 `/new` 重建相应会话。
 

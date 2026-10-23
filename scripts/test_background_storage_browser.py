@@ -52,7 +52,6 @@ def main():
             try {localStorage.setItem('quota-probe', 'x'.repeat(4096)); return false;}
             catch(e) {return e.name === 'QuotaExceededError';}
         }''')
-        page.locator('#settings-menu summary').click()
         page.locator('#btn-background').click()
         ready(page)
         with page.expect_file_chooser() as chooser:
@@ -81,7 +80,6 @@ def main():
         ready(legacy)
         assert appearance.read() == photo.getvalue()
         assert legacy.evaluate('localStorage.getItem("ge_viewport_background")') is None
-        legacy.locator('#settings-menu summary').click()
         legacy.locator('#btn-background').click()
         ready(legacy)
         legacy.locator('#background-reset').click()

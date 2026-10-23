@@ -13,25 +13,12 @@ class AgentsEditTests(unittest.TestCase):
     configured = baseline.SupplementTests.configured
     reviewed = baseline.SupplementTests.reviewed
     submit = baseline.SupplementTests.submit
-
     def edited(self):
         body = self.configured(supplement=False)
         body['roles'] = body['roles'][:1] + [{'name': '全栈开发', 'permissions': []}]
         _, plan = self.reviewed(body)
         body['agents_edit'] = {**plan['agents_draft'], 'content': '# 自定义流程\n项目负责人安排全栈开发交付。\n'}
         return body
-
-    def test_removed_template_roles_allow_unchanged_rules(self):
-        body = self.configured('software')
-        body['git_setup'] = True
-        removed = body['roles'].pop()['name']
-        _, plan = self.reviewed(body)
-        self.assertIn(removed, plan['agents_draft']['content'])
-        body['agents_edit'] = plan['agents_draft']
-        reviewed, _ = self.reviewed(body)
-        response = self.submit(reviewed)
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual((self.root / 'AGENTS.md').read_text(encoding='utf-8'), body['agents_edit']['content'])
 
     def test_edit_backups_exact_original_and_publishes_reviewed_diff(self):
         before = (self.root / 'AGENTS.md').read_bytes()

@@ -7,7 +7,6 @@ function applyUserDisplayName(data) {
     throw new Error('称呼读取失败，请确认引擎已更新并重启');
   const changed = S.userDisplayName !== data.display_name;
   S.userDisplayName = data.display_name;
-  document.dispatchEvent(new Event('user-display-name-loaded'));
   document.querySelector('#btn-user-name').title = `我的称呼：${data.display_name}`;
   if (changed) {
     renderMessages();

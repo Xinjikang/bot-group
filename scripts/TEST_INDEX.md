@@ -1,9 +1,5 @@
 # 测试脚本索引
 
-协作入口与设置：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_update_check scripts.test_import_agents_edit scripts.test_profile_create scripts.test_project_rules scripts.test_project_setup scripts.test_prompt_entry_points scripts.test_inbox_seen_gate scripts.test_message_injection scripts.test_hermes_transport scripts.test_codex_driver_regressions -q`。使用临时宿主、SQLite、Git 与发布索引夹具，验证点对点/话题协议、逐次规则加载、长规则读取边界、角色删除后保留原文保存、独立 profile 创建后入组、正式版本比较及更新失败。Git 创建用例须将 TEMP/TMP 指向仓库外可写目录，以免继承父仓库；原生 Hermes 可选用例按所需宿主路径显式启用。
-
-对应浏览器验证：`python -X utf8 -B scripts/test_collaboration_settings_browser.py --evidence <项目主目录>/reports/tests/<版本>/<日期>-<任务ID>/browser`，需要 Python 3.11+、Playwright 与 Chrome，覆盖真实隔离创建/入组、角色变更弹窗及保留原文保存、设置菜单、关于版本、打开/12 小时/恢复检查、失败重试、胶囊切换与刷新以及 390px 深浅主题。兼容本机 Python 3.10 + tomli 环境时，可在测试启动器中先执行 `import sys, tomli; sys.modules['tomllib'] = tomli`，再用 runpy 运行脚本。称呼、背景与重启菜单分别复用 `test_user_display_name_browser.py`、`test_appearance_browser.py`、`test_background_storage_browser.py`、`test_service_restart_browser.py`；profile 表单复用 `test_profile_create_browser.py`。
-
 手工拆解凭据与鉴权测试隔离：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_task_api scripts.test_access_contract scripts.test_codex_driver_regressions scripts.test_hermes_transport scripts.test_requirement_lifecycle scripts.test_task_brief -q`。同进程串联验证健康接口鉴权与后续 Bot 启动，覆盖缺省/null/空凭据生成、非法类型拒绝、跨成员修订、已有空锁恢复、发布及完成提交。真实手工 stdio MCP 链路运行 `.venv\Scripts\python.exe -X utf8 -B scripts/test_mcp_e2e.py`；自动执行和手工成员分别使用隔离凭据。
 
 自定义数据目录升级：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_release_upgrade scripts.test_config scripts.test_upgrade -q`。使用隔离发布包、真实环境变量和临时数据库，覆盖程序目录内外的自定义数据目录、成功升级、失败回滚、数据库/附件/配置保留，以及依赖子进程继承目录。网络、生产停机与真实依赖安装使用模拟边界。

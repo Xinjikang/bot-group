@@ -1,4 +1,4 @@
-"""Project rules loaded for each execution and synchronized to managed worktrees."""
+"""Wake-time copies of the main project's rules; Hermes owns prompt refresh."""
 from __future__ import annotations
 
 import hashlib
@@ -10,25 +10,6 @@ from . import db
 from .project_workspaces import LOCK, git, key
 
 LIMIT = 2 * 1024 * 1024
-
-
-def prompt(root):
-    """Supply fresh project rules independently of host discovery and persona files."""
-    path = Path(root).resolve() / 'AGENTS.md'
-    prefix = f'## 本次执行的项目协作规则\n规则文件：{path}\n'
-    try:
-        body = _read(path)
-        content = body.decode('utf-8-sig')
-        if not content.strip():
-            raise ValueError('规则文件为空')
-    except (OSError, UnicodeError, ValueError):
-        return prefix + '规则当前无法完整加载。仅开展规则核查与沟通，联系项目负责人补齐可读规则后再执行项目任务。'
-    revision = hashlib.sha256(body).hexdigest()
-    prefix += f'规则版本 SHA256：{revision}\n当前职责、协作顺序及交付要求以这份规则为准。\n'
-    # Bound command/environment size; large files must be read in full from disk.
-    if len(content.encode('utf-8')) > 16000:
-        return prefix + '正文较长：本轮先用文件读取工具完整读取上述文件，核对规则版本后再处理任务；读取失败时联系项目负责人。'
-    return prefix + '<project_rules>\n' + content + '\n</project_rules>'
 
 
 def _read(path):
