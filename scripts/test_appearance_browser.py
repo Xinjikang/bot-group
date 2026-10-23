@@ -91,6 +91,7 @@ def main():
                 page.locator('#composer textarea').blur()
             page.screenshot(path=str(output / f'default-{theme}.png'))
         assert planet_geometry['dark'] == planet_geometry['light'], 'theme switching must preserve planet scale and position'
+        page.locator('#settings-menu summary').click()
         page.locator('#btn-background').click()
         page.wait_for_function('!document.querySelector("#background-select").disabled')
         image = io.BytesIO()
@@ -108,6 +109,7 @@ def main():
         page.evaluate('showLogin(false)')
         page.wait_for_function('!document.querySelector("#background-select").disabled')
         assert 'blob:' in page.locator('.col-msgs').evaluate('(e) => getComputedStyle(e).backgroundImage')
+        page.locator('#settings-menu summary').click()
         page.locator('#btn-background').click()
         page.wait_for_function('!document.querySelector("#background-select").disabled')
         page.locator('#background-file').set_input_files({'name': 'large.png', 'mimeType': 'image/png', 'buffer': b'x' * (11 * 1024 * 1024)})
@@ -130,6 +132,7 @@ def main():
             page.evaluate('(t) => applyTheme(t)', theme)
             assert 'viewport-planet.jpg' in page.locator('.col-msgs').evaluate('(e) => getComputedStyle(e).backgroundImage')
         page.set_viewport_size({'width': 390, 'height': 844})
+        page.locator('#settings-menu summary').click()
         page.locator('#btn-background').click()
         assert page.locator('#dlg-background').evaluate('(e) => e.getBoundingClientRect().right <= innerWidth')
         page.screenshot(path=str(output / 'settings-390.png'))

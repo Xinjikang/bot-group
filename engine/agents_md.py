@@ -38,9 +38,9 @@ _LOCK = threading.RLock()
 
 _WORKTREE_NOTE = (
     "引擎在唤醒前将主目录这份同步到成员 worktree 的受管理 override。"
-    "已有会话不即时生效，规则随 Hermes 重建系统提示词加载。"
+    "每次执行重新加载主目录规则与版本；正在运行的执行在下次唤醒时取得更新。"
 )
-_PLAIN_NOTE = "本项目 bot 读取主目录这份，规则随 Hermes 新建或重建系统提示词加载。"
+_PLAIN_NOTE = "每次执行显式加载主目录规则与版本，适用于新旧 Bot 和恢复的会话；长文件要求本轮完整读取。"
 
 _OVERSIZE_MSG = "文件超过 2 MB，正文未载入；保存会整份覆盖它"
 _ENCODING_MSG = "文件不是有效 UTF-8，正文未载入；保存会整份覆盖它"

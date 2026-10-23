@@ -732,7 +732,7 @@ class ProfileSource(BaseModel):
 
 class ProfileCreateBody(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    project: str = Field(min_length=1, max_length=200)
+    project: str = Field(default='', max_length=200)
     host_type: str = Field(pattern='^(codex|hermes)$')
     profile: str = Field(min_length=1, max_length=64)
     display_name: str = Field(default='', max_length=100)
@@ -845,6 +845,20 @@ def get_members(project: str = "", active_only: bool = False, role: str | None =
         return {"members": members, "count": len(members)}
     finally:
         conn.close()
+
+
+@router_api.get('/system/version')
+def get_system_version(identity=Depends(_resolve_identity)):
+    _admin_only(identity, '版本信息仅限用户查看')
+    from . import update_check
+    return update_check.version()
+
+
+@router_api.get('/system/update-check')
+def get_update_check(identity=Depends(_resolve_identity)):
+    _admin_only(identity, '更新检查仅限用户操作')
+    from . import update_check
+    return update_check.check()
 
 
 @router_api.get('/user/display-name')

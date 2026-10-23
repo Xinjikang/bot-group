@@ -578,7 +578,9 @@ def group_send(text: str | None, need_reply: bool) -> dict:
     A closed topic rejects messages until reopened by the user.
     need_reply（req#57 去默认值改必填）：每次发消息必须显式填 true/false。
     True=需要对方回复（窄闸门照旧）；False=「不需要回复」——被 @ 者可静默标已读、
-    窄闸门豁免，不再卡 pending 打枪。确认类/收口类消息必须传 False。
+    确认回执、状态告知及收口传 False；请求对方确认或决策传 True。
+    work：成功发送后仍须 group_mark_seen 标记已处理的来信 ID。
+    chat：成功发送或允许的跳过会自动清理本话题未读并完成本轮。
     """
     # req#60：按进程身份推导 thread_id（fail-closed，与 group_read_inbox 同路径）。
     _kind, _self_tid, _err = _session_resolve()
@@ -707,7 +709,13 @@ def group_read_inbox(after_id: int = 0, upper_id: int = None) -> dict:
 
 @mcp.tool()
 def group_mark_seen(message_ids: list) -> dict:
-    """标已读（只许标自己的 inbox 行）。"""
+    """确认自己已处理的点对点来信，message_ids 使用收到的消息 ID。
+
+    要求回复时先 group_send 实质回复并 @原发送者，核对发送成功，再调用本工具。
+    明确无需回复的点对点来信处理完成后可直接标记。检查 seen 和 blocked：
+    blocked 中的消息仍是 pending，须按原因完成回复后再确认。
+    话题消息由成功 group_send 自动清理，请通过发言或允许的跳过完成轮次。
+    """
     return _post("/inbox/seen", {"message_ids": message_ids})
 
 

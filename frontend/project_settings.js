@@ -1,4 +1,5 @@
 // Project-scoped membership and workspaces; profile editing remains global.
+document.body.appendChild(document.querySelector('#dlg-member-add'));
 let profileProjectReturn = null;
 const projectMembersCache = new Map(), projectMembersPending = new Map(), projectMembersVersions = new Map();
 let workspaceEditor = null;
@@ -181,7 +182,7 @@ function renderMemberCreate(steps) {
   steps.appendChild(form);
   if (draft.profileTouched) validateDialogField(form.querySelector('#member-create-profile'));
   const current = memberAdd;
-  mountProjectSoulTemplates(form.querySelector('#member-create-soul-templates'), {
+  if (current.project) mountProjectSoulTemplates(form.querySelector('#member-create-soul-templates'), {
     project: current.project, maxLength: 32000, disabled: current.scanning,
     isActive: () => memberAdd === current && current.step === 2 && current.mode === 'create' && !current.busy,
     getValue: () => draft.instructions,
@@ -198,7 +199,7 @@ function renderMemberAdd() {
   const join = $('#member-add-join'), next = $('#member-add-next');
   join.hidden = memberAdd.step !== 2; next.hidden = memberAdd.step === 2;
   join.disabled = memberAdd.busy || memberAdd.scanning || (memberAdd.mode === 'create' ? !memberCreateValid() : !memberAdd.candidate);
-  join.textContent = memberAdd.mode === 'create' ? '创建并加入项目' : '加入当前项目';
+  join.textContent = memberAdd.mode === 'create' ? (memberAdd.onCreated ? '创建 profile' : '创建并加入项目') : '加入当前项目';
   next.disabled = memberAdd.step === 1 ? !memberAdd.host : !(memberAdd.candidate && !memberAdd.scanning);
   steps.replaceChildren();
   if (memberAdd.step === 1) {
@@ -225,7 +226,7 @@ function renderMemberAdd() {
     const modes = document.createElement('div');
     modes.className = 'project-mode-options member-add-modes';
     modes.setAttribute('role', 'radiogroup'); modes.setAttribute('aria-label', '添加方式');
-    for (const [value, title] of [['existing', '选择已有 profile'], ['create', '创建新 profile']]) {
+    for (const [value, title] of (memberAdd.onCreated ? [['create', '创建新 profile']] : [['existing', '选择已有 profile'], ['create', '创建新 profile']])) {
       const label = document.createElement('label'), input = document.createElement('input'), text = document.createElement('span');
       input.type = 'radio'; input.name = 'member-add-mode'; input.value = value;
       input.checked = memberAdd.mode === value; text.textContent = title;
@@ -295,8 +296,10 @@ function renderMemberAdd() {
     }
   }
 }
-function openMemberAdd() {
+function openMemberAdd(options = {}) {
   memberAddReset();
+  if (options.onCreated) Object.assign(memberAdd, {project: '', mode: 'create', onCreated: options.onCreated});
+  $('#dlg-member-add').querySelectorAll('input, select, textarea, button').forEach(el => el.disabled = false);
   $('#dlg-member-add').showModal();
   renderMemberAdd();
   focusMemberAdd();
@@ -381,7 +384,7 @@ async function submitMemberCreate() {
   current.busy = true;
   const dialog = $('#dlg-member-add');
   dialog.querySelectorAll('input, select, textarea, button').forEach(el => el.disabled = true);
-  $('#member-add-status').textContent = '正在创建 profile 并加入项目…';
+  $('#member-add-status').textContent = current.onCreated ? '正在创建 profile…' : '正在创建 profile 并加入项目…';
   $('#member-add-status').dataset.error = 'false';
   const draft = current.draft, source = current.sources[Number(draft.source)];
   const payload = {project: current.project, host_type: current.host, profile: draft.profile,
@@ -394,7 +397,8 @@ async function submitMemberCreate() {
     if (memberAdd !== current) return;
     current.busy = false;
     dialog.close();
-    if ($('#pj-detail-form').dataset.origName === current.project) {
+    if (current.onCreated) current.onCreated(result);
+    else if ($('#pj-detail-form').dataset.origName === current.project) {
       await loadProjectMembers();
       $('#pj-members-status').textContent = result.notice;
     }
@@ -533,7 +537,7 @@ function renderProjectMembers(project, data) {
     row.dataset.profile = member.profile;
     row.innerHTML = `<div class="project-member-header"><div class="project-member-identity">
       <div class="project-member-name"><button type="button" class="member-name-edit" title="点击编辑显示名（所有项目共用）">${esc(memberDisplayName(member))}</button><small>${esc(memberHostProfile(member))}</small>
-      <button type="button" role="switch" aria-checked="${!!member.active}" aria-label="成员启用状态" title="${member.active ? '点击停用' : '点击启用'}" class="project-member-badge ${member.active ? 'enabled' : ''}">${member.active ? '已启用' : '已停用'}</button></div></div>
+      <button type="button" role="switch" aria-checked="${!!member.active}" aria-label="成员启用状态" title="${member.active ? '点击停用' : '点击启用'}" class="project-member-badge ${member.active ? 'enabled' : ''}">${member.active ? '启用' : '停用'}</button></div></div>
       <div class="project-member-actions"><button type="button" class="edit">编辑</button>
       ${member.profile !== 'user' ? `<button type="button" class="reset-session" title="${reset.title}" ${reset.disabled ? 'disabled' : ''}>${reset.label}</button>` : ''}
       <button type="button" class="workspace">工作区</button></div></div>
@@ -561,7 +565,7 @@ function renderProjectMembers(project, data) {
         member.active = active;
         const latest = projectMembersCache.get(project)?.members.find(m => m.profile === member.profile);
         if (latest) latest.active = active;
-        button.textContent = active ? '已启用' : '已停用';
+        button.textContent = active ? '启用' : '停用';
         button.classList.toggle('enabled', active);
         button.setAttribute('aria-checked', String(active));
         button.title = active ? '点击停用' : '点击启用';
@@ -581,7 +585,7 @@ function renderProjectMembers(project, data) {
     roleBtn.textContent = member.role ? member.role : '设置角色';
     roleBtn.setAttribute('aria-haspopup', 'menu');
     roleBtn.setAttribute('aria-label', `${member.display_name || member.profile}的项目角色${member.role ? `：${member.role}` : '（未设置）'}`);
-    // 角色按钮位于 .project-member-name 内，紧接「已启用」badge。
+    // 角色按钮位于 .project-member-name 内，紧接成员状态开关。
     row.querySelector('.project-member-badge').after(roleBtn);
     roleBtn.addEventListener('click', e => {
       e.stopPropagation();
