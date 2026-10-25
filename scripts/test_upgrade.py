@@ -23,8 +23,8 @@ from unittest import mock
 from contextlib import ExitStack
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools import upgrade  # noqa: E402
-from tools import make_release  # noqa: E402
+from engine.maintenance import upgrade  # noqa: E402
+from engine.maintenance import make_release  # noqa: E402
 
 
 def _make_real_sqlite(path) -> None:

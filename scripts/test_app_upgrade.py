@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from engine import app_upgrade, auth, config, restart
-from tools import releases, update_engine, upgrade
+from engine.maintenance import releases, update_engine, upgrade
 from scripts.test_user_display_name import UserNameAPI
 
 

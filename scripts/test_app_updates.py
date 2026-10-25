@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from engine import app_updates, auth, version
-from tools import releases, upgrade
+from engine.maintenance import releases, upgrade
 from scripts.test_user_display_name import UserNameAPI
 
 

@@ -10,7 +10,7 @@ from contextlib import closing
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
-from tools import make_release, upgrade, releases
+from engine.maintenance import make_release, upgrade, releases
 from scripts.test_upgrade import UpgradeTestBase
 
 
@@ -233,7 +233,7 @@ class ReleaseUpgradeTests(UpgradeTestBase):
             self.assertTrue(upgrade._pid_alive(os.getpid()))
 
     def test_stop_client_rejects_foreign_binding_before_post(self):
-        from tools import stop_engine
+        from engine.maintenance import stop_engine
         from contextlib import nullcontext
         import io
         other = {'graceful_shutdown': 1, 'instance_id': 'other', 'pid': 123,
@@ -252,7 +252,7 @@ class ReleaseUpgradeTests(UpgradeTestBase):
         public = {
             'engine/main.py': 'pass\n',
             'tools/install.py': 'pass\n',
-            'tools/__init__.py': '',
+            'engine/maintenance/__init__.py': '',
             'doc/INDEX.md': '# Existing documentation directory\n',
             'docs/engineering/ENGINEERING.md': '# Technical documentation\n',
             'docs/requirements/req-1.md': '# Versioned requirement\n',
@@ -312,10 +312,10 @@ class ReleaseUpgradeTests(UpgradeTestBase):
 
     def test_formal_builder_exports_standalone_bootstrap_and_checksums(self):
         root = self.root / 'formal-source'
-        (root / 'tools').mkdir(parents=True)
-        (root / 'tools/bootstrap.py').write_text('print("standalone")\n')
+        (root / 'engine/maintenance').mkdir(parents=True)
+        (root / 'engine/maintenance/bootstrap.py').write_text('print("standalone")\n')
         out = self.root / 'formal-assets'
-        with mock.patch.object(make_release, '__file__', str(root / 'tools/make_release.py')):
+        with mock.patch.object(make_release, '__file__', str(root / 'engine/maintenance/make_release.py')):
             self.assertEqual(make_release.main(['--formal', '--version', 'v1.2.3', '--out', str(out)]), 0)
         raw = (out / 'bootstrap.py').read_bytes()
         self.assertIn(hashlib.sha256(raw).hexdigest() + '  bootstrap.py',

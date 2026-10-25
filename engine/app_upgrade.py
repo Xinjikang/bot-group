@@ -10,7 +10,7 @@ import time
 from . import config, restart
 from .browser_resources import _pid_alive
 from .version import version_info
-from tools import releases, upgrade
+from .maintenance import releases, upgrade
 
 ACTIVE = {'starting', 'running'}
 

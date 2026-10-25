@@ -19,7 +19,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from tools import bootstrap  # noqa: E402
+from engine.maintenance import bootstrap  # noqa: E402
 
 
 def _make_source_tree(root: Path) -> None:

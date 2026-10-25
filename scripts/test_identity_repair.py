@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from engine import db
 from scripts import test_project_roles
-from tools.repair_hermes_identity import repair
+from engine.maintenance.repair_hermes_identity import repair
 
 
 class RepairTests(unittest.TestCase):

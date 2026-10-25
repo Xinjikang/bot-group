@@ -23,6 +23,7 @@
 | [协作设计依据](design/DESIGN-NOTES.md) / [配置职责](design/PROJECT-CONFIG-INVENTORY-2026-09-23.md) | 会话、持久知识和配置边界 |
 | [Codex 驱动设计](design/CODEX-DRIVER-DESIGN-2026-09-29.md) | 宿主、Bot 与项目成员分层 |
 | [进程查询兼容性](design/2026-10-25-process-query.md) | Windows 进程探测、三态保护与依赖交付 |
+| [维护代码命名空间](design/2026-10-25-maintenance-namespace.md) | Hermes 包共存、命令入口与独立安装器 |
 | [常驻执行后端方案](design/SERVE-RESIDENT-SOLUTION-2026-10-08.md) | 方案与实施前验证条件 |
 | [规则维护边界](design/bot-group-copy-edit-checklist.md) | 提示词、AGENTS 和角色参考 |
 | [维护经验](PITFALLS.md) | 调度、身份、前端与生命周期边界 |
@@ -42,6 +43,7 @@
 | [Windows BAT](engineering/WINDOWS-BAT-COMPATIBILITY-2026-10-17.md) | 编码、换行、参数和退出码 |
 | [测试索引](../scripts/TEST_INDEX.md) | Python、Node、Chromium、MCP 及现场探针入口 |
 | [维护工具](../tools/README.md) | 安装、发布、升级、服务启停与身份修复 |
+| [维护模块](engineering/MAINTENANCE-MODULES.md) | engine.maintenance 导入、旧布局升级与宿主隔离 |
 | [升级清单](engineering/UPGRADE-MANIFEST-SEMANTICS-2026-10-17.md) | 文件归属、冲突保护及恢复 |
 | [临时目录污染](engineering/HERMES-TMP-PATH-INVESTIGATION-2026-10-17.md) | Windows 环境变量边界与处理方法 |
 | [重复拆解边界](engineering/REQ97-DUPLICATE-DECOMPOSE-ROOTCAUSE-2026-09-30.md) | 并发控制及现行授权依据 |

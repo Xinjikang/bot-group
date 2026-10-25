@@ -10,7 +10,7 @@
 
 `engine/app_upgrade.py` 通过共享维护锁与重启协调，同一活动升级及同一请求 ID 复用回执。`tools/update_engine.py` 使用虚拟环境之外的基础 Python，独立于旧引擎执行。程序、数据目录和端口取发起实例的有效配置。回执与日志位于数据目录 `logs/app-upgrade.json`、`logs/app-upgrade.log`。
 
-升级复用 `tools/upgrade.py`：固定目标下载及摘要/清单校验、安全停机、SQLite 和程序备份、文件清单落地、依赖同步、迁移副本检查、就绪校验。完成后运行安装目录的 service 入口并核对健康、实例变更及程序/数据库路径。新服务启动失败时核对升级备份的目标资产，恢复旧版并启动；回滚失败时保留证据并报告。
+升级复用 `engine.maintenance.upgrade`：固定目标下载及摘要/清单校验、安全停机、SQLite 和程序备份、文件清单落地、依赖同步、迁移副本检查、就绪校验。`tools/upgrade.py` 与 `tools/update_engine.py` 保留为命令入口，分别转发到 `engine.maintenance.upgrade` 与 `engine.maintenance.update_engine`。完成后运行安装目录的 service 入口并核对健康、实例变更及程序/数据库路径。新服务启动失败时核对升级备份的目标资产，恢复旧版并启动；回滚失败时保留证据并报告。
 
 ## 连接与失败
 

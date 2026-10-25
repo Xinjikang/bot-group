@@ -1,5 +1,5 @@
 """Read-only application version and formal release discovery."""
-from tools import releases, upgrade
+from .maintenance import releases, upgrade
 from .version import version_info
 
 

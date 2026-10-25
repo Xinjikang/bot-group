@@ -167,8 +167,8 @@ class ReviewTests(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get('HERMES_TEST_SOURCE'), 'requires installed Hermes source for isolated real SessionDB test')
     def test_real_hermes_new_title_and_read_stop_target(self):
-        # Hermes and maintenance tools use overlapping top-level package names.
-        # Run the external source integration in its own interpreter namespace.
+        # Keep external imports isolated from unrelated tests, while exercising
+        # the engine's maintenance and Hermes modules together in the child.
         if os.environ.get('HERMES_SESSION_TEST_CHILD') != '1':
             result = subprocess.run(
                 [sys.executable, '-X', 'utf8', '-B', '-m', 'unittest', self.id(), '-v'],
@@ -179,10 +179,15 @@ class ReviewTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             return
-        from engine import reasoning, stop
+        from engine import app_updates, app_upgrade, reasoning, stop
+        from engine.maintenance import releases, upgrade
         home = Path(self.tmp.name) / 'hermes'
         with patch.object(session_adapter,'_hermes_home',return_value=home), \
+             patch.dict(os.environ, {'GROUP_DATA_DIR': str(Path(self.tmp.name) / 'data')}), \
              patch.object(session_adapter,'_hermes_src',return_value=Path(os.environ['HERMES_TEST_SOURCE'])):
+            with patch.object(upgrade, 'discover_release', return_value=releases.Release('v99.0.0', 'isolated', 'a' * 64)):
+                self.assertEqual(app_updates.check_update()['latest_version'], 'v99.0.0')
+            self.assertIsInstance(app_upgrade.status(), dict)
             logical = 'dev-1-p-work'
             old = session_adapter.resolve_or_create(self.conn,'p','dev-1','work',None,logical)
             first = session_adapter.switch_session(self.conn,'p','dev-1','work',None,logical,busy_check=lambda *a:False)

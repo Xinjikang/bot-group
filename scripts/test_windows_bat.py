@@ -17,7 +17,7 @@ import tempfile
 import unittest
 import zipfile
 
-from tools import make_release
+from engine.maintenance import make_release
 
 
 ROOT = Path(__file__).resolve().parents[1]

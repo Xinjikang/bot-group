@@ -8,7 +8,7 @@ import sys
 from contextlib import closing
 
 from scripts.test_upgrade import UpgradeTestBase
-from tools import make_release
+from engine.maintenance import make_release
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -54,7 +54,8 @@ class LegacyReleaseUpgradeTests(UpgradeTestBase):
         original = {p.relative_to(self.prog).as_posix(): p.read_bytes()
                     for p in self.prog.rglob('*') if p.is_file()}
         source = self.root / 'new-source'
-        for relative in ('engine/config.py', 'engine/auth.py', 'tools/service.py', 'upgrade.bat'):
+        for relative in ('engine/config.py', 'engine/auth.py', 'tools/service.py', 'upgrade.bat',
+                         'engine/maintenance/__init__.py', 'engine/maintenance/service.py'):
             target = source / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes((REPOSITORY / relative).read_bytes())

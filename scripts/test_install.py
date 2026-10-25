@@ -22,7 +22,7 @@ for _p in (str(_PROGRAM_ROOT), str(_SCRIPTS_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from tools import install  # noqa: E402
+from engine.maintenance import install  # noqa: E402
 
 
 class InstallCheckTest(unittest.TestCase):
@@ -89,7 +89,7 @@ class InstallCheckTest(unittest.TestCase):
 
 class FreshInstallLocationTest(unittest.TestCase):
     def test_first_config_and_service_share_root_before_database_exists(self):
-        from tools import service
+        from engine.maintenance import service
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "program"

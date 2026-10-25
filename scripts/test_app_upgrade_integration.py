@@ -1,5 +1,6 @@
 """Isolated real API -> detached upgrade -> restart/rollback integration."""
 from contextlib import closing
+import io
 import json
 import os
 from pathlib import Path
@@ -18,7 +19,7 @@ import zipfile
 from unittest.mock import patch
 
 from engine import auth, restart
-from tools import make_release
+from engine.maintenance import make_release
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -26,6 +27,12 @@ ROOT = Path(__file__).resolve().parents[1]
 @unittest.skipUnless(os.name == 'nt', 'Windows installation lifecycle')
 class AppUpgradeIntegration(unittest.TestCase):
     def test_real_api_upgrade_and_failed_upgrade_restore_running_service(self):
+        self.run_upgrade()
+
+    def test_previous_tools_package_upgrades_and_rolls_back_through_original_helper(self):
+        self.run_upgrade('1ac85a2d4fccc751343c940c3312f660314bd67d')
+
+    def run_upgrade(self, previous_revision=None):
         with tempfile.TemporaryDirectory(prefix='ui upgrade ') as tmp:
             workspace = Path(tmp)
             source, root, data = (workspace / name for name in ('source', 'installed', 'data'))
@@ -35,15 +42,25 @@ class AppUpgradeIntegration(unittest.TestCase):
                     ignore=shutil.ignore_patterns('__pycache__', '.hermes-tmp*'))
             (source / 'tools/install.py').write_text('import sys\nsys.exit(0)\n')
             index = workspace / 'releases.json'
-            def build(version):
+            def build(version, previous=False):
                 out = workspace / version
-                self.assertEqual(make_release.make_release(source, out, 'bot-group', version), 0)
+                if previous:
+                    old_source = workspace / 'previous-source'
+                    raw = subprocess.check_output(['git', 'archive', '--format=zip', previous_revision,
+                                                   'engine', 'tools'], cwd=ROOT)
+                    with zipfile.ZipFile(io.BytesIO(raw)) as old:
+                        old.extractall(old_source)
+                    (old_source / 'tools/install.py').write_text('import sys\nsys.exit(0)\n')
+                    subprocess.run([sys.executable, '-X', 'utf8', '-B', str(old_source / 'tools/make_release.py'),
+                                    '--version', version, '--out', str(out)], check=True, cwd=old_source)
+                else:
+                    self.assertEqual(make_release.make_release(source, out, 'bot-group', version), 0)
                 release = json.loads((out / 'releases.json').read_text())
                 for key in ('source', 'manifest'):
                     release['releases'][0][key] = (out / release['releases'][0][key]).as_uri()
                 index.write_text(json.dumps(release))
                 return out / f'bot-group-{version}.zip'
-            with zipfile.ZipFile(build('v1.0.0')) as archive:
+            with zipfile.ZipFile(build('v1.0.0', previous=bool(previous_revision))) as archive:
                 archive.extractall(root)
             venv = root / '.venv'
             (venv / 'Scripts').mkdir(parents=True)
@@ -94,7 +111,12 @@ class AppUpgradeIntegration(unittest.TestCase):
                         conn.execute("INSERT INTO upgrade_probe VALUES('preserved')")
                     (data / 'attachments').mkdir(exist_ok=True)
                     (data / 'attachments/probe.txt').write_text('preserved')
-                    for target, fail in [('v1.1.0', ''), ('v1.2.0', 'ready'), ('v1.3.0', 'start')]:
+                    attempts = [('v1.1.0', ''), ('v1.2.0', 'ready'), ('v1.3.0', 'start')]
+                    if previous_revision:
+                        attempts.insert(0, ('v1.0.1', 'ready'))
+                    current_version = 'v1.0.0'
+                    for target, fail in attempts:
+                        (source / 'tools/install.py').write_text('import sys\nsys.exit(0)\n')
                         if fail == 'ready':
                             (source / 'tools/install.py').write_text("import sys\nsys.exit(9 if sys.argv[1] == 'check' else 0)\n")
                         elif fail == 'start':
@@ -117,7 +139,11 @@ class AppUpgradeIntegration(unittest.TestCase):
                         health = request('/health')
                         self.assertNotEqual(health['instance_id'], old_id)
                         self.assertFalse(restart._pid_alive(old_pid))
-                        self.assertEqual(request('/system/version')['current_version'], 'v1.1.0')
+                        if not fail:
+                            current_version = target
+                        self.assertEqual(request('/system/version')['current_version'], current_version)
+                        self.assertEqual((root / 'tools/__init__.py').exists(),
+                                         bool(previous_revision and current_version == 'v1.0.0'))
                         wait_for(lambda: not restart._pid_alive(helper_pid))
                     with closing(sqlite3.connect(data / 'group.db')) as conn:
                         self.assertEqual(conn.execute('SELECT value FROM upgrade_probe').fetchone()[0], 'preserved')
