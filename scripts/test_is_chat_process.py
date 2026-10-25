@@ -4,12 +4,16 @@ test_image_browser ImportError 的根因）。用 AST 抽取 _is_chat_process/_r
 源码段独立执行，绕开 FastMCP 依赖。"""
 import ast
 import os
+import shlex
 import sys
 import textwrap
 import types
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from engine import process_query
 
 _SRC = (Path(__file__).resolve().parents[1] / 'mcp/server.py').read_text(encoding='utf-8')
 tree = ast.parse(_SRC)
@@ -30,32 +34,23 @@ mod.__dict__["subprocess"] = __import__("subprocess")
 mod.__dict__["functools"] = __import__("functools")
 mod.__dict__["_CHAT_MODE"] = False
 mod.__dict__["_execution_context"] = lambda: {}
+mod.__dict__["process_query"] = process_query
+mod.__dict__["_profile"] = lambda: 'default'
 exec(compile("\n\n".join(chunks), "<extracted>", "exec"), mod.__dict__)
-
-
-def _mock_wmic_output(cmdline_val: str) -> bytes:
-    return f"CommandLine={cmdline_val}\r\n\r\n".encode("utf-8")
 
 
 class IsChatProcessTests(unittest.TestCase):
     def setUp(self):
-        self._orig_run = mod.subprocess.run
+        self._orig_query = process_query.command_line
         self._orig_getppid = os.getppid
 
     def tearDown(self):
-        mod.subprocess.run = self._orig_run
+        process_query.command_line = self._orig_query
         os.getppid = self._orig_getppid
 
     def _mock(self, cmdline: str | None):
         os.getppid = lambda: 12345
-        if cmdline is None:
-            def _fail(*a, **k):
-                raise RuntimeError("wmic fail")
-            mod.subprocess.run = _fail
-        else:
-            class R:
-                stdout = _mock_wmic_output(cmdline)
-            mod.subprocess.run = lambda *a, **k: R()
+        process_query.command_line = lambda *a, **k: shlex.split(cmdline) if cmdline else cmdline
 
     def test_work_session_not_chat(self):
         self._mock('hermes -p default chat --in E:\\x -c default-bot-group-work --create-if-missing')
@@ -70,7 +65,7 @@ class IsChatProcessTests(unittest.TestCase):
         self._mock('hermes gateway run')
         self.assertFalse(mod._is_chat_process())
 
-    def test_wmic_fail_fail_open(self):
+    def test_process_query_fail_fail_open(self):
         """反查失败 → 放行（fail-open）。"""
         self._mock(None)
         self.assertFalse(mod._is_chat_process())

@@ -178,7 +178,7 @@ def first_config() -> Path:
 
 def selfcheck() -> None:
     """用 venv 内 python 校验关键依赖可 import（装错/半装立即暴露，含 MCP server 的 fastmcp）。"""
-    code = "import fastapi, uvicorn, httpx, yaml, PIL, tomlkit, ruamel.yaml, mcp.server.fastmcp"
+    code = "import fastapi, uvicorn, httpx, yaml, PIL, tomlkit, ruamel.yaml, psutil, mcp.server.fastmcp"
     subprocess.run([str(venv_python()), "-c", code], check=True)
 
 

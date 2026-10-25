@@ -73,7 +73,7 @@ class GroupSendThreadIdTests(unittest.TestCase):
 
     def test_resolve_fail_closed(self):
         """解析失败 → 显式报错，不静默兜底。"""
-        self.mod.__dict__["_session_resolve"] = lambda: ("", None, "wmic 反查失败")
+        self.mod.__dict__["_session_resolve"] = lambda: ("", None, "父进程查询失败")
         r = self.mod.group_send("x", True)
         self.assertIn("error", r)
         self.assertIn("无法确定会话身份", r["error"])

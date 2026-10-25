@@ -20,7 +20,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import db
+from . import db, process_query
 
 _session_lock = threading.RLock()
 _running_sessions: set[str] = set()
@@ -79,25 +79,17 @@ def topic_busy(conn, thread_id, project):
                         if r.get('thread_id') == thread_id and r.get('project') == project)
     return any(session_busy(profile, 'chat', thread_id, project) for profile in profiles)
 
-# 🔴 2026-09-10 后台化引入的黑框 bug：引擎 pythonw 无控制台，spawn 控制台子进程
-# （hermes.exe/wmic/taskkill）时 Windows 会为每个子进程新建控制台窗口。
-# 所有 subprocess 调用必须带 CREATE_NO_WINDOW，保持后台运行。
+# Console child processes must remain hidden when the engine runs under pythonw.
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
 # uv trampoline 的包装进程会很快退出；实际 Bot 进程通过
 # find_bot_processes 按命令行实时匹配，供停止流程定位。
 
 def find_bot_processes(profile: str, session: str | None = None) -> "list[int] | None":
-    """找该 profile 正在跑的真 agent 进程（命令行匹配，2026-09-09 修叫停链）。
+    """Match live Bot arguments; None means unknown and [] proves absence.
 
-    hermes.exe 是 uv trampoline 壳：spawn 真进程即退，Popen 拿到的 pid 秒死。
-    唯一可靠的"活没活着"= 实时按命令行匹配——真 agent 进程命令行含
-    `hermes ... -p <profile> chat`（.hermes-runtime python 层）。照 stop_engine.py 模式。
-
-    三态语义：查询失败返回 None，无进程返回 []。
-    wmic 超时/被禁/权限失败时，调用方（reaper/_wait_dead）把 None 当"查不到"
-    继续重试，把 [] 才当"真退出/真死透"。混用会导致 wmic 偶发失败时误判退出
-    （思考条闪灭 / 提前软删撞悬空行坑）。
+    Hermes launchers may wrap Python children. Match the physical profile and
+    exact session title or persisted runtime ID to retain stop/restart scope.
     """
     native = _find_codex_processes(profile, session)
     if native is not False:
@@ -112,25 +104,18 @@ def find_bot_processes(profile: str, session: str | None = None) -> "list[int] |
                 physical_profile = bot['profile']
         finally:
             conn.close()
-    import subprocess as _sp
-    try:
-        result = _sp.run(
-            ["wmic", "process", "where", "name='python.exe' or name='pythonw.exe'",
-             "get", "ProcessId,CommandLine"],
-            capture_output=True, timeout=15, creationflags=_NO_WINDOW,
-        )
-        if result.returncode != 0:
-            return None
-        out = result.stdout.decode("gbk", errors="ignore")
-    except Exception:  # noqa: BLE001
-        return None   # 查询失败 ≠ 无进程（🟡 区分语义）
+    processes = process_query.list_processes({'python.exe', 'pythonw.exe'}, scope=profile)
+    if processes is None:
+        return None
     pids = []
     session_ids = None
-    for line in out.splitlines():
-        if "hermes" in line and f"-p {physical_profile} " in line and "chat" in line:
-            if session is not None and not re.search(
-                r'(?:-c|--continue)\s+"?' + re.escape(session) + r'"?(?=\s|$)', line
-            ):
+    for pid, argv in processes:
+        # Limit identity checks to CLI arguments before the user prompt.
+        args = argv[:next((i for i, arg in enumerate(argv) if arg in ('-q', '--query', '--')), len(argv))]
+        if (any('hermes' in arg.lower() for arg in args[:3]) and 'chat' in args
+                and process_query.option(args, '-p', '--profile') == physical_profile):
+            actual_session = process_query.option(args, '-c', '--continue')
+            if session is not None and actual_session != session:
                 if session_ids is None:
                     conn = db.get_connection()
                     try:
@@ -140,19 +125,15 @@ def find_bot_processes(profile: str, session: str | None = None) -> "list[int] |
                         session_ids.update(r[0] for r in conn.execute(
                             'SELECT runtime_session_id FROM wake_runs WHERE session=? AND runtime_session_id IS NOT NULL',
                             (session,)))
-                    except sqlite3.Error:
+                    except sqlite3.Error as exc:
+                        process_query.diagnostic(profile, 'session_bindings', exc)
                         return None
                     finally:
                         conn.close()
-                if not any(re.search(r'(?:-c|--continue)\s+"?' + re.escape(sid) + r'"?(?=\s|$)', line)
-                           for sid in session_ids if sid):
+                if not actual_session or actual_session not in session_ids:
                     continue
-            parts = line.rstrip().split()
-            if parts:
-                try:
-                    pids.append(int(parts[-1]))
-                except ValueError:
-                    pass
+            pids.append(pid)
+    process_query.diagnostic(profile, 'session_bindings')
     return pids
 
 
@@ -162,16 +143,18 @@ def _find_codex_processes(profile, session):
     try:
         member = conn.execute('SELECT b.runtime FROM members m JOIN bots b ON b.id=m.bot_id '
                               'WHERE m.profile=?', (profile,)).fetchone()
-        rows = conn.execute("SELECT session,started_at,pid FROM wake_runs WHERE profile=? "
+        rows = conn.execute("SELECT session,started_at,pid,project FROM wake_runs WHERE profile=? "
                             "AND runtime='codex' AND (ended_at IS NULL OR exit_code=-1) "
                             + ('AND session=?' if session else ''),
                             (profile, session) if session else (profile,)).fetchall()
         if not rows and (not member or member['runtime'] != 'codex'):
             return False
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        process_query.diagnostic(profile, 'codex_records', exc)
         return None
     finally:
         conn.close()
+    process_query.diagnostic(profile, 'codex_records')
     pids = []
     for run in rows:
         with _session_lock:
@@ -181,22 +164,37 @@ def _find_codex_processes(profile, session):
                 pids.append(owned[0].pid)
             continue
         if run['pid'] is None:
+            process_query.diagnostic(profile, 'codex_pid', ValueError())
             return None
-        try:
-            result = subprocess.run(['wmic', 'process', 'where', f"ProcessId={run['pid']}",
-                                     'get', 'CommandLine', '/format:list'],
-                                    capture_output=True, timeout=15, creationflags=_NO_WINDOW)
-            if result.returncode:
-                return None
-            command = result.stdout.decode('utf-8', errors='replace')
-            # The inline MCP context carries an exact execution timestamp.
-            # A reused PID or another native program cannot match this record.
-            if ('codex' in command.lower() and ' exec ' in command and
-                    'XDG_GROUP_ENGINE_EXECUTION' in command and str(run['started_at']) in command):
-                pids.append(run['pid'])
-        except Exception:
+        argv = process_query.command_line(run['pid'], scope=profile)
+        if argv is None:
             return None
+        if _matches_codex_execution(argv, profile, run):
+            pids.append(run['pid'])
+    process_query.diagnostic(profile, 'codex_pid')
     return pids
+
+
+def _matches_codex_execution(argv, profile, run):
+    """Validate the exact inline execution identity before trusting a persisted PID."""
+    import json
+    import tomlkit
+
+    if 'exec' not in argv or not any('codex' in arg.lower() for arg in argv[:argv.index('exec')]):
+        return False
+    for index, arg in enumerate(argv[:-1]):
+        if arg not in ('-c', '--config') or not argv[index + 1].startswith('mcp_servers.task_queue='):
+            continue
+        try:
+            server = tomlkit.parse(argv[index + 1])['mcp_servers']['task_queue']
+            context = json.loads(server['env']['XDG_GROUP_ENGINE_EXECUTION'])
+            return (isinstance(context, dict) and context.get('profile') == profile
+                    and context.get('project') == run['project']
+                    and context.get('session') == run['session']
+                    and context.get('wake_started_at') == run['started_at'])
+        except (ValueError, TypeError, KeyError):
+            return False
+    return False
 
 
 # 信号模板（纯信号，不带消息内容，不带拉取策略——拉取策略是工具内部的事）。

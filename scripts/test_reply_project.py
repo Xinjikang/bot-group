@@ -20,7 +20,7 @@ class ReplyProjectTests(unittest.TestCase):
                       '_work_project': lambda: ('xjk', ''),
                       '_get': Mock(), '_profile': lambda: 'architect',
                       '_start_heartbeat': lambda: None,
-                      '_session_resolve': lambda: ('', None, 'wmic 反查父进程命令行失败（超时/乱码/无父进程），无法确定会话身份')}
+                      '_session_resolve': lambda: ('', None, '父进程命令行查询失败或进程已退出，无法确定会话身份')}
         exec(compile(ast.Module(body=functions, type_ignores=[]), 'mcp/server.py', 'exec'), self.scope)
 
     def test_reply_uses_session_project_and_explicit_destination_wins(self):

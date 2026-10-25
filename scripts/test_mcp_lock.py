@@ -18,6 +18,15 @@ PROGRAM_ROOT = Path(__file__).resolve().parents[1]
 
 
 class McpLockTest(unittest.TestCase):
+    def test_process_query_dependency_is_installed_and_checked(self):
+        from engine import process_query
+        self.assertTrue(callable(process_query.psutil.Process))
+        self.assertIn('psutil==', (PROGRAM_ROOT / 'requirements.lock').read_text(encoding='utf-8'))
+        self.assertIn('psutil', (PROGRAM_ROOT / 'requirements.txt').read_text(encoding='utf-8'))
+        with mock.patch.object(install.subprocess, 'run') as run:
+            install.selfcheck()
+        self.assertIn('psutil', run.call_args.args[0][-1])
+
     def test_lock_contains_mcp(self):
         lock = (PROGRAM_ROOT / "requirements.lock").read_text(encoding="utf-8")
         self.assertIn("mcp==", lock)

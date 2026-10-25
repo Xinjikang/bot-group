@@ -19,11 +19,16 @@ import re
 import subprocess
 import sys
 import time
+from pathlib import Path
 from urllib.parse import quote
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.types import Image
+
+# Direct stdio entry points may start in a Bot workspace outside the source root.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from engine import process_query
 
 mcp = FastMCP("group-engine")
 
@@ -48,31 +53,12 @@ def _cond_tool(condition: bool):
 
 
 def _parent_cmdline() -> str:
-    """反查父进程（spawn 本 MCP 的 hermes 父进程）命令行，失败返回空串。
-
-    MCP server 是 stdio 每进程独立，getppid() 拿到的就是 spawn 它的 hermes
-    父进程；引擎唤醒命令行必带 -c {profile}-{project}-chat-{id} 或 -work。
-    wmic 中文系统可能 GBK，解码容错。
-    """
-    try:
-        ppid = os.getppid()
-        if not ppid or ppid <= 1:
-            return ""
-        result = subprocess.run(
-            ["wmic", "process", "where", f"ProcessId={ppid}", "get", "CommandLine", "/format:list"],
-            capture_output=True, timeout=10,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0,
-        )
-        cmdline = result.stdout.decode("utf-8", errors="replace")
-        if "=" not in cmdline:
-            # wmic 中文系统可能 GBK——解码容错
-            cmdline = result.stdout.decode("gbk", errors="replace")
-        for line in cmdline.splitlines():
-            if line.startswith("CommandLine="):
-                return line.split("=", 1)[1]
+    """Read the stdio parent's arguments; unresolved identity returns an empty string."""
+    ppid = os.getppid()
+    if not ppid or ppid <= 1:
         return ""
-    except Exception:  # noqa: BLE001
-        return ""
+    argv = process_query.command_line(ppid, scope='mcp:' + _profile())
+    return subprocess.list2cmdline(argv) if argv else ""
 
 
 def _execution_context() -> dict:
@@ -104,7 +90,7 @@ def _session_resolve() -> tuple[str, int | None, str]:
 
     error 非空 = 解析失败原因（req#54 task#99：group_read_inbox 据此报错，
     不做 fallback；区分两类失败）：
-    ① wmic 反查失败（环境坏了/超时/乱码/无父进程）——cmdline 为空；
+    ① 父进程查询失败或已退出——cmdline 为空；
     ② 命令行里没有身份标记（没走引擎 -c 正常叫醒）——cmdline 非空但解析不出。
 
     - 成功：("chat", tid, "") / ("work", None, "")
@@ -118,7 +104,7 @@ def _session_resolve() -> tuple[str, int | None, str]:
         return ("chat" if tid is not None else "work"), tid, ""
     cmdline = _parent_cmdline()
     if not cmdline:
-        return ("", None, "wmic 反查父进程命令行失败（超时/乱码/无父进程），无法确定会话身份")
+        return ("", None, "父进程命令行查询失败或进程已退出，无法确定会话身份")
     # 匹配 -c "<会话名>" 或 -c <会话名>（会话名无空格，可裸写）
     m = re.search(r'(?:-c|--continue)\s+"?([^"\s]+)"?', cmdline)
     if not m:

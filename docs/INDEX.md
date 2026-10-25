@@ -22,6 +22,7 @@
 | [MCP API 需求](requirements/2026-10-20-mcp-api-runtime.md) / [配置设计](design/2026-10-20-mcp-config-scope.md) | 运行时配置及身份隔离 |
 | [协作设计依据](design/DESIGN-NOTES.md) / [配置职责](design/PROJECT-CONFIG-INVENTORY-2026-09-23.md) | 会话、持久知识和配置边界 |
 | [Codex 驱动设计](design/CODEX-DRIVER-DESIGN-2026-09-29.md) | 宿主、Bot 与项目成员分层 |
+| [进程查询兼容性](design/2026-10-25-process-query.md) | Windows 进程探测、三态保护与依赖交付 |
 | [常驻执行后端方案](design/SERVE-RESIDENT-SOLUTION-2026-10-08.md) | 方案与实施前验证条件 |
 | [规则维护边界](design/bot-group-copy-edit-checklist.md) | 提示词、AGENTS 和角色参考 |
 | [维护经验](PITFALLS.md) | 调度、身份、前端与生命周期边界 |
@@ -31,6 +32,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [工程说明](engineering/ENGINEERING.md) | 子系统、身份、数据、接口、调度、授权和生命周期 |
+| [进程查询](engineering/PROCESS-QUERY.md) | Hermes、Codex、MCP 共享查询接口及部署验证 |
 | [发布指南](guides/RELEASE-GUIDE.md) | 安装、配置、正式 Release 升级与恢复 |
 | [Web 升级](engineering/WEB-UPGRADE.md) | 关于检查、升级确认、独立进程与失败恢复 |
 | [部署边界](guides/DEPLOY.md) | 本机身份信任、反代与外部访问 |

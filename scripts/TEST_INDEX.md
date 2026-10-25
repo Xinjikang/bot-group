@@ -1,5 +1,9 @@
 # 测试脚本索引
 
+Windows 进程查询：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_process_query scripts.test_wmic_free_wake scripts.test_is_chat_process scripts.test_codex_driver_regressions scripts.test_slash_injection_review scripts.test_mcp_lock -q`。覆盖 WMIC 缺失、进程退出与 PID 复用、候选权限失败、Unicode/空格参数、精确 profile/session 匹配、Codex 执行上下文、日志限频及恢复。`test_wmic_free_wake` 使用确定性 Hermes 替身及真实 Windows 启动器、队列、SQLite、stdio MCP、HTTP API，验证 inbox 门禁、显式 @user 回复和已读确认；设置 `PROCESS_QUERY_EVIDENCE_DIR` 为主目录报告路径可保存链路证据。配套回归使用 `test_topic_skip`、`test_topic_restart_recovery`、`test_stop_scope`、`test_engine_shutdown`、`test_wake_pid_watch`、`test_hermes_transport`；真实通用 MCP 契约运行 `.venv\Scripts\python.exe -X utf8 -B scripts/test_mcp_e2e.py`。所有运行资源均隔离，真实模型调用和目标电脑验收单独记录。
+
+`test_process_tree` 的真实 Windows 用例需要测试进程具备终止其子进程树的权限。执行器沙箱禁止 taskkill 时，按执行器审批流程取得所需权限后运行原测试。`test_topic_skip` 的启动用例使用独立 Hermes home、managed/data 目录及绝对项目路径。设置 `HERMES_TEST_SOURCE` 为已安装 Hermes 源码根可启用 `test_slash_injection_review` 的真实 SessionDB 用例，其数据库仍位于临时目录。
+
 项目成员移出：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_member_removal scripts.test_member_disabled scripts.test_access_contract scripts.test_queue_claim_race -q`。隔离 SQLite/HTTP 验证管理员权限、职责与运行阻塞、提交前再次校验、事务回滚、话题推进、收件箱及队列清理、跨项目隔离、历史与目录保留、重新加入授权重置。`python -X utf8 -B scripts/test_project_member_removal_browser.py --evidence <主目录报告目录>` 验证更多菜单、键盘、1280px/390px 深浅主题、取消、处理入口、冲突/失败重试、刷新和重新加入；profile 入口复用 `test_project_models_browser.py` 与 `test_codex_config_browser.py`。
 
 项目详情角色删除提示：`python -X utf8 -B scripts/test_member_switch_browser.py --evidence <主目录报告目录>` 验证职责缺员与 AGENTS.md 协作流程调整提示、取消时保持角色且发送零次删除请求、确定后发送一次删除请求，并保存 390px 确认框截图；保留已有成员数限制、启停、改名和权限提示回归。

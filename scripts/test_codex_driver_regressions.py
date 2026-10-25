@@ -286,13 +286,18 @@ class CodexDriverRegressions(unittest.TestCase):
     def test_native_pid_reuse_and_unknown_query(self):
         member = self.register()['member_profile']
         session = self.running_record(member)
-        with patch.object(wake.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=b'CommandLine=codex.exe exec unrelated')):
+        with patch.object(wake.process_query, 'command_line', return_value=['codex.exe', 'exec', 'unrelated']):
             self.assertEqual(wake.find_bot_processes(member, session), [])
-        with patch.object(wake.subprocess, 'run', side_effect=TimeoutError):
+        with patch.object(wake.process_query, 'command_line', return_value=None):
             self.assertIsNone(wake.find_bot_processes(member, session))
-        text = b'CommandLine=codex.exe exec XDG_GROUP_ENGINE_EXECUTION 100.5'
-        with patch.object(wake.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=text)):
+        context = dict(profile=member, project='p', session=session, wake_started_at=100.5, thread_id=None)
+        argv = ['codex.exe', 'exec'] + wake._codex_mcp_config(member, 'p', context=context)
+        with patch.object(wake.process_query, 'command_line', return_value=argv):
             self.assertEqual(wake.find_bot_processes(member, session), [54321])
+        for change in ({'wake_started_at': 100.51}, {'profile': 'other'}, {'session': session + '-other'}, {'project': 'q'}):
+            argv = ['codex.exe', 'exec'] + wake._codex_mcp_config(change.get('profile', member), 'p', context={**context, **change})
+            with patch.object(wake.process_query, 'command_line', return_value=argv):
+                self.assertEqual(wake.find_bot_processes(member, session), [])
 
     def test_stream_reader_binds_and_persists_before_watcher_closes_run(self):
         reg = self.register()

@@ -3,6 +3,8 @@ import ast
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 from contextlib import closing
 import threading
 import time
@@ -66,8 +68,9 @@ class ReviewTests(unittest.TestCase):
     def test_real_id_process_survives_loss_of_memory_state(self):
         self.conn.execute("INSERT INTO wake_runs(session,started_at,profile,project,runtime_session_id) VALUES('dev-1-p-work',100,'dev-1','p','real-id')")
         self.conn.commit()
-        output = b'hermes -p dev-1 chat -c real-id -Q 123\nhermes -p dev-1 chat -c unrelated -Q 456\n'
-        with patch('subprocess.run', return_value=SimpleNamespace(stdout=output, returncode=0)):
+        processes = [(123, ['hermes', '-p', 'dev-1', 'chat', '-c', 'real-id']),
+                     (456, ['hermes', '-p', 'dev-1', 'chat', '-c', 'unrelated'])]
+        with patch.object(wake.process_query, 'list_processes', return_value=processes):
             self.assertEqual(wake.find_bot_processes('dev-1','dev-1-p-work'), [123])
             self.assertTrue(wake.session_busy('dev-1','work',None,'p'))
 
@@ -164,6 +167,18 @@ class ReviewTests(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get('HERMES_TEST_SOURCE'), 'requires installed Hermes source for isolated real SessionDB test')
     def test_real_hermes_new_title_and_read_stop_target(self):
+        # Hermes and maintenance tools use overlapping top-level package names.
+        # Run the external source integration in its own interpreter namespace.
+        if os.environ.get('HERMES_SESSION_TEST_CHILD') != '1':
+            result = subprocess.run(
+                [sys.executable, '-X', 'utf8', '-B', '-m', 'unittest', self.id(), '-v'],
+                cwd=Path(__file__).resolve().parents[1],
+                env={**os.environ, 'HERMES_SESSION_TEST_CHILD': '1'},
+                capture_output=True, text=True, encoding='utf-8', timeout=30,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return
         from engine import reasoning, stop
         home = Path(self.tmp.name) / 'hermes'
         with patch.object(session_adapter,'_hermes_home',return_value=home), \

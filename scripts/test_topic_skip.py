@@ -1,6 +1,8 @@
 """Topic completion contract using isolated SQLite and mocked wake delivery."""
 import json
+import os
 import sqlite3
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -175,16 +177,30 @@ class TopicSkipTest(unittest.TestCase):
         from unittest.mock import MagicMock
         connection = MagicMock(wraps=self.conn)
         connection.close = MagicMock()
-        output = b'hermes -p a chat -c a-xjk-chat-1 -Q 123\nhermes -p a chat -c a-xjk-chat-10 -Q 456\n'
-        with patch('subprocess.run', return_value=SimpleNamespace(stdout=output, returncode=0)), \
+        processes = [(123, ['hermes', '-p', 'a', 'chat', '-c', 'a-xjk-chat-1']),
+                     (456, ['hermes', '-p', 'a', 'chat', '-c', 'a-xjk-chat-10'])]
+        with patch.object(router.wake.process_query, 'list_processes', return_value=processes), \
              patch.object(db, 'get_connection', return_value=connection):
             self.assertEqual(router.wake.find_bot_processes('a', 'a-xjk-chat-1'), [123])
-        with patch('subprocess.run', return_value=SimpleNamespace(stdout=b'', returncode=1)):
+        with patch.object(router.wake.process_query, 'list_processes', return_value=None):
             self.assertIsNone(router.wake.find_bot_processes('a', 'a-xjk-chat-1'))
 
     def test_spawn_guard_and_exit_record_use_same_run(self):
         from unittest.mock import MagicMock
         from engine import db, events, heartbeat
+        temporary = tempfile.TemporaryDirectory(prefix='topic-spawn-')
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        self.conn.execute("UPDATE projects SET root=?,directory_mode='shared' WHERE name='xjk'", (str(root),))
+        self.conn.commit()
+        environment = patch.dict(os.environ, {
+            'HERMES_HOME': str(root / 'hermes'),
+            'HERMES_MANAGED_DIR': str(root / 'managed'),
+            'GROUP_DATA_DIR': str(root / 'data'),
+            'GROUP_DB': str(root / 'group.db'),
+        })
+        environment.start()
+        self.addCleanup(environment.stop)
         conn = MagicMock(wraps=self.conn)
         conn.close = MagicMock()
         proc = MagicMock()
@@ -198,7 +214,9 @@ class TopicSkipTest(unittest.TestCase):
             return proc
         proc.returncode = 0   # req#39：_watch_session 改 proc.wait()+returncode，废弃 poll
         try:
-            with patch.object(router.wake, '_workdir_for', return_value='.'), \
+            with patch.object(router.wake, '_workdir_for', return_value=str(root)), \
+                 patch('engine.project_rules.sync'), \
+                 patch('engine.session_adapter.available', return_value=False), \
                  patch.object(router.wake, '_hermes_bin', return_value='hermes'), \
                  patch.object(router.wake, 'find_bot_processes', return_value=[]), \
                  patch.object(router.wake.subprocess, 'Popen', side_effect=start_child) as popen, \
@@ -206,7 +224,8 @@ class TopicSkipTest(unittest.TestCase):
                  patch.object(db, 'get_connection', return_value=conn), \
                  patch.object(events.bus, 'publish') as publish, \
                  patch.object(heartbeat, 'on_exit'):
-                self.assertTrue(router.wake._spawn('a', 'chat', 'signal', 1, 'xjk')['ok'])
+                result = router.wake._spawn('a', 'chat', 'signal', 1, 'xjk')
+                self.assertTrue(result['ok'], result)
                 self.assertTrue(router.wake._spawn('a', 'chat', 'signal', 1, 'xjk')['busy'])
                 self.assertEqual(popen.call_count, 1)
                 start = publish.call_args.args[1]['wake_started_at']
