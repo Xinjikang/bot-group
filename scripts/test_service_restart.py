@@ -184,6 +184,21 @@ class RestartIntegration(unittest.TestCase):
                         with closing(sqlite3.connect(data / 'group.db')) as conn, conn:
                             conn.execute('CREATE TABLE restart_probe(value TEXT)')
                             conn.execute("INSERT INTO restart_probe VALUES('preserved')")
+                        (root / 'tools' / 'install.py').write_text(
+                            "import sys\nprint('install-check-stdout', flush=True)\n"
+                            "print('dependency-readiness-failed', file=sys.stderr, flush=True)\n"
+                            "sys.exit(1)\n", encoding='utf-8')
+                        failed = request('/admin/restart', 'POST')
+                        def check_failed():
+                            receipt = request('/admin/restart')
+                            return receipt if receipt.get('id') == failed['id'] and receipt.get('state') == 'failed' else None
+                        receipt = wait_for(check_failed)
+                        wait_for(lambda: not restart._pid_alive(receipt['helper_pid']))
+                        self.assertEqual(request('/health')['instance_id'], health['instance_id'])
+                        log_text = (data / 'logs' / 'service-restart.log').read_text(encoding='utf-8')
+                        self.assertIn('install-check-stdout', log_text)
+                        self.assertIn('dependency-readiness-failed', log_text)
+                        (root / 'tools' / 'install.py').write_text('import sys\nsys.exit(0)\n', encoding='utf-8')
                         for _ in range(2):
                             old_id, old_pid = health['instance_id'], health['pid']
                             operation = request('/admin/restart', 'POST')
