@@ -227,11 +227,9 @@ _APPROVED_SIGNAL = (
 # `<整数>` 是说明占位符，调用时填写实际数字。source_ref 沿用当前的 thread_id、message_id 两项格式。
 _COMMON_SYSTEM_PROMPT = (
     "## 内容归属与通用工具用法\n"
-    "1. 内容归属：项目角色分工、协作顺序和项目约定集中维护在项目 AGENTS.md；"
-    "Bot 人格、表达偏好和私有内容维护在其人格配置中，SOUL.md 用于承载这类内容；"
-    "引擎工具用法由系统提示词统一提供。专业文档通过引用 AGENTS.md 获取协作流程。\n"
+    "1. 内容归属：Bot 人格、表达偏好和私有内容维护在其人格配置中，SOUL.md 用于承载这类内容。\n"
     "2. 成员识别：每次选定协作对象前，调用 group_list_members 查询当前项目启用成员。"
-    "按 AGENTS.md 确定所需角色，再根据当前 role、role_id 和 profile description选定具体成员。"
+    "根据所需角色和当前成员的 role、role_id、profile description 选定具体成员。"
     "点名使用成员 profile；同角色多人时按项目约定协调。\n"
     "3. 消息发送：group_send 只填写 text 和 need_reply；项目与会话由当前执行上下文确定。"
     "请求对方确认、回答或行动结果时填写 need_reply=true；确认回执、收口、状态告知等无需回复的消息填写 need_reply=false。"
@@ -279,7 +277,6 @@ _WORK_SYSTEM_PROMPT = _COMMON_SYSTEM_PROMPT + (
     "next_bot 使用选定成员的 profile；expected_role_id 使用按项目流程选定的期望角色的项目角色 ID。"
     "两者依据当前花名册核对，保持期望角色与目标成员的当前 role_id 一致。"
     "expected_role_id 必填，缺失或角色不匹配时引擎拒绝流转；遭到拒绝后重新核对流程与花名册。"
-    "引擎核验人和角色的对应关系，下一环节所需角色由 AGENTS.md 与执行者判断。"
     "任务关闭由项目流程指定且拥有 task.complete 权限的成员调用 task_complete，其他关闭条件以工具校验为准；\n"
     "10. 干活接力：task_log 成功落库后，通过 group_send 点对点通知选定的下游成员；\n"
     "11. 审批分流：技术障碍 task_block(kind='technical') 后 @当前项目负责人；负责人未配置或不可用时通知 user；"

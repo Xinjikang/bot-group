@@ -395,8 +395,7 @@ def task_log(project: str, task_id: int, type: str, meta: dict = None,
     任务关闭由具有授权的成员按项目流程调用 task_complete。
 
     四个节点字段：
-    - type：本条记录所属环节，必填非空字符串，名称按项目 AGENTS.md 的流程约定，
-      例如 dev、review、test；这些名称是示例，项目可自定义。
+    - type：本条记录所属环节，必填非空字符串，例如 dev、review、test；项目可自定义环节名称。
     - meta：JSON 对象，保存结构化证据与定位信息，例如提交 ID、成果路径、测试命令、
       被测环境和报告路径。下例键名是团队约定示例，可按项目调整；凭据使用安全存储引用。
     - result：本环节实际结论与完成情况，写清通过、失败、受阻、未验证的范围和依据。
@@ -755,7 +754,7 @@ def group_list_members(role: str | None = None) -> dict:
     """查询当前项目启用的队友（profile/display_name/role/active/runtime/bot_id）。
 
     role 可按本项目自定义角色精确筛选；省略时返回全部启用成员。
-    角色职责和协作流程由 AGENTS.md 约定。从结果选定具体 profile 后点名或填 next_bot；
+    从结果选定具体 profile 后点名或填 next_bot；
     同角色多人时按项目约定选择接手人。话题内 @ 的人还须属于话题成员。
     """
     project, error = _current_project()

@@ -1141,7 +1141,7 @@ def task_log(project: str, role: str, task_id: int, type: str, meta=None,
              expected_role_id=None) -> dict:
     type = (type or "").strip()
     if not type:
-        return {"error": "type is required (the workflow stage, per AGENTS.md)"}
+        return {"error": "type is required (the workflow stage)"}
     next_bot = (next_bot or "").strip()
     if not next_bot:
         return {"error": "next_bot is required — select a teammate from group_list_members according to the project workflow"}

@@ -77,6 +77,8 @@ python -X utf8 -B scripts/test_project_templates_browser.py
 
 唤醒提示词与项目规则：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_rules scripts.test_prompt_entry_points scripts.test_workspace_resources scripts.test_codex_project_access -q`。验证共享目录和 worktree 的规则加载、主目录与当前目录及资源注入、项目隔离、静态规则组合，以及独立工作区的共享报告目录授权；目录分类和报告位置由项目规则维护。
 
+提示词与角色参考文案：复用 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_prompt_entry_points scripts.test_flow scripts.test_project_templates scripts.test_template_role_rename scripts.test_product_prototype_template scripts.test_algorithm_template scripts.test_testing_template -q`，验证提示词组合、任务流转及六类模板生成；运行 `.venv\Scripts\python.exe -X utf8 -B scripts/test_mcp_handshake.py` 核验实际注册的工具说明与参数。人工检查直接提示、角色参考和启动阅读指令中的冗余规则来源声明，核对具体职责与参数要求；Bot 唤醒后的实际阅读行为单独验收。
+
 Codex 文件认证：`test_codex_auth.py` 使用临时 home 和合成 JWT 验证有效期、按需复制、401 补查、主账户缺失/过期、不同账户、原子写失败、并发检查与原生更新保留；`test_codex_driver_regressions.py` 验证启动前同步及每次执行只补查一次；`test_profile_create.py` 验证默认继承主账户与旧客户端兼容。命令：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_codex_auth scripts.test_profile_create scripts.test_codex_driver_regressions -q`。浏览器回归：`python -X utf8 -B scripts/test_profile_create_browser.py`，使用已安装 Playwright 的 Python 和 Chrome，覆盖 Codex 认证选项移除及 Hermes 原行为。
 
 安装目录回归：`test_config.py` 与 `test_install.py` 验证全新安装默认在程序根目录创建并读取 `.env`、数据路径一致、重复安装保留配置，以及显式数据目录和命令行的优先级。使用临时目录和模拟启动，运行命令：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_config scripts.test_install -q`。
