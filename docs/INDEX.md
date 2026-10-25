@@ -1,6 +1,6 @@
 # 项目文档索引
 
-当前发布说明：[v0.1.2](releases/v0.1.2.md)。
+当前发布说明：[v0.1.3](releases/v0.1.3.md)。历史版本：[v0.1.2](releases/v0.1.2.md)。
 
 项目成员更多菜单、移出与状态保留契约见 [项目成员移除](engineering/PROJECT-MEMBER-REMOVAL.md)。
 

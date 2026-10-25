@@ -6,7 +6,9 @@
 
 公开安装入口支持 64 位 Windows 10/11 和 PowerShell 5.1。安装器自动选择 64 位 Python 3.11–3.13，缺失时从 Python 官方下载并核验安装程序，安装到 `%LOCALAPPDATA%\bot-group-runtime\Python313`。源码开发安装要求 Python 3.11+。Hermes/Codex 使用各自运行环境；安装时探测并报告缺项，配置完整后才可执行相应模型任务。其他平台发布前需完成对应环境的安装验证。
 
-`VERSION` 是 Release 源码包的安装版本，正式版本格式为 `v1.2.3`，由发布负责人分配版本号和发布地址。Git 源码运行时，页面读取本地 tag、提交号与修改状态；没有本地 tag 时显示开发版提交号。维护工具统一放在 `tools/`，`scripts/` 保存测试及测试支持。
+`VERSION` 是 Release 源码包的安装版本，正式版本格式为 `v1.2.3`，由发布负责人分配版本号和发布地址。Git 源码运行时，页面读取本地 tag、提交号与修改状态；没有本地 tag 时显示开发版提交号。维护命令入口位于 `tools/`，实现按 `engine.maintenance` 导入；`scripts/` 保存测试及测试支持。
+
+Windows 进程探测使用 Toolhelp 与 psutil，支持缺少 WMIC 的系统。更新源码后执行 `tools/install.py repair` 同步锁定依赖与安装就绪记录，再运行 `start.bat`。Release 安装由升级流程自动同步依赖。接口、故障状态与现场验证边界见 [进程查询](../engineering/PROCESS-QUERY.md)。
 
 ## 发布负责人：生成完整资产
 
@@ -127,7 +129,9 @@ start.bat
 
 v0.1.0/v0.1.1 用户继续在原安装目录双击 `upgrade.bat`。升级器下载并校验新源码包后，通过发布包生成的 `scripts/install.py` 兼容入口调用 `tools/install.py`，完成依赖同步与就绪检查。升级成功后，同一目录的 `upgrade.bat` 自动使用 `tools/upgrade.py`。
 
-维护实现保存在仓库 `tools/`。构建源码包时生成两个最小兼容文件：`scripts/install.py` 转发安装命令并保留参数和退出码，`scripts/service.py` 提供旧升级进程回滚停机时使用的环境加载接口。两个文件均列入发布清单，参与下载校验、文件归属管理和失败回滚；仓库 `scripts/` 继续保存测试。支持 v0.1.x 直接升级期间保留这两个发布兼容入口。
+维护实现保存在仓库 `engine/maintenance/`，现有 `tools/` 命令入口保留参数和退出码。构建源码包时生成两个最小兼容文件：`scripts/install.py` 转发至 `tools/install.py`，`scripts/service.py` 从 `engine.maintenance.service` 提供旧升级进程回滚停机时使用的环境加载接口。两个文件均列入发布清单，参与下载校验、文件归属管理和失败回滚；仓库 `scripts/` 继续保存测试。支持 v0.1.x 直接升级期间保留这两个发布兼容入口。
+
+v0.1.2 的受管 `tools/__init__.py` 和 `tools/releases.py` 在升级时按清单移除，释放 Hermes 顶层 `tools` 包的导入路径；失败回滚恢复旧文件。独立发布的 `bootstrap.py` 从 `engine/maintenance/bootstrap.py` 导出，可在尚未安装源码时通过基础 Python 执行。详见 [维护模块与宿主包隔离](../engineering/MAINTENANCE-MODULES.md)。
 
 Git 开发目录通过 Git 更新源码，Release 升级器要求真实文件归属清单。维护时可用 `--program-root` 指定包含引擎与发布清单的已有安装目录；常规升级使用安装目录自身的入口。
 

@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md) | **English**
 
-Release notes: [v0.1.2](docs/releases/v0.1.2.md).
+Release notes: [v0.1.3](docs/releases/v0.1.3.md).
 
 A group chat and task management engine for collaboration between multiple bots. It supports messaging, task assignment, progress tracking, review, acceptance, and delivery. Built-in project templates cover software development, product research, content writing, product prototyping, algorithm research and development, and testing, with roles, workflows, and project documentation for each scenario.
 

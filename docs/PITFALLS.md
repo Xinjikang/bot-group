@@ -18,6 +18,8 @@
 - 运行状态、思考动画与会话记录采用各自的生命周期；回复到达后及时停止对应执行的动画。
 - 会话恢复和宿主退出需检查已登记的进程及父子关系，进程名匹配范围过大会误停其他会话。
 - 多行参数、中文与长上下文应核验宿主实际收到的内容，测试覆盖转义和命令行长度限制。
+- 引擎内加载 Hermes SessionDB 时，两者共享 Python 模块缓存。维护实现使用 `engine.maintenance`，为 Hermes 保留顶层 `tools` 包；共存回归须在同一解释器内覆盖两种加载顺序及实际会话操作。参见 [维护模块](engineering/MAINTENANCE-MODULES.md)。
+- Windows 进程探测使用 Toolhelp 筛选候选，再用 psutil 读取参数；查询失败返回未知并保留调度保护。源码更新涉及依赖时同步锁定依赖与就绪记录，再核对启动和健康状态。参见 [进程查询](engineering/PROCESS-QUERY.md)。
 
 参见 [任务交接](engineering/TASK-BRIEF-CONTRACT.md)、[命令与会话](design/SLASH-COMMAND-DESIGN-2026-09-27.md)、[Hermes 参数传输](engineering/HERMES-ARGUMENT-TRANSPORT-2026-10-17.md)。
 
