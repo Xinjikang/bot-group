@@ -119,7 +119,7 @@ function memberAddReset(options) {
   memberAdd = {host: 'hermes', sources: [], scanning: false, error: '',
     busy: false, project: options.project || '', template: options.template,
     onCreated: options.onCreated,
-    draft: {profile: '', display_name: '', model: '', instructions: '', source: '', reuse_auth: true},
+    draft: {profile: '', display_name: '', model: '', instructions: '', source: ''},
     requestId: [...crypto.getRandomValues(new Uint8Array(16))].map(n => n.toString(16).padStart(2, '0')).join('')};
 }
 function memberProfileError(value) {
@@ -139,7 +139,6 @@ function renderMemberCreate(steps) {
     <input id="member-create-profile" required maxlength="64" placeholder="例如：dev-01" autocomplete="off" spellcheck="false" aria-describedby="member-create-profile-help">
     <p class="profile-help" id="member-create-profile-help">使用 1–64 位小写英文字母、数字、短横线或下划线，以小写英文字母或数字开头。系统会自动准备独立目录。</p>
     <label for="member-create-source">配置来源</label><select id="member-create-source"><option value="">使用默认设置</option></select>
-    ${memberAdd.host === 'codex' ? '' : '<label class="member-create-auth"><input type="checkbox" id="member-create-auth"><span>同时复用来源的模型认证</span></label>'}
     <p class="profile-help" id="member-create-auth-help"></p>
     <div id="member-create-soul-templates"></div>
     <details><summary>更多设置</summary>
@@ -160,7 +159,7 @@ function renderMemberCreate(steps) {
       $('#member-add-join').disabled = !memberCreateValid() || memberAdd.busy || memberAdd.scanning;
     });
   }
-  const source = form.querySelector('#member-create-source'), auth = form.querySelector('#member-create-auth');
+  const source = form.querySelector('#member-create-source');
   memberAdd.sources.forEach((p, i) => source.add(new Option(`${p.display_name || p.profile}（${p.profile}）`, String(i))));
   source.value = draft.source;
   const updateAuth = () => {
@@ -168,14 +167,9 @@ function renderMemberCreate(steps) {
       form.querySelector('#member-create-auth-help').textContent = '自动使用主账户认证；新 Bot 统一开启智能审批（帮我审批）和沙箱，加入项目时获得项目目录授权。';
       return;
     }
-    auth.disabled = source.value === '';
-    auth.checked = !auth.disabled && draft.reuse_auth;
-    form.querySelector('#member-create-auth-help').textContent = source.value === ''
-      ? '创建后可按提示完成登录。'
-      : '沿用模型与运行设置；勾选后复制常用模型服务的 API Key。OAuth 登录需在新 profile 中完成。';
+    form.querySelector('#member-create-auth-help').textContent = '自动继承来源的模型配置与凭证；使用默认设置时读取主 profile。消息渠道独立配置，OAuth 登录需单独完成。';
   };
   source.addEventListener('change', () => { draft.source = source.value; updateAuth(); });
-  if (auth) auth.addEventListener('change', () => { draft.reuse_auth = auth.checked; });
   updateAuth();
   steps.appendChild(form);
   if (draft.profileTouched) validateDialogField(form.querySelector('#member-create-profile'));
@@ -259,7 +253,6 @@ async function submitMemberCreate() {
     display_name: draft.display_name.trim(), model: draft.model.trim(), instructions: draft.instructions,
     source: draft.source !== '' && source ? {profile: source.profile, config_root: source.config_root} : null,
     request_id: current.requestId};
-  if (current.host !== 'codex') payload.reuse_auth = draft.source !== '' && draft.reuse_auth;
   try {
     const result = await api('/profiles/create', {method: 'POST', body: JSON.stringify(payload)});
     if (memberAdd !== current) return;

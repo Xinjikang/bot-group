@@ -45,6 +45,8 @@ def main():
     host = fixture.base / 'host'; host.mkdir()
     (host / 'config.yaml').write_text('model:\n  default: base-model\n')
     (host / '.env').write_text('OPENAI_API_KEY=synthetic-key\n')
+    from scripts.test_profile_credentials import seed_catalog
+    seed_catalog(host)
     codex = fixture.base / 'codex'
     (codex / 'config.toml').write_text('model="test-model"\n')
     (codex / 'auth.json').write_text('{"OPENAI_API_KEY":"synthetic-key"}')
@@ -70,7 +72,7 @@ def main():
                     if state['join_fail'] and req.request.post_data_json['profile'] == 'new-codex':
                         req.fulfill(status=503, json={'detail': '模拟入组失败'})
                         return
-                if path.startswith(('/projects', '/profiles', '/discovery', '/bots')) or path in ('/members', '/auth/status', '/auth/events', '/user/display-name'):
+                if path.startswith(('/projects', '/profiles', '/discovery', '/bots')) or path in ('/members', '/messages', '/auth/status', '/auth/events', '/user/display-name'):
                     response = fixture.client.request(req.request.method, req.request.url,
                         json=req.request.post_data_json if req.request.method in ('POST', 'PUT', 'PATCH') else None)
                     if path == '/profiles/create' and state['lose'] and response.status_code == 200:
@@ -186,7 +188,9 @@ def main():
             wizard.locator('select[aria-label="成员角色"]').select_option('项目负责人')
             wizard.locator('.member-picker-create').click()
             page.wait_for_function('!memberAdd.scanning')
-            assert page.locator('#member-create-auth').is_checked()
+            assert page.locator('#member-create-auth').count() == 0
+            assert '主 profile' in page.locator('#member-create-auth-help').inner_text()
+            page.locator('#member-create-source').select_option('')
             page.locator('#member-create-profile').fill('wizard-hermes')
             page.locator('.profile-soul-template-open').last.click()
             page.locator('#profile-soul-template-apply').wait_for(state='visible')
@@ -211,8 +215,20 @@ def main():
             new_project = page.evaluate('S.currentProject')
             assert fixture.conn.execute('SELECT COUNT(*) FROM project_members WHERE project=?', (new_project,)).fetchone()[0] == 2
             assert (fresh / 'AGENTS.md').is_file()
+            from engine import execution_errors
+            execution_errors.report('wizard-hermes', new_project, None, 'browser-failure',
+                                    "No usable credentials found for provider 'ollama-cloud'. Set OLLAMA_API_KEY.")
             page.reload()
             page.wait_for_function('p => S.projects.some(x => x.name === p)', arg=new_project)
+            page.evaluate('p => selectProject(p)', new_project)
+            notification = page.locator('.msg-content').filter(has_text='配置不完整或无效，请检查配置。')
+            notification.wait_for()
+            assert 'OLLAMA' not in notification.inner_text()
+            for theme in ('dark', 'light'):
+                page.evaluate('applyTheme', theme)
+                page.set_viewport_size({'width': 1280, 'height': 900})
+                assert notification.bounding_box()['width'] > 250
+                notification.screenshot(path=str(output / f'error-{theme}.png'))
             assert not errors, errors
             browser.close()
         print('PASS: shared list, registered/scanned candidates, standalone Codex/Hermes, validation, failure drafts, lost-response idempotency, cancellation retention, selection preservation, SOUL, deferred enrollment/authorization, real project creation, reload, 390px themes')

@@ -80,7 +80,9 @@ class TaskRetryTests(unittest.TestCase):
             result = wake._spawn('dev-1','work','signal',None,'p')
         self.assertFalse(result['ok'])
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM wake_jobs WHERE trigger='retry:task:1'").fetchone()[0],1)
-        self.assertIn('cannot start model', self.conn.execute("SELECT detail FROM events WHERE event_type='execution.failed'").fetchone()[0])
+        from engine.execution_errors import MESSAGES
+        self.assertIn(MESSAGES['unknown'], self.conn.execute("SELECT detail FROM events WHERE event_type='execution.failed'").fetchone()[0])
+        self.assertIn('cannot start model', self.conn.execute('SELECT diagnostic FROM execution_errors').fetchone()[0])
 
     def test_resume_gets_new_budget(self):
         for attempt in range(3):
@@ -103,7 +105,9 @@ class TaskRetryTests(unittest.TestCase):
             wake._spawn('dev-1','work','signal',None,'p')
             callbacks[0]()
             kill.assert_called_once_with(888)
-        self.assertIn('timed out', self.conn.execute("SELECT detail FROM events WHERE event_type='execution.failed'").fetchone()[0])
+        from engine.execution_errors import MESSAGES
+        self.assertIn(MESSAGES['timeout'], self.conn.execute("SELECT detail FROM events WHERE event_type='execution.failed'").fetchone()[0])
+        self.assertEqual(self.conn.execute('SELECT category FROM execution_errors').fetchone()[0], 'timeout')
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM wake_jobs WHERE trigger='retry:task:1'").fetchone()[0],1)
 
     def test_parallel_chat_exit_cleans_only_its_heartbeat(self):

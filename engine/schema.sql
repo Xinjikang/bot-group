@@ -339,6 +339,18 @@ CREATE TABLE IF NOT EXISTS wake_runs (
     PRIMARY KEY(session, started_at)
 );
 
+-- Execution failures and their public notifications commit together.
+CREATE TABLE IF NOT EXISTS execution_errors (
+    project TEXT NOT NULL,
+    profile TEXT NOT NULL,
+    attempt TEXT NOT NULL,
+    category TEXT NOT NULL,
+    diagnostic TEXT NOT NULL,
+    exit_code INTEGER,
+    message_id INTEGER NOT NULL REFERENCES messages(id),
+    PRIMARY KEY(project, profile, attempt)
+);
+
 -- Browser harnesses inherit an engine-owned namespace for each execution.
 CREATE TABLE IF NOT EXISTS browser_resources (
     id TEXT PRIMARY KEY,

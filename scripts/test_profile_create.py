@@ -23,6 +23,8 @@ class ProfileCreateTests(unittest.TestCase):
             (root / 'config.toml').write_text('model="base-model"\napproval_policy="on-request"\n[agents.old]\ndescription="old"\n', encoding='utf-8')
             (root / 'auth.json').write_text('{"OPENAI_API_KEY":"synthetic-key"}', encoding='utf-8')
         else:
+            from scripts.test_profile_credentials import seed_catalog
+            seed_catalog(root)
             (root / 'config.yaml').write_text('model:\n  default: base-model\nplatforms:\n  feishu:\n    token: synthetic-channel\n', encoding='utf-8')
             (root / '.env').write_text('OPENAI_API_KEY=synthetic-key\nFEISHU_APP_SECRET=synthetic-channel\n', encoding='utf-8')
         (root / 'SOUL.md').write_text('Source identity', encoding='utf-8')
@@ -331,6 +333,42 @@ class ProfileCreateTests(unittest.TestCase):
         self.assertFalse(result['auth_copied'])
         self.assertIn(str(root), result['setup_command'])
         self.assertIn('hermes -p new-dev setup', result['setup_command'])
+
+    def test_hermes_default_source_and_custom_provider_copy(self):
+        root, body = self.fixture('hermes')
+        (root / 'config.yaml').write_text('model:\n  provider: company\n  default: custom-model\nproviders:\n  company:\n    base_url: https://example.test/v1\n    key_env: COMPANY_VALUE\n    transport: anthropic_messages\n', encoding='utf-8')
+        (root / '.env').write_text('COMPANY_VALUE=synthetic-company\nOLLAMA_API_KEY=synthetic-ollama\nFEISHU_APP_SECRET=channel\nWEIXIN_TOKEN=channel\n', encoding='utf-8')
+        result = self.create({**body, 'source': None, 'reuse_auth': False}).json()
+        home = Path(result['home'])
+        config = profile_create.files._yaml((home / 'config.yaml').read_bytes())[1]
+        self.assertEqual(config['providers']['company']['key_env'], 'COMPANY_VALUE')
+        self.assertEqual(config['providers']['company']['transport'], 'anthropic_messages')
+        env = (home / '.env').read_text()
+        self.assertIn('COMPANY_VALUE=', env)
+        self.assertIn('OLLAMA_API_KEY=', env)
+        self.assertNotIn('FEISHU', env)
+        self.assertNotIn('WEIXIN', env)
+        self.assertTrue(result['auth_copied'])
+        self.assertNotIn('synthetic-company', json.dumps(result))
+
+    def test_hermes_selected_profile_is_the_only_credential_source(self):
+        root, body = self.fixture('hermes')
+        other = root / 'profiles' / 'source'
+        other.mkdir(parents=True)
+        (other / 'config.yaml').write_text('model:\n  provider: ollama-cloud\n  default: source-model\n')
+        (other / '.env').write_text('OLLAMA_API_KEY=source-secret\n')
+        result = self.create({**body, 'source': {'profile': 'source', 'config_root': str(root)}}).json()
+        env = (Path(result['home']) / '.env').read_text()
+        self.assertIn('source-secret', env)
+        self.assertNotIn('OPENAI_API_KEY', env)
+
+    def test_hermes_incompatible_install_rolls_back_creation(self):
+        root, body = self.fixture('hermes')
+        (root / 'hermes-agent/hermes_cli/auth.py').write_text('_REGISTRY_ROWS = unsupported()')
+        response = self.create(body, 400)
+        self.assertIn('适配', response.text)
+        self.assertFalse((root / 'profiles' / body['profile']).exists())
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM bots WHERE profile='new-dev'").fetchone()[0], 0)
 
     def test_validation_auth_and_source_boundaries(self):
         root, body = self.fixture()

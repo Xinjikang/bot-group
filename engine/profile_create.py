@@ -34,7 +34,7 @@ def _read(home, name):
 def _source(body):
     selected = body.get('source')
     if not selected:
-        return None, None
+        return (Path(discovery._hermes_root()).resolve(), None) if body['host_type'] == 'hermes' else (None, None)
     candidates = discovery._scan_codex() if body['host_type'] == 'codex' else discovery._scan_hermes()
     match = next((c for c in candidates if c['profile'] == selected['profile']
                   and c['config_root'] == selected['config_root']), None)
@@ -114,30 +114,28 @@ def _instructions(body):
 def _hermes(home, body, member):
     parser, source = files._yaml(_read(home, 'config.yaml') if home else None)
     # Seed model/runtime settings only; channels and personal history belong to the source.
-    config = {key: source[key] for key in ('model', 'terminal', 'compression', 'max_turns') if key in source}
-    if not body['reuse_auth'] and isinstance(config.get('model'), dict):
-        config['model'].pop('api_key', None)
+    config = {key: source[key] for key in ('model', 'providers', 'custom_providers', 'model_aliases',
+                                         'terminal', 'compression', 'max_turns') if key in source}
     if body['model']:
         config.setdefault('model', {})['default'] = body['model']
-    env = ''
+    env = b''
+    provisioned = False
     if home and body['reuse_auth']:
-        # Only provider keys/endpoints; never duplicate messaging-channel credentials.
+        from . import profile_credentials
         raw = files._text(_read(home, '.env'))
-        env = '\n'.join(line for line in raw.splitlines() if re.match(
-            r'^(?:OPENAI|ANTHROPIC|OPENROUTER|NOUS|DEEPSEEK|GROQ|GEMINI|GOOGLE|XAI|MISTRAL|TOGETHER|FIREWORKS)_(?:API_KEY|BASE_URL|API_BASE)=', line))
-    has_key = any(line.split('=', 1)[0].endswith('_API_KEY') and line.split('=', 1)[1].strip().strip('\'"')
-                  for line in env.splitlines())
-    inline_auth = isinstance(config.get('model'), dict) and config['model'].get('api_key')
+        try:
+            env, provisioned = profile_credentials.copy_environment(discovery._hermes_root(), home, config, raw)
+        except (OSError, ValueError, SyntaxError, TypeError):
+            raise HTTPException(400, '无法读取兼容的模型凭证定义，请检查 Hermes 安装或更新引擎适配。') from None
     return {'config.yaml': files._dump(parser, config, None) if config else b"# Hermes member configuration.\n",
             'profile.yaml': files._dump(parser, {'display_name': body['display_name'] or body['profile']}, None),
-            'SOUL.md': _instructions(body).encode('utf-8'), '.env': (env + '\n').encode('utf-8')}, bool(has_key or inline_auth)
+            'SOUL.md': _instructions(body).encode('utf-8'), '.env': env}, provisioned
 
 
 def create(conn, body):
     """Publish files and register a Bot, optionally enrolling it, with request recovery."""
-    if body['host_type'] == 'codex':
-        # Older clients may still submit the former opt-out field.
-        body = {**body, 'reuse_auth': True}
+    # Independent homes inherit provider configuration by default, including older clients.
+    body = {**body, 'reuse_auth': True}
     name, host = body['profile'], body['host_type']
     raw_project = body.get('project')
     project = (raw_project or '').strip()

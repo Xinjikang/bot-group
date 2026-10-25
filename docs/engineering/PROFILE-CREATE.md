@@ -10,7 +10,7 @@
 - “更多设置”可填写模型和个人指令。空模型沿用来源或宿主默认设置；空个人指令生成基础工作约定。
 - Codex 自动复制引擎主账户目录（`CODEX_HOME`，默认 `~/.codex`）的 `auth.json`。配置来源用于继承模型与运行设置，创建界面省去认证选择。使用默认设置或选择其他 profile 作为配置来源时，文件认证仍来自主账户。
 - 新建 Codex Bot 统一使用智能审批（“帮我审批”）及工作区写入沙箱，加入项目时获得项目工作目录授权；创建规则独立于配置来源。创建表单显示该规则。
-- Hermes 保留“同时复用来源的模型认证”选项，勾选后复制 `.env` 中常用模型服务的 API Key/endpoint，以及模型配置中的直接凭据；OAuth 登录需在新 home 中完成。
+- Hermes 自动继承来源的模型配置与凭证。“使用默认设置”读取主 profile 的 `config.yaml` 和 `.env`；指定来源读取该 profile 自身文件。界面说明默认继承行为，OAuth 登录需在新 home 中完成。
 - 创建后注册 Bot，待显式确认选择后加入项目。取消成员选择或整个项目向导时，已创建 profile 与 Bot 保留；窗口在创建前说明此行为。缺少可复制认证时显示宿主对应的登录/配置命令，并明确目标 home；Codex 指向主账户目录，并提示提供文件认证。系统钥匙串中的凭据保持原生管理方式。
 - “认证已复制”仅说明本地配置准备完成。实际账号权限、模型可用性和认证有效期以运行结果为准；创建过程不发起付费模型调用。
 
@@ -53,7 +53,11 @@ Windows 新 home 保留来源中有效的 `windows.sandbox` 选择（`elevated`�
 
 `POST /profiles/create` 仅供管理员。请求包含 `host_type`、`profile`、`display_name`、可选 `source: {profile, config_root}`、`reuse_auth`、`model`、`instructions` 和 `request_id`。来源必须匹配当前宿主扫描结果。`project` 可省略或为 null/空字符串，此时只创建并注册 Bot，响应 `member_profile` 和 `project` 为 null。提供有效 `project` 的旧调用继续创建并入组；非空无效、归档或已移除项目返回错误，纯空白标识返回 400。响应补充 `host_type`、`config_root` 供列表选择复用。
 
-`reuse_auth` 仅控制 Hermes。Codex 为兼容旧客户端接受此字段，其创建行为统一为继承主账户文件认证。运行期间的按需同步见 [Codex profile 认证](../guides/CODEX-PROFILE-HOMES.md#file-authentication-synchronization)。
+`reuse_auth` 作为旧客户端兼容字段接受；两种宿主的创建均自动继承模型认证。Codex 的主账户文件认证同步见 [Codex profile 认证](../guides/CODEX-PROFILE-HOMES.md#file-authentication-synchronization)。
+
+Hermes 凭证扫描由 `engine/profile_credentials.py` 实现，以 AST 读取当前安装的 `auth.py` 注册行、`providers.py` overlay 和 `config_defaults.py` 中 provider 类环境变量定义，并合并本地 `models_dev_cache.json` 的 `env` 元数据。扫描保持离线，仅解析数据，保持 Hermes 模块未执行；当前适配结构参考 Hermes `afc3b7c6f3`。定义缺失或结构不兼容时中止并回滚创建，提示检查安装或更新引擎适配。
+
+来源 YAML 的 `model`、`providers`、`custom_providers` 和 `model_aliases` 一同复制。`key_env` / `api_key_env` 显式声明的自定义变量名加入复制集合；直接 `api_key` 保留在模型定义中。`.env` 只复制集合中的赋值，保留引号内空白、等号、换行和特殊字符；消息渠道、浏览器及其他工具配置本轮保持独立。供应商声明的别名 key 和地址变量可同时复制。`auth_copied` 为本地凭证准备提示，当前供应商缺少可识别凭证时保留设置提示。动态 `key_cmd`、外部凭证库及运行时插件 provider 的迁移能力需另行适配。
 
 - Codex 使用 `$CODEX_HOME/profiles/<name>/`，生成 `config.toml`、`AGENTS.md`、空 `memories/` 与 `skills/`。按上述创建规则生成执行配置，协作 MCP 继续由现有唤醒入口注入。
 - Hermes 使用 `$HERMES_HOME/profiles/<name>/`，生成 `config.yaml`、`profile.yaml`、`SOUL.md`、`.env`、空记忆与技能目录。协作 MCP 在每次运行时由引擎提供成员身份和 API 地址，新成员配置文件只保存成员自身设置；消息平台配置、频道凭据、OAuth 缓存、历史、任务和源人格均保留在原 profile。

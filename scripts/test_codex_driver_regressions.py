@@ -240,7 +240,11 @@ class CodexDriverRegressions(unittest.TestCase):
              patch('engine.project_rules.sync'), patch.object(wake.subprocess, 'Popen') as popen:
             result = wake._spawn(member, 'work', 'signal', None, 'p')
         self.assertFalse(result['ok'])
-        self.assertIn('主账户', result['detail'])
+        from engine.execution_errors import MESSAGES
+        self.assertEqual(result['detail'], MESSAGES['authentication'])
+        failure = self.conn.execute('SELECT category,diagnostic FROM execution_errors').fetchone()
+        self.assertEqual(failure['category'], 'authentication')
+        self.assertIn('主账户凭据已过期', failure['diagnostic'])
         popen.assert_not_called()
 
     def test_busy_new_is_rejected_and_first_reset_rejects_late_thread(self):

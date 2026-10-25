@@ -244,7 +244,13 @@ Path(os.environ['TRANSPORT_PROBE_REPORT']).write_text(json.dumps({'argv':args,'q
              patch.object(wake.subprocess, 'Popen', side_effect=OSError('synthetic startup failure')):
             result = wake._spawn('fixture', 'work', 'signal', None, 'transport')
         self.assertFalse(result['ok'])
-        self.assertIn('synthetic startup failure', result['detail'])
+        from engine.execution_errors import MESSAGES
+        self.assertEqual(result['detail'], MESSAGES['unknown'])
+        conn = db.get_connection()
+        try:
+            self.assertIn('synthetic startup failure', conn.execute('SELECT diagnostic FROM execution_errors').fetchone()[0])
+        finally:
+            conn.close()
         self.assertEqual(list((self.root / 'data' / 'runtime' / 'mcp').iterdir()), [])
 
     def test_real_chat_spawn_preserves_bound_session_and_complete_body(self):
@@ -282,7 +288,8 @@ Path(os.environ['TRANSPORT_PROBE_REPORT']).write_text(json.dumps({'argv':args,'q
              patch('engine.project_rules.sync'):
             result = wake._spawn('fixture', 'work', '完整输入\n第二行', None, 'transport')
         self.assertFalse(result['ok'], result)
-        self.assertIn('无法安全解析', result['detail'])
+        from engine.execution_errors import MESSAGES
+        self.assertEqual(result['detail'], MESSAGES['unknown'])
         self.assertFalse(self.capture.exists())
 
 

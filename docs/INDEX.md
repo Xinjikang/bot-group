@@ -2,6 +2,8 @@
 
 当前发布说明：[v0.1.3](releases/v0.1.3.md)。历史版本：[v0.1.2](releases/v0.1.2.md)。
 
+Profile 凭证继承与异常可见性见 [设计依据](design/2026-10-25-profile-credentials-errors.md)、[创建 profile](engineering/PROFILE-CREATE.md) 和 [执行异常反馈](engineering/EXECUTION-ERRORS.md)。
+
 项目成员更多菜单、移出与状态保留契约见 [项目成员移除](engineering/PROJECT-MEMBER-REMOVAL.md)。
 
 访问认证、成员凭据及需求终态门禁见 [访问控制契约](engineering/ACCESS-CONTROL.md)。

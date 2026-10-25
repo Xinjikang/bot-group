@@ -51,8 +51,21 @@ def _handle_task_exit(profile, project, kind, session, started_at, ended_at, exi
         if kind == 'work' and not intentional and not _shutting_down.is_set():
             reason = error or (f'process exited with code {exit_code}' if exit_code else
                                'process exited without task completion or handoff')
+            from .execution_errors import MESSAGES, classify
+            reason = MESSAGES[classify(reason)]
             return task_retry.finish(profile, project, task_id, f'{session}:{started_at}', reason, job_id, event_floor)
     return {"blocked": []}
+
+
+def _report_execution_error(profile, project, thread_id, session, attempt, detail, **kwargs):
+    with _session_lock:
+        if session in _intentional_stops or _shutting_down.is_set():
+            return
+    try:
+        from .execution_errors import report
+        return report(profile, project, thread_id, attempt, detail, **kwargs)
+    except Exception:
+        logging.getLogger(__name__).error('Could not persist execution failure for %s', profile)
 
 
 def session_busy(profile, kind, thread_id, project):
@@ -817,10 +830,24 @@ def _spawn(profile: str, kind: str, signal: str | None, thread_id: int | None,
                         return {'ok': False, 'detail': 'wake job is no longer running'}
                 finally:
                     conn.close()
-            return _spawn_in_workspace(profile, kind, signal, thread_id, project,
-                                       job_id, task_id, trigger_msg_id)
+            result = _spawn_in_workspace(profile, kind, signal, thread_id, project,
+                                         job_id, task_id, trigger_msg_id)
+            if not result.get('ok') and not result.get('busy') and not result.get('failure_handled'):
+                import uuid
+                _report_execution_error(profile, project, thread_id, session_name(profile, kind, thread_id, project),
+                                        f'queue:{job_id}' if job_id is not None else uuid.uuid4().hex,
+                                        result.get('detail', ''), job_id=job_id, parent_id=trigger_msg_id)
+                from .execution_errors import MESSAGES, classify
+                result['detail'] = MESSAGES[classify(result.get('detail', ''))]
+            return result
         except Exception as exc:
-            return {'ok': False, 'detail': str(getattr(exc, 'detail', exc))}
+            import uuid
+            detail = f'{type(exc).__name__}: {getattr(exc, "detail", exc)}'
+            _report_execution_error(profile, project, thread_id, session_name(profile, kind, thread_id, project),
+                                    f'queue:{job_id}' if job_id is not None else uuid.uuid4().hex,
+                                    detail, job_id=job_id, parent_id=trigger_msg_id)
+            from .execution_errors import MESSAGES, classify
+            return {'ok': False, 'detail': MESSAGES[classify(detail)]}
 
 
 def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: int | None,
@@ -1125,6 +1152,9 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
             except subprocess.TimeoutExpired:
                 from .stop import _kill_process_tree
                 if not _kill_process_tree(proc.pid):
+                    _report_execution_error(profile, project, thread_id, session, f'{session}:{wake_started_at}',
+                                            'execution timeout; process tree termination failed', job_id=job_id,
+                                            parent_id=trigger_msg_id, env=env)
                     events.bus.publish('execution.failed', {'profile': profile, 'project': project,
                         'task_id': bound_task, 'error': 'execution timeout; process tree termination failed; manual stop required'})
                     output.close()
@@ -1146,6 +1176,10 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
             if proc.returncode or bound_task is not None:
                 error = (error or f'process exit={proc.returncode}; task not handed off/completed') + (f'\n{tail}' if tail else '')
             ended_at = time.time()
+            if proc.returncode or error.startswith('execution timed out'):
+                _report_execution_error(profile, project, thread_id, session, f'{session}:{wake_started_at}',
+                                        error, exit_code=proc.returncode, job_id=job_id,
+                                        parent_id=trigger_msg_id or parent_id, env=env)
             try:
                 _handle_task_exit(profile, project, kind, session, wake_started_at, ended_at,
                                   proc.returncode, event_floor, task_id=bound_task, job_id=job_id, error=error)
@@ -1240,7 +1274,11 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
             _native_procs.pop(session, None)
         _handle_task_exit(profile, project, kind, session, wake_started_at, time.time(),
                           1, event_floor=locals().get('event_floor'), task_id=bound_task, error=str(exc), job_id=job_id)
-        return {"ok": False, "channel": "subprocess", "detail": str(exc), "failure_handled": True}
+        detail = f'{type(exc).__name__}: {exc}'
+        _report_execution_error(profile, project, thread_id, session, f'{session}:{wake_started_at}', detail,
+                                job_id=job_id, parent_id=trigger_msg_id, env=env)
+        from .execution_errors import MESSAGES, classify
+        return {"ok": False, "channel": "subprocess", "detail": MESSAGES[classify(detail)], "failure_handled": True}
 
 
 def is_chat_active(profile: str) -> bool:
