@@ -37,7 +37,13 @@ def main():
                GROUP_ATTACHMENTS_DIR=str(program / 'attachments'),
                GROUP_ENGINE_URL=f'http://127.0.0.1:{args.port}',
                HERMES_HOME=str(base / 'empty-hermes'), CODEX_HOME=str(base / 'empty-codex'),
-               GROUP_ADMIN_PASSWORD='', GROUP_SECRET='isolated-public-install')
+               GROUP_ADMIN_PASSWORD='', GROUP_SECRET='isolated-public-install',
+               GROUP_DESKTOP_SHORTCUT='0')
+    browser_probe = base / 'browser_probe.py'
+    browser_probe.write_text(
+        "import pathlib,sys\nwith pathlib.Path(__file__).with_name('browser_calls.txt').open('a') as f:\n"
+        "    f.write(sys.argv[1] + '\\n')\n", encoding='utf-8')
+    env['BROWSER'] = f'"{Path(sys.executable).as_posix()}" "{browser_probe.as_posix()}" %s'
     command = re.search(r'```' + args.shell + r'\n([^\n]+)',
                         (ROOT / 'README.md').read_text(encoding='utf-8')).group(1)
     steps = []
@@ -78,6 +84,7 @@ def main():
         env['PATH'] = str(Path(os.environ['SystemRoot']) / 'System32')
         started = True
         run('03-start', bat('start.bat'), program)
+        assert (base / 'browser_calls.txt').read_text().splitlines() == [f'http://127.0.0.1:{args.port}/app/']
         health = json.loads(get('/health'))
         assert health['status'] == 'ok', health
         assert Path(health['program_root']).resolve() == program

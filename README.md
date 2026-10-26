@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md) | **English**
 
-Release notes: [v0.1.4](docs/releases/v0.1.4.md).
+Release notes: [v0.1.5](docs/releases/v0.1.5.md).
 
 A group chat and task management engine for collaboration between multiple bots. It supports messaging, task assignment, progress tracking, review, acceptance, and delivery. Built-in project templates cover software development, product research, content writing, product prototyping, algorithm research and development, and testing, with roles, workflows, and project documentation for each scenario.
 
@@ -133,7 +133,7 @@ curl.exe -fL https://github.com/Xinjikang/bot-group/releases/latest/download/ins
 
 The source files and dedicated `.venv` are installed in that directory; launch it with `D:\Apps\bot-group\start.bat`. When the installer needs to install Python itself, the base runtime is stored separately at `%LOCALAPPDATA%\bot-group-runtime\Python313`. You can also set the `INSTALL_DIR` environment variable before running the default command; an explicit `-InstallDir` argument takes precedence.
 
-After installation, double-click **`start.bat`** in the installation directory and open `http://127.0.0.1:8180/app/`. Use **`stop.bat`** to stop and **`upgrade.bat`** to discover and install the latest stable release while preserving configuration and data. Run `start.bat` again after a successful upgrade.
+After installation, double-click the **Bot Group** desktop shortcut or **`start.bat`** in the installation directory. Startup opens the UI at the configured address, reuses an existing connected page, and preserves a healthy running engine. Use **`stop.bat`** to stop and **`upgrade.bat`** to discover and install the latest stable release while preserving configuration and data. After a command-line upgrade, start the service with the shortcut or `start.bat`; Web upgrade restarts it automatically.
 
 Starting with v0.1.2, open **Settings → About → Check for updates** and confirm the upgrade. Clicking the new-version notice at the top right opens the same confirmation. Web upgrades back up the installation, apply the release, and restart the service; refresh the page when complete. Existing v0.1.0/v0.1.1 installations can reach this version using their original `upgrade.bat`. Git workspaces update through Git.
 
@@ -141,7 +141,7 @@ Prepare your chosen Codex / Hermes runtime and model authentication separately, 
 
 Maintainers with an existing source checkout can run `py -3.11 tools/install.py install`, followed by `py -3.11 tools/service.py start`.
 
-Once startup succeeds, open `http://127.0.0.1:8180/app/` in your browser. Double-click `start.bat` to start or restart the service, or `stop.bat` to stop it. A running service can also be restarted through **Settings → Restart service** at the top right.
+Once startup succeeds, the UI opens automatically (default address: `http://127.0.0.1:8180/app/`). The desktop shortcut and `start.bat` reuse a connected UI page, including its login screen, and open a new page after all UI pages are closed. Bringing an existing page to the foreground depends on browser policy. Use **Settings → Restart service** at the top right to restart a running engine; the page reloads automatically when restart or Web upgrade completes.
 
 Shutdown gives bots up to 120 seconds to finish naturally. The engine then terminates any remaining bot process trees and releases browser resources. See [Service restart](docs/engineering/SERVICE-RESTART-2026-10-17.md).
 

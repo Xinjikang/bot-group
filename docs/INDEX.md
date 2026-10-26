@@ -1,6 +1,6 @@
 # 项目文档索引
 
-当前发布说明：[v0.1.4](releases/v0.1.4.md)。历史版本：[v0.1.3](releases/v0.1.3.md)、[v0.1.2](releases/v0.1.2.md)。
+当前发布说明：[v0.1.5](releases/v0.1.5.md)。历史版本：[v0.1.4](releases/v0.1.4.md)、[v0.1.3](releases/v0.1.3.md)、[v0.1.2](releases/v0.1.2.md)。
 
 Profile 凭证继承与异常可见性见 [设计依据](design/2026-10-25-profile-credentials-errors.md)、[创建 profile](engineering/PROFILE-CREATE.md) 和 [执行异常反馈](engineering/EXECUTION-ERRORS.md)。
 
@@ -14,7 +14,7 @@ Profile 凭证继承与异常可见性见 [设计依据](design/2026-10-25-profi
 
 ## 需求与设计
 
-启动入口、桌面快捷方式和重启/升级后的自动刷新见 [启动与刷新设计](design/2026-10-26-startup-ui.md)。
+启动入口、桌面快捷方式、页面复用和重启/升级后的自动刷新见 [启动与刷新设计](design/2026-10-26-startup-ui.md)。
 
 桌面快捷方式的四顶点三棱锥图形、多尺寸资源与安装引用见 [桌面图标](ui-spec/DESKTOP-ICON.md)。
 
