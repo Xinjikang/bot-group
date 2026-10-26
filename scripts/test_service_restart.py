@@ -194,7 +194,7 @@ class RestartIntegration(unittest.TestCase):
                                                 creationflags=subprocess.CREATE_NO_WINDOW)
                         self.assertEqual(second.returncode, 0, (second.stdout, second.stderr))
                         self.assertEqual(request('/health')['instance_id'], health['instance_id'])
-                        self.assertEqual(browser_calls.read_text().splitlines(), [url + '/app/'] * 2)
+                        self.assertEqual(browser_calls.read_text().splitlines(), [url + '/app/'])
                         import sqlite3
                         with closing(sqlite3.connect(data / 'group.db')) as conn, conn:
                             conn.execute('CREATE TABLE restart_probe(value TEXT)')
@@ -230,7 +230,7 @@ class RestartIntegration(unittest.TestCase):
                             wait_for(lambda: not restart._pid_alive(receipt['helper_pid']))
                         with closing(sqlite3.connect(data / 'group.db')) as conn:
                             self.assertEqual(conn.execute('SELECT value FROM restart_probe').fetchone()[0], 'preserved')
-                        self.assertEqual(browser_calls.read_text().splitlines(), [url + '/app/'] * 2)
+                        self.assertEqual(browser_calls.read_text().splitlines(), [url + '/app/'])
                     finally:
                         # Only this fixture's port and copied instance are targeted.
                         try:

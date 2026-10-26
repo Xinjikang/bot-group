@@ -104,7 +104,8 @@ class ServiceFlowTest(unittest.TestCase):
 class LaunchTest(unittest.TestCase):
     def setUp(self):
         for name, value in (('_load_env', None), ('_running_instance', False),
-                            ('do_start', 0)):
+                            ('do_start', 0), ('_claim_ui', {'action': 'open', 'reservation': 'test'}),
+                            ('_release_ui', None)):
             patcher = mock.patch.object(service, name, return_value=value)
             setattr(self, name, patcher.start())
             self.addCleanup(patcher.stop)
@@ -145,11 +146,26 @@ class LaunchTest(unittest.TestCase):
                 self.browser.side_effect = failure if isinstance(failure, Exception) else None
                 self.browser.return_value = False
                 self.assertEqual(service.do_launch(), 0)
+                self._release_ui.assert_called_with('127.0.0.1', 18765, 'test')
+
+    def test_existing_or_opening_page_is_reused(self):
+        self._running_instance.return_value = True
+        for action in ('reuse', 'pending'):
+            self._claim_ui.return_value = {'action': action}
+            self.assertEqual(service.do_launch(), 0)
+        self.browser.assert_not_called()
+        self.do_start.assert_not_called()
+
+    def test_presence_failure_does_not_open_duplicate_page(self):
+        self._claim_ui.side_effect = OSError('unavailable')
+        self.assertEqual(service.do_launch(), 1)
+        self.browser.assert_not_called()
 
     def test_cli_suppression_and_maintenance(self):
         with mock.patch.dict(os.environ, {'GROUP_SERVICE_MAINTENANCE': ''}):
             self.assertEqual(service.main(['start', '--no-browser']), 0)
         self.browser.assert_not_called()
+        self._claim_ui.assert_not_called()
         self._running_instance.reset_mock()
         with mock.patch.dict(os.environ, {'GROUP_SERVICE_MAINTENANCE': '1'}):
             self.assertEqual(service.main(['start']), 0)
@@ -165,6 +181,14 @@ class LaunchTest(unittest.TestCase):
 
 
 class InstanceProbeTest(unittest.TestCase):
+    def test_old_server_fallback_and_invalid_presence_reply(self):
+        with mock.patch.object(service, '_ui_request', side_effect=service.urllib.error.HTTPError(
+                'http://isolated', 404, 'missing', {}, None)):
+            self.assertEqual(service._claim_ui('127.0.0.1', 1), {'action': 'open'})
+        for result in ({}, {'action': 'invalid'}, []):
+            with mock.patch.object(service, '_ui_request', return_value=result), self.assertRaises(ValueError):
+                service._claim_ui('127.0.0.1', 1)
+
     def test_legacy_maintenance_requires_matching_parent_and_installation(self):
         with tempfile.TemporaryDirectory() as folder, \
              mock.patch.dict(os.environ, {'GROUP_SERVICE_MAINTENANCE': '', 'GROUP_RESTART_INSTANCE': ''}), \

@@ -107,6 +107,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="group-engine", version="0.1.0", lifespan=lifespan)
 app.include_router(router_api)
+from .ui_presence import router as ui_presence_router
+app.include_router(ui_presence_router)
 
 # 静态前端挂在 /app（访问 http://127.0.0.1:8180/app/）
 if _FRONTEND_DIR.exists():

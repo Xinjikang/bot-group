@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -72,6 +73,38 @@ def _running_instance(host: str, port: int) -> bool:
     return True
 
 
+def _ui_request(host: str, port: int, path: str, method: str) -> dict:
+    from engine import auth
+    headers = {}
+    if auth.configured():
+        headers['Authorization'] = 'Bearer ' + auth.login(auth._password())['token']
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    request = urllib.request.Request(_local_url(host, port) + path, method=method, headers=headers)
+    with opener.open(request, timeout=5) as response:
+        return json.load(response)
+
+
+def _claim_ui(host: str, port: int) -> dict:
+    try:
+        result = _ui_request(host, port, '/admin/ui/activate', 'POST')
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            print('[start-engine] 当前服务尚未支持页面复用，请手动重启服务并刷新已有界面。')
+            return {'action': 'open'}
+        raise
+    if not isinstance(result, dict) or result.get('action') not in ('open', 'reuse', 'pending'):
+        raise ValueError('界面状态响应无效')
+    return result
+
+
+def _release_ui(host: str, port: int, reservation: str | None):
+    if reservation:
+        try:
+            _ui_request(host, port, '/admin/ui/open/' + urllib.parse.quote(reservation, safe=''), 'DELETE')
+        except (OSError, ValueError):
+            pass
+
+
 def do_launch(*, open_browser: bool = True) -> int:
     """Reuse the same healthy installation, or start it, then open its UI."""
     _load_env()
@@ -89,9 +122,19 @@ def do_launch(*, open_browser: bool = True) -> int:
     print(f'[start-engine] 界面地址：{url}')
     if open_browser:
         try:
+            claim = _claim_ui(host, port)
+        except (OSError, ValueError) as exc:
+            print(f'[start-engine] 界面状态核对失败，请稍后重试：{exc}', file=sys.stderr)
+            return 1
+        if claim['action'] != 'open':
+            print('[start-engine] 已请求唤回现有界面' if claim['action'] == 'reuse' else '[start-engine] 界面正在打开')
+            return 0
+        try:
             if not webbrowser.open(url):
+                _release_ui(host, port, claim.get('reservation'))
                 print(f'[start-engine] 浏览器打开失败，请访问 {url}', file=sys.stderr)
         except (OSError, webbrowser.Error) as exc:
+            _release_ui(host, port, claim.get('reservation'))
             print(f'[start-engine] 浏览器打开失败：{exc}；请访问 {url}', file=sys.stderr)
     return 0
 
