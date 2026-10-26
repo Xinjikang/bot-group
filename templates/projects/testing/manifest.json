@@ -1,6 +1,6 @@
 {
   "id": "testing",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "owner_role_id": "lead",
   "name": "测试项目",
   "description": "以 PRD 和产品原型为依据，维护用例与脚本映射，执行独立测试、核验证据并交付质量报告。",

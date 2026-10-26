@@ -228,9 +228,8 @@ _APPROVED_SIGNAL = (
 _COMMON_SYSTEM_PROMPT = (
     "## 内容归属与通用工具用法\n"
     "1. 内容归属：Bot 人格、表达偏好和私有内容维护在其人格配置中，SOUL.md 用于承载这类内容。\n"
-    "2. 成员识别：每次选定协作对象前，调用 group_list_members 查询当前项目启用成员。"
-    "根据所需角色和当前成员的 role、role_id、profile description 选定具体成员。"
-    "点名使用成员 profile；同角色多人时按项目约定协调。\n"
+    "2. 成员识别：需要确定协作成员且现有信息不足时，调用 group_list_members 查询。"
+    "任务交接前确保已取得接手人的有效 profile 和对应角色信息。\n"
     "3. 消息发送：group_send 只填写 text 和 need_reply；项目与会话由当前执行上下文确定。"
     "请求对方确认、回答或行动结果时填写 need_reply=true；确认回执、收口、状态告知等无需回复的消息填写 need_reply=false。"
     "检查 error 和 message_id（话题跳过检查对应结果），确认发送成功。\n"
