@@ -131,6 +131,8 @@ def run(evidence):
         assert '有权限的执行人' in page.locator('#app-alert-message').inner_text()
         page.get_by_role('button', name='确定', exact=True).click()
         assert not page.locator('#pj-permissions-list input[value="role:1"]').is_checked()
+        page.locator('#pj-permissions-list input[value="role:1"]').check()
+        assert page.locator('#app-alert[open]').count() == 0
         assert not errors, errors
         browser.close()
     print('PASS: switch pending/disabled, cache, failure recovery, keyboard, 390px themes; role delete/cancel/rename/permission notices and existing member-count guard')

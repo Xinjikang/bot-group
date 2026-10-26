@@ -53,12 +53,14 @@ window.workspaceResourceForm = (container, config) => {
 };
 
 window.openWorkspaceResources = async (project, profile, onClose = () => {}) => {
-  const dialog = document.createElement('dialog'); dialog.style.cssText = 'width:600px;max-width:calc(100vw - 24px);max-height:85dvh;overflow:auto;padding:20px';
+  const dialog = document.createElement('dialog'); dialog.className = 'workspace-resource-dialog'; dialog.style.cssText = 'width:600px;max-width:calc(100vw - 24px);max-height:85dvh;overflow:auto;padding:20px';
   const title = document.createElement('h3'); title.textContent = '工作区资源配置';
   const note = document.createElement('p'), form = document.createElement('div'), status = document.createElement('p'); status.setAttribute('role', 'status');
+  status.className = 'workspace-resource-status';
   const save = document.createElement('button'), close = document.createElement('button');
+  const actions = document.createElement('div'); actions.className = 'dlg-btns'; actions.append(save, close);
   save.textContent = '保存资源配置'; close.textContent = '关闭'; save.disabled = true;
-  dialog.append(title, note, form, status, save, close); document.body.append(dialog); dialog.showModal();
+  dialog.append(title, note, form, status, actions); document.body.append(dialog); dialog.showModal();
   let saving = false;
   close.onclick = () => dialog.close(); dialog.onclose = () => { dialog.remove(); onClose(); }; dialog.oncancel = e => { if (saving) e.preventDefault(); };
   const url = `/projects/${encodeURIComponent(project)}/workspaces/${encodeURIComponent(profile)}/resources`;

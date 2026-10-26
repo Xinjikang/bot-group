@@ -56,7 +56,9 @@ function renderProjectPermissions(data) {
     for (const role of roles) {
       const label = document.createElement('label'), input = document.createElement('input'), text = document.createElement('span');
       input.type = 'checkbox'; input.value = `role:${role.id}`; input.checked = selected.includes(`role:${role.id}`);
-      input.addEventListener('change', () => showAlert(`角色「${role.name}」的权限选择已调整，派工、审查、验收等职责可能缺少有权限的执行人。请自行核对项目协作正文与角色授权。`));
+      input.addEventListener('change', () => {
+        if (!input.checked && selected.includes(input.value)) showAlert(`准备撤销角色「${role.name}」的「${permission.label}」授权。保存后，依赖此权限的职责可能缺少有权限的执行人，请核对项目协作正文与角色授权。`);
+      });
       text.textContent = `角色：${role.name}（${role.member_count} 名成员）`;
       label.append(input, text); options.appendChild(label);
     }

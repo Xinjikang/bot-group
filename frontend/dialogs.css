@@ -39,6 +39,10 @@ dialog [data-error="true"] { color: var(--danger) !important; }
 
 .workspace-resource-form .workspace-resource-card{min-width:0;margin:0 0 16px;padding:18px;border:1px solid var(--border-soft);border-radius:12px;background:var(--card-2)}
 .workspace-resource-form > button{margin-bottom:16px}
+.workspace-resource-form > label{display:block;min-width:0;line-height:1.6}
+.workspace-resource-form > label > input{margin-top:7px}
+.workspace-resource-dialog .workspace-resource-status{margin-top:12px;font-size:12px;line-height:1.6;color:var(--fg-2);overflow-wrap:anywhere}
+.workspace-resource-dialog .dlg-btns{flex-wrap:wrap}
 .workspace-resource-form .workspace-resource-card > label:first-child{margin-top:0!important}
 .workspace-resource-form .workspace-resource-card button{margin-top:10px}
 .workspace-resource-grid:not([hidden]){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:end}

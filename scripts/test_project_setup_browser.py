@@ -81,9 +81,10 @@ def main():
             custom = page.locator('#import-roles .import-card').filter(has_text='自定义角色')
             custom.locator('summary').click()
             custom.locator('input[type=checkbox]').first.check()
-            assert '派工、审查、验收' in page.locator('#app-alert-message').inner_text()
-            page.get_by_role('button', name='确定', exact=True).click()
+            assert page.locator('#app-alert[open]').count() == 0
             custom.locator('input[type=checkbox]').first.uncheck()
+            assert '权限方案已减少' in page.locator('#app-alert-message').inner_text()
+            assert '最终确认提交后生效' in page.locator('#app-alert-message').inner_text()
             page.get_by_role('button', name='确定', exact=True).click()
             custom.get_by_role('button', name='移除角色').click()
             assert '角色绑定' in page.locator('#app-alert-message').inner_text()
@@ -95,6 +96,11 @@ def main():
             page.get_by_role('button', name='确定', exact=True).click()
             custom.wait_for(state='detached')
             assert page.locator('#import-roles .import-card').filter(has_text='自定义角色').count() == 0
+            if '--permissions-only' in sys.argv:
+                assert not errors, errors
+                browser.close()
+                print('PASS: wizard permission additions/reductions, deferred submission notice and role removal/cancel')
+                return
             page.locator('#import-role-name').fill('自定义角色')
             page.locator('#import-role-add').click()
             page.locator('#import-next').click()

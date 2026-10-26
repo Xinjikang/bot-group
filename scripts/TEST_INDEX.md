@@ -79,6 +79,8 @@ python -X utf8 -B scripts/test_project_templates_browser.py
 
 ## Python 单元与隔离集成
 
+资源配置布局与角色权限提示：`python scripts/test_project_settings_browser.py --permissions-only` 覆盖新增授权、取消未保存的新增授权、撤销已保存授权、保存冲突及 390px；`python scripts/test_project_setup_browser.py --permissions-only` 覆盖向导新增/减少权限、生效提示及角色删除/取消；省略参数继续完整设置和向导流程。`python scripts/test_member_switch_browser.py --evidence <报告目录>` 覆盖角色恢复勾选、删除确认和 390px 深浅主题。资源弹窗补查标签间距 7px、状态提示上方 12px、操作区上方 18px、按钮间距 8px，以及长路径、保存反馈、关闭重开与刷新。
+
 场景模板执行请求入口：复用 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_templates scripts.test_template_role_rename scripts.test_product_prototype_template scripts.test_algorithm_template scripts.test_testing_template scripts.test_project_import_supplement scripts.test_project_setup_history -q`。覆盖六类模板生成、角色变量替换、预览与落盘一致、shared/worktree、角色授权和历史快照；人工核对执行请求、已有任务续做、接收成员转交、话题规划及 work 执行条款与各模板原流程一致。以上验证范围为模板与接口，模型实际遵循另行通过隔离行为场景验证。
 
 调研、写作和产品原型 worktree 说明：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_templates scripts.test_template_role_rename scripts.test_product_prototype_template -q`。使用仓库外临时目录及隔离 Git/SQLite，覆盖三类项目的阶段分支、实际角色名称、审查与合并交接、预览到落盘及初始化快照，并回归软件模板和共享目录模式。

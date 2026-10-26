@@ -176,8 +176,11 @@ def main():
             row = page.locator(f'[data-permission="{key}"]')
             row.locator('summary').click()
             row.locator('input[value="role:2"]').check()
-            assert '派工、审查、验收' in page.locator('#app-alert-message').inner_text()
-            page.get_by_role('button', name='确定', exact=True).click()
+            assert page.locator('#app-alert[open]').count() == 0
+            row.locator('input[value="role:2"]').uncheck()
+            assert page.locator('#app-alert[open]').count() == 0
+            row.locator('input[value="role:2"]').check()
+            assert page.locator('#app-alert[open]').count() == 0
             row.locator('input[value="custom-dev"]').check()
             row.locator('summary').click()
         # req#96 #166：授权对象=bot ∪ 角色——task.create 预授权 role:2（数据分析 2 名成员）
@@ -187,6 +190,8 @@ def main():
         assert tc_row.locator('input[value="role:1"]').count() == 1      # 角色项与 bot 项同列可选
         assert tc_row.locator('input[value="role:2"]').locator('xpath=..').inner_text() == '角色：数据分析（2 名成员）'
         tc_row.locator('input[value="role:2"]').uncheck()                # 取消角色授权（多选改动不影响 bot 项）
+        assert '准备撤销角色「数据分析」的「创建任务」授权' in page.locator('#app-alert-message').inner_text()
+        assert '保存后' in page.locator('#app-alert-message').inner_text()
         page.get_by_role('button', name='确定', exact=True).click()
         tc_row.locator('input[value="custom-lead"]').check()             # 同一项权限可同时勾角色和 bot
         page.locator('#pj-permissions-save').click()
@@ -221,6 +226,11 @@ def main():
         page.evaluate("anchorDialog(document.querySelector('#dlg-project-detail'), document.querySelector('#chip-all'))")
         assert page.locator('#pj-panel-permissions').evaluate('(el) => el.scrollWidth <= el.clientWidth + 1')
         page.screenshot(path=str(Path(tempfile.gettempdir()) / 'group-permissions-mobile.png'))
+        if '--permissions-only' in sys.argv:
+            assert not errors, errors
+            browser.close()
+            print('PASS: role additions, unsaved addition undo, saved grant removal, save/conflict and 390px permissions')
+            return
         page.set_viewport_size({'width': 1280, 'height': 900})
         page.evaluate("anchorDialog(document.querySelector('#dlg-project-detail'), document.querySelector('#chip-all'))")
         page.locator('#pj-tab-agents').click()

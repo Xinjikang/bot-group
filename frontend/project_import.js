@@ -224,8 +224,9 @@
       const details = document.createElement('details'), summary = document.createElement('summary');
       const caption = () => { summary.textContent = `调整权限 · 已启用 ${role.permissions.length} 项`; };
       caption(); details.append(summary, permissionEditor(role.permissions, values => {
+        const removed = role.permissions.some(permission => !values.includes(permission));
         role.permissions = values; invalidateRules(); caption();
-        showAlert(`角色「${role.name}」的权限已调整，派工、审查、验收等职责可能缺少有权限的执行人。请在规则审阅步骤根据当前角色和权限调整协作流程，明确各项职责的承担者，并同步更新协作正文与角色授权。`);
+        if (removed) showAlert(`角色「${role.name}」的权限方案已减少。请在规则审阅步骤核对相关职责的承担者及授权；配置在最终确认提交后生效。`);
       }));
       box.append(header);
       if (role.name === ownerRole) {
