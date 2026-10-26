@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+成员候选识别：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_discovery scripts.test_profile_create scripts.test_codex_driver_regressions scripts.test_member_identity -q`。使用隔离配置与 SQLite，覆盖浏览器配置误识别、空或无效配置、仅会话文件、独立认证 home、嵌套 home、根配置与外部命名 profile、删除后刷新过滤、读取失败隔离，以及历史 Bot 登记保留。两处选择列表的端到端验证复用 `scripts/test_profile_create_browser.py`。
+
 后台重启诊断：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_service_restart scripts.test_service scripts.test_install -q`。隔离 Windows 程序目录、数据和端口，验证失败安装检查的 stdout/stderr 写入重启日志且旧实例保留，随后连续两次正常重启；配套覆盖安装就绪检查与依赖核验。手动更新依赖声明后，先运行 `tools/install.py repair` 并确认 `tools/install.py check` 通过，再手动重启生产实例。
 
 Profile 模型凭证与执行异常：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_profile_credentials scripts.test_profile_create scripts.test_execution_errors scripts.test_profile_config scripts.test_task_retry scripts.test_wake_pid_watch scripts.test_hermes_transport scripts.test_stop_scope -q`。覆盖静态 provider 扫描且源码未执行、默认/指定来源、自定义 key_env、多个 key 与地址、渠道排除、不兼容回滚；真实子进程 stderr、分类、脱敏、持久化去重、话题父消息、主动停止及重试。补充回归运行 `scripts.test_codex_driver_regressions scripts.test_wmic_free_wake scripts.test_engine_shutdown`，覆盖 Codex 过期凭证、实际唤醒链路及停机。浏览器运行 `scripts/test_profile_create_browser.py --evidence <主目录报告目录>/browser`，验证默认来源创建、无认证勾选框、桌面异常消息刷新恢复，以及创建对话框 390px 深浅主题。使用隔离目录、数据库和合成凭证；Hermes 安装版本升级后先检查静态适配器兼容性。

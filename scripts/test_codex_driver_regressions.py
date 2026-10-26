@@ -149,7 +149,7 @@ class CodexDriverRegressions(unittest.TestCase):
         (self.home / 'dev.config.toml').write_text('', encoding='utf-8')
         independent = self.home / 'summer'
         independent.mkdir()
-        (independent / 'auth.json').write_text('{}', encoding='utf-8')
+        (independent / 'auth.json').write_text('{"OPENAI_API_KEY":"synthetic-key"}', encoding='utf-8')
         candidates = discovery._scan_codex()
         self.assertEqual({c['profile'] for c in candidates}, {'default', 'old', 'dev', 'summer'})
         chosen = next(c for c in candidates if c['profile'] == 'summer')

@@ -3,9 +3,8 @@
 扫描 Hermes 与 Codex 的配置根目录，产出「可发现 profile 候选」：
 - Hermes：根目录下 profiles/<name>/（named profile 必须显式建目录，
   Hermes assert_named_profile_home_live 强制；根自身是 default）。
-- Codex：CODEX_HOME（默认 ~/.codex）下的子目录（保守判定：目录存在即候选，
-  无 Codex 根时该宿主返回空列表，不报错——冷启动六步的「扫描不到任何
-  profile」由 API 层给文案）。
+- Codex：默认 home、显式命名配置，以及包含 Codex 配置字段或认证结构的独立 home。
+  无可用配置根时返回空列表。
 
 同名 profile 双宿主靠 host_type+config_root 区分（设计稿 2.5 第 2 点；
 UNIQUE(host_type, config_root, profile) 在 schema 层兜底）。
@@ -15,8 +14,10 @@ UNIQUE(host_type, config_root, profile) 在 schema 层兜底）。
 from __future__ import annotations
 
 import os
+import json
 import re
 import sqlite3
+import tomllib
 from pathlib import Path
 
 from . import codex_sandbox_notice, db
@@ -24,6 +25,79 @@ from . import codex_sandbox_notice, db
 # profile 名合法性（与 profile_config._directory 同口径）：小写字母数字开头，
 # 允许 - 和 _，最长 64。
 _PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+_CODEX_CONFIG_KEYS = frozenset({
+    'model', 'model_provider', 'model_providers', 'model_reasoning_effort',
+    'model_context_window', 'model_auto_compact_token_limit',
+    'approval_policy', 'approvals_reviewer', 'sandbox_mode', 'default_permissions',
+    'sandbox_workspace_write', 'sandbox_read_only', 'developer_instructions',
+})
+
+
+def _has_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _entries(path: Path) -> list[Path]:
+    try:
+        return sorted(path.iterdir())
+    except OSError:
+        return []
+
+
+def _toml(path: Path) -> dict | None:
+    try:
+        return tomllib.loads(path.read_text(encoding='utf-8-sig'))
+    except (OSError, ValueError):
+        return None
+
+
+def _codex_home(path: Path) -> bool:
+    """Identify independent homes by Codex settings or authentication structure."""
+    config = _toml(path / 'config.toml')
+    if config is not None and _CODEX_CONFIG_KEYS.intersection(config):
+        return True
+    try:
+        auth = json.loads((path / 'auth.json').read_text(encoding='utf-8-sig'))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(auth, dict):
+        return False
+    tokens = auth.get('tokens')
+    return bool(auth.get('OPENAI_API_KEY') or
+                isinstance(tokens, dict) and (tokens.get('access_token') or tokens.get('id_token')))
+
+
+def _codex_names(root: Path) -> set[str]:
+    names = {p.name[:-len('.config.toml')] for p in _entries(root)
+             if p.name.endswith('.config.toml') and _toml(p) is not None}
+    profiles = (_toml(root / 'config.toml') or {}).get('profiles', {})
+    if isinstance(profiles, dict):
+        names.update(name for name, value in profiles.items() if isinstance(value, dict))
+    return {name for name in names if name != 'default' and _PROFILE_RE.fullmatch(name)}
+
+
+def candidate_available(bot) -> bool:
+    """Check registered configuration paths without changing registration or membership."""
+    from .bot_identity import codex_settings
+    try:
+        root, profile = Path(bot['config_root']), bot['profile']
+        if not root.is_dir():
+            return False
+        if bot['host_type'] == 'hermes':
+            home = root if profile == 'default' else root / 'profiles' / profile
+            return any(_has_file(home / name) for name in ('config.yaml', 'state.db'))
+        if bot['host_type'] == 'codex':
+            home, selector = codex_settings(bot)
+            if selector:
+                return selector in _codex_names(Path(home))
+            return _codex_home(Path(home))
+    except (OSError, ValueError):
+        return False
+    return False
 
 
 def _hermes_root() -> str:
@@ -41,16 +115,16 @@ def _scan_hermes() -> list[dict]:
     """扫描 Hermes 根：default（根自身）+ profiles/<name>。"""
     root = Path(_hermes_root())
     out: list[dict] = []
-    if (root / "state.db").is_file() or (root / "config.yaml").is_file() or root.is_dir():
+    if any(_has_file(root / name) for name in ('state.db', 'config.yaml')) or root.is_dir():
         out.append({"host_type": "hermes", "profile": "default", "config_root": str(root)})
     profiles_dir = root / "profiles"
     if profiles_dir.is_dir():
-        for entry in sorted(profiles_dir.iterdir()):
+        for entry in _entries(profiles_dir):
             if not entry.is_dir() or not _PROFILE_RE.match(entry.name):
                 continue
             # 命名 profile 必须是真实 home（有 state.db/config.yaml 之一），过滤
             # 备份/临时目录之类的空壳。
-            if (entry / "state.db").is_file() or (entry / "config.yaml").is_file():
+            if any(_has_file(entry / name) for name in ('state.db', 'config.yaml')):
                 out.append({"host_type": "hermes", "profile": entry.name,
                             "config_root": str(root)})
     return out
@@ -62,30 +136,20 @@ def _scan_codex() -> list[dict]:
     if not root.is_dir():
         return []
     out: list[dict] = []
-    if any((root / f).is_file() for f in ('config.toml', 'auth.json')):
+    if any(_has_file(root / f) for f in ('config.toml', 'auth.json')):
         out.append({'host_type': 'codex', 'profile': 'default', 'config_root': str(root)})
-    names = {p.name[:-len('.config.toml')] for p in root.glob('*.config.toml')}
-    config = root / 'config.toml'
-    if config.is_file():
-        try:
-            import tomllib
-            names.update(tomllib.loads(config.read_text(encoding='utf-8')).get('profiles', {}))
-        except (ImportError, ValueError, OSError):
-            pass
-    for name in sorted(names):
-        if name != 'default' and _PROFILE_RE.fullmatch(name):
-            out.append({'host_type': 'codex', 'profile': name, 'config_root': str(root)})
-    homes = list(root.iterdir())
+    for name in sorted(_codex_names(root)):
+        out.append({'host_type': 'codex', 'profile': name, 'config_root': str(root)})
+    homes = _entries(root)
     profiles_dir = root / 'profiles'
     if profiles_dir.is_dir():
-        homes.extend(profiles_dir.iterdir())
+        homes.extend(_entries(profiles_dir))
     for entry in sorted(homes):
         if entry == profiles_dir:
             continue
         if not entry.is_dir() or not _PROFILE_RE.match(entry.name):
             continue
-        # 保守判定：目录里至少有一个 Codex 常见工件才视为候选（过滤缓存/日志）。
-        if any((entry / f).is_file() for f in ("config.toml", "auth.json", "sessions.json")):
+        if _codex_home(entry):
             out.append({"host_type": "codex", "profile": entry.name, "config_root": str(entry)})
     return out
 

@@ -37,7 +37,7 @@ class DiscoveryTests(unittest.TestCase):
         # 假 Codex 根：coco 一个候选 + cache 干扰目录
         self.croot = Path(self.tmp.name) / "codex"
         (self.croot / "coco").mkdir(parents=True)
-        (self.croot / "coco" / "config.toml").write_text("")
+        (self.croot / "coco" / "config.toml").write_text('model = "test-model"\n')
         (self.croot / "cache").mkdir(parents=True)  # 无工件 → 不发现
         self._envs = {}
         for k in ("HERMES_HOME", "CODEX_HOME", "GROUP_DB"):
@@ -95,7 +95,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_same_profile_dual_host_distinguished(self):
         # alice 同时存在于 hermes 与 codex 根：双宿主候选靠 host_type 区分
         (self.croot / "alice").mkdir()
-        (self.croot / "alice" / "config.toml").write_text("")
+        (self.croot / "alice" / "config.toml").write_text('model = "test-model"\n')
         conn = db.get_connection()
         try:
             cands = discovery.scan_candidates(conn)
@@ -105,6 +105,99 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(len(alices), 2, f"双宿主应各自成候选: {alices}")
         keys = {(c["host_type"], c["config_root"], c["profile"]) for c in cands if c["profile"] == "alice"}
         self.assertEqual(len(keys), 2)
+
+    def test_codex_auxiliary_files_are_not_independent_homes(self):
+        fixtures = {
+            'browser': ('config.toml', 'approval_mode = "on-request"\n'),
+            'sessions-only': ('sessions.json', '[]'),
+            'empty-config': ('config.toml', ''),
+            'invalid-config': ('config.toml', 'model = ['),
+            'other-auth': ('auth.json', '{"session":"synthetic"}'),
+            'key-home': ('auth.json', '{"OPENAI_API_KEY":"synthetic-key"}'),
+            'token-home': ('auth.json', '{"tokens":{"access_token":"synthetic-token"}}'),
+        }
+        for name, (filename, content) in fixtures.items():
+            home = self.croot / name
+            home.mkdir()
+            (home / filename).write_text(content, encoding='utf-8')
+        for endpoint in ('/discovery/scan', '/profiles/candidates'):
+            response = self.client.get(endpoint)
+            self.assertEqual(response.status_code, 200, response.text)
+            names = {c['profile'] for c in response.json()['candidates'] if c['host_type'] == 'codex'}
+            self.assertEqual(names, {'coco', 'key-home', 'token-home'})
+
+    def test_registered_candidates_require_live_configuration_and_preserve_records(self):
+        external = Path(self.tmp.name) / 'external-home'
+        external.mkdir()
+        config = external / 'config.toml'
+        config.write_text('model = "external-model"\n')
+        browser = self.croot / 'browser'
+        browser.mkdir()
+        (browser / 'config.toml').write_text('approval_mode = "on-request"\n')
+        records = [
+            ('codex', 'profile-13', self.croot / 'profiles' / 'profile-13', 'daxia'),
+            ('codex', 'browser', browser, 'Browser'),
+            ('codex', 'default', external, 'External Codex'),
+            ('hermes', 'deleted', self.hroot, 'Deleted Hermes'),
+            ('hermes', 'alice', self.hroot, 'Alice'),
+        ]
+        conn = db.get_connection()
+        try:
+            ids = {}
+            for host, profile, root, display in records:
+                ids[display] = discovery.register_bot(conn, host, profile, str(root), display)['bot_id']
+            conn.commit()
+            before = [tuple(row) for row in conn.execute('SELECT * FROM bots ORDER BY id')]
+            response = self.client.get('/profiles/candidates')
+            self.assertEqual(response.status_code, 200, response.text)
+            visible = {c['bot_id'] for c in response.json()['candidates']}
+            self.assertIn(ids['External Codex'], visible)
+            self.assertIn(ids['Alice'], visible)
+            for name in ('daxia', 'Browser', 'Deleted Hermes'):
+                self.assertNotIn(ids[name], visible)
+            config.unlink()
+            refreshed = self.client.get('/profiles/candidates').json()['candidates']
+            self.assertNotIn(ids['External Codex'], {c['bot_id'] for c in refreshed})
+            self.assertEqual(before, [tuple(row) for row in conn.execute('SELECT * FROM bots ORDER BY id')])
+        finally:
+            conn.close()
+
+    def test_named_codex_profiles_are_checked_at_their_registered_root(self):
+        self.croot.joinpath('config.toml').write_text('[profiles.review]\nmodel="test-model"\n')
+        self.croot.joinpath('build.config.toml').write_text('model="build-model"\n')
+        external = Path(self.tmp.name) / 'external-codex'
+        external.mkdir()
+        external.joinpath('config.toml').write_text('[profiles.editor]\nmodel="editor-model"\n')
+        conn = db.get_connection()
+        try:
+            ids = [discovery.register_bot(conn, 'codex', name, str(root))['bot_id']
+                   for name, root in [('review', self.croot), ('build', self.croot), ('editor', external)]]
+            conn.commit()
+            visible = {c['bot_id'] for c in self.client.get('/profiles/candidates').json()['candidates']}
+            self.assertTrue(set(ids) <= visible)
+            self.croot.joinpath('config.toml').write_text('model="default-model"\n')
+            self.croot.joinpath('build.config.toml').unlink()
+            external.joinpath('config.toml').write_text('model="default-model"\n')
+            visible = {c['bot_id'] for c in self.client.get('/profiles/candidates').json()['candidates']}
+            self.assertTrue(set(ids).isdisjoint(visible))
+        finally:
+            conn.close()
+
+    def test_unreadable_codex_config_does_not_abort_other_candidates(self):
+        home = self.croot / 'blocked'
+        home.mkdir()
+        target = home / 'config.toml'
+        target.write_text('model="test-model"\n')
+        read_text = Path.read_text
+        def restricted(path, *args, **kwargs):
+            if path == target:
+                raise PermissionError('Unreadable fixture')
+            return read_text(path, *args, **kwargs)
+        with patch.object(Path, 'read_text', restricted):
+            response = self.client.get('/profiles/candidates')
+        self.assertEqual(response.status_code, 200, response.text)
+        names = {c['profile'] for c in response.json()['candidates'] if c['host_type'] == 'codex'}
+        self.assertEqual(names, {'coco'})
 
     def test_register_and_reuse_bot(self):
         # 未绑定 → 注册新 Bot

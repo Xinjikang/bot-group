@@ -804,7 +804,7 @@ def get_profile_candidates(project: str = '', identity=Depends(_resolve_identity
         found = {candidate['bot_id'] for candidate in candidates if candidate['bot_id'] is not None}
         enrolled = {row['bot_id'] for row in conn.execute('SELECT bot_id FROM project_members WHERE project=?', (project,))}
         for row in conn.execute("SELECT b.*, m.profile AS member_profile FROM bots b LEFT JOIN members m ON m.bot_id=b.id WHERE b.profile!='user' ORDER BY b.id"):
-            if row['id'] in found:
+            if row['id'] in found or not discovery.candidate_available(row):
                 continue
             candidates.append({'bot_id': row['id'], 'host_type': row['host_type'], 'profile': row['profile'],
                                'config_root': row['config_root'], 'display_name': row['display_name'],
