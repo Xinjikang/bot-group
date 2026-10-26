@@ -26,11 +26,11 @@ if (-not $desktop) { $desktop = $shell.SpecialFolders.Item('Desktop') }
 if (-not $desktop -or -not (Test-Path -LiteralPath $desktop -PathType Container)) {
     throw 'Desktop directory is unavailable'
 }
-$path = Join-Path $desktop 'BOT GROUP.lnk'
+$path = Join-Path $desktop 'Bot Group.lnk'
 if (Test-Path -LiteralPath $path) {
     $existing = $shell.CreateShortcut($path)
     if ($existing.TargetPath -ne $spec.target -or $existing.Arguments -ne $spec.arguments) {
-        $path = Join-Path $desktop ('BOT GROUP (' + $spec.id + ').lnk')
+        $path = Join-Path $desktop ('Bot Group (' + $spec.id + ').lnk')
     }
 }
 if (Test-Path -LiteralPath $path) {
@@ -43,9 +43,15 @@ $link = $shell.CreateShortcut($path)
 $link.TargetPath = $spec.target
 $link.Arguments = $spec.arguments
 $link.WorkingDirectory = $spec.root
-$link.Description = 'Start BOT GROUP and open its web interface'
+$link.IconLocation = $spec.icon
+$link.Description = 'Start Bot Group and open its web interface'
 $link.WindowStyle = 7
 $link.Save()
+$name = [IO.Path]::GetFileName($path)
+$actual = Get-ChildItem -LiteralPath $desktop -File | Where-Object { $_.Name -ieq $name } | Select-Object -First 1
+if ($actual.Name -cne $name) {
+    Rename-Item -LiteralPath $actual.FullName -NewName $name
+}
 """
 
 
@@ -57,8 +63,10 @@ def ensure_shortcut(root: Path, python: Path, data_dir: Path, *, desktop: Path |
         '-X', 'utf8', '-c', _LAUNCH, str(data_dir), str(root / 'tools' / 'service.py'),
     ])
     identity = hashlib.sha256((str(root).casefold() + '\n' + str(data_dir).casefold()).encode()).hexdigest()[:8]
+    icon = root / 'frontend/assets/bot-group.ico'
     spec = {'root': str(root), 'target': str(python), 'arguments': arguments, 'id': identity,
-            'desktop': str(desktop) if desktop is not None else ''}
+            'desktop': str(desktop) if desktop is not None else '',
+            'icon': str(icon if icon.is_file() else python) + ',0'}
     executable = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
     encoded = base64.b64encode(_SCRIPT.encode('utf-16-le')).decode('ascii')
     try:
@@ -69,5 +77,5 @@ def ensure_shortcut(root: Path, python: Path, data_dir: Path, *, desktop: Path |
     except (OSError, subprocess.SubprocessError) as exc:
         print(f'[install] 桌面快捷方式创建失败，可重新安装以补建：{exc}', file=sys.stderr)
         return False
-    print('[install] 桌面快捷方式已就绪：BOT GROUP（启动服务并打开界面）')
+    print('[install] 桌面快捷方式已就绪：Bot Group（启动服务并打开界面）')
     return True

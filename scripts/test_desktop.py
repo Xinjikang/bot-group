@@ -2,6 +2,8 @@
 import base64
 import json
 import os
+import shutil
+import struct
 from pathlib import Path
 import subprocess
 import sys
@@ -9,7 +11,26 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from engine.maintenance import desktop, install
+from engine.maintenance import desktop, install, make_release
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class IconAssetTest(unittest.TestCase):
+    def test_icon_sizes_and_release_assets(self):
+        raw = (ROOT / 'frontend/assets/bot-group.ico').read_bytes()
+        reserved, kind, count = struct.unpack_from('<HHH', raw)
+        self.assertEqual((reserved, kind, count), (0, 1, 7))
+        dimensions = set()
+        for i in range(count):
+            width, height, _, _, _, _, length, offset = struct.unpack_from('<BBBBHHII', raw, 6 + i * 16)
+            dimensions.add((width or 256, height or 256))
+            self.assertLessEqual(offset + length, len(raw))
+            self.assertGreater(length, 0)
+        self.assertEqual(dimensions, {(s, s) for s in (16, 24, 32, 48, 64, 128, 256)})
+        managed = make_release._managed_files(ROOT)
+        self.assertIn('frontend/assets/bot-group.ico', managed)
+        self.assertIn('frontend/assets/bot-group-icon.png', managed)
 
 
 class InstallShortcutTest(unittest.TestCase):
@@ -55,22 +76,29 @@ class DesktopShortcutTest(unittest.TestCase):
                 'parser.parse_args()\n'
                 'pathlib.Path("probe.json").write_text(json.dumps({"argv":sys.argv[1:],"data":os.environ["GROUP_DATA_DIR"]}))\n',
                 encoding='utf-8')
-            for _ in range(2):
-                self.assertTrue(desktop.ensure_shortcut(target, Path(sys.executable), data, desktop=screen))
+            self.assertTrue(desktop.ensure_shortcut(target, Path(sys.executable), data, desktop=screen))
+            (screen / 'Bot Group.lnk').rename(screen / 'BOT GROUP.lnk')
+            icon = target / 'frontend/assets/bot-group.ico'
+            icon.parent.mkdir(parents=True)
+            shutil.copyfile(ROOT / 'frontend/assets/bot-group.ico', icon)
+            self.assertTrue(desktop.ensure_shortcut(target, Path(sys.executable), data, desktop=screen))
             links = list(screen.glob('*.lnk'))
             self.assertEqual(len(links), 1)
+            self.assertEqual(links[0].name, 'Bot Group.lnk')
             original = links[0].read_bytes()
             script = r"""
 $ErrorActionPreference = 'Stop'
 $shell = New-Object -ComObject WScript.Shell
 $link = $shell.CreateShortcut($env:TEST_LINK)
 if ($link.WorkingDirectory -ne $env:TEST_ROOT) { throw 'Working directory mismatch' }
+if ($link.IconLocation -ne ($env:TEST_ICON + ',0')) { throw 'Icon mismatch' }
 $p = Start-Process -FilePath $link.TargetPath -ArgumentList $link.Arguments -WorkingDirectory $link.WorkingDirectory -WindowStyle Hidden -Wait -PassThru
 exit $p.ExitCode
 """
             result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand',
                                      base64.b64encode(script.encode('utf-16-le')).decode()],
-                                    env={**os.environ, 'TEST_LINK': str(links[0]), 'TEST_ROOT': str(target)},
+                                    env={**os.environ, 'TEST_LINK': str(links[0]), 'TEST_ROOT': str(target),
+                                         'TEST_ICON': str(icon)},
                                     capture_output=True, timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads((target / 'probe.json').read_text()), {'argv': ['start'], 'data': str(data)})

@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+桌面图标：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_desktop -q`。验证 ICO 七种尺寸、资源被发布清单收录，以及临时桌面中已有快捷方式从默认图标更新为安装目录内 ICO，保持启动参数、自定义数据目录及多实例共存。
+
 成员识别与交接规则：复用 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_prompt_entry_points scripts.test_project_templates scripts.test_template_role_rename scripts.test_product_prototype_template scripts.test_algorithm_template scripts.test_testing_template scripts.test_project_setup_history -q`。验证 work/chat 静态提示词组成、六类模板预览与落盘、角色替换及初始化历史恢复。人工核对成员识别条款仅包含信息不足时查询和交接前取得有效 profile 与角色信息两项要求；六类模板保留职责与交接标准。上述检查覆盖规则与生成链路，模型实际调用行为另行隔离验证。
 
 启动、桌面入口与自动刷新：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_service scripts.test_desktop scripts.test_install scripts.test_service_restart scripts.test_app_upgrade scripts.test_app_upgrade_integration -q`。覆盖 BAT 冷启动、重复启动复用同一实例、健康后打开配置地址、失败/维护流程保持浏览器调用次数、实例身份与数据目录隔离、真实 Windows `.lnk` 创建/幂等/多实例及特殊字符路径。桌面验证全部使用临时目录与惰性启动替身。Chrome 回归使用 `python -X utf8 -B scripts/test_service_restart_browser.py --evidence <主目录报告目录>/restart-browser` 和 `python -X utf8 -B scripts/test_app_upgrade_browser.py --evidence <主目录报告目录>/upgrade-browser`；验证新实例门槛、刷新续查、成功自动刷新一次、失败保留页面及升级窗口 390px 深浅主题。设计见 [启动与刷新](../docs/design/2026-10-26-startup-ui.md)。

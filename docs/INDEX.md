@@ -16,6 +16,8 @@ Profile 凭证继承与异常可见性见 [设计依据](design/2026-10-25-profi
 
 启动入口、桌面快捷方式和重启/升级后的自动刷新见 [启动与刷新设计](design/2026-10-26-startup-ui.md)。
 
+桌面快捷方式的四顶点三棱锥图形、多尺寸资源与安装引用见 [桌面图标](ui-spec/DESKTOP-ICON.md)。
+
 | 文档 | 内容 |
 | --- | --- |
 | [文档目录要求](requirements/DOCUMENT-LAYOUT.md) | 分类、Git、报告与存量资料整理 |
