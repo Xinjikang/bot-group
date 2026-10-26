@@ -102,7 +102,7 @@
     submitting = true; render();
     const targetVersion = info.latest_version, generation = epoch;
     try {
-      if (!await showConfirm(`升级到 ${targetVersion}？\n系统将校验下载内容、暂停服务并备份程序与数据，然后更新并自动启动服务。Bot 收尾最多等待 120 秒；升级失败时自动恢复原版本。`)) return;
+      if (!await showConfirm(`升级到 ${targetVersion}？\n系统将校验下载内容、暂停服务并备份程序与数据，然后更新并自动启动服务、刷新界面。Bot 收尾最多等待 120 秒；升级失败时自动恢复原版本。`)) return;
       if (!allowed() || generation !== epoch) return;
       const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
       let operation = {id, target_version: targetVersion, created_at: Date.now() / 1000};
@@ -126,6 +126,7 @@
     if (!dialog.open) dialog.showModal();
     refreshButton.hidden = true; render();
     const generation = epoch, deadline = Date.now() + 30 * 60 * 1000;
+    let reloading = false;
     const progress = (message, failed = false) => {
       progressText.textContent = message; progressText.dataset.error = String(failed);
       S.restartMessage = message;
@@ -142,10 +143,12 @@
               const health = await api('/health', {cache: 'no-store', signal: AbortSignal.timeout(5000)});
               if (health.status === 'ok' && health.instance_id === receipt.new_instance_id && health.program_root === receipt.program_root && health.db_path === receipt.db_path) {
                 clear(); notice.hidden = true;
-                progress(`已升级到 ${receipt.target_version}，服务已恢复。请刷新界面加载新版本。`);
+                progress(`已升级到 ${receipt.target_version}，正在刷新界面…`);
                 refreshButton.hidden = false;
                 version = {version_label: receipt.target_version};
                 info = {status: 'ok', update_available: false};
+                reloading = true;
+                location.reload();
                 return;
               }
             } else progress(phases[receipt.phase] || '正在升级…');
@@ -158,9 +161,11 @@
       }
       if (generation === epoch && allowed()) progress('等待升级结果超时；重新打开“关于”可继续查看。服务未恢复时请检查 logs/app-upgrade.log。', true);
     } finally {
-      monitoring = false; S.upgrading = false; S.restarting = false; S.restartMessage = '';
-      restartButton.disabled = false; render();
-      if (allowed()) connectSSE();
+      if (!reloading) {
+        monitoring = false; S.upgrading = false; S.restarting = false; S.restartMessage = '';
+        restartButton.disabled = false; render();
+        if (allowed()) connectSSE();
+      }
     }
   }
   async function restoreOperation() {

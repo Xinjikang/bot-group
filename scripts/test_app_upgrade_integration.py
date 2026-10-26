@@ -79,6 +79,13 @@ class AppUpgradeIntegration(unittest.TestCase):
                    'HERMES_HOME': str(data / 'hermes'), 'RELEASE_INDEX_URL': index.as_uri(),
                    'PYTHONPATH': os.pathsep.join(site.getsitepackages()), 'PYTHONDONTWRITEBYTECODE': '1'}
             env.pop('GROUP_RESTART_INSTANCE', None)
+            env.pop('GROUP_SERVICE_MAINTENANCE', None)
+            browser_probe = workspace / 'browser_probe.py'
+            browser_calls = workspace / 'browser_calls.txt'
+            browser_probe.write_text(
+                "import pathlib,sys\npathlib.Path(__file__).with_name('browser_calls.txt').write_text(sys.argv[1])\n",
+                encoding='utf-8')
+            env['BROWSER'] = f'"{Path(sys.executable).as_posix()}" "{browser_probe.as_posix()}" %s'
             env.pop('UPGRADE_URL', None); env.pop('UPGRADE_SHA256', None)
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             with patch.dict(os.environ, env):
@@ -145,6 +152,7 @@ class AppUpgradeIntegration(unittest.TestCase):
                         self.assertEqual((root / 'tools/__init__.py').exists(),
                                          bool(previous_revision and current_version == 'v1.0.0'))
                         wait_for(lambda: not restart._pid_alive(helper_pid))
+                        self.assertFalse(browser_calls.exists(), 'Maintenance opened a browser')
                     with closing(sqlite3.connect(data / 'group.db')) as conn:
                         self.assertEqual(conn.execute('SELECT value FROM upgrade_probe').fetchone()[0], 'preserved')
                     self.assertEqual((data / 'attachments/probe.txt').read_text(), 'preserved')

@@ -18,12 +18,13 @@ def run(operation_id):
     receipt.update(state='restarting', helper_pid=os.getpid())
     restart.write_receipt(receipt)
     try:
-        # start.bat already performs install check -> stop -> start -> health.
+        # Maintenance preserves install check -> stop -> start -> health.
         command = ([os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', str(ROOT / 'start.bat')]
                    if os.name == 'nt' else [sys.executable, str(ROOT / 'tools' / 'service.py'), 'start'])
         options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
         # Detached Windows parents need explicit handles for child diagnostics.
-        result = subprocess.run(command, cwd=ROOT, stdout=sys.stdout, stderr=sys.stderr, **options)
+        env = {**os.environ, 'GROUP_SERVICE_MAINTENANCE': '1'}
+        result = subprocess.run(command, cwd=ROOT, env=env, stdout=sys.stdout, stderr=sys.stderr, **options)
         if result.returncode:
             raise RuntimeError(f'服务启动脚本退出码 {result.returncode}，请查看 service-restart.log')
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))

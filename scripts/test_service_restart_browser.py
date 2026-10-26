@@ -1,5 +1,6 @@
 """Real Chrome UI, synthetic HTTP only: ordering, receipt polling and reload."""
 import json
+import argparse
 import mimetypes
 import os
 from pathlib import Path
@@ -11,12 +12,14 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run():
-    state = {'posts': 0, 'phase': 'draining', 'health_id': 'old', 'fail': False}
+def run(evidence):
+    state = {'posts': 0, 'phase': 'draining', 'health_id': 'old', 'fail': False, 'loads': 0}
     receipt = {'id': 'operation', 'instance_id': 'old', 'program_root': 'isolated', 'db_path': 'isolated.db'}
     def route(request):
         path = urlparse(request.request.url).path
         if path.startswith('/app/'):
+            if path == '/app/':
+                state['loads'] += 1
             file = ROOT / 'frontend' / (path[5:] or 'index.html')
             if file.is_file():
                 request.fulfill(body=file.read_bytes(), content_type=mimetypes.guess_type(file.name)[0] or 'text/plain')
@@ -71,10 +74,12 @@ def run():
         state['phase'] = 'done'
         page.wait_for_timeout(1200)
         assert page.evaluate('S.restarting')  # Same old health instance cannot pass.
+        loads = state['loads']
         state['health_id'] = 'new'
-        page.wait_for_function('document.querySelector("#app-alert-message")?.textContent === "服务已重启"')
+        page.wait_for_event('load')
+        page.wait_for_function('S.isUserIdentity && !document.querySelector("#btn-restart").disabled')
+        assert state['loads'] == loads + 1
         assert page.evaluate('sessionStorage.getItem("ge_service_restart")') is None
-        page.get_by_role('button', name='确定', exact=True).click()
         assert button.is_enabled()
         state['fail'] = True
         page.locator('#btn-settings').click()
@@ -82,19 +87,21 @@ def run():
         page.get_by_role('button', name='确定', exact=True).click()
         page.wait_for_function('document.querySelector("#app-alert-message")?.textContent.includes("启动失败")')
         assert state['posts'] == 2
+        assert state['loads'] == loads + 1
         page.get_by_role('button', name='确定', exact=True).click()
-        screenshot = ROOT / 'cache' / 'service-restart-topbar.png'
-        screenshot.parent.mkdir(exist_ok=True)
+        screenshot = evidence / 'service-restart-topbar.png'
         page.locator('#topbar').screenshot(path=str(screenshot))
         page.evaluate('logout()')
         assert button.is_hidden()
         browser.close()
-    print('PASS: button order, confirmation/cancel, stop progress, reload without duplicate POST, new-instance gate, failure, login visibility')
+    print('PASS: button order, confirmation/cancel, stop progress, reload recovery, new-instance gate, automatic reload once, failure without reload, login visibility')
 
 
 if __name__ == '__main__':
-    cache = ROOT / 'cache'
-    cache.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='restart-browser-', dir=cache) as temp, \
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--evidence', type=Path, required=True)
+    args = parser.parse_args()
+    args.evidence.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='restart-browser-') as temp, \
          patch.dict(os.environ, {'TEMP': temp, 'TMP': temp}):
-        run()
+        run(args.evidence)

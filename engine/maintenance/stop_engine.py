@@ -20,7 +20,7 @@ def stop(url=None, timeout=180):
     if url is None:
         url = config.engine_url()
     parsed = urlsplit(url)
-    if parsed.scheme != 'http' or parsed.hostname not in ('127.0.0.1', 'localhost'):
+    if parsed.scheme != 'http' or parsed.hostname not in ('127.0.0.1', 'localhost', '::1'):
         raise ValueError('shutdown URL must be local HTTP')
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     headers = {}

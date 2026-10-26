@@ -40,6 +40,7 @@
     save(operation);
     progress('正在重启…');
     let failure = '';
+    let reloading = false;
     try {
       const deadline = operation.deadline || Date.now() + 300000;
       while (Date.now() < deadline) {
@@ -54,6 +55,9 @@
                   health.instance_id !== operation.instance_id &&
                   health.program_root === receipt.program_root && health.db_path === receipt.db_path) {
                 clear();
+                reloading = true;
+                progress('服务已恢复，正在刷新界面…');
+                location.reload();
                 return;
               }
             }
@@ -71,17 +75,15 @@
       failure = error.message;
       if (error.terminal) clear();
     } finally {
-      monitoring = false;
-      S.restarting = false;
-      S.restartMessage = '';
-      button.disabled = false;
-      button.textContent = '↻ 重启服务';
-      button.title = '重启服务';
-      connectSSE();
-      if (failure) showAlert(failure);
-      else {
-        await Promise.allSettled([loadMembers(), loadThreads(), loadTasks(), refreshMessages(), loadThinking()]);
-        showAlert('服务已重启');
+      if (!reloading) {
+        monitoring = false;
+        S.restarting = false;
+        S.restartMessage = '';
+        button.disabled = false;
+        button.textContent = '↻ 重启服务';
+        button.title = '重启服务';
+        connectSSE();
+        if (failure) showAlert(failure);
       }
     }
   }
@@ -90,7 +92,7 @@
     if (button.disabled || !S.isUserIdentity) return;
     button.disabled = true;
     try {
-      if (!await showConfirm('重启服务？将暂停新任务派发，等待 Bot 收尾最多 120 秒；超时后停止剩余 Bot 进程树，回收浏览器资源，再启动服务。')) return;
+      if (!await showConfirm('重启服务？将暂停新任务派发，等待 Bot 收尾最多 120 秒；超时后停止剩余 Bot 进程树，回收浏览器资源，再启动服务。服务恢复后自动刷新界面。')) return;
       let operation;
       try { operation = await request('/admin/restart', 'POST'); }
       catch (error) {

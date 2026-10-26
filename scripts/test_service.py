@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import os
+import io
+import json
 import sys
 import tempfile
 import unittest
@@ -97,6 +99,118 @@ class ServiceFlowTest(unittest.TestCase):
              mock.patch.object(service.subprocess, "run") as run:
             self.assertEqual(service.do_stop(), 1)
             run.assert_not_called()
+
+
+class LaunchTest(unittest.TestCase):
+    def setUp(self):
+        for name, value in (('_load_env', None), ('_running_instance', False),
+                            ('do_start', 0)):
+            patcher = mock.patch.object(service, name, return_value=value)
+            setattr(self, name, patcher.start())
+            self.addCleanup(patcher.stop)
+        for name, value in (('host', '127.0.0.1'), ('port', 18765)):
+            patcher = mock.patch.object(service.config, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(service.webbrowser, 'open', return_value=True)
+        self.browser = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_cold_launch_opens_configured_url_after_start(self):
+        self.do_start.side_effect = lambda: (self.browser.assert_not_called() or 0)
+        self.assertEqual(service.do_launch(), 0)
+        self.do_start.assert_called_once()
+        self.browser.assert_called_once_with('http://127.0.0.1:18765/app/')
+
+    def test_running_installation_opens_without_restart(self):
+        self._running_instance.return_value = True
+        self.assertEqual(service.do_launch(), 0)
+        self.do_start.assert_not_called()
+        self.browser.assert_called_once()
+
+    def test_failure_keeps_browser_closed(self):
+        self.do_start.return_value = 7
+        self.assertEqual(service.do_launch(), 7)
+        self.browser.assert_not_called()
+
+    def test_other_installation_is_preserved(self):
+        self._running_instance.side_effect = RuntimeError('实例不匹配')
+        self.assertEqual(service.do_launch(), 1)
+        self.do_start.assert_not_called()
+        self.browser.assert_not_called()
+
+    def test_browser_failure_preserves_running_service(self):
+        for failure in (False, OSError('no browser')):
+            with self.subTest(failure=failure):
+                self.browser.side_effect = failure if isinstance(failure, Exception) else None
+                self.browser.return_value = False
+                self.assertEqual(service.do_launch(), 0)
+
+    def test_cli_suppression_and_maintenance(self):
+        with mock.patch.dict(os.environ, {'GROUP_SERVICE_MAINTENANCE': ''}):
+            self.assertEqual(service.main(['start', '--no-browser']), 0)
+        self.browser.assert_not_called()
+        self._running_instance.reset_mock()
+        with mock.patch.dict(os.environ, {'GROUP_SERVICE_MAINTENANCE': '1'}):
+            self.assertEqual(service.main(['start']), 0)
+        self._running_instance.assert_not_called()
+        self.browser.assert_not_called()
+        self.assertEqual(service.main(['restart']), 0)
+        self.browser.assert_not_called()
+
+    def test_cli_data_directory_reaches_child_environment(self):
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict(os.environ):
+            self.assertEqual(service.main(['start', '--data-dir', folder, '--no-browser']), 0)
+            self.assertEqual(os.environ['GROUP_DATA_DIR'], str(Path(folder).resolve()))
+
+
+class InstanceProbeTest(unittest.TestCase):
+    def test_legacy_maintenance_requires_matching_parent_and_installation(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.dict(os.environ, {'GROUP_SERVICE_MAINTENANCE': '', 'GROUP_RESTART_INSTANCE': ''}), \
+             mock.patch.object(service.config, 'logs_dir', return_value=Path(folder)):
+            path = Path(folder) / 'app-upgrade.json'
+            receipt = {'state': 'running', 'helper_pid': os.getppid(),
+                       'program_root': str(service.config.program_root().resolve()),
+                       'db_path': str(Path(service.config.db_path()).resolve())}
+            self.assertFalse(service._maintenance_start())
+            path.write_text(json.dumps(receipt), encoding='utf-8')
+            self.assertTrue(service._maintenance_start())
+            for key, value in (('state', 'succeeded'), ('helper_pid', -1),
+                               ('program_root', 'another-installation'), ('db_path', 'another-db')):
+                with self.subTest(key=key):
+                    path.write_text(json.dumps({**receipt, key: value}), encoding='utf-8')
+                    self.assertFalse(service._maintenance_start())
+            with mock.patch.dict(os.environ, {'GROUP_RESTART_INSTANCE': 'old-instance'}):
+                self.assertTrue(service._maintenance_start())
+
+    def test_authenticated_identity_and_path_match(self):
+        from engine import auth
+        root = Path(tempfile.gettempdir()) / 'program'
+        database = root / 'data/group.db'
+        health = {'status': 'ok', 'instance_id': 'current', 'program_root': str(root), 'db_path': str(database)}
+        with mock.patch.object(service.config, 'program_root', return_value=root), \
+             mock.patch.object(service.config, 'db_path', return_value=str(database)), \
+             mock.patch.object(auth, 'configured', return_value=True), \
+             mock.patch.object(auth, '_password', return_value='isolated'), \
+             mock.patch.object(auth, 'login', return_value={'token': 'test-token'}), \
+             mock.patch.object(service.urllib.request, 'build_opener') as factory:
+            opener = factory.return_value
+            opener.open.return_value = io.StringIO(json.dumps(health))
+            self.assertTrue(service._running_instance('0.0.0.0', 18765))
+            request = opener.open.call_args.args[0]
+            self.assertEqual(request.full_url, 'http://127.0.0.1:18765/health')
+            self.assertEqual(request.headers['Authorization'], 'Bearer test-token')
+            for key in ('program_root', 'db_path', 'instance_id'):
+                with self.subTest(key=key):
+                    opener.open.return_value = io.StringIO(json.dumps({**health, key: ''}))
+                    with self.assertRaises(RuntimeError):
+                        service._running_instance('127.0.0.1', 18765)
+
+    def test_local_browser_url(self):
+        self.assertEqual(service._local_url('0.0.0.0', 8123), 'http://127.0.0.1:8123')
+        self.assertEqual(service._local_url('::', 8123), 'http://[::1]:8123')
+        self.assertEqual(service._local_url('localhost', 8123), 'http://localhost:8123')
 
 
 if __name__ == "__main__":

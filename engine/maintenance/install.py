@@ -254,6 +254,8 @@ def do_install(rebuild: bool = False, base_python: str | None = None) -> int:
         print("[install] 自检通过")
         write_state()
         print(f"[install] 就绪状态：{state_path()}（venv Python {venv_python_version()}）")
+        from engine.maintenance.desktop import ensure_shortcut
+        ensure_shortcut(PROGRAM_ROOT, venv_python(), config.data_dir())
         return 0
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         print(f"[install] 失败，保持未就绪：{exc}", file=sys.stderr)

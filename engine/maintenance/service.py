@@ -1,12 +1,10 @@
-"""req#122 task#213 service：原生启停入口（Python 标准库，不依赖 Git Bash）。
+"""Native service entry using the Python standard library.
 
-start/stop 子命令：
-  start  就绪检查(install.py check) -> 数据目录解析 -> .env 导入(统一 dotenv 剥引号/CR，环境优先)
-         -> 旧引擎优雅退出 -> 启动(start_engine.py 后台) -> 健康检查
-  stop   数据目录解析 -> .env 导入 -> 优雅停止(stop_engine.py)
-
-.env 导入复用 engine/config.py 的 _parse_dotenv（strip 掉 CR/空白、剥单双引号、去 export 前缀、
-跳注释），只把进程环境未定义的键导入 os.environ，保留「环境 > .env」优先级（不覆盖用户已 export 的键）。
+start reuses a healthy matching instance or starts it, then opens the UI.
+restart checks readiness, drains the old instance, starts and verifies its replacement.
+stop drains the matching instance. Maintenance helpers select restart semantics
+through GROUP_SERVICE_MAINTENANCE so older rollback targets keep accepting start.
+Dotenv loading preserves explicit environment values.
 """
 
 from __future__ import annotations
@@ -19,6 +17,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import webbrowser
 from pathlib import Path
 
 PROGRAM_ROOT = Path(__file__).resolve().parents[2]
@@ -45,16 +44,65 @@ def _run_install_check() -> int:
     ).returncode
 
 
-def _health_check(host: str, port: int) -> int:
-    url = f"http://{host}:{port}/health"
+def _local_url(host: str, port: int) -> str:
+    host = {'0.0.0.0': '127.0.0.1', '::': '::1'}.get(host, host)
+    if ':' in host and not host.startswith('['):
+        host = f'[{host}]'
+    return f'http://{host}:{port}'
+
+
+def _running_instance(host: str, port: int) -> bool:
+    from engine import auth
+    headers = {}
+    if auth.configured():
+        headers['Authorization'] = 'Bearer ' + auth.login(auth._password())['token']
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    request = urllib.request.Request(_local_url(host, port) + '/health', headers=headers)
+    try:
+        with opener.open(request, timeout=2) as response:
+            health = json.load(response)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(health, dict) or health.get('status') != 'ok' or not health.get('instance_id'):
+        raise RuntimeError('端口上的服务身份无法确认，请检查配置和服务日志')
+    for key, expected in (('program_root', config.program_root()), ('db_path', config.db_path())):
+        actual = health.get(key)
+        if not isinstance(actual, str) or not actual or Path(actual).resolve() != Path(expected).resolve():
+            raise RuntimeError(f'运行实例的 {key} 与当前安装不匹配，请检查端口和数据目录')
+    return True
+
+
+def do_launch(*, open_browser: bool = True) -> int:
+    """Reuse the same healthy installation, or start it, then open its UI."""
+    _load_env()
+    host, port = config.host(), config.port()
+    try:
+        running = _running_instance(host, port)
+    except RuntimeError as exc:
+        print(f'[start-engine] {exc}', file=sys.stderr)
+        return 1
+    if not running:
+        result = do_start()
+        if result:
+            return result
+    url = _local_url(host, port) + '/app/'
+    print(f'[start-engine] 界面地址：{url}')
+    if open_browser:
+        try:
+            if not webbrowser.open(url):
+                print(f'[start-engine] 浏览器打开失败，请访问 {url}', file=sys.stderr)
+        except (OSError, webbrowser.Error) as exc:
+            print(f'[start-engine] 浏览器打开失败：{exc}；请访问 {url}', file=sys.stderr)
+    return 0
+
+
+def _health_check(host: str, port: int) -> int:
     for _ in range(15):
         try:
-            with opener.open(url, timeout=1) as response:
-                if json.load(response).get("status") == "ok":
-                    print("[start-engine] 引擎健康检查通过")
-                    return 0
-        except (OSError, ValueError):
+            if _running_instance(host, port):
+                print("[start-engine] 引擎健康检查通过")
+                return 0
+        except (OSError, ValueError, RuntimeError):
             pass
         time.sleep(1)
     print("[start-engine] 启动失败，请检查日志", file=sys.stderr)
@@ -90,22 +138,49 @@ def do_stop() -> int:
     # spawn 转发」用的存量覆盖，从网关会话里跑 service stop 时会继承 XDG 变量指向
     # 别的实例（如生产 8180）——管理命令明确拒绝这种静默偏移，宁可失败也不打错引擎。
     expected = (config.host(), config.port())
-    actual = urllib.parse.urlsplit(config.engine_url())
-    if (actual.hostname or "") != expected[0] or actual.port != expected[1]:
+    configured_url = config.engine_url()
+    default_url = f'http://{expected[0]}:{expected[1]}'
+    actual = urllib.parse.urlsplit(_local_url(*expected) if configured_url == default_url else configured_url)
+    expected_host = urllib.parse.urlsplit(_local_url(*expected)).hostname
+    if (actual.hostname or "") != expected_host or actual.port != expected[1]:
         print(f"[stop-engine] 停机目标不一致：engine_url={config.engine_url()} "
               f"与 host/port={expected[0]}:{expected[1]} 不符"
               f"（检查 GROUP_ENGINE_URL/XDG_GROUP_ENGINE_URL 环境变量），拒绝执行", file=sys.stderr)
         return 1
     return subprocess.run(
-        [str(venv_python()), "-X", "utf8", str(PROGRAM_ROOT / "tools" / "stop_engine.py")]
+        [str(venv_python()), "-X", "utf8", str(PROGRAM_ROOT / "tools" / "stop_engine.py"),
+         '--url', _local_url(*expected)]
     ).returncode
+
+
+def _maintenance_start() -> bool:
+    if os.environ.get('GROUP_SERVICE_MAINTENANCE') == '1' or os.environ.get('GROUP_RESTART_INSTANCE'):
+        return True
+    # Earlier upgrade helpers call start without a flag. Their receipt identifies
+    # the direct parent, so a concurrent manual launcher keeps its own semantics.
+    try:
+        receipt = json.loads((config.logs_dir() / 'app-upgrade.json').read_text(encoding='utf-8'))
+        return (isinstance(receipt, dict) and receipt.get('state') == 'running'
+                and receipt.get('helper_pid') == os.getppid()
+                and receipt.get('program_root') == str(config.program_root().resolve())
+                and receipt.get('db_path') == str(Path(config.db_path()).resolve()))
+    except (OSError, ValueError):
+        return False
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["start", "stop"])
+    parser.add_argument("command", choices=["start", "stop", "restart"])
+    parser.add_argument('--data-dir', type=Path, help='实例数据目录')
+    parser.add_argument('--no-browser', action='store_true', help='启动后跳过打开界面')
     args = parser.parse_args(argv)
+    if args.data_dir is not None:
+        os.environ['GROUP_DATA_DIR'] = str(args.data_dir.resolve())
     if args.command == "start":
+        if _maintenance_start():
+            return do_start()
+        return do_launch(open_browser=not args.no_browser)
+    if args.command == "restart":
         return do_start()
     return do_stop()
 

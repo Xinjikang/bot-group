@@ -18,7 +18,8 @@ def start_and_verify(receipt):
     if not service.exists():
         service = root / 'scripts/service.py'
     options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
-    result = subprocess.run([sys.executable, '-X', 'utf8', str(service), 'start'], cwd=root, **options)
+    env = {**os.environ, 'GROUP_SERVICE_MAINTENANCE': '1'}
+    result = subprocess.run([sys.executable, '-X', 'utf8', str(service), 'start'], cwd=root, env=env, **options)
     if result.returncode:
         raise RuntimeError('服务启动失败，请查看 logs/app-upgrade.log 并运行 start.bat 恢复服务。')
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))

@@ -33,6 +33,7 @@ def main() -> None:
     # 启动日志落数据目录（req#122 程序/数据分离，与引擎日志同目录）
     env = dict(os.environ)
     env.pop('GROUP_RESTART_INSTANCE', None)
+    env.pop('GROUP_SERVICE_MAINTENANCE', None)
     pid = start_detached(
         [str(executable), "-m", "engine.main"], root,
         config.logs_dir() / "engine-startup.log", env=env,

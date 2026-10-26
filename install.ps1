@@ -113,7 +113,7 @@ function Install-BotGroup {
         Write-Host "Start:   $target\start.bat"
         Write-Host "Stop:    $target\stop.bat"
         Write-Host "Upgrade: $target\upgrade.bat"
-        Write-Host 'Open after starting: http://127.0.0.1:8180/app/'
+        Write-Host 'Start opens the web interface in your default browser after the service is ready.'
     } finally {
         foreach ($key in $savedEnvironment.Keys) {
             [Environment]::SetEnvironmentVariable($key, $savedEnvironment[$key], 'Process')

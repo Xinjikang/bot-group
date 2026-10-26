@@ -152,6 +152,13 @@ class RestartIntegration(unittest.TestCase):
                    'PYTHONPATH': os.pathsep.join(site.getsitepackages()),
                    'PATH': str(venv / 'Scripts') + os.pathsep + os.environ['PATH']}
             env.pop('GROUP_RESTART_INSTANCE', None)
+            env.pop('GROUP_SERVICE_MAINTENANCE', None)
+            browser_probe = root / 'browser_probe.py'
+            browser_calls = root / 'browser_calls.txt'
+            browser_probe.write_text(
+                "import pathlib,sys\nwith pathlib.Path(__file__).with_name('browser_calls.txt').open('a') as f:\n"
+                "    f.write(sys.argv[1] + '\\n')\n", encoding='utf-8')
+            env['BROWSER'] = f'"{Path(sys.executable).as_posix()}" "{browser_probe.as_posix()}" %s'
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             def request(path, method='GET'):
                 headers = {}
@@ -174,12 +181,20 @@ class RestartIntegration(unittest.TestCase):
             with patch.dict(os.environ, env):
                 token = auth.login('test')['token']
                 with (root / 'initial.log').open('wb') as log:
-                    initial = subprocess.Popen([str(venv / 'Scripts' / 'python.exe'), '-B', '-m', 'engine.main'],
+                    initial = subprocess.Popen([os.environ['COMSPEC'], '/d', '/c', str(root / 'start.bat')],
                                                cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT,
                                                creationflags=subprocess.CREATE_NO_WINDOW)
                     try:
                         health = wait_for(lambda: request('/health'))
                         self.assertEqual(Path(health['db_path']), data / 'group.db')
+                        wait_for(lambda: browser_calls.exists())
+                        self.assertEqual(initial.wait(timeout=10), 0)
+                        second = subprocess.run([os.environ['COMSPEC'], '/d', '/c', str(root / 'start.bat')],
+                                                cwd=root, env=env, capture_output=True, timeout=15,
+                                                creationflags=subprocess.CREATE_NO_WINDOW)
+                        self.assertEqual(second.returncode, 0, (second.stdout, second.stderr))
+                        self.assertEqual(request('/health')['instance_id'], health['instance_id'])
+                        self.assertEqual(browser_calls.read_text().splitlines(), [url + '/app/'] * 2)
                         import sqlite3
                         with closing(sqlite3.connect(data / 'group.db')) as conn, conn:
                             conn.execute('CREATE TABLE restart_probe(value TEXT)')
@@ -215,6 +230,7 @@ class RestartIntegration(unittest.TestCase):
                             wait_for(lambda: not restart._pid_alive(receipt['helper_pid']))
                         with closing(sqlite3.connect(data / 'group.db')) as conn:
                             self.assertEqual(conn.execute('SELECT value FROM restart_probe').fetchone()[0], 'preserved')
+                        self.assertEqual(browser_calls.read_text().splitlines(), [url + '/app/'] * 2)
                     finally:
                         # Only this fixture's port and copied instance are targeted.
                         try:

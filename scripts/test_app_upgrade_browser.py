@@ -9,13 +9,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(evidence):
-    state = {'checks': 0, 'posts': 0, 'receipt': {}, 'fail_check': False, 'lost_response': False}
+    state = {'checks': 0, 'posts': 0, 'receipt': {}, 'fail_check': False, 'lost_response': False,
+             'loads': 0, 'health_id': 'old'}
     update = {'status': 'ok', 'current_version': 'v1.0.0', 'version_label': 'v1.0.0',
               'latest_version': 'v1.1.0', 'update_available': True, 'can_upgrade': True}
     errors = []
     def route(req):
         path = urlparse(req.request.url).path
         if path.startswith('/app/'):
+            if path == '/app/':
+                state['loads'] += 1
             file = ROOT / 'frontend' / (path[5:] or 'index.html')
             req.fulfill(body=file.read_bytes(), content_type=mimetypes.guess_type(file.name)[0] or 'text/plain')
             return
@@ -26,7 +29,7 @@ def run(evidence):
             state['checks'] += 1
             data = {'status': 'unavailable'} if state['fail_check'] else update
         elif path == '/system/version':
-            data = {'version_label': 'v1.0.0'}
+            data = {'version_label': update['version_label']}
         elif path == '/system/upgrade':
             if req.request.method == 'POST':
                 state['posts'] += 1
@@ -39,7 +42,7 @@ def run(evidence):
                     return
             data = state['receipt']
         elif path == '/health':
-            data = {'status': 'ok', 'instance_id': 'new', 'program_root': 'isolated', 'db_path': 'isolated.db'}
+            data = {'status': 'ok', 'instance_id': state['health_id'], 'program_root': 'isolated', 'db_path': 'isolated.db'}
         elif path == '/appearance/background':
             req.fulfill(status=204)
             return
@@ -105,10 +108,20 @@ def run(evidence):
         page.get_by_role('button', name='确定', exact=True).click()
         page.wait_for_function('document.querySelector("#app-upgrade-progress").textContent.includes("下载")')
         state['receipt']['state'] = 'succeeded'
-        page.locator('#app-upgrade-refresh').wait_for(state='visible')
-        assert '已升级到 v1.1.0' in page.locator('#app-upgrade-progress').inner_text()
-        assert 'v1.1.0' in page.locator('#app-about-version').inner_text()
+        loads = state['loads']
+        page.wait_for_timeout(1700)
+        assert state['loads'] == loads
+        assert page.evaluate('S.upgrading')
+        update.update(version_label='v1.1.0', current_version='v1.1.0', update_available=False)
+        state['health_id'] = 'new'
+        page.wait_for_event('load')
+        page.wait_for_function('S.isUserIdentity && !document.querySelector("#btn-restart").disabled')
+        assert state['loads'] == loads + 1
+        assert page.evaluate('sessionStorage.getItem("ge_app_upgrade")') is None
         assert state['posts'] == 2
+        page.locator('#btn-settings').click()
+        page.locator('#btn-about').click()
+        page.wait_for_function('document.querySelector("#app-about-version").textContent.includes("v1.1.0")')
         page.screenshot(path=str(evidence / 'upgrade-complete-390.png'))
         assert not errors, errors
         browser.close()
