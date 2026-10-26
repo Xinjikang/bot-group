@@ -26,7 +26,7 @@
 
   function progress(message) {
     S.restartMessage = message;
-    button.textContent = '↻ 重启中';
+    button.querySelector('.settings-label').textContent = '重启中';
     button.title = message;
     setConn('connecting', message);
   }
@@ -80,7 +80,7 @@
         S.restarting = false;
         S.restartMessage = '';
         button.disabled = false;
-        button.textContent = '↻ 重启服务';
+        button.querySelector('.settings-label').textContent = '重启服务';
         button.title = '重启服务';
         connectSSE();
         if (failure) showAlert(failure);

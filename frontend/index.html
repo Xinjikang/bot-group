@@ -724,7 +724,11 @@ dialog .primary{border:1px solid var(--accent);letter-spacing:2px;color:var(--ac
 #app-update-notice{color:var(--accent-2);max-width:140px;overflow:hidden;text-overflow:ellipsis}
 #topbar-user-name{max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
 #app-settings-menu{position:absolute;right:0;top:calc(100% + 8px);z-index:1500;width:190px;max-width:calc(100vw - 24px);padding:6px;border:1px solid var(--border);border-radius:12px;background:var(--card);box-shadow:0 8px 28px rgba(0,0,0,.3)}
-#app-settings-menu button{display:block;width:100%;text-align:left;border:0;border-radius:6px;padding:10px;background:transparent;color:var(--fg);cursor:pointer;font-size:13px}
+#app-settings-menu button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:0;border-radius:6px;padding:10px;background:transparent;color:var(--fg);cursor:pointer;font-size:13px}
+#app-settings-menu .settings-icon{width:16px;height:16px;flex:0 0 16px;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+#app-settings-menu .theme-moon{display:none}
+html[data-theme="light"] #app-settings-menu .theme-sun{display:none}
+html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 #app-settings-menu button[hidden]{display:none}
 #app-settings-menu button:hover{background:var(--hover)}
 #app-settings-menu button:focus-visible,#btn-settings:focus-visible,#app-update-notice:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
@@ -869,11 +873,11 @@ dialog .primary{border:1px solid var(--accent);letter-spacing:2px;color:var(--ac
       <div id="app-settings">
       <button id="btn-settings" type="button" aria-expanded="false" aria-controls="app-settings-menu">⚙ 设置</button>
       <div id="app-settings-menu" hidden>
-      <button id="btn-user-name" type="button" title="我的称呼" aria-haspopup="dialog" hidden>我的称呼</button>
-      <button id="btn-background" type="button" title="更换舷窗背景" aria-label="更换舷窗背景">背景</button>
-      <button id="btn-theme-top" title="切换深色 / 浅色">🌙</button>
-      <button id="btn-restart" type="button" title="重启服务" aria-label="重启服务" hidden>↻ 重启服务</button>
-      <button id="btn-about" type="button" aria-haspopup="dialog" hidden>关于</button>
+      <button id="btn-user-name" type="button" title="我的称呼" aria-haspopup="dialog" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span>我的称呼</span></button>
+      <button id="btn-background" type="button" title="更换舷窗背景" aria-label="更换舷窗背景"><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 5-5 4 4 4-6 5 7"/></svg><span>背景</span></button>
+      <button id="btn-theme-top" type="button" title="切换深色 / 浅色"><svg class="settings-icon theme-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg><svg class="settings-icon theme-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/></svg><span class="settings-label">切换浅色</span></button>
+      <button id="btn-restart" type="button" title="重启服务" aria-label="重启服务" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2.3 5.7"/></svg><span class="settings-label">重启服务</span></button>
+      <button id="btn-about" type="button" aria-haspopup="dialog" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></svg><span>关于</span></button>
       </div>
       </div>
       <span id="conn" data-state="connecting" role="status"><span class="dot"></span><span id="conn-text">连接中…</span></span>
@@ -4563,7 +4567,7 @@ async function stopBot(profile, project, threadId = null) {
 const themeBtn = $("#btn-theme-top");
 function applyTheme(t) {
   document.documentElement.dataset.theme = t;
-  themeBtn.textContent = t === "dark" ? "☀️ 切换浅色" : "🌙 切换深色";
+  themeBtn.querySelector('.settings-label').textContent = t === "dark" ? "切换浅色" : "切换深色";
 }
 applyTheme(localStorage.getItem("ge_theme") || "dark");
 themeBtn.addEventListener("click", () => {
@@ -4595,7 +4599,7 @@ themeBtn.addEventListener("click", () => {
 </script>
 <script src="/app/ui_presence.js?v=20261026"></script>
 <script src="/app/message_navigation.js?v=20261016-read-persistence"></script>
-<script src="/app/service_restart.js?v=20261026-auto-refresh"></script>
+<script src="/app/service_restart.js?v=20261026-settings-icons"></script>
 <script src="/app/app_settings.js?v=20261026-auto-refresh"></script>
 <script src="/app/background_settings.js?v=20261023-settings-anchor"></script>
 <script src="/app/directory_picker.js?v=20261011"></script>

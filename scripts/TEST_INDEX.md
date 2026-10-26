@@ -169,7 +169,7 @@ MCP 独立入口：`test_mcp_handshake.py`、`test_mcp_e2e.py`、`test_mcp_messa
 
 测试支持模块：`project_test_support.py`、`background_test_support.py`、`unified_test_support.py`。它们供测试导入，维护时同步检查相关调用方。
 
-`test_background_storage_browser.py` 同时检查设置菜单收起后，背景弹窗在加载、上传和恢复默认完成时保持位于右侧设置按钮下方。
+`test_background_storage_browser.py` 同时检查设置菜单收起后，背景弹窗在加载、上传和恢复默认完成时保持位于右侧设置按钮下方。设置菜单图标调整后，复用 `test_app_settings_browser.py` 与 `test_service_restart_browser.py`，检查桌面和 390px 深浅主题截图：每项图标 16px、文字间距 10px，主题图标跟随切换，重启中及失败恢复后图标保留，键盘与禁用状态可辨识。
 
 ## 维护
 
