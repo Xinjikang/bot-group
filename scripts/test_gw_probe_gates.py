@@ -726,6 +726,51 @@ class StopOwnershipTest(unittest.TestCase):
         self.assertEqual(rec["verdict"], "unknown")
         self.assertIsNone(rec["gateway_state"])
 
+    def test_foreign_when_inbound_precedes_start(self):
+        # 窗口内出现早于 start_time（超出 5s 时钟容差）的 inbound：日志与本实例不一致
+        (self.home / "logs" / "gateway.log").write_text(
+            "2026-10-27 22:18:07,000 INFO gateway.run: Auto-started gateway: new\n"
+            "2026-10-27 22:17:36,000 INFO gateway.run: inbound message: platform=local\n",
+            encoding="utf-8")
+        self._pid_file()
+        rec = gw_probe.stop_ownership()
+        self.assertEqual(rec["verdict"], "foreign")
+        self.assertIs(rec["log_covers_instance"], False)
+        self.assertIn("last_inbound", rec["log_reason"])
+        self.assertLess(rec["log_start_deltas_s"]["last_inbound"], -5)
+
+    def test_foreign_when_shutdown_precedes_start(self):
+        (self.home / "logs" / "gateway.log").write_text(
+            "2026-10-27 22:18:07,000 INFO gateway.run: Auto-started gateway: new\n"
+            "2026-10-27 22:17:40,000 INFO gateway.run: Gateway stopped (total teardown 1.1s)\n",
+            encoding="utf-8")
+        self._pid_file()
+        rec = gw_probe.stop_ownership()
+        self.assertEqual(rec["verdict"], "foreign")
+        self.assertIn("last_shutdown", rec["log_reason"])
+
+    def test_owned_when_event_within_clock_tolerance(self):
+        # 早于 start_time 但在 5s 容差内（时钟偏差），仍判 owned
+        (self.home / "logs" / "gateway.log").write_text(
+            "2026-10-27 22:18:07,000 INFO gateway.run: Auto-started gateway: new\n"
+            "2026-10-27 22:18:03,000 INFO gateway.run: inbound message: platform=local\n",
+            encoding="utf-8")
+        self._pid_file()
+        rec = gw_probe.stop_ownership()
+        self.assertEqual(rec["verdict"], "owned", rec.get("reason"))
+        self.assertGreater(rec["log_start_deltas_s"]["last_inbound"], -5)
+
+    def test_unknown_when_instance_start_time_invalid(self):
+        # start_time 无法解析：不得静默退回全局窗口
+        self._pid_file()
+        orig = gw_probe.log_instance_window
+        gw_probe.log_instance_window = lambda since=None: {
+            "exists": True, "readable": True, "since_invalid": True, "since": "not-a-date"}
+        self.addCleanup(lambda: setattr(gw_probe, "log_instance_window", orig))
+        rec = gw_probe.stop_ownership()
+        self.assertEqual(rec["verdict"], "unknown")
+        self.assertIn("invalid instance start_time", rec["log_reason"])
+
     def test_unknown_when_log_missing(self):
         (self.home / "logs" / "gateway.log").unlink()
         self._pid_file()
@@ -769,6 +814,13 @@ class LogInstanceWindowTest(unittest.TestCase):
         self.assertEqual(rec["last_inbound"], "2026-10-27 21:00:05")
         self.assertEqual(rec["last_shutdown"], "2026-10-27 21:30:00")
         self.assertNotIn("since", rec)
+
+    def test_invalid_since_returns_flag(self):
+        # start_time 非法：显式标记，不静默退回全局窗口
+        rec = gw_probe.log_instance_window("not-a-date")
+        self.assertTrue(rec["since_invalid"])
+        self.assertEqual(rec["since"], "not-a-date")
+        self.assertNotIn("auto_started", rec)
 
     def test_missing_log_reports_absent(self):
         (self.home / "logs" / "gateway.log").unlink()

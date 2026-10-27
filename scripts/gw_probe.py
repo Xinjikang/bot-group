@@ -442,14 +442,21 @@ def _win32_process(pid: int) -> dict:
 
 
 _LOG_TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+# 过滤余量：早于实例 start_time 超过该值的日志事件属上一实例，不参与本实例判定
+_LOG_WINDOW_MARGIN_S = 60.0
+# 判定容差：窗口内事件允许的时钟偏差，超出即与本实例不一致（判 foreign）
+_LOG_CLOCK_TOLERANCE_S = 5.0
 
 
 def log_instance_window(since: str | None = None) -> dict:
     """网关日志中的实例事件时间点（Auto-started / inbound / 停止）。
 
-    `since` 传本实例 start_time（ISO UTC）时只统计该时刻之后的事件（留 60s 时钟容差）。
+    `since` 传本实例 start_time（ISO UTC）时只统计该时刻之后的事件（留过滤余量）。
     不按实例过滤会把上一实例遗留的 inbound 当成本实例最后一条，delta 变成大负数，
     使 owned 被误判 foreign；刚启动尚未产生 inbound 的实例同样会踩到。
+
+    `since` 无法解析时返回 `since_invalid`，由调用方按 unknown 处理——静默退回全局窗口
+    会让上一实例的事件混进本实例判定。
     """
     log_file = HERMES_HOME / "logs" / "gateway.log"
     if not log_file.exists():
@@ -461,12 +468,13 @@ def log_instance_window(since: str | None = None) -> dict:
     since_dt = None
     if since:
         try:
-            since_dt = (datetime.fromisoformat(since.replace("Z", "+00:00"))
-                        - timedelta(seconds=60))
+            since_dt = (datetime.fromisoformat(str(since).replace("Z", "+00:00"))
+                        - timedelta(seconds=_LOG_WINDOW_MARGIN_S))
         except ValueError:
-            since_dt = None
+            return {"exists": True, "readable": True, "since_invalid": True, "since": str(since)}
     started = inbound = shutdown = None
     skipped = 0
+    unparsable = 0
     for ln in lines:
         m = _LOG_TS.match(ln)
         if not m:
@@ -478,6 +486,7 @@ def log_instance_window(since: str | None = None) -> dict:
                     skipped += 1
                     continue
             except ValueError:
+                unparsable += 1
                 continue
         low = ln.lower()
         if "auto-started gateway" in low:
@@ -491,6 +500,7 @@ def log_instance_window(since: str | None = None) -> dict:
     if since_dt is not None:
         out["since"] = since
         out["events_before_since"] = skipped
+        out["unparsable_events"] = unparsable
     return out
 
 
@@ -507,8 +517,9 @@ def stop_ownership() -> dict:
       foreign  明确不一致（home/入口/启动时间/日志事件早于实例启动）→ 保留实例，不 stop
       unknown  字段缺失、解析或查询失败、日志不足以证明本实例 → 不 stop（fail-closed）
 
-    日志窗口以本实例 start_time 为界（容差 60s）只取之后的事件：必须存在 Auto-started，
-    且 inbound/停止事件都不得早于 start_time；日志缺失或不覆盖按 unknown 处理。
+    日志窗口以本实例 start_time 为界只取之后的事件（过滤余量 60s）：必须存在 Auto-started；
+    窗口内 inbound/停止事件早于 start_time 超过时钟容差（5s）或时间戳不可解析，说明日志与本
+    实例不一致，判 foreign；日志缺失、start_time 非法或无本实例 Auto-started 按 unknown。
     """
     pid_file = HERMES_HOME / "gateway.pid"
     rec: dict = {"pid_file": str(pid_file), "expected_home": str(HERMES_HOME)}
@@ -561,11 +572,14 @@ def stop_ownership() -> dict:
     rec["gateway_log"] = loginfo
 
     # 日志窗口必须以本实例 start_time 为界：Auto-started 必须在窗口内（证明日志里有这次启动），
-    # inbound / 停止事件也参与判定，任一早于 start_time 说明日志不属于本实例。
+    # inbound / 停止事件也参与判定；窗口内事件早于 start_time 超出时钟容差，或时间戳无法解析，
+    # 说明日志内容与本实例不一致 → foreign（与 description 的归属口径一致）。
     log_ok = None
     log_reason = None
     if loginfo.get("exists") is False:
         log_reason = "gateway.log missing"
+    elif loginfo.get("since_invalid"):
+        log_reason = f"invalid instance start_time: {loginfo.get('since')}"
     elif not loginfo.get("readable"):
         log_reason = "gateway.log unreadable"
     elif not pid_start:
@@ -576,6 +590,8 @@ def stop_ownership() -> dict:
         start_dt = datetime.fromisoformat(str(pid_start).replace("Z", "+00:00"))
         deltas: dict = {}
         outside = []
+        if loginfo.get("unparsable_events"):
+            outside.append(f"unparsable={loginfo['unparsable_events']}")
         for key in ("auto_started", "last_inbound", "last_shutdown"):
             val = loginfo.get(key)
             if not val:
@@ -586,11 +602,12 @@ def stop_ownership() -> dict:
                 outside.append(key)
                 continue
             deltas[key] = round((t - start_dt).total_seconds(), 3)
-            if deltas[key] < -60:
+            if deltas[key] < -_LOG_CLOCK_TOLERANCE_S:
                 outside.append(key)
         rec["log_start_deltas_s"] = deltas
         if outside:
-            log_reason = f"log events outside instance window: {','.join(outside)}"
+            log_ok = False
+            log_reason = f"log events inconsistent with instance start: {','.join(outside)}"
         else:
             log_ok = True
     rec["log_covers_instance"] = log_ok
@@ -598,8 +615,10 @@ def stop_ownership() -> dict:
         rec["log_reason"] = log_reason
 
     verdict = alignment.get("verdict")
-    if verdict == "mismatched":
-        rec.update({"verdict": "foreign", "reason": "three-way ownership mismatch"})
+    if verdict == "mismatched" or log_ok is False:
+        rec.update({"verdict": "foreign",
+                    "reason": "three-way ownership mismatch" if verdict == "mismatched"
+                    else f"log does not belong to this instance ({log_reason})"})
     elif verdict == "aligned" and log_ok is True:
         rec.update({"verdict": "owned",
                     "reason": "three-way aligned and log window covers this instance"})
