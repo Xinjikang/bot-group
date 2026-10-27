@@ -8,13 +8,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 def fixture_response(bot, context):
+    latest=(context.get('history') or [{}])[-1].get('text','')
+    if '怎么更换维护助手' in latest:
+        return {'text':'可以直接在 HUD 里更换，当前项目的维护记录会保留。','guide':{
+            'title':'更换维护助手','steps':[
+                {'title':'打开设置','body':'点击右上角的更多按钮，再选择“设置”。'},
+                {'title':'选择维护 AI','body':'从已有 Bot 中选择一个，可以与项目负责人相同。'},
+                {'title':'保存并开始维护','body':'确认选择后点击“保存并开始维护”，由新的助手继续维护当前项目。'}]}}
     decisions = context.get('decisions', [])
     if decisions and not context.get('facts'):
-        return {'text': '本地交互验证：已记录回答，请确认资料登记建议。', 'proposal': {
+        return {'text': '我把你的回答整理成了资料登记建议，请确认。', 'proposal': {
             'changes': {}, 'facts': [{'label': '需求资料来源', 'value': decisions[-1]['answer']}]}}
     if context.get('facts'):
-        return {'text': '本地交互验证：资料已确认并保存。可以继续补充项目配置。'}
-    return {'text': '本地交互验证：当前项目需要确认输入资料。', 'question': {
+        return {'text': '资料约定已经保存。接下来想完善哪一部分？'}
+    return {'text': '我们先把需求资料准备好，再确定下一步。', 'question': {
         'title': '这次项目的需求资料准备到哪一步了？',
         'reason': '确认资料来源后，才能把目录用途和后续准备工作整理清楚。你也可以直接输入自己的情况。',
         'options': ['已有完整文档，直接登记位置（推荐）', '资料分散，需要先整理', '还没有资料，先讨论项目目标']}}

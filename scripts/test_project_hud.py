@@ -142,6 +142,23 @@ class HudTests(unittest.TestCase):
             context=hud.context(conn,saved)
         self.assertEqual(context['history'][-1]['text'],'我们调整为原型项目')
 
+    def test_usage_guide_persists_without_creating_a_decision(self):
+        item=self.session()
+        guide={'title':'登记需求资料','steps':[{'title':'确认来源','body':'说明资料位置及用途。'}]}
+        result=self.infer(item,{'text':'按以下步骤准备。','guide':guide})
+        self.assertEqual(result['status'],'idle')
+        self.assertEqual(result['entries'][-1]['content']['guide'],guide)
+        self.assertNotIn('question',result['state'])
+        saved=hud.answer(item['id'],{'revision':result['revision'],'text':'资料分散怎么办？','question_id':None})
+        with hud.connection() as conn:
+            payload=hud.context(conn,saved)
+        self.assertEqual(payload['history'][-2]['guide'],guide)
+        self.assertEqual(payload['history'][-1]['text'],'资料分散怎么办？')
+        for bad in ({'title':'说明','steps':[]},{'title':'说明','steps':[{'title':'运行','body':'说明','command':'run'}]}):
+            with self.assertRaises(ValueError):hud.validate_response({'text':'说明','guide':bad})
+        result=hud.validate_response({'text':'需要确认','question':{'title':'来源在哪？','reason':'需要资料'},'guide':guide})
+        self.assertIsNone(result['guide'])
+
     def test_stage_change_defers_question_and_manual_edit_invalidates_proposal(self):
         item=self.session()
         item=self.infer(item,{'text':'确认目标','question':{'title':'预期产出是什么？','reason':'决定准备哪些资料','options':['原型','应用']}})

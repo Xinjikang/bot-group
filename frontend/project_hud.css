@@ -1,7 +1,7 @@
-#project-hud{position:fixed;z-index:1200;top:12px;left:50%;transform:translateX(-50%);width:340px;max-width:calc(100vw - 24px);color:var(--fg);font:13px/1.6 "Segoe UI","Microsoft YaHei",sans-serif;filter:drop-shadow(0 8px 24px #0004)}
+#project-hud{position:fixed;z-index:1200;top:12px;left:50%;transform:translateX(-50%);width:340px;max-width:calc(100vw - 24px);color:var(--fg);font:13px/1.6 "Segoe UI","Microsoft YaHei",sans-serif}
 #project-hud *{box-sizing:border-box}
 #project-hud [hidden]{display:none!important}
-#project-hud .hud-shell{background:var(--card);border:1px solid var(--border);border-radius:22px;overflow:hidden;transition:border-radius .18s ease}
+#project-hud .hud-shell{background:linear-gradient(135deg,color-mix(in srgb,var(--card) 80%,transparent),color-mix(in srgb,var(--bg) 74%,transparent));backdrop-filter:blur(26px) saturate(125%);border:1px solid color-mix(in srgb,var(--cyan) 22%,var(--border-soft));border-radius:22px;overflow:hidden;box-shadow:inset 0 1px 0 #ffffff24,0 18px 54px #0003;transition:border-radius .18s ease}
 #topbar .logo .sub{display:none}
 #topbar .project-bar{max-width:calc(50vw - 485px);overflow-x:auto;flex-wrap:nowrap;flex-shrink:1}
 #project-hud.expanded{width:510px}
@@ -17,17 +17,18 @@
 .hud-error .hud-light{background:var(--danger)}
 .hud-caption{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hud-chevron{color:var(--fg-3);font-size:12px}
-.hud-panel{display:flex;flex-direction:column;max-height: min(690px,calc(100dvh - 82px));border-top:1px solid var(--border-soft)}
+.hud-panel{display:flex;flex-direction:column;height:min(650px,calc(100dvh - 82px));max-height: min(690px,calc(100dvh - 82px));border-top:1px solid var(--border-soft)}
 .hud-context{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 18px;color:var(--fg-2);font-size:12px}
 .hud-context span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hud-link{background:transparent;border:0;padding:4px 6px;color:var(--accent-2)!important;white-space:nowrap}
-.hud-scroll{overflow:auto;padding:0 18px 14px;min-height:0;overscroll-behavior:contain}
-.hud-question h3{font-size:17px;line-height:1.5;margin:8px 0;color:var(--fg)}
-.hud-reason{color:var(--fg-2);font-size:12px;margin:0 0 14px}
+.hud-scroll{flex:1;overflow:auto;padding:16px 20px;min-height:0;overscroll-behavior:contain}
+.hud-question h3{font-size:14px;line-height:1.6;margin:12px 0 8px;color:var(--fg)}
+.hud-reason{color:var(--fg-3);font-size:11px;margin:0 0 12px}
+.hud-reason summary{cursor:pointer}
+.hud-reason p{margin-top:6px}
 .hud-options{display:grid;gap:8px}
-.hud-option{display:flex;gap:10px;text-align:left;align-items:start;padding:11px 13px;border:1px solid var(--border-soft);background:var(--card-2);border-radius:10px;line-height:1.5;overflow-wrap:anywhere}
-.hud-option[aria-checked=true]{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,var(--card));box-shadow:inset 0 0 0 1px var(--accent)}
-.hud-radio{color:var(--accent-2)}
+.hud-option{display:block;width:100%;text-align:left;padding:9px 12px;border:1px solid var(--border-soft);background:var(--card);border-radius:8px;line-height:1.5;overflow-wrap:anywhere}
+.hud-option:hover{border-color:var(--accent);background:var(--hover)}
 .hud-text{white-space:pre-wrap;overflow-wrap:anywhere;margin:9px 0}
 .hud-muted{color:var(--fg-2)}
 .hud-proposal{margin-top:12px;padding:13px;background:var(--card-2);border:1px solid var(--border-soft);border-radius:12px}
@@ -35,20 +36,50 @@
 .hud-proposal dt{font-size:12px;color:var(--fg-2)}
 .hud-proposal dd{margin:2px 0 10px;white-space:pre-wrap;overflow-wrap:anywhere}
 .hud-primary{background:var(--accent)!important;color:var(--bg)!important;border:1px solid var(--accent);border-radius:9px;padding:7px 15px;font-weight:600!important}
-.hud-compose{flex-shrink:0;padding:12px 18px 14px;border-top:1px solid var(--border-soft);background:var(--card)}
-.hud-compose label{display:block;font-size:12px;color:var(--fg-2);margin-bottom:6px}
-#hud-input{width:100%;min-height:66px;max-height:150px;resize:vertical;border:1px solid var(--border-soft);border-radius:10px;background:var(--bg);padding:10px;line-height:1.5}
+.hud-compose{flex-shrink:0;padding:12px 18px 14px;border-top:1px solid var(--border-soft);background:color-mix(in srgb,var(--card) 28%,transparent)}
+.hud-compose .hud-input-label{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+#hud-input{width:100%;min-height:56px;max-height:150px;resize:vertical;border:1px solid var(--border-soft);border-radius:10px;background:color-mix(in srgb,var(--bg) 40%,transparent);padding:10px;line-height:1.5}
 .hud-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}
 .hud-hint{color:var(--fg-3);font-size:11px}
 .hud-error-text{color:var(--danger);white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0}
-.hud-history{margin-top:14px;border-top:1px solid var(--border-soft);padding-top:9px}
-.hud-history summary{cursor:pointer;color:var(--fg-2);font-size:12px}
+.hud-history{padding:4px 0}
 .hud-history article{padding:9px 0;border-bottom:1px solid var(--border-soft)}
 .hud-history small{color:var(--fg-3)}
 .hud-settings{padding:10px 0}
 .hud-settings label{display:block;margin:9px 0}
 .hud-settings select{width:100%;padding:8px;background:var(--card-2);border:1px solid var(--border-soft);border-radius:8px}
 .hud-notices{display:flex;flex-wrap:wrap;gap:5px;margin:8px 0}
+.hud-context nav{display:flex;gap:2px;flex-shrink:0}
+.hud-context .hud-link{font-size:11px;color:var(--fg-2)!important}
+.hud-context .hud-link[aria-pressed=true]{color:var(--accent-2)!important}
+.hud-back{text-align:left;align-self:flex-start;margin:0 14px 4px}
+.hud-more{font-size:20px!important;line-height:1;letter-spacing:2px}
+.hud-tools{display:flex;gap:8px;justify-content:flex-end;padding:0 14px 10px;border-bottom:1px solid var(--border-soft)}
+.hud-tools .hud-link{font-size:12px}
+.hud-message{margin:0 0 20px;max-width:100%;overflow-wrap:anywhere}
+.hud-speaker{display:block;color:var(--fg-3);font-size:11px;margin-bottom:6px}
+.hud-message-text{margin:0;white-space:pre-wrap;font-size:14px;line-height:1.75}
+.hud-message-user{margin-left:36px;padding:11px 14px;background:var(--card-2);border:1px solid var(--border-soft);border-radius:12px 12px 3px 12px}
+.hud-message-user .hud-speaker{color:var(--accent-2)}
+.hud-message-assistant{padding-right:6px}
+.hud-system-note,.hud-replying{color:var(--fg-3);font-size:12px;margin:12px 0}
+.hud-past-question{font-size:13px;color:var(--fg-2);margin:6px 0;white-space:pre-wrap}
+.hud-past-guide{margin-top:10px;color:var(--fg-2)}
+.hud-past-guide summary{cursor:pointer}
+#project-hud[data-scene=choice] .hud-speaker,#project-hud[data-scene=guide] .hud-speaker,#project-hud[data-scene=confirm] .hud-speaker{display:none}
+#project-hud[data-scene=choice] .hud-scroll,#project-hud[data-scene=guide] .hud-scroll,#project-hud[data-scene=confirm] .hud-scroll{padding:28px 24px}
+#project-hud[data-scene=choice] .hud-message-text,#project-hud[data-scene=guide] .hud-message-text{font-size:13px;color:var(--fg-2)}
+#project-hud[data-scene=choice] .hud-question h3,.hud-guide>h3{font-size:21px;font-weight:500;line-height:1.5;margin:16px 0 14px;letter-spacing:.2px}
+#project-hud[data-scene=choice] .hud-options{margin-top:22px;gap:0}
+#project-hud[data-scene=choice] .hud-option{position:relative;padding:15px 28px 15px 0;border:0;border-bottom:1px solid var(--border-soft);border-radius:0;background:transparent}
+#project-hud[data-scene=choice] .hud-option::after{content:'↗';position:absolute;right:3px;color:var(--cyan)}
+#project-hud[data-scene=choice] .hud-option:hover{color:var(--cyan);background:color-mix(in srgb,var(--cyan) 5%,transparent)}
+.hud-guide ol{list-style:none;counter-reset:guide;padding:0;margin:24px 0}
+.hud-guide li{counter-increment:guide;position:relative;padding:0 0 24px 34px;white-space:pre-wrap;overflow-wrap:anywhere}
+.hud-guide li::before{content:counter(guide,decimal-leading-zero);position:absolute;left:0;top:1px;font-size:11px;color:var(--cyan)}
+.hud-guide h4{font-size:14px;font-weight:500;margin:0 0 5px}
+.hud-guide p{font-size:13px;line-height:1.7;color:var(--fg-2);margin:0}
+#hud-latest{align-self:center;font-size:12px;margin-bottom:6px}
 @keyframes hud-breathe{50%{opacity:.35}}
 @media(prefers-reduced-motion:reduce){.hud-running .hud-light{animation:none}.hud-shell{transition:none!important}}
 @media(max-width:1100px){#topbar{padding-bottom:58px!important}#project-hud{top:58px}#topbar .project-bar{max-width:none}}

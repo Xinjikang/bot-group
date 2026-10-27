@@ -5,18 +5,21 @@
   host.innerHTML = `<div class="hud-shell">
     <button class="hud-toggle" id="hud-toggle" aria-expanded="false" aria-controls="hud-panel"><span class="hud-light" aria-hidden="true"></span><span class="hud-caption">项目维护助手 · 准备就绪</span><span class="hud-chevron">展开</span></button>
     <div class="hud-panel" id="hud-panel" hidden>
-      <div class="hud-context"><span id="hud-context"></span><button class="hud-link" id="hud-settings-toggle">设置</button></div>
+      <div class="hud-context"><span id="hud-context"></span><nav aria-label="维护工具"><button class="hud-link" id="hud-scene-toggle" hidden>对话记录</button><button class="hud-link hud-more" id="hud-more" aria-label="更多维护工具" aria-expanded="false">···</button></nav></div>
+      <nav class="hud-tools" id="hud-tools" aria-label="更多维护工具" hidden><button class="hud-link" id="hud-projects-toggle">切换项目</button><button class="hud-link" id="hud-history-toggle">已确认资料</button><button class="hud-link" id="hud-settings-toggle">设置</button></nav>
+      <button class="hud-link hud-back" id="hud-back" hidden>← 返回对话</button>
       <div class="hud-scroll">
         <div id="hud-settings" class="hud-settings" hidden></div>
-        <div id="hud-notices" class="hud-notices"></div>
-        <div id="hud-content" aria-live="polite"></div>
+        <div id="hud-notices" class="hud-notices" hidden></div>
+        <div id="hud-history" class="hud-history" hidden></div>
+        <div id="hud-content" role="log" aria-label="维护对话" aria-live="polite"></div>
         <p id="hud-error" class="hud-error-text" role="alert" hidden></p>
         <button class="hud-link" id="hud-retry" hidden>重新检查</button>
-        <details class="hud-history"><summary>维护记录与已确认资料</summary><div id="hud-history"></div></details>
       </div>
+      <button class="hud-link" id="hud-latest" hidden>查看最新回复 ↓</button>
       <form class="hud-compose" id="hud-compose">
-        <label for="hud-input">你的回答或补充</label>
-        <textarea id="hud-input" maxlength="12000" placeholder="可以选择上方选项，也可以直接输入你的想法…"></textarea>
+        <label class="hud-input-label" for="hud-input">发消息给维护助手</label>
+        <textarea id="hud-input" maxlength="12000" placeholder="输入回答，或补充说明…"></textarea>
         <div class="hud-actions"><span class="hud-hint" id="hud-hint">Ctrl + Enter 发送</span><button class="hud-primary" id="hud-send" type="submit">发送</button></div>
       </form>
     </div></div>`;
@@ -24,7 +27,9 @@
   const el = id => host.querySelector('#hud-' + id);
   let current = null, scope = '', version = 0, expanded = false, settings = false, busy = false, selected = '', refreshing = false;
   let draftMode = false, draftId = '', onApply = null, beforeConfirm = null, errorText = '', chain = Promise.resolve();
-  const inputs = new Map(), selections = new Map(), silenced = new Set(), seenOthers = new Set();
+  let auxiliary = '', renderedKey = '', followNext = false;
+  let sceneKey='', conversationOnly=false;
+  const inputs = new Map(), silenced = new Set(), seenOthers = new Set();
   const stages = {purpose:'项目目标',collaboration:'协作方式',roles:'角色设置',rules:'协作规则',members:'成员分配',resources:'工作区资源',review:'确认创建',maintenance:'项目维护'};
   const fieldNames = {display_name:'项目名称',description:'项目简介',root:'项目目录',template:'项目模板',directory_mode:'协作方式',worktree_root:'工作区根目录'};
   const node = (tag, text, cls) => { const n = document.createElement(tag); if (text != null) n.textContent = text; if (cls) n.className = cls; return n; };
@@ -59,7 +64,10 @@
   el('input').addEventListener('input',()=>{remember(); updateSend();});
   el('input').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)&&!e.isComposing){e.preventDefault();el('compose').requestSubmit();}});
   host.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();toggle(false);el('toggle').focus();}});
-  function updateSend() { el('send').disabled=busy||!current?.bot||current?.status==='running'||!(selected||el('input').value.trim()); }
+  function updateSend() {
+    el('send').disabled=busy||!current?.bot||current?.status==='running'||!(selected||el('input').value.trim());
+    host.querySelectorAll('.hud-option').forEach(button=>button.disabled=busy||current?.status==='running');
+  }
   function setData(data) {
     const changed=current?.id!==data.id;
     if(changed) remember();
@@ -68,58 +76,130 @@
       let saved=''; try {saved=sessionStorage.getItem('hud-input:'+data.id)||'';}catch{}
       el('input').value=inputs.get(data.id)??saved;
     }
-    let choice='';try{choice=sessionStorage.getItem('hud-choice:'+data.state.question?.id)||'';}catch{}
-    selected=selections.get(data.state.question?.id)||choice;
     render();
   }
   function render() {
     const item=current, q=item?.state.question, proposal=item?.state.proposal;
     const state=item?.status;
+    const lastReply=item?.entries.filter(e=>e.role==='assistant').at(-1);
+    const guide=item?.entries.at(-1)?.role==='assistant'?lastReply.content.guide:null;
+    const activeKey=q?.id||proposal?.id||(guide?String(lastReply.id):'');
+    if(activeKey!==sceneKey){sceneKey=activeKey;conversationOnly=false;}
+    const scene=conversationOnly?'chat':q?'choice':proposal?'confirm':guide?'guide':'chat';
+    const changedScene=host.dataset.scene!==scene;
+    host.dataset.scene=scene;
+    el('scene-toggle').hidden=!activeKey;
+    el('scene-toggle').textContent=conversationOnly?(q?'当前问题':proposal?'待确认建议':'使用说明'):'对话记录';
+    el('input').placeholder=scene==='choice'?'也可以输入自己的回答…':scene==='guide'?'继续问，或描述你卡在哪一步…':'输入你的想法…';
     const label=!item?.bot?'选择 AI 开始维护':state==='paused'?'点击开始维护':state==='running'||state==='queued'?'正在检查项目':state==='error'?'检查未完成':q?'有 1 项需要你确认':proposal?'有配置建议待确认':'随时为你维护项目';
     host.querySelector('.hud-caption').textContent=(item?.bot?.display_name||'项目维护助手')+' · '+label;
     host.classList.toggle('hud-attention',!!q||!!proposal);host.classList.toggle('hud-running',state==='running'||state==='queued');host.classList.toggle('hud-error',state==='error');
     const project=typeof S!=='undefined'?S.projects?.find(p=>p.name===item?.project):null;
     el('context').textContent=(project?.display_name||item?.state.draft?.display_name|| (item?.project?'当前项目':'创建项目'))+' · '+(stages[item?.stage]||'项目维护');
+    const scroll=host.querySelector('.hud-scroll'),oldTop=scroll.scrollTop;
+    const nearBottom=scroll.scrollHeight-scroll.clientHeight-oldTop<70;
+    const key=`${item?.id}/${item?.entries.at(-1)?.id}/${state}/${scene}`;
+    const newTurn=key!==renderedKey,firstView=!renderedKey||!renderedKey.startsWith(item?.id+'/');
     const content=el('content'); content.replaceChildren();
+    let reply=null;
+    for(const entry of item?.entries||[]){
+      if(scene!=='chat'&&entry.id!==lastReply?.id)continue;
+      const message=node('article',null,`hud-message hud-message-${entry.role}`);
+      message.dataset.entry=entry.id;
+      if(entry.role==='system')message.append(node('p',entry.content.text,'hud-system-note'));
+      else {
+        message.append(node('small',entry.role==='user'?'你':item.bot?.display_name||'助手','hud-speaker'),node('p',entry.content.text,'hud-message-text'));
+        if(entry.role==='assistant'){
+          reply=message;
+          const oldQuestion=entry.content.question;
+          if(oldQuestion&&oldQuestion.id!==q?.id)message.append(node('p',oldQuestion.title,'hud-past-question'));
+          if(entry.content.guide&&scene==='chat'){
+            const details=node('details',null,'hud-past-guide');details.append(node('summary',entry.content.guide.title),guideContent(entry.content.guide));message.append(details);
+          }
+        }
+      }
+      content.append(message);
+    }
     if(!item?.bot){
       content.append(node('h3','为 HUD 选择一个 AI'),node('p','可以使用项目负责人，也可以选择其他 Bot。它会在这里帮你完善项目资料和配置。','hud-muted'));
       content.append(action('选择或连接 AI',()=>showSettings(true),'hud-primary'));
       if(!item)content.append(action('重试连接',()=>attach(scope||null,draftMode?draftId:null)));
     }else if(state==='paused'){
       content.append(node('h3','开始维护这个项目'),node('p','启用后，所选 AI 将使用项目配置、模板和项目内文档帮助你完善配置，并在发生变化时主动检查。','hud-muted'),action('开始维护',()=>mutate('/retry'),'hud-primary'));
-    }else if(q){
-      const box=node('div',null,'hud-question');box.append(node('h3',q.title),node('p',q.reason,'hud-reason'));
-      const options=node('div',null,'hud-options');options.setAttribute('role','radiogroup');options.setAttribute('aria-label','建议回答');
+    }else if(q&&scene==='choice'){
+      const box=node('div',null,'hud-question');box.append(node('h3',q.title));
+      const why=node('details',null,'hud-reason');why.append(node('summary','为什么问这个？'),node('p',q.reason));box.append(why);
+      const options=node('div',null,'hud-options');options.setAttribute('role','group');options.setAttribute('aria-label','选择并发送回答');
       for(const option of q.options||[]){
-        const b=action('',()=>{selected=selected===option?'':option;selections.set(q.id,selected);try{sessionStorage.setItem('hud-choice:'+q.id,selected);}catch{}render();host.querySelectorAll('.hud-option')[q.options.indexOf(option)]?.focus();},'hud-option');
-        b.setAttribute('role','radio');b.setAttribute('aria-checked',String(selected===option));
-        b.append(node('span',selected===option?'●':'○','hud-radio'),node('span',option)); options.append(b);
+        const b=action(option,()=>{selected=option;updateSend();el('compose').requestSubmit();},'hud-option');
+        options.append(b);
       }
       options.addEventListener('keydown',e=>{if(!['ArrowDown','ArrowUp','ArrowLeft','ArrowRight'].includes(e.key))return;e.preventDefault();const buttons=[...options.children],i=buttons.indexOf(document.activeElement),d=['ArrowDown','ArrowRight'].includes(e.key)?1:-1;buttons[(i+d+buttons.length)%buttons.length]?.focus();});
-      box.append(options);content.append(box);
+      box.append(options);(reply||content).append(box);
     }else{
-      const latest=item.entries.filter(e=>e.role==='assistant').at(-1);
-      content.append(node('p',state==='queued'||state==='running'?'正在结合项目资料与模板检查当前阶段…':latest?.content.text||'告诉我你想完善什么，我会结合项目资料协助你。','hud-text'));
+      if(state==='queued'||state==='running')content.append(node('p','正在回复…','hud-replying'));
+      else if(!item.entries.length)content.append(node('p','告诉我你想完善什么，我们一起把项目准备好。','hud-muted'));
     }
-    if(proposal){
+    if(proposal&&scene==='confirm'){
       const box=node('div',null,'hud-proposal');box.append(node('strong','待确认的配置建议'));const dl=node('dl');
       for(const [key,value] of Object.entries(proposal.changes))dl.append(node('dt',fieldNames[key]||key),node('dd',value));
       for(const fact of proposal.facts)dl.append(node('dt',fact.label),node('dd',fact.value));
       box.append(dl,action(Object.keys(proposal.changes).length?(item.project?'确认更新项目':'确认写入向导'):'确认保存维护资料',async()=>{
         if(draftMode)await beforeConfirm?.();
         const data=await mutate('/accept',{proposal_id:proposal.id});if(data&&draftMode&&Object.keys(proposal.changes).length)onApply?.(data.state.draft);
-      },'hud-primary'));content.append(box);
+      },'hud-primary'));(reply||content).append(box);
+    }
+    if(guide&&scene==='guide'){
+      (reply||content).append(guideContent(guide));
     }
     el('error').textContent=errorText||item?.error||'';el('error').hidden=!el('error').textContent;
-    el('retry').hidden=!item?.bot||['running','queued','paused','waiting'].includes(state);
-    el('hint').textContent=state==='running'?'正在处理，输入会为你保留':selected?'已选答案，可补充文字后发送':'Ctrl + Enter 发送';
+    el('retry').hidden=!item?.bot||state!=='error';
+    el('hint').textContent=busy?'正在发送…':state==='running'?'正在回复，输入会为你保留':'Ctrl + Enter 发送';
     el('input').disabled=!item?.bot;
     const history=el('history');history.replaceChildren();
+    history.append(node('h3','已确认资料'));
     for(const fact of item?.state.facts||[]){const p=node('article');p.append(node('strong',fact.label),node('p',fact.value,'hud-text'));history.append(p);}
-    for(const entry of item?.entries||[]){const p=node('article');p.append(node('small',entry.role==='user'?'你':entry.role==='assistant'?(item.bot?.display_name||'助手'):'维护记录'),node('p',entry.content.text,'hud-text'));history.append(p);}
+    if(!item?.state.facts?.length)history.append(node('p','确认后的资料约定会保存在这里。','hud-muted'));
     updateSend();
     if((q&&!silenced.has(q.id))||proposal&&!silenced.has(proposal.id))toggle(true);
+    renderedKey=key;
+    const follow=followNext||firstView||nearBottom||changedScene;followNext=false;
+    if(newTurn)requestAnimationFrame(()=>{
+      if(renderedKey!==key)return;
+      if(follow&&!auxiliary)showLatest();
+      else {scroll.scrollTop=oldTop;if(!auxiliary)el('latest').hidden=false;}
+    });
+    else scroll.scrollTop=oldTop;
   }
+  function guideContent(guide){
+    const box=node('section',null,'hud-guide');box.append(node('h3',guide.title));
+    const list=node('ol');
+    for(const step of guide.steps){const li=node('li');li.append(node('h4',step.title),node('p',step.body));list.append(li);}
+    box.append(list);return box;
+  }
+  function showLatest(){
+    const messages=[...el('content').querySelectorAll('.hud-message')];
+    const target=host.dataset.scene==='chat'?(messages.filter(m=>m.classList.contains('hud-message-user')).at(-1)||messages.at(-1)):null;
+    const scroll=host.querySelector('.hud-scroll');
+    if(target)scroll.scrollTop+=target.getBoundingClientRect().top-scroll.getBoundingClientRect().top-12;
+    else scroll.scrollTop=0;
+    el('latest').hidden=true;
+  }
+  function showAuxiliary(name){
+    el('tools').hidden=true;el('more').setAttribute('aria-expanded','false');
+    auxiliary=name;settings=name==='settings';
+    for(const panel of ['settings','history','notices'])el(panel).hidden=panel!==name;
+    el('content').hidden=!!name;el('compose').hidden=!!name;el('back').hidden=!name;el('latest').hidden=true;
+    for(const [id,panel] of [['settings','settings'],['history','history'],['projects','notices']])el(id+'-toggle').setAttribute('aria-pressed',String(panel===name));
+    host.querySelector('.hud-scroll').scrollTop=0;
+    if(!name)requestAnimationFrame(showLatest);
+  }
+  el('back').onclick=()=>showAuxiliary('');
+  el('more').onclick=()=>{el('tools').hidden=!el('tools').hidden;el('more').setAttribute('aria-expanded',String(!el('tools').hidden));};
+  el('scene-toggle').onclick=()=>{showAuxiliary('');conversationOnly=!conversationOnly;render();};
+  el('latest').onclick=showLatest;
+  el('history-toggle').onclick=()=>showAuxiliary(auxiliary==='history'?'':'history');
+  el('projects-toggle').onclick=()=>showAuxiliary(auxiliary==='notices'?'':'notices');
   async function mutate(path,body={},method='POST') {
     if(!current||busy)return null;
     const sid=current.id,stamp=version;busy=true;errorText='';updateSend();
@@ -133,13 +213,17 @@
     e.preventDefault();if(el('send').disabled)return;
     const original=el('input').value,sid=current.id,q=current.state.question;
     const text=[selected,original.trim()].filter(Boolean).join('\n补充：');
+    followNext=true;
     const data=await mutate('/answer',{text,question_id:q?.id||null});
-    if(data&&current.id===sid){el('input').value='';inputs.delete(sid);selections.delete(q?.id);selected='';remember();render();}
+    if(current?.id===sid){
+      el('input').value=data?'':text;selected='';remember();render();
+      if(data)el('input').focus();
+    }
   });
   el('retry').onclick=()=>mutate('/retry');
   el('settings-toggle').onclick=()=>showSettings(!settings);
   async function showSettings(value){
-    settings=value;el('settings').hidden=!value;if(!value)return;
+    showAuxiliary(value?'settings':'');if(!value)return;
     const box=el('settings');box.replaceChildren(node('p','正在读取可用 AI…','hud-muted'));
     try{
       const bots=await MemberPicker.load();if(!settings)return;
@@ -154,12 +238,13 @@
         try{
           if(!bot.bot_id){const registered=await api('/bots/register',{method:'POST',body:JSON.stringify({host_type:bot.host_type,profile:bot.profile,config_root:bot.config_root})});bot={...bot,bot_id:registered.bot_id};}
           const result=await mutate('',{bot_id:bot.bot_id,make_default:check.checked,idle_seconds:Number(timeSelect.value)},'PATCH');
-          if(result){settings=false;box.hidden=true;}
+          if(result)showAuxiliary('');
         }catch(e){errorText=e.message;render();}
       },'hud-primary'),action('创建 AI 配置',()=>openProfileCreate({onCreated:()=>showSettings(true)})),action('刷新列表',()=>showSettings(true)));
     }catch(e){box.replaceChildren(node('p',e.message,'hud-error-text'),action('重试',()=>showSettings(true)));}
   }
   async function attach(project, id=null){
+    showAuxiliary('');
     const stamp=++version;remember();scope=project||'';errorText='';current=null;selected='';el('input').value='';render();
     try{
       if(!project&&!id&&!draftMode){const index=await api('/hud');id=index.sessions.find(s=>!s.project)?.id;}
@@ -215,7 +300,7 @@
   document.querySelector('#dlg-project-detail')?.addEventListener('close',()=>refresh());
   const authChanged=()=>{
     host.hidden=!document.querySelector('#login')?.hidden;
-    if(host.hidden){++version;current=null;el('input').value='';inputs.clear();selections.clear();}
+    if(host.hidden){++version;current=null;el('input').value='';inputs.clear();}
     else if(!current)attach(typeof S!=='undefined'?S.currentProject:null);
   };
   document.addEventListener('service-auth-changed',authChanged);

@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+HUD 场景布局：`test_project_hud_browser.py` 验证五个详情标签等高且坐标稳定、对话/选择/确认/使用说明切换、正文及用户回答可见、选项点击即发送并消失、刷新恢复消息、更多入口、历史说明与自由追问。使用说明另覆盖 390px 深浅主题。`scripts.test_project_hud` 验证 guide 持久化、后续上下文、步骤格式边界及问题优先级。截图包含 `hud-conversation.png`、`hud-confirmation.png`、`hud-guide.png`、`hud-guide-mobile-*.png` 和 `hud-with-project-detail.png`。
+
 HUD 与项目详情协作：`test_project_hud_browser.py` 覆盖详情打开后切换标签、填写未保存字段、展开 HUD、选择和输入、返回详情、窄屏发送及 Escape、无顶栏活动项目时的 HUD 上下文和关闭后恢复。几何断言检查详情位置尺寸不变、HUD 右侧贴靠同高、详情高度变化后同步以及收起回到原位，并验证右侧空间不足时的回退。截图 `hud-with-project-detail.png` 保留两者同时打开的状态。
 
 HUD 开放式提问回归：`scripts.test_project_hud` 验证模型省略选项时的归一化及回答入库；`test_project_hud_browser.py` 额外覆盖已有无选项记录的渲染、文字输入和发送可用性，截图保存为 `hud-free-text.png`。

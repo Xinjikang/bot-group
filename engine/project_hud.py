@@ -318,11 +318,24 @@ def context(conn, item):
 
 
 def validate_response(value):
-    if not isinstance(value, dict) or set(value) - {'text', 'question', 'proposal'}:
+    if not isinstance(value, dict) or set(value) - {'text', 'question', 'proposal', 'guide'}:
         raise ValueError('AI 返回格式无效，请重试')
     text = value.get('text', '')
     if not isinstance(text, str) or not text.strip() or len(text) > 6000:
         raise ValueError('AI 回复正文无效')
+    guide = value.get('guide')
+    if guide is not None:
+        if not isinstance(guide, dict) or set(guide) != {'title', 'steps'}:
+            raise ValueError('AI 使用说明格式无效')
+        if not isinstance(guide['title'], str) or not 1 <= len(guide['title']) <= 160:
+            raise ValueError('AI 使用说明标题无效')
+        if not isinstance(guide['steps'], list) or not 1 <= len(guide['steps']) <= 8:
+            raise ValueError('AI 使用说明步骤无效')
+        for step in guide['steps']:
+            if not isinstance(step, dict) or set(step) != {'title', 'body'} or any(
+                    not isinstance(step[k], str) or not 1 <= len(step[k]) <= limit
+                    for k, limit in (('title', 160), ('body', 2000))):
+                raise ValueError('AI 使用说明步骤无效')
     question = value.get('question')
     if question:
         if not isinstance(question, dict) or set(question) - {'title', 'reason', 'options'}:
@@ -354,6 +367,8 @@ def validate_response(value):
         # A configuration decision occupies the current interaction; the next
         # question is generated after confirmation against the updated facts.
         value['question'] = None
+    if value.get('question') or value.get('proposal'):
+        value['guide'] = None
     return value
 
 
