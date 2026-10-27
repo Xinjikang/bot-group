@@ -49,6 +49,13 @@
 .hud-settings label{display:block;margin:9px 0}
 .hud-settings select{width:100%;padding:8px;background:var(--card-2);border:1px solid var(--border-soft);border-radius:8px}
 .hud-notices{display:flex;flex-wrap:wrap;gap:5px;margin:8px 0}
+@media(min-width:1120px){
+  body:has(#dlg-project-detail[open])>#project-hud.expanded{left:calc(50% + 288px)}
+  body:has(>#project-hud.expanded:not([hidden])) #dlg-project-detail[open]{left:calc(50% - 543px)!important;top:72px!important;max-height:calc(100dvh - 84px)!important}
+}
+@media(max-width:1119px){
+  body:has(>#project-hud:not([hidden])) #dlg-project-detail[open]{top:120px!important;max-height:calc(100dvh - 132px)!important}
+}
 @keyframes hud-breathe{50%{opacity:.35}}
 @media(prefers-reduced-motion:reduce){.hud-running .hud-light{animation:none}.hud-shell{transition:none!important}}
 @media(max-width:1100px){#topbar{padding-bottom:58px!important}#project-hud{top:58px}#topbar .project-bar{max-width:none}}

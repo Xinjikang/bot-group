@@ -154,7 +154,9 @@
   }
   async function refresh(){
     if(document.hidden||busy||host.hidden||refreshing)return;
-    if(!draftMode&&typeof S!=='undefined'&&(S.currentProject||'')!==scope){await attach(S.currentProject);return;}
+    const detail=document.querySelector('#dlg-project-detail');
+    const project=detail?.open?document.querySelector('#pj-detail-form')?.dataset.origName:S.currentProject;
+    if(!draftMode&&(project||'')!==scope){await attach(project);return;}
     if(!current)return;
     const sid=current.id,stamp=version;
     refreshing=true;
@@ -189,6 +191,7 @@
     changed(){refresh();},
   };
   setInterval(refresh,3000);
+  document.querySelector('#dlg-project-detail')?.addEventListener('close',()=>refresh());
   const authChanged=()=>{
     host.hidden=!document.querySelector('#login')?.hidden;
     if(host.hidden){++version;current=null;el('input').value='';inputs.clear();selections.clear();}

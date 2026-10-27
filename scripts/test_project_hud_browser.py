@@ -21,6 +21,42 @@ def main():
         page.goto(args.url+'/app/')
         page.wait_for_selector('.hud-question',timeout=20000)
         page.screenshot(path=str(args.evidence/'hud-desktop.png'))
+        page.locator('#hud-toggle').click()
+        page.evaluate("openProjectDetail('hud-preview',document.querySelector('#chip-all'))")
+        page.wait_for_selector('#dlg-project-detail[open]')
+        page.locator('#pj-d-desc').fill('尚未保存的项目配置')
+        page.locator('#pj-tab-roles').click()
+        page.locator('#hud-toggle').click()
+        assert page.locator('#dlg-project-detail').evaluate('(e)=>e.open')
+        assert page.locator('#pj-tab-roles').get_attribute('aria-selected')=='true'
+        page.locator('#hud-input').fill('一起完善这个项目')
+        page.get_by_role('radio').first.click()
+        assert page.locator('#dlg-project-detail').evaluate('(e)=>e.open')
+        assert page.locator('#pj-d-desc').input_value()=='尚未保存的项目配置'
+        detail_box=page.locator('#dlg-project-detail').bounding_box()
+        hud_box=page.locator('#project-hud').bounding_box()
+        assert detail_box['x']+detail_box['width']<hud_box['x'],(detail_box,hud_box)
+        page.screenshot(path=str(args.evidence/'hud-with-project-detail.png'))
+        for width in (1120,1119):
+            page.set_viewport_size({'width':width,'height':1000})
+            detail_box=page.locator('#dlg-project-detail').bounding_box()
+            hud_box=page.locator('#project-hud').bounding_box()
+            assert detail_box['x']>=0 and hud_box['x']+hud_box['width']<=width
+            if width==1120:
+                assert detail_box['x']+detail_box['width']<hud_box['x']
+            else:
+                page.locator('#hud-toggle').click()
+                hud_box=page.locator('#project-hud').bounding_box()
+                assert detail_box['y']>hud_box['y']+hud_box['height']
+                page.locator('#hud-toggle').click()
+        page.set_viewport_size({'width':1440,'height':1000})
+        page.locator('#hud-input').fill('')
+        page.get_by_role('radio').first.click()
+        page.locator('#hud-toggle').click()
+        page.locator('#pj-tab-basic').click()
+        assert page.locator('#pj-d-desc').input_value()=='尚未保存的项目配置'
+        page.locator('#dlg-pj-detail-close').click()
+        page.locator('#hud-toggle').click()
         page.get_by_role('radio').first.click()
         page.locator('#hud-input').fill('需求放在 specs-v2，原型放在 design-sketches。')
         page.reload()
@@ -42,8 +78,8 @@ def main():
         page.locator('#import-template').select_option('algorithm')
         page.wait_for_timeout(1400)
         page.locator('#import-close').click()
-        page.wait_for_timeout(3500)
-        page.locator('#hud-toggle').click()
+        page.get_by_role('button',name='继续：可恢复的项目草稿',exact=True).wait_for(state='attached')
+        if page.locator('#hud-toggle').get_attribute('aria-expanded')!='true':page.locator('#hud-toggle').click()
         page.get_by_role('button',name='继续：可恢复的项目草稿',exact=True).click()
         page.wait_for_function("document.querySelector('#import-name').value==='可恢复的项目草稿'")
         assert page.locator('#import-template').input_value()=='algorithm'
@@ -64,6 +100,23 @@ def main():
         page.keyboard.press('Escape')
         assert page.locator('#hud-panel').is_hidden()
         assert page.locator('#hud-toggle').evaluate('(e)=>e===document.activeElement')
+        page.evaluate("S.currentProject=null;renderProjectBar();ProjectHUD.changed()")
+        page.wait_for_function("!document.querySelector('#hud-context').textContent.startsWith('HUD 交互预览')")
+        page.evaluate("openProjectDetail('hud-preview',document.querySelector('#chip-all'))")
+        page.wait_for_function("document.querySelector('#hud-context').textContent.startsWith('HUD 交互预览')")
+        if page.locator('#hud-toggle').get_attribute('aria-expanded')=='true':page.locator('#hud-toggle').click()
+        page.locator('#pj-d-desc').fill('窄屏未保存的项目配置')
+        page.locator('#hud-toggle').click()
+        page.locator('#hud-input').fill('继续检查项目资料')
+        page.locator('#hud-send').click()
+        page.wait_for_function("document.querySelector('#hud-input').value===''")
+        assert page.locator('#dlg-project-detail').evaluate('(e)=>e.open')
+        page.locator('#hud-input').focus()
+        page.keyboard.press('Escape')
+        assert page.locator('#dlg-project-detail').evaluate('(e)=>e.open')
+        assert page.locator('#pj-d-desc').input_value()=='窄屏未保存的项目配置'
+        page.locator('#dlg-pj-detail-close').click()
+        page.wait_for_function("!document.querySelector('#hud-context').textContent.startsWith('HUD 交互预览')")
         # Previously persisted free-text questions may omit the options field.
         def free_text_question(route):
             response=route.fetch()
@@ -86,8 +139,8 @@ def main():
         page.screenshot(path=str(args.evidence/'hud-free-text.png'))
         assert not errors,errors
         (args.evidence/'browser.json').write_text(json.dumps({'passed':True,'errors':errors,'checks':[
-            'automatic question expansion','options and custom text','refresh preserves input','confirmed facts',
-            'wizard draft restore','390px dark/light','Escape and focus','free-text question without options']},ensure_ascii=False,indent=2),encoding='utf-8')
+            'automatic question expansion','project details stay open with unsaved fields and active tab','options and custom text','refresh preserves input','confirmed facts',
+            'wizard draft restore','390px dark/light','Escape and focus','detail project context and mobile reply','free-text question without options']},ensure_ascii=False,indent=2),encoding='utf-8')
         browser.close()
 
 

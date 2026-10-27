@@ -1925,6 +1925,7 @@ function openProjectDetail(name, triggerEl) {
   // 参照「全部项目」下拉窗：弹在触发按钮正下方（getBoundingClientRect 实时定位）
   const dlg = $("#dlg-project-detail");
   openDialogAnchored(dlg, triggerEl || $("#chip-all"));
+  window.ProjectHUD?.changed();
   if (!isNew) $("#pj-d-name").focus();
 }
 // 从「全部项目」下拉窗进入的新建/详情窗口，关闭后返回下拉窗。
@@ -3167,6 +3168,7 @@ function openDialogAnchored(dlg, triggerEl) {
     // req#96 #165：showConfirm/showAlert 的 app-alert modal 弹层点击不算「点外面」，
     // 否则在锚定弹窗里触发确认框时，点确认会顺带把宿主弹窗关掉
     if (e.target.closest('#app-alert')) return;
+    if (e.target.closest('#project-hud')) return;
     if (e.target.closest('#dlg-member-add, #dlg-member-picker, #dlg-member-remove')) return;
     // req#110 #189：子弹层 dialog（网页内目录选择器等 body 直属独立弹窗）点击同样豁免——
     // 选择器是从宿主弹窗触发的，点它属于宿主交互链，不能当「点外面」关掉宿主
@@ -3208,6 +3210,7 @@ function openDialogCentered(dlg) {
   dlg.__centeredRO.observe(dlg);
   dlg.__outsideCloser = (e) => {
     if (e.target.closest('#app-alert')) return;               // req#96 #165：app-alert 豁免
+    if (e.target.closest('#project-hud')) return;
     if (e.target.closest('dialog[dir-picker-layer]')) return; // req#110 #189：子弹层豁免
     // 外部点击关闭弹窗，底部另提供「取消」按钮。
     if (!dlg.contains(e.target)) dlg.close();
@@ -4612,8 +4615,8 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/project_template_references.js?v=20261016-latest-soul"></script>
 <script src="/app/profile_soul_templates.js?v=20261023-shared-profiles"></script>
 <script src="/app/project_settings.js?v=20261026-role-permission-notices"></script>
-<link rel="stylesheet" href="/app/project_hud.css?v=20261027">
-<script src="/app/project_hud.js?v=20261027"></script>
+<link rel="stylesheet" href="/app/project_hud.css?v=20261027-detail">
+<script src="/app/project_hud.js?v=20261027-detail"></script>
 <script src="/app/requirement_details.js?v=20261012-controls"></script>
 </body>
 </html>

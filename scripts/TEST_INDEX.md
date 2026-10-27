@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+HUD 与项目详情协作：`test_project_hud_browser.py` 覆盖详情打开后切换标签、填写未保存字段、展开 HUD、选择和输入、返回详情、窄屏发送及 Escape、从全部项目打开详情时的 HUD 上下文和关闭后恢复。截图 `hud-with-project-detail.png` 保留两者同时打开的状态。
+
 HUD 开放式提问回归：`scripts.test_project_hud` 验证模型省略选项时的归一化及回答入库；`test_project_hud_browser.py` 额外覆盖已有无选项记录的渲染、文字输入和发送可用性，截图保存为 `hud-free-text.png`。
 
 HUD 真实模型验证：明确授权后运行 `scripts/verify_project_hud_live.py --live --hermes-home <已授权宿主目录> --expected-provider <服务商> --expected-host <服务域名> --expected-model <模型> --evidence <新的报告文件.json>`。执行前精确核对配置的服务商、域名和模型；五轮仅使用合成调研/软件/空项目及模板，验证可选问题、自定义目录用途提案、确认后超时接续、资源阶段提问和空项目引导。结束核对原宿主配置摘要、群会话表为空及临时目录清理。网络或模型行为失败保留已完成轮次证据。
