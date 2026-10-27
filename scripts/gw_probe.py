@@ -59,7 +59,6 @@ PROBE_DATA = Path(os.environ.get("GW_PROBE_DATA")
                      r"\ws_6043478a1e82665dc05e9604\test-data")
 HERMES_HOME = PROBE_DATA / "task-250" / "gw-probe-home"      # 独立 profile 数据根（绝不指向生产）
 HERMES_RUNTIME = PROBE_DATA / "task-250" / "hermes-pm-store"  # pm 依赖存储
-HERMES_CLI = HERMES_HOME / "bin" / "hermes.exe"  # setup 在本 home 发布的官方入口
 # 依赖环境：hermes pm 装在 HERMES_HOME/installs/<install>/environments/<env>/venv
 # （pm repair 产物，ruamel/fastapi/websockets 全在此解释器）；PYTHONPATH 指向 worktree 源码根。
 import glob as _glob  # noqa: E402
@@ -178,36 +177,80 @@ def env_snapshot() -> dict:
     }
 
 
-def config_mcp_issue() -> str:
-    """探针 home 配置校验：必须显式写 `mcp_servers: {}`（空映射）。
+class ConfigError(ValueError):
+    """探针 home config.yaml 不满足隔离要求。"""
 
-    缺失、null、[]、非空内联值、缩进块条目一律不通过——「键不存在」等于配置失控权
-    仍在外部（managed scope / profile 覆盖层可注入），不能当作已关闭 MCP。
+
+def _strict_yaml_load(text: str) -> dict:
+    """解析 config.yaml 并拒绝重复键（ruamel 优先，退化 PyYAML 严格 loader）。
+
+    重复键是绕过配置门禁的常见手法：逐行扫描时只看第一条 `mcp_servers:`，
+    第二条非空仍能带着注入跑起来；解析后只有最后一条生效，必须显式拒绝。
+    """
+    try:
+        from ruamel.yaml import YAML
+        from ruamel.yaml.constructor import DuplicateKeyError
+    except ImportError:
+        import yaml as _pyyaml
+
+        class _StrictLoader(_pyyaml.SafeLoader):
+            pass
+
+        def _no_dups(loader, node, deep=False):
+            mapping = {}
+            for key_node, value_node in node.value:
+                key = loader.construct_object(key_node, deep=deep)
+                if key in mapping:
+                    raise ConfigError(f"duplicate key: {key!r}")
+                mapping[key] = loader.construct_object(value_node, deep=deep)
+            return mapping
+
+        _StrictLoader.add_constructor(
+            _pyyaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_dups)
+        try:
+            data = _pyyaml.load(text, Loader=_StrictLoader)
+        except ConfigError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - YAML 语法错误一律视为配置非法
+            raise ConfigError(f"invalid yaml: {type(exc).__name__}: {exc}") from exc
+    else:
+        yaml = YAML(typ="safe")
+        yaml.allow_duplicate_keys = False
+        try:
+            data = yaml.load(text)
+        except DuplicateKeyError as exc:
+            raise ConfigError(f"duplicate key: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001
+            raise ConfigError(f"invalid yaml: {type(exc).__name__}: {exc}") from exc
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ConfigError(f"top-level not a mapping (type={type(data).__name__})")
+    return data
+
+
+def config_mcp_issue() -> str:
+    """preflight：探针 home 必须显式声明顶层 `mcp_servers: {}`（空映射）。
+
+    按 YAML 语义判定而不是逐行匹配：重复键、null、[]、块条目、非空映射一律拒绝。
     返回问题描述（空串=通过）。
     """
     cfg = HERMES_HOME / "config.yaml"
     if not cfg.exists():
         return f"config.yaml missing at {cfg}"
-    lines = cfg.read_text(encoding="utf-8", errors="replace").splitlines()
-    for i, line in enumerate(lines):
-        s = line.strip()
-        if not s.startswith("mcp_servers:"):
-            continue
-        rest = s.split(":", 1)[1].split("#", 1)[0].strip()
-        if rest.replace(" ", "") != "{}":
-            return f"mcp_servers must be exactly '{{}}', got: {rest or '<empty>'}"
-        base_indent = len(line) - len(line.lstrip())
-        for nxt in lines[i + 1:]:
-            if not nxt.strip() or nxt.strip().startswith("#"):
-                continue
-            indent = len(nxt) - len(nxt.lstrip())
-            if indent <= base_indent:
-                break
-            return f"mcp_servers block entry not allowed: {nxt.strip()}"
-        return ""
-    return "mcp_servers key missing (probe home must declare 'mcp_servers: {}')"
-
-
+    text = cfg.read_text(encoding="utf-8", errors="replace")
+    try:
+        data = _strict_yaml_load(text)
+    except ConfigError as exc:
+        return f"config invalid: {exc}"
+    if "mcp_servers" not in data:
+        return "mcp_servers key missing (probe home must declare 'mcp_servers: {}')"
+    servers = data["mcp_servers"]
+    if not isinstance(servers, dict):
+        return f"mcp_servers must be top-level empty mapping '{{}}', got: {servers!r}"
+    if servers:
+        return f"mcp_servers must be empty, got: {servers!r}"
+    return ""
 def check_mcp_empty(snapshot, stage: str) -> str:
     """严格校验会话快照里没有 MCP：必须 info 为 dict、显式含 mcp_servers、值为 list 且空。
 
@@ -234,20 +277,24 @@ def check_mcp_empty(snapshot, stage: str) -> str:
 def mcp_log_snapshot() -> dict:
     """记录探针 home 的 mcp-stderr 日志里 /heartbeat 计数与末条。
 
-    readable=False 表示文件不存在或读取失败——该情形是**未知**，不得当作「0 次心跳」。
+    三态：`exists=False`（空 home，从没有 MCP 日志，等价 0 基线）；
+    `exists=True, readable=False`（存在但读不了，属**未知**）；
+    `readable=True`（可读，计数可信）。
     """
     p = HERMES_HOME / "logs" / "mcp-stderr.log"
     if not p.exists():
         return {"exists": False, "readable": False, "heartbeat_count": 0,
-                "last_heartbeat": "", "error": "mcp-stderr.log missing"}
+                "last_heartbeat": "", "baseline": "no-mcp-log",
+                "error": "mcp-stderr.log missing"}
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return {"exists": True, "readable": False, "heartbeat_count": 0,
-                "last_heartbeat": "", "error": f"{type(exc).__name__}: {exc}"}
+                "last_heartbeat": "", "baseline": "unreadable",
+                "error": f"{type(exc).__name__}: {exc}"}
     beats = [ln.strip() for ln in text.splitlines() if "/heartbeat" in ln]
     return {"exists": True, "readable": True, "heartbeat_count": len(beats),
-            "last_heartbeat": beats[-1] if beats else ""}
+            "last_heartbeat": beats[-1] if beats else "", "baseline": "readable"}
 
 
 _NO_GATEWAY_MARKERS = ("no gateway", "not running", "no running", "gateway not running")
@@ -273,15 +320,17 @@ def stop_existing_gateway() -> dict:
     ensure_gateway_runtime 会 attach 已存在的网关，而旧实例的 env/config 可能与本轮
     preflight 不同（正是第二次隔离事故的成因）。停止后再启动，保证校验对象与被测对象一致。
 
-    经本 home 的官方 CLI（`<HERMES_HOME>/bin/hermes.exe`）执行：home 采用重新安装
-    而非移动，CLI 元数据天然绑定当前路径；同时避免 attach 旧实例。
+    统一走 pm 环境 venv 的 `python -m hermes_cli.main`（architect 8373 拍板口径）：
+    不依赖 `.hermes/bin` / `<home>/bin` 的 launcher——launcher 内嵌生成时的绝对路径，
+    home 迁移或重装后可能失效且静默吞错。同时避免 attach 旧实例。
     """
-    if not HERMES_CLI.exists():
-        return {"cli": str(HERMES_CLI), "cli_exists": False, "rc": None,
-                "stopped": False, "output": "hermes CLI missing under HERMES_HOME/bin"}
-    record: dict = {"cli": str(HERMES_CLI), "cli_exists": True}
+    if not PROBE_PYTHON.exists():
+        return {"cli": f"{PROBE_PYTHON} -m hermes_cli.main", "cli_exists": False,
+                "rc": None, "stopped": False,
+                "output": "probe venv python missing under HERMES_HOME/installs"}
+    record: dict = {"cli": f"{PROBE_PYTHON.name} -m hermes_cli.main", "cli_exists": True}
     try:
-        r = subprocess.run([str(HERMES_CLI), "gateway", "stop"],
+        r = subprocess.run([str(PROBE_PYTHON), "-m", "hermes_cli.main", "gateway", "stop"],
                            capture_output=True, text=True, env=probe_env(),
                            timeout=180, cwd=str(WORKTREE_SRC))
     except subprocess.TimeoutExpired:
@@ -328,12 +377,13 @@ def preflight() -> dict:
         sys.exit(6)
 
     baseline = mcp_log_snapshot()
-    if not baseline["readable"]:
+    if baseline.get("exists") and not baseline["readable"]:
         log("PREFLIGHT FAILED: mcp-stderr unreadable, cannot gate heartbeats",
             error=baseline.get("error"))
         sys.exit(8)
     log("preflight ok", config_mcp="explicit {}",
         heartbeat_baseline=baseline["heartbeat_count"],
+        baseline=baseline.get("baseline"),
         last_heartbeat=baseline["last_heartbeat"])
     return {"env": snap, "stop": stop_rec, "heartbeat_baseline": baseline}
 
@@ -504,17 +554,77 @@ async def run(info: dict, prompt_text: str) -> int:
 
 
 def heartbeat_gate(rc: int, before: dict, after: dict) -> tuple[int, str, int | None]:
-    """心跳门禁：证据可读且增量为 0 才算通过。
+    """心跳门禁：证据可信且增量为 0 才算通过。
 
-    返回 (退出码, 判定, 增量)。rc 已非 0 时保留原码（不掩盖根因），但判定仍记录为失败。
+    空 home（两侧都没有 mcp-stderr）不是「未知」——没有 MCP 日志就是没有 MCP，
+    按 0 基线放行并标 `no-mcp-log`（否则清理后首次运行永远起不来）。
+    只有「存在但读不了」或「一侧有一侧无」才是未知，按 rc=8 处理。
+    rc 已非 0 时保留原码（不掩盖根因），但判定仍记录为失败。
     """
-    readable = bool(before.get("readable")) and bool(after.get("readable"))
-    if not readable:
+    b_exists = bool(before.get("exists"))
+    a_exists = bool(after.get("exists"))
+    if not b_exists and not a_exists:
+        return rc, "no-mcp-log", 0
+    if b_exists != a_exists:
+        return (8 if rc == 0 else rc), "unknown", None
+    if not (before.get("readable") and after.get("readable")):
         return (8 if rc == 0 else rc), "unknown", None
     delta = after["heartbeat_count"] - before["heartbeat_count"]
     if delta != 0:
         return (8 if rc == 0 else rc), "violation", delta
     return rc, "pass", delta
+
+
+def _pid_alive(pid: int) -> bool | None:
+    """进程是否存活；查询本身失败返回 None（未知，不当作已退出）。"""
+    try:
+        r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return str(pid) in (r.stdout or "")
+
+
+def _port_listening(port: int) -> bool | None:
+    """端口是否有 LISTENING；netstat 查询失败返回 None。"""
+    try:
+        r = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    needle = f":{port} "
+    return any(needle in ln and "LISTENING" in ln
+               for ln in (r.stdout or "").splitlines())
+
+
+def _origin_port(origin: str) -> int | None:
+    """从 api_origin 取端口：兼容 `host:port` 与 `scheme://host:port`（urlparse 会把裸 host 当 scheme）。"""
+    if not origin:
+        return None
+    text = origin.split("//", 1)[-1] if "//" in origin else origin
+    host_port = text.split("/", 1)[0].strip()
+    if ":" not in host_port:
+        return None
+    tail = host_port.rsplit(":", 1)[1]
+    return int(tail) if tail.isdigit() else None
+
+
+def stop_instance(info: dict, pid: int | None) -> dict:
+    """停掉本轮拉起的网关并核验释放（stop-after 证据：端口 / pid / gateway.pid）。
+
+    验收要求：正常完成与可捕获异常均清理，清理失败要体现在退出状态与报告里。
+    三方核验（pid 存活 / gateway.pid / 端口 LISTENING）任一不干净即判未清理成功。
+    """
+    origin = str(info.get("api_origin") or "")
+    port = _origin_port(origin)
+    rec: dict = {"api_origin": origin or None, "port": port, "pid": pid}
+    rec["stop"] = stop_existing_gateway()
+    rec["pid_alive_after"] = _pid_alive(pid) if pid else None
+    rec["gateway_pid_exists"] = (HERMES_HOME / "gateway.pid").exists()
+    rec["port_listening"] = _port_listening(port) if port else None
+    rec["clean"] = bool(rec["pid_alive_after"] is False
+                        and rec["gateway_pid_exists"] is False
+                        and (rec["port_listening"] is False or port is None))
+    return rec
 
 
 def instance_forensics(info: dict) -> dict:
@@ -572,27 +682,57 @@ def main() -> int:
         log("PREFLIGHT ONLY: all static gates passed")
         return 0
     beats_before = pre["heartbeat_baseline"]
-    info = connect_gateway_info()
-    forensics = instance_forensics(info)
-    save_evidence("instance-forensics", forensics)
-    log("instance forensics", pid=(forensics.get("pid_file") or {}).get("pid"),
-        win32=bool(forensics.get("win32_process", {}).get("output")),
-        log_lines=forensics.get("gateway_log", {}).get("total_lines"))
-    rc = asyncio.run(run(info, args.prompt))
+    info: dict = {}
+    pid = None
+    rc = 0
+    try:
+        info = connect_gateway_info()
+        forensics = instance_forensics(info)
+        save_evidence("instance-forensics", forensics)
+        pid = (forensics.get("pid_file") or {}).get("pid")
+        log("instance forensics", pid=pid,
+            win32=bool(forensics.get("win32_process", {}).get("output")),
+            log_lines=forensics.get("gateway_log", {}).get("total_lines"))
+        rc = asyncio.run(run(info, args.prompt))
+    except SystemExit as exc:
+        # 内层 sys.exit（如 ensure 失败）不直接终止：先走 finally 清理可能半启动的实例
+        rc = rc or int(exc.code or 1)
+    except Exception as exc:  # noqa: BLE001 - 可捕获异常也必须清理
+        log("PROBE EXCEPTION", error=f"{type(exc).__name__}: {exc}")
+        rc = rc or 1
+    finally:
+        # 心跳门禁：证据可信且本次运行前后 /heartbeat 计数差为 0。
+        # 空 home（无 mcp-stderr）按 0 基线放行并标 no-mcp-log；存在但读不了才算未知。
+        beats_after = mcp_log_snapshot()
+        rc, verdict, delta = heartbeat_gate(rc, beats_before, beats_after)
+        save_evidence("heartbeat-diff", {
+            "before": beats_before, "after": beats_after,
+            "baseline": beats_after.get("baseline"),
+            "delta": delta, "gate": verdict})
+        log("heartbeat check", before=beats_before["heartbeat_count"],
+            after=beats_after["heartbeat_count"], delta=delta, gate=verdict)
+        if verdict == "no-mcp-log":
+            log("no MCP log (empty home): 0 baseline, heartbeat gate skipped")
+        elif verdict == "unknown":
+            log("ISOLATION UNKNOWN (heartbeat): mcp-stderr unreadable/inconsistent")
+        elif verdict == "violation":
+            log("ISOLATION VIOLATION (heartbeat): /heartbeat increased", delta=delta)
 
-    # 心跳门禁：证据必须可读，且本次运行前后 /heartbeat 计数差为 0。
-    # 增量非 0 说明探针仍连到了某个心跳端点（隔离失守）；证据不可读则属未知，都不是成功。
-    beats_after = mcp_log_snapshot()
-    rc, verdict, delta = heartbeat_gate(rc, beats_before, beats_after)
-    save_evidence("heartbeat-diff", {
-        "before": beats_before, "after": beats_after,
-        "readable": verdict != "unknown", "delta": delta, "gate": verdict})
-    log("heartbeat check", before=beats_before["heartbeat_count"],
-        after=beats_after["heartbeat_count"], delta=delta, gate=verdict)
-    if verdict == "unknown":
-        log("ISOLATION UNKNOWN (heartbeat): mcp-stderr unreadable")
-    elif verdict == "violation":
-        log("ISOLATION VIOLATION (heartbeat): /heartbeat increased", delta=delta)
+        # 资源清理：正常完成与可捕获异常都停掉本次实例，并留 stop-after 证据。
+        # 清理失败单独体现（rc=9），不能把未释放的资源算成成功。
+        try:
+            cleanup = stop_instance(info, pid)
+        except Exception as exc:  # noqa: BLE001 - 清理自身的异常同样要如实反映
+            cleanup = {"clean": False, "error": f"{type(exc).__name__}: {exc}"}
+        save_evidence("stop-after", cleanup)
+        log("stop-after", clean=cleanup.get("clean"), port=cleanup.get("port"),
+            pid_alive_after=cleanup.get("pid_alive_after"),
+            gateway_pid_exists=cleanup.get("gateway_pid_exists"),
+            port_listening=cleanup.get("port_listening"))
+        if not cleanup.get("clean"):
+            log("CLEANUP FAILED: gateway resources not released", detail=cleanup)
+            if rc == 0:
+                rc = 9
     log("PROBE DONE", rc=rc, elapsed_s=round(time.time() - t0, 1))
     return rc
 

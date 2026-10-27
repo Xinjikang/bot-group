@@ -96,53 +96,84 @@ class ConfigMcpIssueTest(unittest.TestCase):
         self._write("mcp_servers: { }  # 显式关闭\n")
         self.assertEqual(gw_probe.config_mcp_issue(), "")
 
+    def test_quoted_key_passes(self):
+        # YAML 语义：`"mcp_servers": {}` 与裸键等价，逐行匹配会误杀
+        self._write('"mcp_servers": {}\n')
+        self.assertEqual(gw_probe.config_mcp_issue(), "")
+
     def test_missing_key_rejected(self):
         self._write('model:\n  default: "x"\n')
         self.assertIn("key missing", gw_probe.config_mcp_issue())
 
     def test_null_rejected(self):
         self._write("mcp_servers: null\n")
-        self.assertIn("must be exactly", gw_probe.config_mcp_issue())
+        self.assertIn("empty mapping", gw_probe.config_mcp_issue())
 
     def test_empty_list_rejected(self):
         self._write("mcp_servers: []\n")
-        self.assertIn("must be exactly", gw_probe.config_mcp_issue())
+        self.assertIn("empty mapping", gw_probe.config_mcp_issue())
 
     def test_inline_list_rejected(self):
         self._write("mcp_servers: [fake]\n")
-        self.assertIn("must be exactly", gw_probe.config_mcp_issue())
+        self.assertIn("empty mapping", gw_probe.config_mcp_issue())
 
     def test_block_entry_rejected(self):
         self._write("mcp_servers:\n  fake:\n    command: python\n")
-        self.assertIn("must be exactly", gw_probe.config_mcp_issue())
+        self.assertIn("must be empty", gw_probe.config_mcp_issue())
 
     def test_empty_value_rejected(self):
         self._write("mcp_servers:\n")
-        self.assertIn("must be exactly", gw_probe.config_mcp_issue())
+        self.assertIn("empty mapping", gw_probe.config_mcp_issue())
+
+    def test_duplicate_key_bypass_rejected(self):
+        # node 1326 实测绕过：第一条 {} + 第二条非空，逐行扫描只看第一条
+        self._write("mcp_servers: {}\nmcp_servers:\n  fake:\n    command: python\n")
+        self.assertIn("duplicate key", gw_probe.config_mcp_issue())
+
+    def test_duplicate_key_both_empty_rejected(self):
+        self._write("mcp_servers: {}\nmcp_servers: {}\n")
+        self.assertIn("duplicate key", gw_probe.config_mcp_issue())
+
+    def test_toplevel_not_mapping_rejected(self):
+        self._write("- mcp_servers\n")
+        self.assertIn("not a mapping", gw_probe.config_mcp_issue())
 
 
 class HeartbeatGateTest(unittest.TestCase):
-    """心跳门禁：可读 + 增量 0 才通过；未知与违规都要非零。"""
+    """心跳门禁：空 home 按 0 基线放行；存在但读不了/不一致才非零。"""
 
     @staticmethod
-    def snap(count: int, readable: bool = True) -> dict:
-        return {"readable": readable, "heartbeat_count": count}
+    def snap(count: int, exists: bool = True, readable: bool = True) -> dict:
+        return {"exists": exists, "readable": readable, "heartbeat_count": count}
 
     def test_delta_zero_passes(self):
         self.assertEqual(gw_probe.heartbeat_gate(0, self.snap(33), self.snap(33)),
                          (0, "pass", 0))
+
+    def test_empty_home_no_mcp_log_passes(self):
+        # 空 home（清理后首次运行）：没有 MCP 日志就是没有 MCP，按 0 基线放行
+        self.assertEqual(gw_probe.heartbeat_gate(0, self.snap(0, exists=False, readable=False),
+                                                 self.snap(0, exists=False, readable=False)),
+                         (0, "no-mcp-log", 0))
 
     def test_delta_positive_fails(self):
         self.assertEqual(gw_probe.heartbeat_gate(0, self.snap(33), self.snap(34)),
                          (8, "violation", 1))
 
     def test_unreadable_before_fails(self):
-        self.assertEqual(gw_probe.heartbeat_gate(0, self.snap(0, False), self.snap(0)),
-                         (8, "unknown", None))
+        self.assertEqual(
+            gw_probe.heartbeat_gate(0, self.snap(0, readable=False), self.snap(0)),
+            (8, "unknown", None))
 
     def test_unreadable_after_fails(self):
-        self.assertEqual(gw_probe.heartbeat_gate(0, self.snap(33), self.snap(0, False)),
-                         (8, "unknown", None))
+        self.assertEqual(
+            gw_probe.heartbeat_gate(0, self.snap(33), self.snap(0, readable=False)),
+            (8, "unknown", None))
+
+    def test_one_side_missing_is_unknown(self):
+        self.assertEqual(
+            gw_probe.heartbeat_gate(0, self.snap(33), self.snap(0, exists=False, readable=False)),
+            (8, "unknown", None))
 
     def test_prior_failure_code_preserved(self):
         self.assertEqual(gw_probe.heartbeat_gate(4, self.snap(33), self.snap(34)),
@@ -203,6 +234,55 @@ class McpLogSnapshotTest(unittest.TestCase):
         snap = gw_probe.mcp_log_snapshot()
         self.assertTrue(snap["exists"])
         self.assertFalse(snap["readable"])
+
+
+class StopInstanceTest(unittest.TestCase):
+    """stop-after：pid 存活 / gateway.pid / 端口 LISTENING 三方全干净才算释放（未知不算）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self._orig = (gw_probe.HERMES_HOME, gw_probe.stop_existing_gateway,
+                      gw_probe._pid_alive, gw_probe._port_listening)
+        gw_probe.HERMES_HOME = self.home
+        gw_probe.stop_existing_gateway = lambda: {"rc": 0, "stopped": True}
+
+    def tearDown(self):
+        (gw_probe.HERMES_HOME, gw_probe.stop_existing_gateway,
+         gw_probe._pid_alive, gw_probe._port_listening) = self._orig
+        self.tmp.cleanup()
+
+    def _stub(self, alive, listening):
+        gw_probe._pid_alive = lambda pid: alive
+        gw_probe._port_listening = lambda port: listening
+
+    def test_fully_released_is_clean(self):
+        self._stub(False, False)
+        rec = gw_probe.stop_instance({"api_origin": "127.0.0.1:58123"}, 4242)
+        self.assertTrue(rec["clean"])
+        self.assertEqual(rec["port"], 58123)
+
+    def test_pid_still_alive_not_clean(self):
+        self._stub(True, False)
+        self.assertFalse(
+            gw_probe.stop_instance({"api_origin": "127.0.0.1:58123"}, 4242)["clean"])
+
+    def test_port_still_listening_not_clean(self):
+        self._stub(False, True)
+        self.assertFalse(
+            gw_probe.stop_instance({"api_origin": "127.0.0.1:58123"}, 4242)["clean"])
+
+    def test_unknown_query_state_not_clean(self):
+        # tasklist/netstat 查询失败返回 None：未知，不能当作已释放
+        self._stub(None, None)
+        self.assertFalse(
+            gw_probe.stop_instance({"api_origin": "127.0.0.1:58123"}, 4242)["clean"])
+
+    def test_gateway_pid_file_left_not_clean(self):
+        self._stub(False, False)
+        (self.home / "gateway.pid").write_text("4242", encoding="utf-8")
+        self.assertFalse(
+            gw_probe.stop_instance({"api_origin": "127.0.0.1:58123"}, 4242)["clean"])
 
 
 if __name__ == "__main__":
