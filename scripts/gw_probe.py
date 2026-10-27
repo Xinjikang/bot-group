@@ -16,9 +16,9 @@
 隔离边界：代码在独立 worktree（`.probe-worktrees/hermes-v0225`），
 持久测试数据在引擎分配的 test-data 下（`<test-data>/task-250/gw-probe-home` 与
 `hermes-pm-store`）；不碰生产配置/数据/进程。网关由 ensure_gateway_runtime 拉起（非独立 serve），
-脚本**不自动停止**网关：结束时须显式执行 gateway stop 子命令（经 pm 环境 python
-`-m hermes_cli.main`，HERMES_HOME/HERMES_RUNTIME_DIR 指向探针目录），并核对目标端口
-无 LISTENING、gateway.pid 不存在。
+脚本**不自动停止**网关：结束时须显式执行 gateway stop 子命令（本 home 的
+`bin/hermes.exe`，由 setup 在该 home 重新安装发布；HERMES_HOME/HERMES_RUNTIME_DIR
+指向探针目录），并核对目标端口无 LISTENING、gateway.pid 不存在。
 真实网关证据：所有回执原样落盘 evidence 目录，禁止 mock。
 
 隔离门禁（任一不满足即失败，不得假绿）：
@@ -59,6 +59,7 @@ PROBE_DATA = Path(os.environ.get("GW_PROBE_DATA")
                      r"\ws_6043478a1e82665dc05e9604\test-data")
 HERMES_HOME = PROBE_DATA / "task-250" / "gw-probe-home"      # 独立 profile 数据根（绝不指向生产）
 HERMES_RUNTIME = PROBE_DATA / "task-250" / "hermes-pm-store"  # pm 依赖存储
+HERMES_CLI = HERMES_HOME / "bin" / "hermes.exe"  # setup 在本 home 发布的官方入口
 # 依赖环境：hermes pm 装在 HERMES_HOME/installs/<install>/environments/<env>/venv
 # （pm repair 产物，ruamel/fastapi/websockets 全在此解释器）；PYTHONPATH 指向 worktree 源码根。
 import glob as _glob  # noqa: E402
@@ -272,12 +273,15 @@ def stop_existing_gateway() -> dict:
     ensure_gateway_runtime 会 attach 已存在的网关，而旧实例的 env/config 可能与本轮
     preflight 不同（正是第二次隔离事故的成因）。停止后再启动，保证校验对象与被测对象一致。
 
-    经 pm 环境的 python 直调 CLI（`python -m hermes_cli.main gateway stop`），
-    不依赖 `.hermes/bin/hermes.exe` shim——该 shim 内嵌生成时的绝对路径，目录迁移后失效。
+    经本 home 的官方 CLI（`<HERMES_HOME>/bin/hermes.exe`）执行：home 采用重新安装
+    而非移动，CLI 元数据天然绑定当前路径；同时避免 attach 旧实例。
     """
-    record: dict = {"cli": f"{PROBE_PYTHON.name} -m hermes_cli.main gateway stop"}
+    if not HERMES_CLI.exists():
+        return {"cli": str(HERMES_CLI), "cli_exists": False, "rc": None,
+                "stopped": False, "output": "hermes CLI missing under HERMES_HOME/bin"}
+    record: dict = {"cli": str(HERMES_CLI), "cli_exists": True}
     try:
-        r = subprocess.run([str(PROBE_PYTHON), "-m", "hermes_cli.main", "gateway", "stop"],
+        r = subprocess.run([str(HERMES_CLI), "gateway", "stop"],
                            capture_output=True, text=True, env=probe_env(),
                            timeout=180, cwd=str(WORKTREE_SRC))
     except subprocess.TimeoutExpired:
@@ -349,8 +353,8 @@ def connect_gateway_info() -> dict:
         pid_file = HERMES_HOME / "gateway.pid"
         if pid_file.exists():
             log("cleanup required: leftover gateway", pid_file=str(pid_file),
-                hint="run gateway stop via python -m hermes_cli.main with probe "
-                     "HERMES_HOME/HERMES_RUNTIME_DIR")
+                hint="run gateway stop with probe HERMES_HOME/HERMES_RUNTIME_DIR "
+                     "(CLI: <HERMES_HOME>/bin/hermes.exe)")
         sys.exit(1)
     log("ensure_gateway OK", api_origin=info["api_origin"],
         instance_id=info["instance_id"][:12] + "…")
@@ -513,6 +517,48 @@ def heartbeat_gate(rc: int, before: dict, after: dict) -> tuple[int, str, int | 
     return rc, "pass", delta
 
 
+def instance_forensics(info: dict) -> dict:
+    """实例归属三方对齐（PID 不单独作准）。
+
+    三方 = gateway.pid 记录（argv/hermes_home/start） + Win32_Process 的
+    CommandLine/CreationDate + 日志 inbound/stop 时间。任一方缺失即如实留空，
+    不推断归属。
+    """
+    rec: dict = {"instance_id": info.get("instance_id"), "api_origin": info.get("api_origin")}
+    pid_file = HERMES_HOME / "gateway.pid"
+    pid = None
+    if pid_file.exists():
+        raw = pid_file.read_text(encoding="utf-8", errors="replace")
+        rec["pid_file_raw"] = raw[:800]
+        try:
+            meta = json.loads(raw)
+            pid = meta.get("pid")
+            rec["pid_file"] = {k: meta.get(k) for k in
+                               ("pid", "hermes_home", "api_origin", "started_at", "argv")}
+        except json.JSONDecodeError:
+            rec["pid_file_parse"] = "not json"
+    if pid:
+        try:
+            r = subprocess.run(["wmic", "process", "where", f"processid={pid}",
+                                "get", "CommandLine,CreationDate", "/format:list"],
+                               capture_output=True, text=True, timeout=30)
+            rec["win32_process"] = {"pid": pid, "rc": r.returncode,
+                                    "output": (r.stdout or "").strip()[:1200]}
+        except (OSError, subprocess.SubprocessError) as exc:
+            rec["win32_process"] = {"pid": pid, "error": f"{type(exc).__name__}: {exc}"}
+    log_file = HERMES_HOME / "logs" / "gateway.log"
+    if log_file.exists():
+        try:
+            lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            hits = [ln for ln in lines
+                    if "gateway" in ln.lower()
+                    and any(k in ln.lower() for k in ("start", "stop", "inbound"))]
+            rec["gateway_log"] = {"total_lines": len(lines), "recent": hits[-6:]}
+        except OSError as exc:
+            rec["gateway_log"] = {"error": str(exc)}
+    return rec
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prompt", default="请只回复两个字：收到")
@@ -527,6 +573,11 @@ def main() -> int:
         return 0
     beats_before = pre["heartbeat_baseline"]
     info = connect_gateway_info()
+    forensics = instance_forensics(info)
+    save_evidence("instance-forensics", forensics)
+    log("instance forensics", pid=(forensics.get("pid_file") or {}).get("pid"),
+        win32=bool(forensics.get("win32_process", {}).get("output")),
+        log_lines=forensics.get("gateway_log", {}).get("total_lines"))
     rc = asyncio.run(run(info, args.prompt))
 
     # 心跳门禁：证据必须可读，且本次运行前后 /heartbeat 计数差为 0。
