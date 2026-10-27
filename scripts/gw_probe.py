@@ -282,6 +282,27 @@ async def run(info: dict, prompt_text: str) -> int:
             return 5
         log("isolation confirmed", mcp_servers=[]) 
 
+        # session.resume 独立路径（验收 2：须独立取得 resume 回执，非仅 create 内部 resume+attach）。
+        # 先 detach 断开本连接订阅，再 resume 重新挂载。
+        subscription_id = created.get("subscription_id")
+        await rpc(ws, "session.detach", {
+            "session_id": session_id, "subscription_id": subscription_id})
+        resumed = await rpc(ws, "session.resume", {"session_id": session_id})
+        save_evidence("session-resume", resumed)
+        resumed_mcp = (resumed.get("info") or {}).get("mcp_servers") or []
+        save_evidence("session-resume-mcp-servers", {"mcp_servers": resumed_mcp})
+        log("session resumed", session_id=str(resumed.get("session_id"))[:20] + "…",
+            epoch=resumed.get("authority_epoch"),
+            message_count=resumed.get("message_count"),
+            subscription_id=str(resumed.get("subscription_id"))[:12] + "…")
+        if resumed.get("session_id") != session_id:
+            log("RESUME ID MISMATCH", expected=session_id, got=resumed.get("session_id"))
+            return 7
+        if resumed_mcp:
+            log("ISOLATION VIOLATION (resume): mcp_servers not empty", servers=resumed_mcp)
+            return 5
+        log("isolation confirmed (resume)", mcp_servers=[])
+
         # 提交（session.create 已建订阅）。
         # v0.22.5 实测语义（session_finite.py:47/_may_run_unattended）：unattended=true
         # 必须 finite=true 同传，且仅 cli 平台会话 + 本地 creator 允许——tool 会话
