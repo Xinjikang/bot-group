@@ -108,8 +108,8 @@ asyncio.run(main())
 
 
 # 子进程环境白名单：只放行 Windows/Python 运行必需的基础变量。
-# 绝不继承 HERMES_*、GROUP_ENGINE*、XDG_*、TASK_QUEUE* 等会引入生产指向或 managed scope 的变量；
-# 模型凭据由隔离 home 的 .env 提供，不经父进程环境传递。
+# 绝不继承 HERMES_*、GROUP_ENGINE*、XDG_GROUP_ENGINE*、TASK_QUEUE*（managed scope 会经
+# HERMES_MANAGED_DIR 注入 mcp_servers，含生产 URL 与成员凭据）；模型凭据由隔离 home 的 .env 提供。
 _ENV_ALLOW = {
     "PATH", "PATHEXT", "COMSPEC", "SYSTEMROOT", "SystemRoot", "WINDIR",
     "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
@@ -118,6 +118,15 @@ _ENV_ALLOW = {
     "PYTHONIOENCODING", "PYTHONUTF8", "PYTHONHOME", "PYTHONPATH",
 }
 
+# 显式排除清单（安全审查要求；白名单已从机制上排除，此处用于自检与审计留痕）。
+_FORBIDDEN_ENV = (
+    "HERMES_MANAGED_DIR", "HERMES_PROFILE", "HERMES_CHAT_MODE",
+    "GROUP_ENGINE_URL", "GROUP_ENGINE_HOST", "GROUP_ENGINE_PORT", "GROUP_ENGINE_TOKEN",
+    "XDG_GROUP_ENGINE_URL", "XDG_GROUP_ENGINE_TOKEN", "XDG_GROUP_ENGINE_EXECUTION",
+    "TASK_QUEUE_ROLE",
+)
+_SENSITIVE_PREFIX = ("HERMES_", "GROUP_ENGINE", "XDG_GROUP_ENGINE", "TASK_QUEUE")
+
 
 def probe_env() -> dict:
     """构造探针子进程环境：白名单基础变量 + 隔离 home/runtime，其他一律不继承。"""
@@ -125,8 +134,73 @@ def probe_env() -> dict:
     env["HERMES_HOME"] = str(HERMES_HOME)
     env["HERMES_RUNTIME_DIR"] = str(PROBE_ROOT / "hermes-pm-store")
     env["PYTHONPATH"] = str(WORKTREE_SRC)
-    env.pop("HERMES_MANAGED_DIR", None)
+    for k in _FORBIDDEN_ENV:
+        env.pop(k, None)
     return env
+
+
+def env_snapshot() -> dict:
+    """脱敏环境快照：只记父进程/子进程环境里敏感变量键名，不落值（URL 与凭据不外泄）。"""
+    parent = sorted(k for k in os.environ if k.startswith(_SENSITIVE_PREFIX))
+    child = sorted(k for k in probe_env() if k.startswith(_SENSITIVE_PREFIX))
+    return {
+        "parent_sensitive_keys": parent,
+        "child_sensitive_keys": child,
+        "child_isolation_ok": all(k in ("HERMES_HOME", "HERMES_RUNTIME_DIR") for k in child),
+        "forbidden_in_child": [k for k in _FORBIDDEN_ENV if k in probe_env()],
+    }
+
+
+def config_mcp_issue() -> str:
+    """检查探针 home 的 config.yaml 是否含非空 mcp_servers；返回问题描述（空串=通过）。"""
+    cfg = HERMES_HOME / "config.yaml"
+    if not cfg.exists():
+        return "config.yaml missing"
+    lines = cfg.read_text(encoding="utf-8", errors="replace").splitlines()
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if not s.startswith("mcp_servers:"):
+            continue
+        rest = s.split(":", 1)[1].strip()
+        if rest not in ("", "{}", "[]", "null", "~"):
+            return f"mcp_servers inline value: {rest}"
+        base_indent = len(line) - len(line.lstrip())
+        for nxt in lines[i + 1:]:
+            if not nxt.strip() or nxt.strip().startswith("#"):
+                continue
+            indent = len(nxt) - len(nxt.lstrip())
+            if indent <= base_indent:
+                break
+            return f"mcp_servers block entry: {nxt.strip()}"
+        return ""
+    return ""
+
+
+def mcp_log_snapshot() -> dict:
+    """记录探针 home 的 mcp-stderr 日志里 /heartbeat 计数与末条，用于前后对比证明无新增。"""
+    p = HERMES_HOME / "logs" / "mcp-stderr.log"
+    if not p.exists():
+        return {"exists": False, "heartbeat_count": 0, "last_heartbeat": ""}
+    beats = [ln.strip() for ln in p.read_text(encoding="utf-8", errors="replace").splitlines()
+             if "/heartbeat" in ln]
+    return {"exists": True, "heartbeat_count": len(beats),
+            "last_heartbeat": beats[-1] if beats else ""}
+
+
+def preflight() -> None:
+    """启动网关前的隔离校验。任一不通过即终止，绝不启动真实网关。"""
+    snap = env_snapshot()
+    save_evidence("env-snapshot", snap)
+    log("preflight env", child_sensitive_keys=snap["child_sensitive_keys"],
+        forbidden_in_child=snap["forbidden_in_child"])
+    if snap["forbidden_in_child"]:
+        log("PREFLIGHT FAILED: forbidden env in child", keys=snap["forbidden_in_child"])
+        sys.exit(6)
+    issue = config_mcp_issue()
+    if issue:
+        log("PREFLIGHT FAILED: probe home config has mcp_servers", issue=issue)
+        sys.exit(6)
+    log("preflight ok", config_mcp="empty-or-absent", heartbeat_baseline=mcp_log_snapshot())
 
 
 def connect_gateway_info() -> dict:
@@ -182,15 +256,13 @@ async def run(info: dict, prompt_text: str) -> int:
             profile_id=described.get("profile_id"),
             epoch=described.get("authority_epoch"), capabilities=caps)
 
-        # 建会话（内部 resume+attach，返回 SubscriptionSnapshot）
+        # 建会话（内部 resume+attach，返回 CanonicalSnapshot：顶层 session_id，无 handle）
         created = await rpc(ws, "session.create", {
             "request_id": f"probe-create-{int(time.time())}",
             "source": "tool",  # v0.22.5 SURFACES 白名单：cli/tui/gui/acp/tool/oneshot
             "cwd": str(PROBE_ROOT),
         })
         save_evidence("session-create", created)
-        # v0.22.5 实际响应为扁平 SubscriptionSnapshot：session_id 在顶层
-        #（call-table 描述的 handle.ref 包装在实测响应中不存在——以运行证据为准）
         session_id = created.get("session_id")
         log("session created", session_id=str(session_id)[:20] + "…",
             epoch=created.get("authority_epoch"),
@@ -198,6 +270,17 @@ async def run(info: dict, prompt_text: str) -> int:
             generation=created.get("execution_generation"),
             revision=created.get("revision"))
         assert session_id, "未拿到 session_id"
+
+        # 隔离硬断言（隔离失守防线）：会话内的 MCP server 必须为空。
+        # 非空说明 managed scope 或 profile 配置注入成功——可能挂着生产写工具与心跳，
+        # 立即中止，不提交任何 prompt。
+        mcp_servers = (created.get("info") or {}).get("mcp_servers") or []
+        save_evidence("session-mcp-servers", {"mcp_servers": mcp_servers})
+        if mcp_servers:
+            names = [(m.get("name"), m.get("tools"), m.get("status")) for m in mcp_servers]
+            log("ISOLATION VIOLATION: mcp_servers not empty", servers=names)
+            return 5
+        log("isolation confirmed", mcp_servers=[]) 
 
         # 提交（session.create 已建订阅）。
         # v0.22.5 实测语义（session_finite.py:47/_may_run_unattended）：unattended=true
@@ -261,8 +344,18 @@ def main() -> int:
     parser.add_argument("--prompt", default="请只回复两个字：收到")
     args = parser.parse_args()
     t0 = time.time()
+    # 启动前隔离校验：环境白名单 + 探针 home 的 mcp_servers 为空；不通过即终止，绝不拉起网关。
+    preflight()
+    beats_before = mcp_log_snapshot()
     info = connect_gateway_info()
     rc = asyncio.run(run(info, args.prompt))
+    # 心跳对比：本次运行前后 mcp-stderr 的 /heartbeat 计数差，证明未向生产引擎发心跳。
+    beats_after = mcp_log_snapshot()
+    save_evidence("heartbeat-diff", {
+        "before": beats_before, "after": beats_after,
+        "delta": beats_after["heartbeat_count"] - beats_before["heartbeat_count"]})
+    log("heartbeat check", before=beats_before["heartbeat_count"],
+        after=beats_after["heartbeat_count"])
     log("PROBE DONE", rc=rc, elapsed_s=round(time.time() - t0, 1))
     return rc
 
