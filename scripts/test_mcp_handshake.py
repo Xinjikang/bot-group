@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.unified_test_support import isolated_api, isolated_database, server_parameters
-from engine import db
+from engine import auth, db
 import json
 from scripts.unified_test_support import REQUIREMENT_FIELDS
 
@@ -43,24 +43,30 @@ async def main():
                 print(f'PASS: unified MCP exposes both tool groups ({len(names)} tools)')
         for mode in ('0', '1'):
             params = server_parameters(path, url)
-            params.env.update({'TASK_QUEUE_ROLE': 'arbitrary-profile', 'HERMES_PROFILE': 'arbitrary-profile', 'HERMES_CHAT_MODE': mode})
+            params.env.update({'TASK_QUEUE_ROLE': 'arbitrary-profile', 'HERMES_PROFILE': 'arbitrary-profile',
+                               'GROUP_ENGINE_TOKEN': auth.bot_token('arbitrary-profile'), 'HERMES_CHAT_MODE': mode})
             async with stdio_client(params) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
-                    names = {tool.name for tool in (await session.list_tools()).tools}
+                    mode_tools = {tool.name: tool for tool in (await session.list_tools()).tools}
+                    names = set(mode_tools)
                     assert {'req_create', 'task_update', 'req_cancel', 'task_cancel', 'req_complete',
                             'req_resume', 'task_resume'} <= names
                     from engine.wake import _MCP_TOOLS
                     assert {'req_update', 'req_resume', 'task_resume'} <= set(_MCP_TOOLS)
                     # req#117 #199：task_create 双入口开放；领取/开发/交付工具仍仅 WORK 注册。
                     assert 'task_create' in names
+                    create_description = mode_tools['task_create'].description
+                    assert '指定第一个接手人' in create_description, mode
+                    assert '沿用同一个 task_id' in create_description, mode
                     for name in ('task_claim', 'task_log', 'task_complete', 'task_block'):
                         assert (name in names) == (mode == '0'), (mode, name)
-                    response = await session.call_tool('req_create', {'project': 'alpha', 'title': 'denied'})
-                    assert json.loads(response.content[0].text)['code'] == 'permission_denied'
                     conn = db.get_connection()
                     conn.execute("INSERT OR IGNORE INTO members(profile,display_name) VALUES('arbitrary-profile','Arbitrary')")
                     conn.execute("INSERT OR IGNORE INTO project_members(project,profile,active) VALUES('alpha','arbitrary-profile',1)")
+                    conn.commit()
+                    response = await session.call_tool('req_create', {'project': 'alpha', 'title': 'denied'})
+                    assert json.loads(response.content[0].text)['code'] == 'permission_denied'
                     conn.execute("INSERT INTO project_permissions VALUES('alpha','arbitrary-profile','req.create')")
                     conn.commit()
                     response = await session.call_tool('req_create', {'project': 'alpha', 'title': 'granted', **REQUIREMENT_FIELDS})

@@ -1,6 +1,6 @@
 {
   "id": "software",
-  "version": "1.5.4",
+  "version": "1.5.5",
   "owner_role_id": "owner",
   "name": "软件研发",
   "description": "开发自测、审查合并与验收关闭；用户指令启动独立的 release 版本测试流程。",

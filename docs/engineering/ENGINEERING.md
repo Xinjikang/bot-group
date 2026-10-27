@@ -88,6 +88,10 @@ HTTP 路由以 `engine/api.py`、`engine/main.py` 为准。FastAPI 默认 `/docs
 
 任务创建与推进要求父需求处于 `open/blocked` 且未归档；领取、扫描和重试使用相同门禁。拆解完成要求所有未取消任务已发布且说明完整，失败时本次创建事务回滚。详细行为见 [生命周期门禁](ACCESS-CONTROL.md#需求终态与任务推进)。
 
+需求、任务、节点构成 `requirement → task → node` 三层结构。task 按业务目标或模块建立，创建时通过 `next_bot` 指定第一个接手人并产生拆解 node。一个 task 保持同一 ID，按项目流程由多个成员接力；后续 node 随实际执行追加，记录各环节的成果、问题和证据。`task_log` 写入本环节 node，将原 task 转回 pending 并交给下一成员；下一成员在 work 中领取该任务继续当前环节。验收成员按权限在待其处理的 pending 状态调用 `task_complete`，写入验收节点并关闭该链。任务内环节通过节点和交接推进，`prerequisites` 表达不同任务之间的成果依赖。
+
+三层定义由 `engine/wake.py` 的公共系统提示词提供，覆盖 work/chat；`task_create` 工具说明明确第一个接手人的含义。六类模板的 AGENTS.md 展示具体任务链流程、链内返修及需求关闭条件，软件模板另展示独立版本测试链。模板版本随流程说明更新，已有项目文件按维护者授权另行更新。维护边界见[提示词与项目约定](../design/bot-group-copy-edit-checklist.md)。
+
 ## 5. 调度、消息与会话
 
 ### 消息与话题

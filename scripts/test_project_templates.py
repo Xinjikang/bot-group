@@ -131,6 +131,22 @@ class TemplateTests(unittest.TestCase):
                 self.assertIn('具体接手人', agents)
                 self.assertNotIn('next_bot', agents)
                 self.assertNotIn('expected_role_id', agents)
+                self.assertIn('指定第一个接手人', agents)
+                self.assertIn('始终使用同一个 task ID', agents)
+                self.assertNotIn('requirement → task → node', agents)
+                flows = re.findall(r'```text\n(requirement[^`]+)```', agents)
+                self.assertEqual(len(flows), 2 if name == 'software' else 1)
+                for flow in flows:
+                    chains = [line for line in flow.splitlines() if re.match(r'[├└]─ task ', line)]
+                    self.assertEqual(len(chains), 2, (name, flow))
+                    self.assertTrue(chains[0].startswith('├─ task A'))
+                    self.assertTrue(chains[1].startswith('└─ task B'))
+                    for chain in chains:
+                        self.assertGreaterEqual(chain.count(' → '), 4, (name, chain))
+                        self.assertTrue(chain.endswith(' → done'), (name, chain))
+                    self.assertIn('沿用该 task ID', flow)
+                    self.assertIn('全部 task done → 关闭 requirement', flow)
+                    self.assertNotIn('{{ROLE_', flow)
                 self.assertEqual(len(result['applied_team']['role_ids']), len(body['roles']))
         self.assert_host_changes(before)
         EVIDENCE['bot_configuration'] = {'files': len(before), 'only_project_grants_and_backups_changed': True}

@@ -16,6 +16,20 @@ from engine import wake  # noqa: E402
 
 
 class PromptEntryPointTests(unittest.TestCase):
+    def test_task_hierarchy_and_handoff_reach_both_modes(self):
+        for kind in ('work', 'chat'):
+            with self.subTest(kind=kind):
+                prompt = wake.system_prompt_for(kind)
+                self.assertEqual(prompt.count('## 需求、任务链与节点（三层结构）'), 1)
+                self.assertLess(prompt.index('requirement → task → node'), prompt.index('## 协作规则'))
+                for contract in ('├─ task A', '│  ├─ node 1', '└─ task B',
+                                 '始终保持同一个 task_id', '指定第一个接手人',
+                                 '后续 node 随工作发生逐条产生', '领取同一个 task',
+                                 'prerequisites 表达不同 task 之间的成果依赖'):
+                    self.assertIn(contract, prompt)
+                self.assertEqual(prompt.count('指定第一个接手人'), 1)
+        self.assertNotIn('开工等任务池里有你的名字', wake.system_prompt_for('chat'))
+
     def test_permission_denial_and_chat_handoff_are_static(self):
         for kind in ("work", "chat"):
             prompt = wake.system_prompt_for(kind)

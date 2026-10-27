@@ -353,7 +353,10 @@ def task_create(project: str, requirement_id: int, tasks: list,
     draft=true 可保存待补全草稿，草稿不会派发；task_update(publish=true) 发布。
     prerequisites 保存同项目的前置任务 ID，全部 done 才派发；priority 已退役。
     先建前置任务取得 ID，再建后续任务；或先创建草稿，补齐依赖后发布。
-    next_bot 是从 group_list_members 项目花名册选定的具体成员 profile，
+    创建任务时通过 next_bot 指定第一个接手人，使用 group_list_members 项目花名册中的具体成员 profile。
+    一个 task 按项目流程由多个成员接力；首位成员完成本环节后通过 task_log 将原任务交给下一成员，
+    后续设计、执行、评审、返修和验收沿用同一个 task_id。
+    next_bot 使用具体成员 profile，
     不是角色统称（如 fe-dev）。写统称会导致 bot 无法 claim。
 
     需求拆解状态机（req#117）：首次拆解自动原子占用需求并返回 credential（有效期 30 分钟，

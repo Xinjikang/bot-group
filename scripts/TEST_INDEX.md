@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+任务链与三层结构提示：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_prompt_entry_points scripts.test_project_templates scripts.test_template_role_rename scripts.test_product_prototype_template scripts.test_algorithm_template scripts.test_testing_template scripts.test_flow -q`，随后运行 `.venv\Scripts\python.exe -X utf8 -B scripts/test_mcp_handshake.py`。覆盖 work/chat 公共定义、六类模板预览与落盘中的完整任务链及返修路径、角色替换、同一任务的实际节点流转，以及两种模式真实 MCP 暴露的第一个接手人说明。使用隔离 SQLite、项目和宿主配置；这些检查验证提示与工具契约，真实模型的自主拆解行为需在隔离场景另行验收。
+
 Hermes 兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_compatibility scripts.test_execution_errors scripts.test_install scripts.test_hermes_transport scripts.test_runtime_fork -q`。覆盖新旧 ID、入口与源码身份、静态能力、导入错误、配置提示、多行传输及 Codex 隔离。对 v0.21.1 `cdf4c765` 和 v0.21.3 `afc3b7c6f3` 的真实源码分别执行 `.venv\Scripts\python.exe -X utf8 -B scripts/verify_hermes_compatibility.py --source <源码目录>`；脚本在临时 home/SQLite 与独立子进程中检查创建、恢复、标题迁移、历史保留、`/new`、generation、压缩续接、失效绑定及重启恢复。源码只读，使用本地已取得的对应提交，报告保存到项目主目录。契约见 [Hermes 兼容性](../docs/engineering/HERMES-COMPATIBILITY.md)。
 
 Hermes 兼容性配套回归：设置 `HERMES_TEST_SOURCE` 为本机 Hermes 源码根，运行 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_maintenance_namespace scripts.test_slash_injection_review scripts.test_service -q`，验证实际会话 API 与维护模块双向导入、会话控制和安装/启动入口共存。
