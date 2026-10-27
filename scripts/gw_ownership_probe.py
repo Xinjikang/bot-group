@@ -1,4 +1,4 @@
-"""#253 真实隔离 task_queue + 项目 MCP 的归属/并发/凭据验证（E1–E8）。
+"""#253 真实隔离 task_queue + 项目 MCP 的归属/并发/凭据验证（E1–E9）。
 
 与 gw_mcp_probe.py 的分工：
   gw_mcp_probe.py  验证网关侧 MCP 注入（固定配置 / editor_mcp / 反向隔离）；
@@ -32,7 +32,9 @@
   E6 工具集     chat 进程 task 工具物理不存在，work 进程存在；
   E7 并发       同 profile 三个执行同时读写，各自落点正确、无串台；
   E8 凭据       旧执行凭据在 wake_run 结束/被超越/重启/换密钥后的真实响应；
-                新执行重新绑定成功；与网关 session ticket 一次性区分。
+                新执行重新绑定成功；与网关 session ticket 一次性区分；
+  E9 网关端到端  隔离网关显式加载引擎生成的 managed overlay，会话可见 task_queue，
+                模型真实调用工具返回隔离库话题数据（真实 project/thread，非 tag 回显）。
 """
 from __future__ import annotations
 
@@ -53,9 +55,11 @@ ROOT = Path(r"E:\Code\bot-group")
 PY = ROOT / ".venv" / "Scripts" / "python.exe"
 BASE = Path(r"E:\Code\.bot-group-resources\dcc5f7fd43510c8f\ws_6043478a1e82665dc05e9604"
             r"\test-data\task-253\ownership")
-DATA = BASE / "engine"
-DB = DATA / "group-test.db"
-HOME = BASE / "home"
+RUN = time.strftime("%H%M%S")
+# 每次运行独立数据目录：旧库不会被复用，E1 的计数断言只对本场景行成立。
+DATA = BASE / f"run-{RUN}" / "engine"
+DB = DATA / "group.db"
+HOME = BASE / f"run-{RUN}" / "home"
 EVIDENCE = ROOT / "reports" / "research" / "hermes-gateway" / "evidence-2026-10-28-task253-ownership"
 SCRATCH = Path(r"E:\home\admin\hermes\profiles\be-dev-01\cache\scratch")
 MCP = ROOT / "mcp" / "server.py"
@@ -69,7 +73,6 @@ KEY = "test-key-253"
 KEY2 = "test-key-253-rotated"
 ADMIN_PW = "test-admin-253"
 
-RUN = time.strftime("%H%M%S")
 EVID: list[dict] = []
 
 
@@ -441,6 +444,26 @@ def e2_config(eng: Engine, threads: dict) -> dict:
     import yaml
     cfg = yaml.safe_load((Path(overlay_dir) / "config.yaml").read_text(encoding="utf-8"))
     entry = ((cfg.get("mcp_servers") or {}).get("task_queue") or {})
+
+    # 可证伪对照：父进程设置 HERMES_MANAGED_DIR 时，overlay 必须写自己的目录，
+    # server spec 也不得继承父值。若 hermes_overlay 改为沿用父值，本断言会失败。
+    parent_managed = r"X:\parent-managed-should-not-leak"
+    prev_managed = os.environ.get("HERMES_MANAGED_DIR")
+    os.environ["HERMES_MANAGED_DIR"] = parent_managed
+    control_env = {}
+    control_overlay = None
+    control_dir = None
+    try:
+        control_overlay = mcp_runtime.hermes_overlay(server, control_env, profile_home=None)
+        control_dir = control_env.get("HERMES_MANAGED_DIR")
+    finally:
+        if prev_managed is None:
+            os.environ.pop("HERMES_MANAGED_DIR", None)
+        else:
+            os.environ["HERMES_MANAGED_DIR"] = prev_managed
+    if control_overlay is not None:
+        control_overlay.cleanup()
+
     checks = {
         "command_is_python": str(entry.get("command", "")).lower().endswith("python.exe"),
         "args_points_to_mcp_server": str((entry.get("args") or [""])[0]).endswith("mcp\\server.py")
@@ -455,10 +478,12 @@ def e2_config(eng: Engine, threads: dict) -> dict:
         "lazy_false": entry.get("lazy") is False,
         "connect_timeout_60": entry.get("connect_timeout") == 60,
         "cwd_is_project_root": str(entry.get("cwd", "")).lower() == str(ROOT).lower(),
-        "no_managed_inherited": "HERMES_MANAGED_DIR" in src_env,
+        "managed_dir_override_not_inherited": bool(control_dir) and control_dir != parent_managed
+                                              and "HERMES_MANAGED_DIR" not in env,
     }
     result = {"passed": all(checks.values()), "checks": checks,
               "server_env_keys": sorted(env), "overlay": overlay_dir,
+              "control_managed_dir": control_dir, "parent_managed": parent_managed,
               "token_prefix": str(env.get("GROUP_ENGINE_TOKEN", ""))[:20] + "…",
               "raw_entry": {k: v for k, v in entry.items() if k != "env"}}
     if overlay is not None:
@@ -983,6 +1008,7 @@ def heartbeat() -> dict:
 def main() -> int:
     BASE.mkdir(parents=True, exist_ok=True)
     DATA.mkdir(parents=True, exist_ok=True)
+    HOME.mkdir(parents=True, exist_ok=True)
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     SCRATCH.mkdir(parents=True, exist_ok=True)
     # --only e2,e3,... 只跑指定场景（E1 数据准备与执行上下文始终执行），便于单项复跑。
