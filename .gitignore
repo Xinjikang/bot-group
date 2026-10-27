@@ -22,6 +22,8 @@ group.db.bak_*
 
 # Test/research reports and development/runtime artifacts
 /reports/
+# #250 网关探针隔离运行环境（独立 HERMES_HOME、工具包缓存、hermes-agent 检出）
+.probe-worktrees/
 .hermes-tmp.*
 /appearance/
 /cache/
