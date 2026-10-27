@@ -16,15 +16,15 @@
 隔离边界：代码在独立 worktree（`.probe-worktrees/hermes-v0225`），
 持久测试数据在引擎分配的 test-data 下（`<test-data>/task-250/gw-probe-home` 与
 `hermes-pm-store`）；不碰生产配置/数据/进程。网关由 ensure_gateway_runtime 拉起（非独立 serve），
-脚本**不自动停止**网关：结束时须显式执行 gateway stop 子命令（本 home 的
-`bin/hermes.exe`，由 setup 在该 home 重新安装发布；HERMES_HOME/HERMES_RUNTIME_DIR
-指向探针目录），并核对目标端口无 LISTENING、gateway.pid 不存在。
+脚本**自动清理本次实例**：正常完成与可捕获异常都在 finally 里执行 gateway stop，并落
+`stop-after` 证据（pid 存活 / `gateway.pid` / 端口 LISTENING 三方核验）；清理失败以退出码 9
+体现。启停统一走 pm 环境 `python -m hermes_cli.main`，不依赖任何 launcher。
 真实网关证据：所有回执原样落盘 evidence 目录，禁止 mock。
 
 隔离门禁（任一不满足即失败，不得假绿）：
-  preflight  子进程环境白名单、config 显式 mcp_servers:{}、先停残留网关（强制 fresh）
+  preflight  子进程环境白名单、config 顶层 mcp_servers:{}（YAML 解析，拒重复键）、先停残留网关
   create/resume 后  info 必须为 dict 且显式含 mcp_servers，值为 list 且空
-  运行前后     mcp-stderr 的 /heartbeat 计数必须可读且增量为 0
+  运行前后     mcp-stderr 的 /heartbeat 计数必须可信且增量为 0（空 home 按 0 基线）
 
 退出码：
   0=terminal/completed 且全部门禁通过
@@ -34,7 +34,8 @@
   5=隔离未知或失守（info/mcp_servers 缺失、类型异常或非空）
   6=preflight 拒绝启动（环境/配置/残留网关）
   7=session.resume 返回的 session_id 与 create 不一致
-  8=心跳门禁失败（mcp-stderr 不可读或 /heartbeat 有新增）
+  8=心跳门禁失败（mcp-stderr 不可读/不一致或 /heartbeat 有新增）
+  9=清理失败（网关资源未释放）
 """
 from __future__ import annotations
 
@@ -42,9 +43,11 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # ── 隔离环境常量 ───────────────────────────────────────────────────────────
@@ -371,6 +374,11 @@ def preflight() -> dict:
         # 既非成功也非「无网关运行」：不能假定环境干净
         log("PREFLIGHT FAILED: gateway stop failed", output=stop_rec.get("output"))
         sys.exit(6)
+    # stop 之后等状态收敛：ensure 读到 draining/starting 过渡态会误报未就绪
+    settled = wait_gateway_settled()
+    save_evidence("preflight-gateway-settled", settled)
+    log("preflight gateway settled", state=settled["state"], settled=settled["settled"],
+        waited_s=settled["waited_s"])
     pid_file = HERMES_HOME / "gateway.pid"
     if pid_file.exists():
         log("PREFLIGHT FAILED: gateway.pid still present after stop", path=str(pid_file))
@@ -385,30 +393,75 @@ def preflight() -> dict:
         heartbeat_baseline=baseline["heartbeat_count"],
         baseline=baseline.get("baseline"),
         last_heartbeat=baseline["last_heartbeat"])
-    return {"env": snap, "stop": stop_rec, "heartbeat_baseline": baseline}
+    return {"env": snap, "stop": stop_rec, "settled": settled,
+            "heartbeat_baseline": baseline}
 
 
-def connect_gateway_info() -> dict:
-    """在 v0.22.5 依赖环境（pm store python）里跑官方连接三步，回传 ws url + subprotocols。"""
-    env = probe_env()
+def wait_gateway_settled(timeout: float = 20.0) -> dict:
+    """stop 之后等 `gateway_state.json` 收敛，避免 ensure 读到 draining/starting 过渡态。"""
+    p = HERMES_HOME / "gateway_state.json"
+    t0 = time.monotonic()
+    last: str | None = None
+    while True:
+        if not p.exists():
+            return {"exists": False, "state": "absent", "settled": True,
+                    "waited_s": round(time.monotonic() - t0, 1)}
+        try:
+            last = (json.loads(p.read_text(encoding="utf-8", errors="replace")) or {}).get(
+                "gateway_state")
+        except (json.JSONDecodeError, OSError):
+            last = None
+        if last in (None, "stopped"):
+            return {"exists": True, "state": last, "settled": True,
+                    "waited_s": round(time.monotonic() - t0, 1)}
+        if time.monotonic() - t0 >= timeout:
+            return {"exists": True, "state": last, "settled": False,
+                    "waited_s": round(time.monotonic() - t0, 1)}
+        time.sleep(0.5)
+
+
+def _ensure_once() -> dict:
+    """跑一次官方连接三步（子进程），返回 (info, stderr)；不判成败。"""
     r = subprocess.run([str(PROBE_PYTHON), "-X", "utf8", "-c", CONNECT_CODE,
                         str(HERMES_HOME), str(ENSURE_GATEWAY_TIMEOUT)],
-                       capture_output=True, text=True, env=env, timeout=600,
+                       capture_output=True, text=True, env=probe_env(), timeout=600,
                        cwd=str(WORKTREE_SRC))
     out = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "{}"
-    info = json.loads(out)
-    if not info.get("ok"):
-        log("ensure_gateway FAILED", state=info.get("state"), reason=info.get("reason"),
-            detail=str(info.get("detail", ""))[:300], stderr=r.stderr[-500:])
-        pid_file = HERMES_HOME / "gateway.pid"
-        if pid_file.exists():
-            log("cleanup required: leftover gateway", pid_file=str(pid_file),
-                hint="run gateway stop with probe HERMES_HOME/HERMES_RUNTIME_DIR "
-                     "(CLI: <HERMES_HOME>/bin/hermes.exe)")
-        sys.exit(1)
-    log("ensure_gateway OK", api_origin=info["api_origin"],
-        instance_id=info["instance_id"][:12] + "…")
-    return info
+    try:
+        info = json.loads(out)
+    except json.JSONDecodeError:
+        info = {"ok": False, "state": "unparsable", "detail": out[:300]}
+    return {"info": info, "stderr": (r.stderr or "")[-500:]}
+
+
+def connect_gateway_info(max_attempts: int = 3, delay: float = 5.0) -> dict:
+    """在 v0.22.5 依赖环境（pm store python）里跑官方连接三步，回传 ws url + subprotocols。
+
+    ensure 可能读到网关自身的过渡态（draining/starting，例如上一轮 stop 后马上重跑），
+    此时既不是拒绝也不是就绪；重试有限次数后仍不 ready 才判失败，避免把过渡态当故障。
+    """
+    last: dict = {}
+    for attempt in range(1, max_attempts + 1):
+        res = _ensure_once()
+        info = res["info"]
+        if info.get("ok"):
+            log("ensure_gateway OK", api_origin=info.get("api_origin"),
+                instance_id=str(info.get("instance_id", ""))[:12] + "…", attempt=attempt)
+            return info
+        last = res
+        log("ensure_gateway not ready", attempt=attempt, state=info.get("state"),
+            reason=info.get("reason"), detail=str(info.get("detail", ""))[:200])
+        if attempt < max_attempts:
+            time.sleep(delay)
+    info = last.get("info") or {}
+    log("ensure_gateway FAILED", state=info.get("state"), reason=info.get("reason"),
+        detail=str(info.get("detail", ""))[:300], stderr=last.get("stderr", ""))
+    pid_file = HERMES_HOME / "gateway.pid"
+    if pid_file.exists():
+        log("cleanup required: leftover gateway", pid_file=str(pid_file),
+            hint="run gateway stop with probe HERMES_HOME/HERMES_RUNTIME_DIR "
+                 "(pm venv python -m hermes_cli.main gateway stop)")
+    sys.exit(1)
 
 
 # ── WebSocket 客户端（websockets 库，与官方 gateway_client 同参数） ────────
@@ -627,6 +680,121 @@ def stop_instance(info: dict, pid: int | None) -> dict:
     return rec
 
 
+def _parse_pid_start_time(value) -> datetime | None:
+    """解析 gateway.pid 的 start_time。
+
+    Windows 上该值是 psutil `create_time()` 量化后的**厘秒**（见 gateway/status.py
+    `_get_process_start_time`：epoch 秒 × 100），Linux 是 `/proc/<pid>/stat` 的时钟滴答数
+    （跨平台不可比，仅同源比较）。这里按数量级识别秒/厘秒/毫秒/微秒/FILETIME，
+    识别不了就返回 None，不猜。
+    """
+    if value is None:
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    if num <= 0:
+        return None
+    try:
+        if num > 1e16:      # FILETIME：100ns since 1601-01-01
+            return datetime(1601, 1, 1, tzinfo=timezone.utc) + timedelta(microseconds=num / 10)
+        if num > 1e14:      # 微秒 epoch
+            return datetime.fromtimestamp(num / 1e6, tz=timezone.utc)
+        if num > 1e12:      # 毫秒 epoch
+            return datetime.fromtimestamp(num / 1e3, tz=timezone.utc)
+        if num > 1e10:      # 厘秒 epoch（Windows gateway.pid 实测单位）
+            return datetime.fromtimestamp(num / 100, tz=timezone.utc)
+        return datetime.fromtimestamp(num, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _parse_win32_creation(value: str) -> datetime | None:
+    """解析 wmic CreationDate `20261027214403.396228+480`（本地时间 + 时区偏移，单位分钟）。"""
+    if not value:
+        return None
+    m = re.match(r"^(\d{14})\.(\d+)([+-]\d{3})$", value.strip())
+    if not m:
+        return None
+    stamp, frac, tzmin = m.groups()
+    try:
+        dt = datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(
+            microsecond=int(frac.ljust(6, "0")[:6]))
+        sign = 1 if tzmin[0] == "+" else -1
+        return dt.replace(tzinfo=timezone(timedelta(minutes=sign * int(tzmin[1:]))))
+    except ValueError:
+        return None
+
+
+def alignment_verdict(pid_meta: dict, win32_output: str, probe_home: Path) -> dict:
+    """实例归属三方对齐判定（PID 不单独作准）。
+
+    三方 = gateway.pid 记录（pid/hermes_home/argv/start_time）+ Win32_Process
+    （CommandLine/CreationDate）+ 探针 home 路径。只采集不作判定等于没核验，
+    这里显式给出每项比较结果与总判定（aligned / mismatched / partial）。
+    """
+    win_cmd = ""
+    win_created = None
+    for line in (win32_output or "").splitlines():
+        if line.startswith("CommandLine="):
+            win_cmd = line.split("=", 1)[1].strip()
+        elif line.startswith("CreationDate="):
+            win_created = _parse_win32_creation(line.split("=", 1)[1])
+
+    pid_start = _parse_pid_start_time(pid_meta.get("start_time"))
+    delta = None
+    if pid_start and win_created:
+        delta = round(abs((win_created - pid_start).total_seconds()), 3)
+
+    home_ok = None
+    home_raw = pid_meta.get("hermes_home")
+    if home_raw:
+        try:
+            home_ok = (str(Path(str(home_raw)).resolve()).lower()
+                       == str(Path(probe_home).resolve()).lower())
+        except OSError:
+            home_ok = False
+
+    argv = pid_meta.get("argv")
+    argv_text = " ".join(argv) if isinstance(argv, list) else str(argv or "")
+    argv_norm = argv_text.replace("\\", "/")
+    entry = "main.py" if "hermes_cli/main.py" in argv_norm else (
+        "hermes_cli.main" if "hermes_cli.main" in argv_text else "")
+    win_entry = "hermes_cli.main" if "-m hermes_cli.main" in win_cmd else (
+        "main.py" if "hermes_cli/main.py" in win_cmd.replace("\\", "/") else "")
+    # 两种入口写法指向同一 CLI：入口语义等价即可，字符串不同不算冲突
+    entry_equivalent = bool(entry and win_entry
+                            and (entry == win_entry
+                                 or {entry, win_entry} == {"main.py", "hermes_cli.main"}))
+
+    checks = {
+        "start_time_aligned": (delta is not None and delta <= 5.0),
+        "hermes_home_matches": home_ok,
+        "argv_entry_equivalent": entry_equivalent if (entry and win_entry) else None,
+    }
+    if all(v is True for v in checks.values()):
+        verdict = "aligned"
+    elif any(v is False for v in checks.values()):
+        verdict = "mismatched"
+    else:
+        verdict = "partial"
+    return {
+        "pid_file_pid": pid_meta.get("pid"),
+        "pid_start_time_parsed": pid_start.isoformat() if pid_start else None,
+        "win32_creation_parsed": win_created.isoformat() if win_created else None,
+        "start_time_delta_s": delta,
+        "pid_file_hermes_home": home_raw,
+        "win32_commandline": win_cmd[:400],
+        "argv_entry": entry,
+        "win32_entry": win_entry,
+        "argv_note": "gateway.pid 记录 CLI 入口脚本，Win32 CommandLine 记录解释器+模块入口；"
+                     "按入口语义比较，字符串差异本身不构成冲突",
+        "checks": checks,
+        "verdict": verdict,
+    }
+
+
 def instance_forensics(info: dict) -> dict:
     """实例归属三方对齐（PID 不单独作准）。
 
@@ -644,7 +812,8 @@ def instance_forensics(info: dict) -> dict:
             meta = json.loads(raw)
             pid = meta.get("pid")
             rec["pid_file"] = {k: meta.get(k) for k in
-                               ("pid", "hermes_home", "api_origin", "started_at", "argv")}
+                               ("pid", "kind", "hermes_home", "api_origin", "started_at",
+                                "start_time", "gateway_state", "exit_reason", "argv")}
         except json.JSONDecodeError:
             rec["pid_file_parse"] = "not json"
     if pid:
@@ -666,6 +835,11 @@ def instance_forensics(info: dict) -> dict:
             rec["gateway_log"] = {"total_lines": len(lines), "recent": hits[-6:]}
         except OSError as exc:
             rec["gateway_log"] = {"error": str(exc)}
+    # 采集之外必须判定：三方逐项比较 + 总判定，避免「只采集即宣称一致」
+    rec["alignment"] = alignment_verdict(
+        rec.get("pid_file") or {},
+        (rec.get("win32_process") or {}).get("output") or "",
+        HERMES_HOME)
     return rec
 
 
@@ -692,7 +866,12 @@ def main() -> int:
         pid = (forensics.get("pid_file") or {}).get("pid")
         log("instance forensics", pid=pid,
             win32=bool(forensics.get("win32_process", {}).get("output")),
-            log_lines=forensics.get("gateway_log", {}).get("total_lines"))
+            log_lines=forensics.get("gateway_log", {}).get("total_lines"),
+            alignment=forensics.get("alignment", {}).get("verdict"),
+            start_delta_s=forensics.get("alignment", {}).get("start_time_delta_s"))
+        if forensics.get("alignment", {}).get("verdict") == "mismatched":
+            log("INSTANCE MISMATCH: gateway.pid / Win32 / probe home 不一致",
+                checks=forensics["alignment"].get("checks"))
         rc = asyncio.run(run(info, args.prompt))
     except SystemExit as exc:
         # 内层 sys.exit（如 ensure 失败）不直接终止：先走 finally 清理可能半启动的实例

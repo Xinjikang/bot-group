@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -234,6 +235,106 @@ class McpLogSnapshotTest(unittest.TestCase):
         snap = gw_probe.mcp_log_snapshot()
         self.assertTrue(snap["exists"])
         self.assertFalse(snap["readable"])
+
+
+class AlignmentTest(unittest.TestCase):
+    """实例归属三方对齐：解析 gateway.pid start_time 与 Win32 CreationDate 并逐项判定。"""
+
+    HOME = Path(r"E:\Code\.bot-group-resources\dcc5f7fd43510c8f"
+                r"\ws_6043478a1e82665dc05e9604\test-data\task-250\gw-probe-home")
+
+    def _pid_meta(self, **over):
+        meta = {
+            "pid": 2604,
+            "start_time": 179310864340,
+            "hermes_home": str(self.HOME),
+            "argv": [r"E:\Code\bot-group\.probe-worktrees\hermes-v0225\hermes_cli\main.py",
+                     "gateway", "run", "--quiet", "--idle-exit"],
+        }
+        meta.update(over)
+        return meta
+
+    @staticmethod
+    def _win(created: str = "20261027214403.396228+480", cmd: str = "-m hermes_cli.main") -> str:
+        return (f"CommandLine=\"{cmd}\\Python314\\python.exe\" {cmd} gateway run\r\n"
+                f"CreationDate={created}\r\n")
+
+    def test_pid_start_time_millis_epoch(self):
+        self.assertEqual(gw_probe._parse_pid_start_time(179310864340).isoformat(),
+                         "2026-10-27T13:44:03.400000+00:00")
+
+    def test_pid_start_time_seconds_and_filetime(self):
+        self.assertEqual(gw_probe._parse_pid_start_time(1793108643).isoformat(),
+                         "2026-10-27T13:44:03+00:00")
+        # FILETIME(100ns since 1601) 解出的年份应远早于 epoch 解释
+        self.assertIsNotNone(gw_probe._parse_pid_start_time(133800000000000000))
+
+    def test_win32_creation_parsed_with_offset(self):
+        dt = gw_probe._parse_win32_creation("20261027214403.396228+480")
+        self.assertEqual(dt.isoformat(), "2026-10-27T21:44:03.396228+08:00")
+
+    def test_win32_creation_invalid(self):
+        for value in ("", "2026-10-27 21:44:03", "20261027214403"):
+            with self.subTest(value=value):
+                self.assertIsNone(gw_probe._parse_win32_creation(value))
+
+    def test_aligned(self):
+        rec = gw_probe.alignment_verdict(self._pid_meta(), self._win(), self.HOME)
+        self.assertEqual(rec["verdict"], "aligned")
+        self.assertLessEqual(rec["start_time_delta_s"], 5.0)
+        self.assertEqual(rec["argv_entry"], "main.py")
+        self.assertEqual(rec["win32_entry"], "hermes_cli.main")
+        self.assertTrue(rec["checks"]["argv_entry_equivalent"])
+
+    def test_home_mismatch_is_mismatched(self):
+        rec = gw_probe.alignment_verdict(
+            self._pid_meta(hermes_home=r"E:\Code\bot-group\.probe-worktrees\gw-probe-home"),
+            self._win(), self.HOME)
+        self.assertEqual(rec["verdict"], "mismatched")
+        self.assertFalse(rec["checks"]["hermes_home_matches"])
+
+    def test_no_win32_output_is_mismatched(self):
+        # 查不到进程信息就无法证明归属，不能算 aligned
+        rec = gw_probe.alignment_verdict(self._pid_meta(), "", self.HOME)
+        self.assertEqual(rec["verdict"], "mismatched")
+        self.assertIsNone(rec["start_time_delta_s"])
+
+    def test_missing_argv_is_partial(self):
+        rec = gw_probe.alignment_verdict(self._pid_meta(argv=None), self._win(), self.HOME)
+        self.assertEqual(rec["verdict"], "partial")
+        self.assertIsNone(rec["checks"]["argv_entry_equivalent"])
+
+
+class ForensicsWiringTest(unittest.TestCase):
+    """instance_forensics 必须把 start_time 送进对齐判定（漏字段会让对齐永远 false）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self._orig = (gw_probe.HERMES_HOME, gw_probe.subprocess.run)
+        gw_probe.HERMES_HOME = self.home
+
+    def tearDown(self):
+        gw_probe.HERMES_HOME, gw_probe.subprocess.run = self._orig
+        self.tmp.cleanup()
+
+    def test_pid_file_start_time_feeds_alignment(self):
+        meta = {"pid": 4242, "kind": "hermes-gateway", "start_time": 179310967322,
+                "hermes_home": str(self.home),
+                "argv": [str(self.home / "hermes_cli" / "main.py"), "gateway", "run"]}
+        (self.home / "gateway.pid").write_text(json.dumps(meta), encoding="utf-8")
+
+        class _R:
+            returncode = 0
+            stdout = ("CommandLine=python.exe -m hermes_cli.main gateway run\r\n"
+                      "CreationDate=20261027220113.218528+480\r\n")
+            stderr = ""
+
+        gw_probe.subprocess.run = lambda *a, **k: _R()
+        rec = gw_probe.instance_forensics({"instance_id": "x", "api_origin": "127.0.0.1:1"})
+        self.assertIn("start_time", rec["pid_file"])
+        self.assertIsNotNone(rec["alignment"]["pid_start_time_parsed"])
+        self.assertEqual(rec["alignment"]["verdict"], "aligned")
 
 
 class StopInstanceTest(unittest.TestCase):
