@@ -4,6 +4,8 @@
 
 Hermes 兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_compatibility scripts.test_execution_errors scripts.test_install scripts.test_hermes_transport scripts.test_runtime_fork -q`。覆盖新旧 ID、入口与源码身份、静态能力、导入错误、配置提示、多行传输及 Codex 隔离。对 v0.21.1 `cdf4c765` 和 v0.21.3 `afc3b7c6f3` 的真实源码分别执行 `.venv\Scripts\python.exe -X utf8 -B scripts/verify_hermes_compatibility.py --source <源码目录>`；脚本在临时 home/SQLite 与独立子进程中检查创建、恢复、标题迁移、历史保留、`/new`、generation、压缩续接、失效绑定及重启恢复。源码只读，使用本地已取得的对应提交，报告保存到项目主目录。契约见 [Hermes 兼容性](../docs/engineering/HERMES-COMPATIBILITY.md)。
 
+安装运行时探测（CODEX_HOME）：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_install -q`（35 项）。`DetectRuntimeCodexHomeTest` 显式控制进程环境，覆盖 CODEX_HOME 设置/未设置、Windows 候选 `codex.exe`/`.cmd`/`.bat` 的存在与缺失、PATH 回退、非 Windows 只认裸 `codex`，以及 `do_check` 启动检查经 `detect_runtime` 的调用路径。`e48560e` 之前 CODEX_HOME 非空即抛 NameError，该组用例在修复前 RED、修复后 GREEN；用例 patch `CODEX_HOME` 而非依赖运行环境，避免像既有检查用例那样受本机 Codex 安装影响。
+
 Hermes 兼容性配套回归：设置 `HERMES_TEST_SOURCE` 为本机 Hermes 源码根，运行 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_maintenance_namespace scripts.test_slash_injection_review scripts.test_service -q`，验证实际会话 API 与维护模块双向导入、会话控制和安装/启动入口共存。
 
 当前发布验收说明：[v0.1.6](../docs/releases/v0.1.6.md)。本版组合执行需求恢复、正式 Release 验收，以及设置菜单和服务重启浏览器回归；报告保存到主目录 `reports/tests/v0.1.6/2026-10-27-release/`。
