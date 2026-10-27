@@ -6,6 +6,8 @@ Hermes 兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_he
 
 网关停止语义（#251）：`python -B scripts/gw_stop_probe.py --scenarios s1,s2,s3,s4,s5,s6`（真实网关；隔离 home + 随机回环端口）。场景：S1 queued→`prompt.cancel`、S2 started→`session.interrupt`（先证 `prompt.cancel` 抛 `stale_generation`）、S3 提交后立即 cancel 的 queued→started 竞态、S4 取消与自然完成竞态、S5 两会话隔离（A 中断不影响 B `completed`）、S6 不取消的自然完成对照。`prompt.cancel` 必须同时传 `session_id`（只传 `admission_id` 报 invalid_params）。`--preflight-only` 只跑隔离校验、不启动网关。归属判定与清理单测：`python -B -m unittest scripts.test_gw_probe_gates`（106 项，含 600s 慢启动上界 `+600 owned` / `+601 unknown` 临界用例）。证据落主目录 `reports/research/hermes-gateway/evidence-2026-10-28-task251/`。
 
+网关恢复与幂等（#252）：`python -B scripts/gw_recovery_probe.py --scenarios r1,r3,r4,r5`（真实网关；r5 会停掉并重新拉起网关观察 epoch 变化）。R1 同 `submission_id`+同 payload 命中同一 admission；R2 同 id 异 payload → `admission_conflict`；R3 回执丢失→重连（**必须重新取 ticket**，复用旧 ticket 会被 403）→`session.resume`→同 id 重提命中同一 admission→终态对账；R4 断线前已 started 的重连恢复；R5 `authority_epoch` 变化后旧 admission 的 receipt/cancel 边界。遗留期未知时禁止自动重提。网关在有活跃会话时默认拒绝 stop，脚本清理用 `stop_instance(..., force=True)` 加 `--yes`。证据落 `reports/research/hermes-gateway/evidence-2026-10-28-task252/`。
+
 Hermes 兼容性配套回归：设置 `HERMES_TEST_SOURCE` 为本机 Hermes 源码根，运行 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_maintenance_namespace scripts.test_slash_injection_review scripts.test_service -q`，验证实际会话 API 与维护模块双向导入、会话控制和安装/启动入口共存。
 
 当前发布验收说明：[v0.1.6](../docs/releases/v0.1.6.md)。本版组合执行需求恢复、正式 Release 验收，以及设置菜单和服务重启浏览器回归；报告保存到主目录 `reports/tests/v0.1.6/2026-10-27-release/`。

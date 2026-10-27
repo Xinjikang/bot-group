@@ -785,7 +785,7 @@ def stop_verdict(rc: int | None, output: str) -> tuple[bool, str]:
     return False, "failed"
 
 
-def stop_existing_gateway() -> dict:
+def stop_existing_gateway(force: bool = False) -> dict:
     """强制干净起点：停掉探针 home 下可能残留的网关。
 
     ensure_gateway_runtime 会 attach 已存在的网关，而旧实例的 env/config 可能与本轮
@@ -818,7 +818,8 @@ def stop_existing_gateway() -> dict:
         return record
     record.update({"cli": f"{py.name} -m hermes_cli.main", "cli_exists": True})
     try:
-        r = subprocess.run([str(py), "-m", "hermes_cli.main", "gateway", "stop"],
+        r = subprocess.run([str(py), "-m", "hermes_cli.main", "gateway", "stop"]
+                           + (["--yes"] if force else []),
                            capture_output=True, text=True, encoding="utf-8", errors="replace", env=probe_env(),
                            timeout=180, cwd=str(WORKTREE_SRC))
     except subprocess.TimeoutExpired:
@@ -1154,16 +1155,21 @@ def _origin_port(origin: str) -> int | None:
     return int(tail) if tail.isdigit() else None
 
 
-def stop_instance(info: dict, pid: int | None) -> dict:
+def stop_instance(info: dict, pid: int | None, force: bool = False) -> dict:
     """停掉本轮拉起的网关并核验释放（stop-after 证据：端口 / pid / gateway.pid）。
 
     验收要求：正常完成与可捕获异常均清理，清理失败要体现在退出状态与报告里。
     三方核验（pid 存活 / gateway.pid / 端口 LISTENING）任一不干净即判未清理成功。
+
+    force=True 时给官方 CLI 加 `--yes`：网关默认拒绝停止仍有活跃执行的实例
+    （实测输出 "Refusing to stop the gateway: 1 live session(s) would be interrupted"），
+    探针脚本创建的会话都属于本次测试、且已先尝试 interrupt，此时需要强制释放，
+    否则断线/重启类场景会留下运行中的网关。
     """
     origin = str(info.get("api_origin") or "")
     port = _origin_port(origin)
-    rec: dict = {"api_origin": origin or None, "port": port, "pid": pid}
-    rec["stop"] = stop_existing_gateway()
+    rec: dict = {"api_origin": origin or None, "port": port, "pid": pid, "force": force}
+    rec["stop"] = stop_existing_gateway(force=force)
     pid_file = HERMES_HOME / "gateway.pid"
     pid_file_exists = pid_file.exists()
     # 残留 pid 文件但记录的进程已死＝v0.22.5 的 stale 状态（实测 22:15 复跑后出现），

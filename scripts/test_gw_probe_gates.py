@@ -392,7 +392,7 @@ class StopInstanceTest(unittest.TestCase):
         self._orig = (gw_probe.HERMES_HOME, gw_probe.stop_existing_gateway,
                       gw_probe._pid_alive, gw_probe._port_listening)
         gw_probe.HERMES_HOME = self.home
-        gw_probe.stop_existing_gateway = lambda: {"rc": 0, "stopped": True}
+        gw_probe.stop_existing_gateway = lambda *a, **kw: {"rc": 0, "stopped": True}
 
     def tearDown(self):
         (gw_probe.HERMES_HOME, gw_probe.stop_existing_gateway,
