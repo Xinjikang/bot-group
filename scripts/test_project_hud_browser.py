@@ -26,6 +26,8 @@ def main():
         page.wait_for_selector('#dlg-project-detail[open]')
         page.locator('#pj-d-desc').fill('尚未保存的项目配置')
         page.locator('#pj-tab-roles').click()
+        original_detail=page.locator('#dlg-project-detail').bounding_box()
+        original_hud=page.locator('#project-hud').bounding_box()
         page.locator('#hud-toggle').click()
         assert page.locator('#dlg-project-detail').evaluate('(e)=>e.open')
         assert page.locator('#pj-tab-roles').get_attribute('aria-selected')=='true'
@@ -35,25 +37,37 @@ def main():
         assert page.locator('#pj-d-desc').input_value()=='尚未保存的项目配置'
         detail_box=page.locator('#dlg-project-detail').bounding_box()
         hud_box=page.locator('#project-hud').bounding_box()
-        assert detail_box['x']+detail_box['width']<hud_box['x'],(detail_box,hud_box)
+        assert detail_box==original_detail,(detail_box,original_detail)
+        assert abs(detail_box['x']+detail_box['width']+8-hud_box['x'])<1
+        assert abs(detail_box['y']-hud_box['y'])<1
+        assert abs(detail_box['height']-hud_box['height'])<1
+        assert page.locator('.hud-scroll').bounding_box()['height']>=80
         page.screenshot(path=str(args.evidence/'hud-with-project-detail.png'))
-        for width in (1120,1119):
+        for width in (1120,1040):
             page.set_viewport_size({'width':width,'height':1000})
+            page.wait_for_timeout(100)
             detail_box=page.locator('#dlg-project-detail').bounding_box()
             hud_box=page.locator('#project-hud').bounding_box()
             assert detail_box['x']>=0 and hud_box['x']+hud_box['width']<=width
             if width==1120:
                 assert detail_box['x']+detail_box['width']<hud_box['x']
+                assert abs(detail_box['height']-hud_box['height'])<1
             else:
                 page.locator('#hud-toggle').click()
-                hud_box=page.locator('#project-hud').bounding_box()
-                assert detail_box['y']>hud_box['y']+hud_box['height']
+                assert page.locator('#dlg-project-detail').bounding_box()==detail_box
                 page.locator('#hud-toggle').click()
         page.set_viewport_size({'width':1440,'height':1000})
         page.locator('#hud-input').fill('')
         page.get_by_role('radio').first.click()
         page.locator('#hud-toggle').click()
+        assert page.locator('#dlg-project-detail').bounding_box()==original_detail
+        assert page.locator('#project-hud').bounding_box()==original_hud
         page.locator('#pj-tab-basic').click()
+        page.locator('#hud-toggle').click()
+        page.wait_for_timeout(100)
+        resized_detail=page.locator('#dlg-project-detail').bounding_box()
+        assert abs(resized_detail['height']-page.locator('#project-hud').bounding_box()['height'])<1
+        page.locator('#hud-toggle').click()
         assert page.locator('#pj-d-desc').input_value()=='尚未保存的项目配置'
         page.locator('#dlg-pj-detail-close').click()
         page.locator('#hud-toggle').click()
@@ -139,7 +153,7 @@ def main():
         page.screenshot(path=str(args.evidence/'hud-free-text.png'))
         assert not errors,errors
         (args.evidence/'browser.json').write_text(json.dumps({'passed':True,'errors':errors,'checks':[
-            'automatic question expansion','project details stay open with unsaved fields and active tab','options and custom text','refresh preserves input','confirmed facts',
+            'automatic question expansion','detail position unchanged; HUD docks at equal height and returns on collapse','project details stay open with unsaved fields and active tab','options and custom text','refresh preserves input','confirmed facts',
             'wizard draft restore','390px dark/light','Escape and focus','detail project context and mobile reply','free-text question without options']},ensure_ascii=False,indent=2),encoding='utf-8')
         browser.close()
 

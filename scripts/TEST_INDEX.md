@@ -1,6 +1,6 @@
 # 测试脚本索引
 
-HUD 与项目详情协作：`test_project_hud_browser.py` 覆盖详情打开后切换标签、填写未保存字段、展开 HUD、选择和输入、返回详情、窄屏发送及 Escape、从全部项目打开详情时的 HUD 上下文和关闭后恢复。截图 `hud-with-project-detail.png` 保留两者同时打开的状态。
+HUD 与项目详情协作：`test_project_hud_browser.py` 覆盖详情打开后切换标签、填写未保存字段、展开 HUD、选择和输入、返回详情、窄屏发送及 Escape、无顶栏活动项目时的 HUD 上下文和关闭后恢复。几何断言检查详情位置尺寸不变、HUD 右侧贴靠同高、详情高度变化后同步以及收起回到原位，并验证右侧空间不足时的回退。截图 `hud-with-project-detail.png` 保留两者同时打开的状态。
 
 HUD 开放式提问回归：`scripts.test_project_hud` 验证模型省略选项时的归一化及回答入库；`test_project_hud_browser.py` 额外覆盖已有无选项记录的渲染、文字输入和发送可用性，截图保存为 `hud-free-text.png`。
 

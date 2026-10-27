@@ -39,6 +39,21 @@
     el('toggle').setAttribute('aria-expanded',String(value)); host.querySelector('.hud-chevron').textContent=value?'收起':'展开';
     if (!value && current?.state.question) silenced.add(current.state.question.id);
     if (!value && current?.state.proposal) silenced.add(current.state.proposal.id);
+    placeBesideDetail();
+  }
+  function placeBesideDetail() {
+    const detail=document.querySelector('#dlg-project-detail');
+    const rect=detail?.open&&host.parentElement===document.body?detail.getBoundingClientRect():null;
+    const available=rect?innerWidth-rect.right-16:0;
+    const docked=!!(expanded&&rect&&available>=300);
+    host.classList.toggle('hud-docked',docked);
+    host.classList.toggle('hud-compact',docked&&rect.height<420);
+    if(docked){
+      host.style.setProperty('--hud-left',`${rect.right+8}px`);
+      host.style.setProperty('--hud-top',`${rect.top}px`);
+      host.style.setProperty('--hud-width',`${Math.min(510,available)}px`);
+      host.style.setProperty('--hud-height',`${rect.height}px`);
+    }
   }
   el('toggle').onclick=()=>toggle(!expanded);
   el('input').addEventListener('input',()=>{remember(); updateSend();});
@@ -191,6 +206,12 @@
     changed(){refresh();},
   };
   setInterval(refresh,3000);
+  const detailDialog=document.querySelector('#dlg-project-detail');
+  if(detailDialog){
+    new ResizeObserver(placeBesideDetail).observe(detailDialog);
+    new MutationObserver(placeBesideDetail).observe(detailDialog,{attributes:true,attributeFilter:['open','style']});
+  }
+  window.addEventListener('resize',placeBesideDetail);
   document.querySelector('#dlg-project-detail')?.addEventListener('close',()=>refresh());
   const authChanged=()=>{
     host.hidden=!document.querySelector('#login')?.hidden;
