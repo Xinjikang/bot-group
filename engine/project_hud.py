@@ -310,7 +310,7 @@ def context(conn, item):
     template = project_templates.load(selected) if selected != 'blank' else {'id': 'blank', 'description': '空项目：从目标、输入和产出建立约定'}
     history = [json.loads(r[0]) for r in conn.execute('SELECT content FROM hud_entries WHERE session=? '
                'AND generation=? ORDER BY id DESC LIMIT 16', (item['id'], item['generation']))][::-1]
-    return {'stage': item['stage'], 'project': config, 'template': template,
+    return {'stage': item['stage'], 'project_created': bool(item['project']), 'project': config, 'template': template,
             'materials': document_context(config.get('root')), 'facts': state.get('facts', []),
             'deferred_questions': state.get('deferred_questions', [])[-12:],
             'decisions': state.get('decisions', [])[-60:], 'history': history,
@@ -332,6 +332,7 @@ def validate_response(value):
         options = question.get('options', [])
         if not isinstance(options, list) or len(options) > 5 or any(not isinstance(o, str) or not 1 <= len(o) <= 160 for o in options):
             raise ValueError('AI 问题选项无效')
+        question['options'] = options
         question['id'] = uuid.uuid4().hex
     proposal = value.get('proposal')
     if proposal:
@@ -350,6 +351,9 @@ def validate_response(value):
             if not isinstance(fact, dict) or set(fact) != {'label', 'value'} or any(not isinstance(v, str) or not 1 <= len(v) <= 4000 for v in fact.values()):
                 raise ValueError('AI 维护资料格式无效')
         proposal.update(id=uuid.uuid4().hex, changes=changes, facts=facts)
+        # A configuration decision occupies the current interaction; the next
+        # question is generated after confirmation against the updated facts.
+        value['question'] = None
     return value
 
 
@@ -399,6 +403,7 @@ def run_one(sid):
                     current['state'].pop(key, None)
             add_entry(conn, current, 'assistant', response)
             current['status'], current['error'] = ('waiting' if response.get('question') or response.get('proposal') else 'idle'), ''
+        current['activity'] = time.time()
         store(conn, current)
 
 

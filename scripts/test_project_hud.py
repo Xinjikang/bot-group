@@ -3,6 +3,9 @@ import json
 import time
 import unittest
 from pathlib import Path
+import os
+import subprocess
+import sys
 from unittest.mock import patch
 
 from engine import auth, project_hud as hud
@@ -44,6 +47,17 @@ class HudTests(unittest.TestCase):
         self.assertIn('需求集',fresh['state']['decisions'][0]['answer'])
         for table in ('messages','threads','session_bindings','wake_jobs'):
             self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM '+table).fetchone()[0],0,table)
+
+    def test_question_without_options_accepts_free_text(self):
+        item=self.session()
+        result=self.infer(item,{'text':'先确定项目目标','question':{
+            'title':'这个项目要做成什么？','reason':'目标决定输入与产出'}})
+        question=result['state']['question']
+        self.assertEqual(question['options'],[])
+        response=self.client.post('/hud/'+item['id']+'/answer',json={
+            'revision':result['revision'],'question_id':question['id'],'text':'整理研究资料并形成决策报告'})
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['state']['decisions'][-1]['answer'],'整理研究资料并形成决策报告')
 
     def test_template_context_and_proposal_confirmation(self):
         item=self.session()
@@ -130,12 +144,23 @@ class HudTests(unittest.TestCase):
 
     def test_stage_change_defers_question_and_manual_edit_invalidates_proposal(self):
         item=self.session()
-        item=self.infer(item,{'text':'确认目标','question':{'title':'预期产出是什么？','reason':'决定准备哪些资料','options':['原型','应用']},
-                              'proposal':{'changes':{'description':'旧目标'},'facts':[]}})
+        item=self.infer(item,{'text':'确认目标','question':{'title':'预期产出是什么？','reason':'决定准备哪些资料','options':['原型','应用']}})
         saved=hud.update(item['id'],{'revision':item['revision'],'stage':'collaboration','draft':{'description':'新的目标'}})
         self.assertNotIn('question',saved['state'])
         self.assertNotIn('proposal',saved['state'])
         self.assertEqual(len(saved['state']['deferred_questions']),1)
+
+    def test_proposal_takes_precedence_and_timeout_advances_once(self):
+        item=self.session()
+        with hud.connection() as conn:
+            conn.execute('UPDATE hud_sessions SET activity=? WHERE id=?',(time.time()-3600,item['id']))
+        result=self.infer(item,{'text':'配置建议','question':{'title':'下一项？','reason':'后续阶段需要','options':['A','B']},
+                                'proposal':{'changes':{'description':'旧目标'},'facts':[]}})
+        self.assertEqual(result['generation'],item['generation']+1)
+        self.assertNotIn('question',result['state'])
+        self.assertIn('proposal',result['state'])
+        saved=hud.update(item['id'],{'revision':result['revision'],'draft':{'description':'用户新目标'}})
+        self.assertNotIn('proposal',saved['state'])
 
     def test_default_bot_does_not_enable_other_projects(self):
         item=self.session()
@@ -175,6 +200,41 @@ class HudTests(unittest.TestCase):
             self.assertEqual(hud_runtime.respond(bot,{}),{'text':'ready'})
         self.assertFalse(Path(captured[0]).exists())
         self.assertIn('mcp_servers.production',(home/'config.toml').read_text(encoding='utf-8'))
+
+    def test_hermes_worker_does_not_shadow_stdlib_or_replace_isolated_home(self):
+        from engine import hud_runtime
+        source=self.root/'fake-hermes';source.mkdir()
+        package=source/'hermes_cli';package.mkdir()
+        (package/'__init__.py').write_text('',encoding='utf-8')
+        (package/'config.py').write_text('def load_config():\n return {"model":{"default":"fixture","provider":"fixture"}}\n',encoding='utf-8')
+        (package/'runtime_provider.py').write_text('def resolve_runtime_provider(**kwargs):\n return {}\n',encoding='utf-8')
+        (source/'run_agent.py').write_text(
+            'import json, os, queue, urllib.request\n'
+            'class AIAgent:\n'
+            ' def __init__(self, **kwargs):\n'
+            '  assert kwargs["enabled_toolsets"] == []\n'
+            '  self.tools=[]\n'
+            ' def run_conversation(self, prompt):\n'
+            '  return {"final_response":json.dumps({"home":os.environ["HERMES_HOME"],"queue":queue.__file__})}\n'
+            ' def close(self): pass\n',encoding='utf-8')
+        home=self.root/'disposable';home.mkdir()
+        (home/'.env').write_text('HERMES_HOME=/wrong-home\nGROUP_DB=/wrong-db\nFIXTURE_API_KEY=synthetic-only\n',encoding='utf-8')
+        env={**hud_runtime._env(),'HERMES_HOME':str(home)}
+        worker=Path(hud_runtime.__file__).with_name('hud_hermes_worker.py')
+        result=subprocess.run([sys.executable,str(worker),str(source)],input='fixture',cwd=home,env=env,
+                              text=True,encoding='utf-8',capture_output=True,timeout=30)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        value=json.loads(result.stdout.split('HUD_RESULT:',1)[1])
+        self.assertEqual(value['home'],str(home))
+        self.assertNotEqual(Path(value['queue']).resolve().parent,worker.parent)
+        (package/'runtime_provider.py').write_text('def resolve_runtime_provider(**kwargs):\n raise ValueError("must-never-leak-fixture-secret")\n',encoding='utf-8')
+        result=subprocess.run([sys.executable,str(worker),str(source)],input='fixture',cwd=home,env=env,
+                              text=True,encoding='utf-8',capture_output=True,timeout=30)
+        self.assertNotEqual(result.returncode,0)
+        diagnostic=json.loads(result.stdout.split('HUD_ERROR:',1)[1])
+        self.assertEqual(diagnostic['stage'],'解析模型连接')
+        self.assertEqual(diagnostic['type'],'ValueError')
+        self.assertNotIn('must-never-leak',result.stdout+result.stderr)
 
 
 if __name__=='__main__':

@@ -1,6 +1,7 @@
 """Real-browser HUD checks against preview_project_hud.py's isolated fixture."""
 import argparse
 import json
+import re
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -63,10 +64,30 @@ def main():
         page.keyboard.press('Escape')
         assert page.locator('#hud-panel').is_hidden()
         assert page.locator('#hud-toggle').evaluate('(e)=>e===document.activeElement')
+        # Previously persisted free-text questions may omit the options field.
+        def free_text_question(route):
+            response=route.fetch()
+            data=response.json()
+            if route.request.method=='GET' and isinstance(data,dict) and 'state' in data:
+                data['status']='waiting'
+                data['state'].pop('proposal',None)
+                data['state']['question']={'id':'free-text-regression','title':'这个项目要做成什么？',
+                                           'reason':'项目目标决定需要哪些输入和产出。'}
+                route.fulfill(response=response,json=data)
+            else:
+                route.fulfill(response=response)
+        page.route(re.compile(r'/hud/[^/?]+$'),free_text_question)
+        page.reload()
+        page.wait_for_selector('.hud-question')
+        assert page.get_by_role('radio').count()==0
+        assert page.locator('#hud-input').is_enabled()
+        page.locator('#hud-input').fill('整理研究资料并形成决策报告')
+        assert page.locator('#hud-send').is_enabled()
+        page.screenshot(path=str(args.evidence/'hud-free-text.png'))
         assert not errors,errors
         (args.evidence/'browser.json').write_text(json.dumps({'passed':True,'errors':errors,'checks':[
             'automatic question expansion','options and custom text','refresh preserves input','confirmed facts',
-            'wizard draft restore','390px dark/light','Escape and focus']},ensure_ascii=False,indent=2),encoding='utf-8')
+            'wizard draft restore','390px dark/light','Escape and focus','free-text question without options']},ensure_ascii=False,indent=2),encoding='utf-8')
         browser.close()
 
 

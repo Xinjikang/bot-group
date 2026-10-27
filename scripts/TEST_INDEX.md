@@ -1,5 +1,9 @@
 # 测试脚本索引
 
+HUD 开放式提问回归：`scripts.test_project_hud` 验证模型省略选项时的归一化及回答入库；`test_project_hud_browser.py` 额外覆盖已有无选项记录的渲染、文字输入和发送可用性，截图保存为 `hud-free-text.png`。
+
+HUD 真实模型验证：明确授权后运行 `scripts/verify_project_hud_live.py --live --hermes-home <已授权宿主目录> --expected-provider <服务商> --expected-host <服务域名> --expected-model <模型> --evidence <新的报告文件.json>`。执行前精确核对配置的服务商、域名和模型；五轮仅使用合成调研/软件/空项目及模板，验证可选问题、自定义目录用途提案、确认后超时接续、资源阶段提问和空项目引导。结束核对原宿主配置摘要、群会话表为空及临时目录清理。网络或模型行为失败保留已完成轮次证据。
+
 项目维护 HUD：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud -q` 使用隔离 SQLite、临时宿主与模型替身，覆盖身份边界、逐项目启用、模板上下文、问题/自由回答、超时换代、修订冲突、提案确认、阶段切换、成功回执绑定、共享事实及临时运行配置清理。以 `scripts/preview_project_hud.py --data-dir <独立空目录> --port <独立端口>` 启动固定响应预览；使用带 Playwright 的 Python 运行 `scripts/test_project_hud_browser.py --url http://127.0.0.1:<端口> --evidence <主目录报告路径>`，覆盖桌面、390px 深浅主题、选择加补充、刷新恢复、向导草稿恢复及 Escape 焦点。预览有专用测试重置接口，仅用于该隔离实例。真实模型联调须明确模型服务和发送资料范围，独立记录宿主兼容性与实际提问质量。
 
 任务链与三层结构提示：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_prompt_entry_points scripts.test_project_templates scripts.test_template_role_rename scripts.test_product_prototype_template scripts.test_algorithm_template scripts.test_testing_template scripts.test_flow -q`，随后运行 `.venv\Scripts\python.exe -X utf8 -B scripts/test_mcp_handshake.py`。覆盖 work/chat 公共定义、六类模板预览与落盘中的完整任务链及返修路径、角色替换、同一任务的实际节点流转，以及两种模式真实 MCP 暴露的第一个接手人说明。使用隔离 SQLite、项目和宿主配置；这些检查验证提示与工具契约，真实模型的自主拆解行为需在隔离场景另行验收。

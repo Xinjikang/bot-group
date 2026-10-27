@@ -75,7 +75,7 @@
     }else if(q){
       const box=node('div',null,'hud-question');box.append(node('h3',q.title),node('p',q.reason,'hud-reason'));
       const options=node('div',null,'hud-options');options.setAttribute('role','radiogroup');options.setAttribute('aria-label','建议回答');
-      for(const option of q.options){
+      for(const option of q.options||[]){
         const b=action('',()=>{selected=selected===option?'':option;selections.set(q.id,selected);try{sessionStorage.setItem('hud-choice:'+q.id,selected);}catch{}render();host.querySelectorAll('.hud-option')[q.options.indexOf(option)]?.focus();},'hud-option');
         b.setAttribute('role','radio');b.setAttribute('aria-checked',String(selected===option));
         b.append(node('span',selected===option?'●':'○','hud-radio'),node('span',option)); options.append(b);
