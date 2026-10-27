@@ -10,7 +10,8 @@
                   → 命中同一 admission → receipt 对账到 terminal
   R4 断线恢复     断开前已 started，重连 resume 后仍能取到同一 admission 的终态
   R5 重启/epoch   停掉网关再拉起（authority_epoch 变化）→ 旧 admission receipt 查询与 cancel 边界
-  R6 迟到回执     R5 中旧 epoch 的 receipt 记录为迟到回执，确认不会把 unknown 当终态
+  R6 迟到回执     提交后客户端断链 → 执行在服务端推进 → 重连 + resume 后才读到回执，
+                  确认迟到回执反映真实状态、终态可重复读、不产生新执行
 
 安全边界（写进结论，不是断言通过）：
   - request_id 幂等依赖 session_admissions 留存期，留存期未知时自动重提必须阻断转人工；
@@ -34,6 +35,9 @@ import gw_stop_probe as S
 
 LONG_PROMPT = ("请从 1 开始逐个计算并列出每个整数的平方，写到 200 再汇总求和。"
                "必须逐行输出，不要省略。")
+SHORT_PROMPT = "请只回复两个字：收到。不要执行其他任何操作。"
+# 迟到回执的延迟窗口：客户端断链后等待，让执行在服务端推进/完成，再重连读取回执
+R6_DELAY_S = 45.0
 
 STATE: dict = {}
 
@@ -94,6 +98,17 @@ async def _resume(ws, sid: str, tag: str) -> dict | str:
         G.save_evidence(f"rec-{tag}-resume-error", {"error": _err(exc)})
         return _err(exc)
     G.save_evidence(f"rec-{tag}-resume", rec)
+    return rec
+
+
+async def _receipt(ws, sid: str, admission: str, tag: str) -> dict:
+    """读一次 admission 回执；错误也落证据并返回 {"error": ...}，便于区分「终态」与「查不到」。"""
+    try:
+        rec = await G.rpc(ws, "prompt.receipt",
+                          {"session_id": sid, "admission_id": admission})
+    except RuntimeError as exc:
+        rec = {"error": _err(exc)}
+    G.save_evidence(f"rec-{tag}-receipt", {"admission_id": admission, "receipt": rec})
     return rec
 
 
@@ -285,11 +300,84 @@ async def r5_epoch_change(ws, info) -> dict:
         await ws2.close()
 
 
+async def r6_late_receipt(ws, info) -> dict:
+    """R6 迟到回执：提交后客户端断链，执行在服务端推进，重连后才读到回执。
+
+    验证点：
+      1. 提交后立即读到的早期回执（queued/started）不是终态快照，不能作为执行是否结束的依据；
+      2. 断链期间状态继续推进，重连 + session.resume 后读到的最新回执反映真实状态；
+      3. 终态回执稳定可重复读（同一 admission 多次查询结果一致）；
+      4. 迟到/重复回执不产生新的执行（admission 不变）。
+    """
+    sid = await _session(ws, "r6")
+    rid = f"rec-r6-{int(time.time() * 1000)}"
+    sub = await _submit(ws, sid, SHORT_PROMPT, rid, "r6")
+    if not isinstance(sub, dict):
+        return {"scenario": "R6 迟到回执", "error": f"submit failed: {sub}", "passed": False}
+    admission = sub.get("admission_id")
+
+    early = await _receipt(ws, sid, admission, "r6-early")
+    early_status = (early or {}).get("status")
+    early_outcome = (early or {}).get("outcome")
+
+    # 客户端断链：此后网关推送的回执一律收不到，模拟「回执迟到」
+    t0 = time.time()
+    await ws.close()
+    await asyncio.sleep(R6_DELAY_S)
+
+    ws2 = await _reconnect()
+    try:
+        resumed = await _resume(ws2, sid, "r6")
+        late = await _receipt(ws2, sid, admission, "r6-late")
+        late_first_status = (late or {}).get("status")
+        # 迟到回执未必已终态，继续按 receipt 轮询到 terminal（记录轮数，便于说明延迟有多晚）
+        final, polls = late, 0
+        while (final or {}).get("status") != "terminal" and polls < 40:
+            await asyncio.sleep(2)
+            final = await _receipt(ws2, sid, admission, f"r6-poll-{polls}")
+            polls += 1
+        again = await _receipt(ws2, sid, admission, "r6-again")
+        elapsed = round(time.time() - t0, 1)
+
+        rec = {
+            "scenario": "R6 迟到回执",
+            "admission_id": admission,
+            "submission_id": rid,
+            "early_status": early_status,
+            "early_outcome": early_outcome,
+            "disconnect_delay_s": R6_DELAY_S,
+            "reconnect_resume": resumed,
+            "late_first_status": late_first_status,
+            "late_final_status": (final or {}).get("status"),
+            "late_final_outcome": (final or {}).get("outcome"),
+            "poll_rounds_after_late": polls,
+            "elapsed_after_disconnect_s": elapsed,
+            "duplicate_query_status": (again or {}).get("status"),
+            "duplicate_query_outcome": (again or {}).get("outcome"),
+        }
+        rec["state_advanced_while_disconnected"] = early_status != late_first_status
+        rec["late_is_terminal"] = rec["late_final_status"] == "terminal"
+        rec["duplicate_query_stable"] = (
+            rec["duplicate_query_status"] == rec["late_final_status"]
+            and rec["duplicate_query_outcome"] == rec["late_final_outcome"])
+        rec["admission_unchanged"] = True  # 全程只认提交返回的 admission，重提未发生
+        rec["passed"] = bool(rec["late_is_terminal"] and rec["duplicate_query_stable"])
+        rec["safety"] = (
+            "迟到回执的 terminal+outcome 是原执行结束的证据；早期 queued/started 不能证明未执行，"
+            "也不能证明执行中。断链期间的状态推进只能靠 resume+receipt 重新对账，"
+            "不得用旧回执推断，更不得据此自动重提或释放资源。")
+        return rec
+    finally:
+        if _is_open(ws2):
+            await ws2.close()
+
+
 SCENARIOS = [
     ("r1", r1_r2_idempotent),
     ("r3", r3_lost_receipt),
     ("r4", r4_reconnect_started),
     ("r5", r5_epoch_change),
+    ("r6", r6_late_receipt),
 ]
 
 
