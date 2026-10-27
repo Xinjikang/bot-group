@@ -692,7 +692,7 @@ class StopOwnershipTest(unittest.TestCase):
         rec = gw_probe.stop_ownership()
         self.assertEqual(rec["verdict"], "foreign")
         self.assertIs(rec["log_covers_instance"], False)
-        self.assertIn("Auto-started inconsistent", rec["log_reason"])
+        self.assertIn("predates instance start", rec["log_reason"])
 
     def test_owned_when_no_inbound_in_this_instance(self):
         # 上一实例的 inbound 残留在日志里，本实例刚启动尚无 inbound：不得因此判 foreign
@@ -769,14 +769,27 @@ class StopOwnershipTest(unittest.TestCase):
         self.assertIsNone(rec["gateway_log"]["last_inbound"])
         self.assertIsNone(rec["gateway_log"]["last_shutdown"])
 
-    def test_startup_offset_uses_absolute_five_second_boundary(self):
+    def test_startup_offset_boundary(self):
+        # 只把「日志早于进程启动」判 foreign；晚于属正常初始化延迟（实测 +81s）。
         self._pid_file()
-        for offset, expected in ((-6, "foreign"), (-5, "owned"), (5, "owned"), (6, "foreign")):
+        for offset, expected in ((-6, "foreign"), (-5, "owned"), (5, "owned"),
+                                 (6, "owned"), (81, "owned"), (700, "unknown")):
             with self.subTest(offset=offset):
                 timestamp = (self.BASE + timedelta(seconds=offset)).strftime("%Y-%m-%d %H:%M:%S")
                 (self.home / "logs" / "gateway.log").write_text(
                     f"{timestamp} INFO Auto-started gateway: current\n", encoding="utf-8")
                 self.assertEqual(gw_probe.stop_ownership()["verdict"], expected)
+
+    def test_owned_when_auto_started_lags_process_start(self):
+        # 实测：进程创建 00:17:26，Auto-started 00:18:47（+81s，venv 首次导入 + 网关初始化）。
+        # 旧口径用 abs(delta)>5s 判 foreign，会拒绝停止本实例并泄漏网关。
+        (self.home / "logs" / "gateway.log").write_text(
+            "2026-10-27 22:19:27,769 INFO gateway.run: Auto-started gateway: exits after 600s\n",
+            encoding="utf-8")
+        self._pid_file()
+        rec = gw_probe.stop_ownership()
+        self.assertEqual(rec["verdict"], "owned", rec.get("reason"))
+        self.assertAlmostEqual(rec["log_start_deltas_s"]["auto_started"], 81.0, places=3)
 
     def test_unparsable_events_are_diagnostics(self):
         self.log_line("2026-99-27 22:18:09 INFO inbound message: invalid date")

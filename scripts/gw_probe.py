@@ -443,6 +443,10 @@ def _win32_process(pid: int) -> dict:
 _LOG_TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 # 启动日志与进程创建时间的允许偏差。
 _LOG_CLOCK_TOLERANCE_S = 5.0
+# 进程启动到写 Auto-started 可能很慢（实测 81s：venv 首次导入 + 网关初始化）。
+# 只看「日志早于进程启动」这一侧才是上一实例残留；晚于启动只设诊断上限，
+# 超过上限说明日志与进程对不上，按 unknown 处理（不 stop），不能当 foreign 判死。
+_LOG_START_DELAY_MAX_S = 600.0
 
 
 def log_instance_window(since: str | None = None) -> dict:
@@ -527,8 +531,9 @@ def stop_ownership() -> dict:
       unknown  字段缺失、解析或查询失败、日志不足以证明本实例 → 不 stop（fail-closed）
 
     日志窗口从时间最接近 start_time 的 Auto-started 起至下一次启动。
-    Auto-started 与 start_time 的绝对偏差超过 5s 判 foreign；前序实例事件排除，
-    无法解析的日志仅作诊断。日志缺失、start_time 非法或无启动记录按 unknown。
+    Auto-started 早于进程创建超 5s 判 foreign（属上一实例）；晚于进程创建属正常初始化
+    延迟（实测 81s），超过 600s 视为日志与进程对不上、按 unknown 不 stop。
+    前序实例事件排除，无法解析的日志仅作诊断。日志缺失、start_time 非法或无启动记录按 unknown。
     """
     pid_file = HERMES_HOME / "gateway.pid"
     rec: dict = {"pid_file": str(pid_file), "expected_home": str(HERMES_HOME)}
@@ -609,10 +614,15 @@ def stop_ownership() -> dict:
         startup_delta = deltas.get("auto_started")
         if startup_delta is None:
             log_reason = "Auto-started timestamp unavailable"
-        elif abs(startup_delta) > _LOG_CLOCK_TOLERANCE_S:
+        elif startup_delta < -_LOG_CLOCK_TOLERANCE_S:
+            # 日志里的启动早于本进程创建：这条记录属于上一个实例，不能认作本实例。
             log_ok = False
-            log_reason = "Auto-started inconsistent with instance start"
+            log_reason = "Auto-started predates instance start"
+        elif startup_delta > _LOG_START_DELAY_MAX_S:
+            # 晚太多说明日志与进程对不上（不是本实例的启动记录），证据不足按 unknown。
+            log_reason = "Auto-started far later than instance start"
         else:
+            # 晚于进程启动属正常：进程起来到写 Auto-started 有初始化延迟（实测 81s）。
             log_ok = True
     rec["log_covers_instance"] = log_ok
     if log_reason:
