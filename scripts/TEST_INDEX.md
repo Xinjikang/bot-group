@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+当前发布验收说明：[v0.1.6](../docs/releases/v0.1.6.md)。本版组合执行需求恢复、正式 Release 验收，以及设置菜单和服务重启浏览器回归；报告保存到主目录 `reports/tests/v0.1.6/2026-10-27-release/`。
+
 需求恢复与空唤醒：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_requirement_recovery scripts.test_scan_requirements scripts.test_decompose_state_machine scripts.test_decompose_finalize scripts.test_requirement_lifecycle scripts.test_requirement_gate scripts.test_requirement_gate_reason scripts.test_message_injection scripts.test_task_retry scripts.test_queue_claim_race -q`。使用独立 SQLite 和模型投递记录器，覆盖 blocked 子任务连续扫描及显式恢复、部分拆解续作上下文、有效租约与拆解完成、来源撤回、授权/成员/项目门禁、负责人配置协调、存量队列取消、消息/任务合并保留及领取期间状态变化。生产数据及真实模型调用保持隔离；报告记录被测提交与实际命令。契约见 [需求恢复](../docs/engineering/REQUIREMENT-RECOVERY.md)。
 
 页面复用：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_service scripts.test_ui_presence scripts.test_service_restart scripts.test_desktop scripts.test_app_upgrade -q`。覆盖管理员权限、同源登记门禁、回环地址归并、远端隔离、连接关闭、占位释放/过期、浏览器失败重试及维护启动。运行 `python -X utf8 -B scripts/test_ui_presence_browser.py` 验证真实 Chrome、实际 `start.bat` 与临时桌面快捷方式的首次打开、快速重复、登录页、后台页、刷新、多页面和全部关闭后重新打开；隔离服务端口与数据目录，浏览器打开请求使用记录器，实际焦点切换受浏览器策略限制。
