@@ -13,10 +13,12 @@
   → session.create 建会话订阅 → prompt.submit 拿 admission_id
   → prompt.receipt 轮询到 terminal
 
-隔离边界：独立 HERMES_HOME（gw-probe-home）、独立安装 worktree、分配资源；
-不碰生产配置/数据/进程。网关由 ensure_gateway_runtime 拉起（非独立 serve），
-脚本**不自动停止**网关：结束时须显式 `hermes gateway stop`（HERMES_HOME/HERMES_RUNTIME_DIR
-指向探针目录），并核对目标端口无 LISTENING、gateway.pid 不存在。
+隔离边界：代码在独立 worktree（`.probe-worktrees/hermes-v0225`），
+持久测试数据在引擎分配的 test-data 下（`<test-data>/task-250/gw-probe-home` 与
+`hermes-pm-store`）；不碰生产配置/数据/进程。网关由 ensure_gateway_runtime 拉起（非独立 serve），
+脚本**不自动停止**网关：结束时须显式执行 gateway stop 子命令（经 pm 环境 python
+`-m hermes_cli.main`，HERMES_HOME/HERMES_RUNTIME_DIR 指向探针目录），并核对目标端口
+无 LISTENING、gateway.pid 不存在。
 真实网关证据：所有回执原样落盘 evidence 目录，禁止 mock。
 
 隔离门禁（任一不满足即失败，不得假绿）：
@@ -46,11 +48,17 @@ import time
 from pathlib import Path
 
 # ── 隔离环境常量 ───────────────────────────────────────────────────────────
-# PROBE_ROOT 可用 GW_PROBE_ROOT 覆盖；默认取仓库根下的 .probe-worktrees（脚本位于 <repo>/scripts/）。
+# 代码/源码隔离：git worktree + uv 包，可用 GW_PROBE_ROOT 覆盖；
+# 默认取仓库根下的 .probe-worktrees（脚本位于 <repo>/scripts/）。
 PROBE_ROOT = Path(os.environ.get("GW_PROBE_ROOT")
                   or Path(__file__).resolve().parents[1] / ".probe-worktrees")
-HERMES_HOME = PROBE_ROOT / "gw-probe-home"          # 独立 profile 数据根（绝不指向生产）
-HERMES_EXE = PROBE_ROOT / "hermes-v0225" / ".hermes" / "bin" / "hermes.exe"
+# 持久测试数据根：HERMES_HOME 属测试持久数据，必须落在引擎分配的 test-data 下
+# （不用 .probe-worktrees 代替）；GW_PROBE_DATA 可覆盖以在其他工作区复跑。
+PROBE_DATA = Path(os.environ.get("GW_PROBE_DATA")
+                  or r"E:\Code\.bot-group-resources\dcc5f7fd43510c8f"
+                     r"\ws_6043478a1e82665dc05e9604\test-data")
+HERMES_HOME = PROBE_DATA / "task-250" / "gw-probe-home"      # 独立 profile 数据根（绝不指向生产）
+HERMES_RUNTIME = PROBE_DATA / "task-250" / "hermes-pm-store"  # pm 依赖存储
 # 依赖环境：hermes pm 装在 HERMES_HOME/installs/<install>/environments/<env>/venv
 # （pm repair 产物，ruamel/fastapi/websockets 全在此解释器）；PYTHONPATH 指向 worktree 源码根。
 import glob as _glob  # noqa: E402
@@ -150,7 +158,7 @@ def probe_env() -> dict:
     """构造探针子进程环境：白名单基础变量 + 隔离 home/runtime，其他一律不继承。"""
     env = {k: v for k, v in os.environ.items() if k in _ENV_ALLOW}
     env["HERMES_HOME"] = str(HERMES_HOME)
-    env["HERMES_RUNTIME_DIR"] = str(PROBE_ROOT / "hermes-pm-store")
+    env["HERMES_RUNTIME_DIR"] = str(HERMES_RUNTIME)
     env["PYTHONPATH"] = str(WORKTREE_SRC)
     for k in _FORBIDDEN_ENV:
         env.pop(k, None)
@@ -246,16 +254,17 @@ def stop_existing_gateway() -> dict:
 
     ensure_gateway_runtime 会 attach 已存在的网关，而旧实例的 env/config 可能与本轮
     preflight 不同（正是第二次隔离事故的成因）。停止后再启动，保证校验对象与被测对象一致。
+
+    经 pm 环境的 python 直调 CLI（`python -m hermes_cli.main gateway stop`），
+    不依赖 `.hermes/bin/hermes.exe` shim——该 shim 内嵌生成时的绝对路径，目录迁移后失效。
     """
-    record = {"exe": str(HERMES_EXE), "exe_exists": HERMES_EXE.exists()}
-    if not HERMES_EXE.exists():
-        record["output"] = "hermes.exe not found; skip stop"
-        return record
+    record: dict = {"cli": f"{PROBE_PYTHON.name} -m hermes_cli.main gateway stop"}
     try:
-        r = subprocess.run([str(HERMES_EXE), "gateway", "stop"], capture_output=True,
-                           text=True, env=probe_env(), timeout=120, cwd=str(WORKTREE_SRC))
+        r = subprocess.run([str(PROBE_PYTHON), "-m", "hermes_cli.main", "gateway", "stop"],
+                           capture_output=True, text=True, env=probe_env(),
+                           timeout=180, cwd=str(WORKTREE_SRC))
     except subprocess.TimeoutExpired:
-        record.update({"rc": None, "stopped": False, "output": "gateway stop timeout(120s)"})
+        record.update({"rc": None, "stopped": False, "output": "gateway stop timeout(180s)"})
         return record
     out = ((r.stdout or "") + (r.stderr or "")).strip()
     record.update({"rc": r.returncode, "stopped": "Stopped gateway" in out,
@@ -284,10 +293,9 @@ def preflight() -> dict:
 
     stop_rec = stop_existing_gateway()
     save_evidence("preflight-gateway-stop", stop_rec)
-    log("preflight gateway stop", rc=stop_rec.get("rc"), stopped=stop_rec.get("stopped"),
-        exe_exists=stop_rec.get("exe_exists"))
-    if stop_rec.get("exe_exists") and stop_rec.get("rc") not in (0,):
-        # stop 非零且非「无网关」时不可假定环境干净
+    log("preflight gateway stop", rc=stop_rec.get("rc"), stopped=stop_rec.get("stopped"))
+    if stop_rec.get("rc") != 0:
+        # stop 非零时不可假定环境干净（rc=None 为超时，同样阻断）
         log("PREFLIGHT FAILED: gateway stop failed", output=stop_rec.get("output"))
         sys.exit(6)
     pid_file = HERMES_HOME / "gateway.pid"
@@ -321,7 +329,8 @@ def connect_gateway_info() -> dict:
         pid_file = HERMES_HOME / "gateway.pid"
         if pid_file.exists():
             log("cleanup required: leftover gateway", pid_file=str(pid_file),
-                hint="hermes gateway stop with HERMES_HOME/HERMES_RUNTIME_DIR set to probe dirs")
+                hint="run gateway stop via python -m hermes_cli.main with probe "
+                     "HERMES_HOME/HERMES_RUNTIME_DIR")
         sys.exit(1)
     log("ensure_gateway OK", api_origin=info["api_origin"],
         instance_id=info["instance_id"][:12] + "…")
