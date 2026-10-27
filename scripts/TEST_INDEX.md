@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+需求恢复与空唤醒：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_requirement_recovery scripts.test_scan_requirements scripts.test_decompose_state_machine scripts.test_decompose_finalize scripts.test_requirement_lifecycle scripts.test_requirement_gate scripts.test_requirement_gate_reason scripts.test_message_injection scripts.test_task_retry scripts.test_queue_claim_race -q`。使用独立 SQLite 和模型投递记录器，覆盖 blocked 子任务连续扫描及显式恢复、部分拆解续作上下文、有效租约与拆解完成、来源撤回、授权/成员/项目门禁、负责人配置协调、存量队列取消、消息/任务合并保留及领取期间状态变化。生产数据及真实模型调用保持隔离；报告记录被测提交与实际命令。契约见 [需求恢复](../docs/engineering/REQUIREMENT-RECOVERY.md)。
+
 页面复用：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_service scripts.test_ui_presence scripts.test_service_restart scripts.test_desktop scripts.test_app_upgrade -q`。覆盖管理员权限、同源登记门禁、回环地址归并、远端隔离、连接关闭、占位释放/过期、浏览器失败重试及维护启动。运行 `python -X utf8 -B scripts/test_ui_presence_browser.py` 验证真实 Chrome、实际 `start.bat` 与临时桌面快捷方式的首次打开、快速重复、登录页、后台页、刷新、多页面和全部关闭后重新打开；隔离服务端口与数据目录，浏览器打开请求使用记录器，实际焦点切换受浏览器策略限制。
 
 桌面图标：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_desktop -q`。验证 ICO 七种尺寸、资源被发布清单收录，以及临时桌面中已有快捷方式从默认图标更新为安装目录内 ICO，保持启动参数、自定义数据目录及多实例共存。
@@ -125,7 +127,7 @@ MCP API 与运行时配置：`test_task_api.py` 验证成员/项目/执行校验
 | 消息投递与读取 | `test_group_send_thread_id.py`、`test_empty_sender.py`、`test_read_inbox_batch.py`、`test_inbox_seen_gate.py`、`test_need_reply_nullable.py`、`test_recipient_need_reply.py`、`test_reply_project.py`、`test_retract.py`、`test_mention_scope.py`、`test_self_mention.py`、`test_speak_read_granularity.py` |
 | 消息注入、执行与分页 | `test_message_injection.py`、`test_message_degrade_pagination.py`、`test_message_execution.py`、`test_message_pagination.py`、`test_message_stale_failure.py`、`test_signal_prefix.py`、`test_prompt_entry_points.py`、`test_hermes_transport.py` |
 | 话题与轮次 | `test_thread_creation.py`、`test_chat_isolation.py`、`test_topic_boundary_regressions.py`、`test_topic_restart_recovery.py`、`test_topic_skip.py`、`test_topic_unread.py`、`test_member_add_turn.py`、`test_skip_turn.py`、`test_turn_timeout_active.py`、`test_p2p_stale.py` |
-| 扫描、队列与进程 | `test_scan_order.py`、`test_scan_requirements.py`、`test_queue_claim_race.py`、`test_abnormal_exit.py`、`test_pids_alive.py`、`test_wake_pid_watch.py`、`test_wake_index_migration.py`、`test_is_chat_process.py`、`test_runtime_fork.py` |
+| 扫描、队列与进程 | `test_scan_order.py`、`test_scan_requirements.py`、`test_requirement_recovery.py`、`test_queue_claim_race.py`、`test_abnormal_exit.py`、`test_pids_alive.py`、`test_wake_pid_watch.py`、`test_wake_index_migration.py`、`test_is_chat_process.py`、`test_runtime_fork.py` |
 | 会话、命令与宿主 | `test_session_binding.py`、`test_session_switch.py`、`test_binding_column_order.py`、`test_member_session_reset.py`、`test_codex_session_mapping.py`、`test_codex_driver_regressions.py`、`test_commands_dispatch.py`、`test_stop_scope.py`、`test_steer_ledger.py`、`test_slash_injection_review.py` |
 | 可选 Hermes 集成 | `test_hermes_embed_entry.py`、`test_hermes_session_restore.py`、`test_hermes_steer_delivery.py`；先核对脚本中的宿主依赖和运行边界 |
 | 思考、图片与浏览器资源 | `test_active_entries_session.py`、`test_reasoning_window.py`、`test_thinking_run_identity.py`、`test_image_attachments.py`、`test_background_storage.py`、`test_browser_resources.py`、`test_browser_harness_integration.py` |

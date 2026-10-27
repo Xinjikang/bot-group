@@ -324,76 +324,28 @@ def _scan_thread_all_responded(conn) -> int:
     return enqueued
 
 
-def _pick_decompose_candidate(conn, project):
-    """确定性选一名有 task.create 权限的有效成员（role_id 升序 + profile 字典序，复用 #198）。
-
-    返回 profile 或 None（无候选）。
-    """
-    from . import project_permissions
-    granted = set(project_permissions.granted_profiles(conn, project, "task.create"))
-    if not granted:
-        return None
-    for row in conn.execute(
-        "SELECT pm.profile FROM project_members pm "
-        "JOIN members m ON m.profile = pm.profile "
-        "WHERE pm.project=? AND COALESCE(pm.active,0)=1 AND m.profile<>? "
-        "ORDER BY COALESCE(pm.role_id,0) ASC, pm.profile ASC",
-        (project, db.BUILTIN_USER_PROFILE),
-    ):
-        if row["profile"] in granted:
-            return row["profile"]
-    return None
-
-
 def scan_requirements(conn) -> int:
-    """扫描待拆/超时需求，按项目确定性选一名有效授权成员恢复拆解（不再全部唤醒）。"""
-    from . import project_readiness
-    from . import requirement_gate
-    now = db.now_iso()
-    rows = conn.execute(
-        """
-        SELECT r.*
-        FROM requirements r
-        JOIN projects p ON p.name = r.project AND p.archived = 0
-        WHERE r.status = 'open' AND r.archived = 0
-          AND (
-                r.decompose_state = 'pending'
-                OR (r.decompose_state = 'decomposing'
-                    AND (r.decompose_expires_at = '' OR r.decompose_expires_at < ?))
-              )
-        """,
-        (now,),
-    ).fetchall()
+    """Schedule pending/expired decomposition using shared recovery eligibility."""
+    from . import requirement_gate, requirement_recovery
+    rows = requirement_recovery.candidates(conn)
     enqueued = 0
     for r in rows:
-        if not project_readiness.is_ready(conn, r['project']):
-            continue
         blocked = requirement_gate.check(conn, r)
         if blocked:
-            # req#111 task#192：未过门禁 → 把 check 返回原因写回 gate_reason，
-            # 供前端标「待拆解授权 + 原因」，不再静默丢弃 continue、两头拿不到原因。
             reason = blocked['error'] if isinstance(blocked, dict) else str(blocked)
             conn.execute('UPDATE requirements SET gate_reason=? WHERE id=?', (reason, r['id']))
             conn.commit()
             continue
-        # 过门禁 → 清空 gate_reason（历史残留不误标）。WHERE gate_reason<>'' 守卫避免每轮无谓写+commit。
+        # Avoid a write for rows whose previous gate reason is already empty.
         conn.execute("UPDATE requirements SET gate_reason='' WHERE id=? AND gate_reason<>''", (r['id'],))
         conn.commit()
-        candidate = _pick_decompose_candidate(conn, r['project'])
+        candidate = requirement_recovery.pick_candidate(conn, r['project'])
         if candidate is None:
-            # req#117 task#200：无候选 → 写 gate_reason 明确原因 + 唤醒项目负责人处理配置（不再静默漏拆）。
-            reason = ("无 task.create 授权成员：请在项目设置中为至少一名有效成员授予 task.create 权限"
-                      "（或为该成员配置持有该权限的角色）后再拆解。")
-            conn.execute("UPDATE requirements SET gate_reason=? WHERE id=?", (reason, r['id']))
+            conn.execute("UPDATE requirements SET gate_reason=? WHERE id=?",
+                         (requirement_recovery.NO_CANDIDATE_REASON, r['id']))
             conn.commit()
-            owner = conn.execute(
-                "SELECT value FROM settings WHERE project=? AND key='owner_profile'", (r['project'],)
-            ).fetchone()
-            if owner and owner['value']:
-                if wake.enqueue(conn, owner['value'], "work", "scan:req", project=r['project']):
-                    enqueued += 1
-            continue
-        if wake.enqueue(conn, candidate, "work", "scan:req", project=r["project"]):
+            candidate = requirement_recovery.coordination_owner(conn, r['project'])
+        if candidate and wake.enqueue(conn, candidate, "work", "scan:req", project=r["project"]):
             enqueued += 1
     return enqueued
 
