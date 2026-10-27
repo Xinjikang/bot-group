@@ -717,16 +717,31 @@ def stop_instance(info: dict, pid: int | None) -> dict:
     port = _origin_port(origin)
     rec: dict = {"api_origin": origin or None, "port": port, "pid": pid}
     rec["stop"] = stop_existing_gateway()
-    pid_file_exists = (HERMES_HOME / "gateway.pid").exists()
+    pid_file = HERMES_HOME / "gateway.pid"
+    pid_file_exists = pid_file.exists()
+    # 残留 pid 文件但记录的进程已死＝v0.22.5 的 stale 状态（实测 22:15 复跑后出现），
+    # 不能据此判「未释放」，否则清理会报假失败。
+    recorded_pid = None
+    recorded_alive = None
+    if pid_file_exists:
+        try:
+            raw_meta = json.loads(pid_file.read_text(encoding="utf-8", errors="replace"))
+        except (json.JSONDecodeError, OSError):
+            raw_meta = None
+        recorded_pid = raw_meta.get("pid") if isinstance(raw_meta, dict) else None
+        recorded_alive = _pid_alive(recorded_pid) if recorded_pid else None
+    stale_pid_file = bool(pid_file_exists and recorded_alive is False)
     pid_alive = _pid_alive(pid) if pid else None
     listening = _port_listening(port) if port else None
     rec.update({"pid_alive_after": pid_alive, "gateway_pid_exists": pid_file_exists,
-                "port_listening": listening})
+                "port_listening": listening, "pid_file_recorded_pid": recorded_pid,
+                "pid_file_stale": stale_pid_file})
     # 三态而不是两态：ensure 失败时 pid/端口未知，此时「查不到」不等于「没释放」。
-    #   failed  明确有残留（pid 存活 / 端口 LISTENING / gateway.pid 还在）
+    #   failed  明确有残留（pid 存活 / 端口 LISTENING / gateway.pid 指向仍存活的进程）
     #   unknown 有关键项查不到（pid 或端口已知但查询失败）
-    #   clean   所有可核验项都确认已释放（pid 文件不存在 + 无 pid 存活 + 端口无监听）
-    failed = bool(pid_file_exists or pid_alive is True or listening is True)
+    #   clean   所有可核验项都确认已释放（stale pid 文件不算残留）
+    failed = bool((pid_file_exists and not stale_pid_file)
+                  or pid_alive is True or listening is True)
     unknown = (not failed) and ((pid is not None and pid_alive is None)
                                 or (port is not None and listening is None))
     verdict = "failed" if failed else ("unknown" if unknown else "clean")

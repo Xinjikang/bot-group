@@ -444,6 +444,21 @@ class StopInstanceTest(unittest.TestCase):
             gw_probe.stop_instance({"api_origin": "127.0.0.1:58123"}, 4242)["verdict"],
             "unknown")
 
+    def test_stale_pid_file_does_not_fail_cleanup(self):
+        # 实测 22:15：网关已 stopped，gateway.pid 残留指向已死进程 -> 不能判 failed
+        self._stub(False, False)
+        (self.home / "gateway.pid").write_text(json.dumps({"pid": 13516}), encoding="utf-8")
+        rec = gw_probe.stop_instance({"api_origin": "127.0.0.1:58123"}, 4242)
+        self.assertTrue(rec["pid_file_stale"])
+        self.assertEqual(rec["verdict"], "clean")
+
+    def test_pid_file_with_live_process_fails(self):
+        self._stub(True, False)  # 任意 pid 查询都返回存活
+        (self.home / "gateway.pid").write_text(json.dumps({"pid": 13516}), encoding="utf-8")
+        rec = gw_probe.stop_instance({"api_origin": "127.0.0.1:58123"}, 4242)
+        self.assertFalse(rec["pid_file_stale"])
+        self.assertEqual(rec["verdict"], "failed")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
