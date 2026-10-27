@@ -445,24 +445,19 @@ def e2_config(eng: Engine, threads: dict) -> dict:
     cfg = yaml.safe_load((Path(overlay_dir) / "config.yaml").read_text(encoding="utf-8"))
     entry = ((cfg.get("mcp_servers") or {}).get("task_queue") or {})
 
-    # 可证伪对照：父进程设置 HERMES_MANAGED_DIR 时，overlay 必须写自己的目录，
-    # server spec 也不得继承父值。若 hermes_overlay 改为沿用父值，本断言会失败。
+    # 可证伪对照：向 overlay 的 env 预置父目录值，overlay 必须写自己的临时目录而不是复用它；
+    # 若 hermes_overlay 改为沿用传入值，control_dir 将等于 parent_managed，本断言失败。
+    # 「父环境变量不进入子进程」由 M3 验证，本项只声明不复用父目录。
     parent_managed = r"X:\parent-managed-should-not-leak"
-    prev_managed = os.environ.get("HERMES_MANAGED_DIR")
-    os.environ["HERMES_MANAGED_DIR"] = parent_managed
-    control_env = {}
+    control_env = {"HERMES_MANAGED_DIR": parent_managed}
     control_overlay = None
     control_dir = None
     try:
         control_overlay = mcp_runtime.hermes_overlay(server, control_env, profile_home=None)
         control_dir = control_env.get("HERMES_MANAGED_DIR")
     finally:
-        if prev_managed is None:
-            os.environ.pop("HERMES_MANAGED_DIR", None)
-        else:
-            os.environ["HERMES_MANAGED_DIR"] = prev_managed
-    if control_overlay is not None:
-        control_overlay.cleanup()
+        if control_overlay is not None:
+            control_overlay.cleanup()
 
     checks = {
         "command_is_python": str(entry.get("command", "")).lower().endswith("python.exe"),
@@ -478,8 +473,7 @@ def e2_config(eng: Engine, threads: dict) -> dict:
         "lazy_false": entry.get("lazy") is False,
         "connect_timeout_60": entry.get("connect_timeout") == 60,
         "cwd_is_project_root": str(entry.get("cwd", "")).lower() == str(ROOT).lower(),
-        "managed_dir_override_not_inherited": bool(control_dir) and control_dir != parent_managed
-                                              and "HERMES_MANAGED_DIR" not in env,
+        "overlay_does_not_reuse_parent_managed_dir": bool(control_dir) and control_dir != parent_managed,
     }
     result = {"passed": all(checks.values()), "checks": checks,
               "server_env_keys": sorted(env), "overlay": overlay_dir,
