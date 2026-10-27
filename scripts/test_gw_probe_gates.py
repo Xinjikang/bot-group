@@ -460,5 +460,182 @@ class StopInstanceTest(unittest.TestCase):
         self.assertEqual(rec["verdict"], "failed")
 
 
+class ProbePythonSelectTest(unittest.TestCase):
+    """PROBE_PYTHON 确定性选取 + 双自检：不依赖 mtime，自检不过不采用。"""
+
+    def _cands(self, *names):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        out = []
+        for n in names:
+            p = root / n
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("stub", encoding="utf-8")
+            out.append(p)
+        return out
+
+    def test_deterministic_same_input_same_choice(self):
+        cands = sorted(self._cands("b/python.exe", "a/python.exe"))
+        first, rec1 = gw_probe.select_probe_python(cands, selftest=False)
+        second, rec2 = gw_probe.select_probe_python(list(reversed(cands)), selftest=False)
+        self.assertEqual(first, second)
+        self.assertEqual(first.name, "python.exe")
+        self.assertIn("a", str(first))  # 排序末位
+        self.assertEqual(rec1["chosen"], rec2["chosen"])
+
+    def test_failed_selftest_excluded(self):
+        cands = self._cands("a/python.exe", "b/python.exe")
+        seen = {}
+
+        def fake(py, src):
+            seen[str(py)] = True
+            return {"python": str(py), "ok": str(py).endswith("b\\python.exe")
+                    or str(py).endswith("b/python.exe")}
+
+        orig = gw_probe._selftest_probe_python
+        gw_probe._selftest_probe_python = fake
+        self.addCleanup(lambda: setattr(gw_probe, "_selftest_probe_python", orig))
+        chosen, rec = gw_probe.select_probe_python(cands)
+        self.assertIsNotNone(chosen)
+        self.assertTrue(str(chosen).endswith("b\\python.exe") or str(chosen).endswith("b/python.exe"))
+        self.assertEqual(len(rec["selftests"]), 2)
+        self.assertIn("single passing candidate", rec["reason"])
+
+    def test_all_selftests_failed_returns_none(self):
+        cands = self._cands("a/python.exe")
+        orig = gw_probe._selftest_probe_python
+        gw_probe._selftest_probe_python = lambda py, src: {"python": str(py), "ok": False}
+        self.addCleanup(lambda: setattr(gw_probe, "_selftest_probe_python", orig))
+        chosen, rec = gw_probe.select_probe_python(cands)
+        self.assertIsNone(chosen)
+        self.assertIn("no candidate passed self-test", rec["reason"])
+
+    def test_no_candidate_returns_none(self):
+        chosen, rec = gw_probe.select_probe_python([])
+        self.assertIsNone(chosen)
+        self.assertIn("no candidate", rec["reason"])
+
+    def test_selftest_rejects_empty_output(self):
+        # 空输出/rc 非 0/异常标记都不能算通过（缺项必须失败）
+        orig_run = gw_probe.subprocess.run
+
+        class R:
+            def __init__(self, rc, out):
+                self.returncode, self.stdout, self.stderr = rc, out, ""
+
+        seq = [R(0, ""), R(0, "3.14.9")]  # interpreter 空 -> 不通过
+        gw_probe.subprocess.run = lambda *a, **k: seq.pop(0)
+        self.addCleanup(lambda: setattr(gw_probe.subprocess, "run", orig_run))
+        rec = gw_probe._selftest_probe_python(Path("x/python.exe"), Path("src"))
+        self.assertFalse(rec["ok"])
+
+
+class StopOwnershipTest(unittest.TestCase):
+    """停前归属校验：只允许停本探针 home 的实例（foreign/unknown 一律拒绝）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self._orig_home = gw_probe.HERMES_HOME
+        gw_probe.HERMES_HOME = self.home
+
+    def tearDown(self):
+        gw_probe.HERMES_HOME = self._orig_home
+        self.tmp.cleanup()
+
+    def _write(self, payload):
+        text = payload if isinstance(payload, str) else json.dumps(payload)
+        (self.home / "gateway.pid").write_text(text, encoding="utf-8")
+
+    def test_absent_when_no_pid_file(self):
+        self.assertEqual(gw_probe.stop_ownership()["verdict"], "absent")
+
+    def test_owned_when_home_matches(self):
+        self._write({"pid": 123, "hermes_home": str(self.home), "argv": ["x"]})
+        rec = gw_probe.stop_ownership()
+        self.assertEqual(rec["verdict"], "owned")
+        self.assertEqual(rec["pid"], 123)
+
+    def test_owned_with_slash_case_differences(self):
+        self._write({"pid": 1, "hermes_home": str(self.home).replace("\\", "/").upper()})
+        self.assertEqual(gw_probe.stop_ownership()["verdict"], "owned")
+
+    def test_foreign_when_other_home(self):
+        self._write({"pid": 1, "hermes_home": "E:/home/admin/hermes/prod-home"})
+        rec = gw_probe.stop_ownership()
+        self.assertEqual(rec["verdict"], "foreign")
+        self.assertIn("mismatch", rec["reason"])
+
+    def test_foreign_when_home_missing(self):
+        self._write({"pid": 1})
+        rec = gw_probe.stop_ownership()
+        self.assertEqual(rec["verdict"], "foreign")
+        self.assertIn("missing", rec["reason"])
+
+    def test_unknown_when_unparsable(self):
+        self._write("{not json")
+        self.assertEqual(gw_probe.stop_ownership()["verdict"], "unknown")
+
+    def test_unknown_when_not_object(self):
+        self._write("12345")
+        self.assertEqual(gw_probe.stop_ownership()["verdict"], "unknown")
+
+
+class StopRefusedTest(unittest.TestCase):
+    """归属不符时 stop_existing_gateway 必须拒绝执行，且不得调用任何子进程。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self._orig = (gw_probe.HERMES_HOME, gw_probe.subprocess.run)
+        gw_probe.HERMES_HOME = self.home
+
+    def tearDown(self):
+        gw_probe.HERMES_HOME, gw_probe.subprocess.run = self._orig
+        self.tmp.cleanup()
+
+    def test_foreign_instance_refused_without_subprocess(self):
+        (self.home / "gateway.pid").write_text(
+            json.dumps({"pid": 1, "hermes_home": "E:/home/admin/hermes/prod-home"}),
+            encoding="utf-8")
+        calls = []
+        gw_probe.subprocess.run = lambda *a, **k: calls.append(a) or (_ for _ in ()).throw(
+            AssertionError("stop 不应在归属不符时执行"))
+
+        rec = gw_probe.stop_existing_gateway()
+        self.assertEqual(rec["verdict"], "refused")
+        self.assertEqual(rec["ownership"]["verdict"], "foreign")
+        self.assertEqual(calls, [])
+
+    def test_unknown_pid_file_refused_without_subprocess(self):
+        (self.home / "gateway.pid").write_text("{broken", encoding="utf-8")
+        calls = []
+        gw_probe.subprocess.run = lambda *a, **k: calls.append(a)
+        rec = gw_probe.stop_existing_gateway()
+        self.assertEqual(rec["verdict"], "refused")
+        self.assertEqual(rec["ownership"]["verdict"], "unknown")
+        self.assertEqual(calls, [])
+
+    def test_absent_pid_file_proceeds_to_stop(self):
+        # 无 pid 文件：没有实例可停，允许走 CLI（会返回 no-gateway，幂等安全）
+        calls = []
+
+        class R:
+            returncode, stdout, stderr = 0, "✗ No gateway running", ""
+
+        def fake(*a, **k):
+            calls.append(a)
+            return R()
+
+        orig_py = gw_probe.probe_python
+        gw_probe.subprocess.run = fake
+        gw_probe.probe_python = lambda: Path(sys.executable)
+        self.addCleanup(lambda: setattr(gw_probe, "probe_python", orig_py))
+        rec = gw_probe.stop_existing_gateway()
+        self.assertEqual(rec["ownership"]["verdict"], "absent")
+        self.assertEqual(len(calls), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

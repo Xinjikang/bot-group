@@ -65,12 +65,9 @@ HERMES_HOME = PROBE_DATA / "task-250" / "gw-probe-home"      # 独立 profile �
 HERMES_RUNTIME = PROBE_DATA / "task-250" / "hermes-pm-store"  # pm 依赖存储
 # 依赖环境：hermes pm 装在 HERMES_HOME/installs/<install>/environments/<env>/venv
 # （pm repair 产物，ruamel/fastapi/websockets 全在此解释器）；PYTHONPATH 指向 worktree 源码根。
+# 解释器不在此处固定：见 select_probe_python()——按路径字典序确定性选取，
+# 并对候选做双自检（解释器可执行 + 能 import hermes_cli），任一不通过不采用。
 import glob as _glob  # noqa: E402
-_env_venvs = sorted(_glob.glob(str(HERMES_HOME / "installs" / "*" / "environments" / "*"
-                                   / "venv" / "Scripts" / "python.exe")),
-                    key=lambda p: Path(p).stat().st_mtime)
-assert _env_venvs, "probe dependency venv python.exe not found under gw-probe-home/installs"
-PROBE_PYTHON = Path(_env_venvs[-1])                  # 按 mtime 取最近安装的环境（非名称排序）
 WORKTREE_SRC = PROBE_ROOT / "hermes-v0225"
 EVIDENCE_DIR = Path(os.environ.get(
     "GW_EVIDENCE_DIR",
@@ -119,7 +116,8 @@ def evidence_meta() -> dict:
             "commit": _git("rev-parse", "--short", "HEAD"),
             "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
             "worktree_clean": (dirty == "") if dirty is not None else None,
-            "probe_python": str(PROBE_PYTHON),
+            "probe_python": str(probe_python() or ""),
+            "probe_python_record": probe_python_record(),
             "hermes_home": str(HERMES_HOME),
             "hermes_runtime": str(HERMES_RUNTIME),
         }
@@ -224,6 +222,138 @@ def env_snapshot() -> dict:
 
 class ConfigError(ValueError):
     """探针 home config.yaml 不满足隔离要求。"""
+
+
+class ProbePythonError(RuntimeError):
+    """探针依赖解释器无法确定或自检不通过：不允许带着未知解释器启动。"""
+
+
+# 解释器选取结果（首次调用计算并缓存，避免每次 import 都跑自检子进程）
+_PROBE_PYTHON: dict = {}
+
+
+def _venv_candidates() -> list[Path]:
+    """枚举 pm 安装的解释器候选，按路径字典序（install/env 哈希稳定，结果与时间戳无关）。"""
+    pattern = str(HERMES_HOME / "installs" / "*" / "environments" / "*" / "venv"
+                  / "Scripts" / "python.exe")
+    return sorted(Path(p) for p in _glob.glob(pattern))
+
+
+def _selftest_probe_python(py: Path, src: Path) -> dict:
+    """双自检：①解释器自身可执行；②在 worktree 源码下能 import hermes_cli。
+
+    只有两项都给出正常输出才算可用——单看文件存在会被残留/半安装环境骗过
+    （重装后 shim 失效时 hermes.exe 正是「存在但 rc=1 无输出」）。
+    """
+    rec: dict = {"python": str(py)}
+    checks = (("interpreter", "import sys; print(sys.version.split()[0])"),
+              ("hermes_cli", "import hermes_cli; print(hermes_cli.__file__)"))
+    for key, code in checks:
+        try:
+            r = subprocess.run([str(py), "-c", code], capture_output=True, text=True,
+                               env=probe_env(), timeout=120, cwd=str(src))
+        except (OSError, subprocess.SubprocessError) as exc:
+            rec[key] = f"error:{type(exc).__name__}"
+            continue
+        out = ((r.stdout or "") + (r.stderr or "")).strip()
+        rec[key] = (out.splitlines()[-1][:160] if r.returncode == 0 and out
+                    else f"rc{r.returncode}:{out[-160:]}")
+
+    def _passed(value) -> bool:
+        """通过＝有实际输出且不是错误标记；空值不算通过（缺项必须失败）。"""
+        s = str(value or "")
+        return bool(s) and not s.startswith("error:") and not s.startswith("rc")
+
+    rec["ok"] = all(_passed(rec.get(k)) for k in ("interpreter", "hermes_cli"))
+    return rec
+
+
+def select_probe_python(candidates: list[Path] | None = None, *,
+                        selftest: bool = True) -> tuple[Path | None, dict]:
+    """确定性选取探针解释器：候选按路径排序，只采用自检通过者，取排序末位。
+
+    多候选同时可用时仍然取末位并在记录里列出全部候选与原因——同一文件系统状态下
+    结果恒定，不依赖 mtime 或 glob 返回顺序。无候选/全部自检失败时返回 None，
+    由调用方按失败处理（不能悄悄退化成系统 python 去跑真实网关）。
+    """
+    cands = sorted(candidates if candidates is not None else _venv_candidates())
+    rec: dict = {"candidates": [str(c) for c in cands], "selftests": [], "chosen": None,
+                 "reason": ""}
+    if not cands:
+        rec["reason"] = "no candidate under HERMES_HOME/installs/*/environments/*/venv/Scripts"
+        return None, rec
+    passed: list[Path] = []
+    for py in cands:
+        st = _selftest_probe_python(py, WORKTREE_SRC) if selftest else {"python": str(py), "ok": True}
+        rec["selftests"].append(st)
+        if st.get("ok"):
+            passed.append(py)
+    if not passed:
+        rec["reason"] = "no candidate passed self-test (interpreter + hermes_cli)"
+        return None, rec
+    rec["chosen"] = str(passed[-1])
+    rec["reason"] = ("single passing candidate" if len(passed) == 1 else
+                     f"{len(passed)} passing candidates; deterministic pick = path-sorted last")
+    return passed[-1], rec
+
+
+def probe_python() -> Path | None:
+    """探针解释器（首次调用做确定性选取 + 双自检并缓存）。"""
+    if not _PROBE_PYTHON:
+        chosen, rec = select_probe_python()
+        _PROBE_PYTHON.update(rec)
+        log("probe python select", chosen=rec.get("chosen"), reason=rec.get("reason"),
+            candidates=len(rec.get("candidates") or []))
+    chosen = _PROBE_PYTHON.get("chosen")
+    return Path(chosen) if chosen else None
+
+
+def probe_python_record() -> dict:
+    """解释器选取/自检记录（写进证据 meta，便于追溯用的是哪个环境）。"""
+    probe_python()
+    return {k: _PROBE_PYTHON.get(k) for k in ("chosen", "reason", "candidates", "selftests")}
+
+
+def _norm_path(p) -> str:
+    """归一化路径用于归属比较（大小写、正/反斜杠、相对段）。"""
+    try:
+        return os.path.normcase(str(Path(p).resolve()))
+    except (OSError, ValueError, RuntimeError):
+        return os.path.normcase(str(p).replace("/", "\\"))
+
+
+def stop_ownership() -> dict:
+    """停前归属校验：只允许停本探针 home 的实例。
+
+    所有 stop 入口都要先过这里——`gateway stop` 按 HERMES_HOME 定位，但 pid 文件
+    可能属于别的 home（迁移/残留/串台），盲目 stop 会打到不是本次拉起的实例。
+      absent   无 pid 文件：没有实例可停，stop 幂等安全
+      owned    pid 文件记录 hermes_home 与本探针一致：允许停
+      foreign  hermes_home 不同：拒绝停（不得触碰其他实例）
+      unknown  pid 文件不可解析：无法确认归属，同样拒绝停（fail-closed）
+    """
+    pid_file = HERMES_HOME / "gateway.pid"
+    rec: dict = {"verdict": "absent", "pid_file": str(pid_file),
+                 "expected_home": str(HERMES_HOME)}
+    if not pid_file.exists():
+        return rec
+    try:
+        meta = json.loads(pid_file.read_text(encoding="utf-8", errors="replace"))
+    except (json.JSONDecodeError, OSError) as exc:
+        rec.update({"verdict": "unknown", "reason": f"{type(exc).__name__}"})
+        return rec
+    if not isinstance(meta, dict):
+        rec.update({"verdict": "unknown", "reason": "pid file is not an object"})
+        return rec
+    home = meta.get("hermes_home")
+    rec.update({"pid": meta.get("pid"), "hermes_home": home,
+                "argv": meta.get("argv") if isinstance(meta.get("argv"), list) else None})
+    if home and _norm_path(home) == _norm_path(HERMES_HOME):
+        rec["verdict"] = "owned"
+    else:
+        rec.update({"verdict": "foreign", "reason": "hermes_home mismatch" if home
+                    else "hermes_home missing"})
+    return rec
 
 
 class InstanceMismatch(RuntimeError):
@@ -372,14 +502,31 @@ def stop_existing_gateway() -> dict:
     统一走 pm 环境 venv 的 `python -m hermes_cli.main`（architect 8373 拍板口径）：
     不依赖 `.hermes/bin` / `<home>/bin` 的 launcher——launcher 内嵌生成时的绝对路径，
     home 迁移或重装后可能失效且静默吞错。同时避免 attach 旧实例。
+
+    停前归属校验（所有 stop 入口都经此函数）：pid 文件不属于本探针 home 或无法解析时
+    一律不执行 stop，返回 verdict=refused。
     """
-    if not PROBE_PYTHON.exists():
-        return {"cli": f"{PROBE_PYTHON} -m hermes_cli.main", "cli_exists": False,
-                "rc": None, "stopped": False,
-                "output": "probe venv python missing under HERMES_HOME/installs"}
-    record: dict = {"cli": f"{PROBE_PYTHON.name} -m hermes_cli.main", "cli_exists": True}
+    own = stop_ownership()
+    record: dict = {"ownership": own, "verdict": None}
+    if own["verdict"] in ("foreign", "unknown"):
+        record.update({"cli": None, "cli_exists": True, "rc": None, "stopped": False,
+                       "verdict": "refused",
+                       "output": f"stop refused: gateway.pid ownership={own['verdict']}"
+                                 f" ({own.get('reason', '')})"})
+        log("STOP REFUSED: gateway.pid 不属于本探针 home，未执行 stop",
+            verdict=own["verdict"], hermes_home=own.get("hermes_home"),
+            expected=own.get("expected_home"))
+        return record
+    py = probe_python()
+    if py is None or not py.exists():
+        record.update({"cli": "probe venv python (unresolved)", "cli_exists": False,
+                       "rc": None, "stopped": False,
+                       "output": "probe venv python unavailable"
+                                 " (see probe_python select record)"})
+        return record
+    record.update({"cli": f"{py.name} -m hermes_cli.main", "cli_exists": True})
     try:
-        r = subprocess.run([str(PROBE_PYTHON), "-m", "hermes_cli.main", "gateway", "stop"],
+        r = subprocess.run([str(py), "-m", "hermes_cli.main", "gateway", "stop"],
                            capture_output=True, text=True, env=probe_env(),
                            timeout=180, cwd=str(WORKTREE_SRC))
     except subprocess.TimeoutExpired:
@@ -411,14 +558,19 @@ def preflight() -> dict:
         sys.exit(6)
 
     stop_rec = stop_existing_gateway()
-    clean, verdict = stop_verdict(stop_rec.get("rc"), stop_rec.get("output", ""))
+    if stop_rec.get("verdict") == "refused":
+        # 归属不明/不属于本 home：既不停也不启动，保证不触碰其他实例
+        clean, verdict = False, "refused"
+    else:
+        clean, verdict = stop_verdict(stop_rec.get("rc"), stop_rec.get("output", ""))
     stop_rec["verdict"] = verdict
     save_evidence("preflight-gateway-stop", stop_rec)
     log("preflight gateway stop", rc=stop_rec.get("rc"), stopped=stop_rec.get("stopped"),
-        verdict=verdict)
+        verdict=verdict, ownership=(stop_rec.get("ownership") or {}).get("verdict"))
     if not clean:
         # 既非成功也非「无网关运行」：不能假定环境干净
-        log("PREFLIGHT FAILED: gateway stop failed", output=stop_rec.get("output"))
+        log("PREFLIGHT FAILED: gateway stop failed", verdict=verdict,
+            output=stop_rec.get("output"))
         sys.exit(6)
     # stop 之后等状态收敛：ensure 读到 draining/starting 过渡态会误报未就绪
     settled = wait_gateway_settled()
@@ -468,7 +620,10 @@ def wait_gateway_settled(timeout: float = 20.0) -> dict:
 
 def _ensure_once() -> dict:
     """跑一次官方连接三步（子进程），返回 (info, stderr)；不判成败。"""
-    r = subprocess.run([str(PROBE_PYTHON), "-X", "utf8", "-c", CONNECT_CODE,
+    py = probe_python()
+    if py is None or not py.exists():
+        raise ProbePythonError("probe venv python unavailable; see probe python select record")
+    r = subprocess.run([str(py), "-X", "utf8", "-c", CONNECT_CODE,
                         str(HERMES_HOME), str(ENSURE_GATEWAY_TIMEOUT)],
                        capture_output=True, text=True, env=probe_env(), timeout=600,
                        cwd=str(WORKTREE_SRC))
