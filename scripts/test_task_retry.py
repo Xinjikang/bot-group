@@ -8,7 +8,14 @@ from scripts import test_abnormal_exit as fixtures
 
 
 class TaskRetryTests(unittest.TestCase):
-    setUp = fixtures.AbnormalExitTests.setUp
+    def setUp(self):
+        fixtures.AbnormalExitTests.setUp(self)
+        runtime = patch.dict('os.environ', {
+            'GROUP_DATA_DIR': self.tmp.name,
+            'HERMES_MANAGED_DIR': self.tmp.name + '/managed',
+        })
+        runtime.start()
+        self.addCleanup(runtime.stop)
 
     def test_binding_is_exact_owner_and_project(self):
         self.assertEqual(select_task(self.conn, 'dev-1', 'p'), 1)
