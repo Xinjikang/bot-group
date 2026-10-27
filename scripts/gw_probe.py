@@ -14,11 +14,25 @@
   → prompt.receipt 轮询到 terminal
 
 隔离边界：独立 HERMES_HOME（gw-probe-home）、独立安装 worktree、分配资源；
-不碰生产配置/数据/进程。网关由 ensure_gateway_runtime 拉起，实测以 planned stop
-退出（idle-exit 尚未获得观测证据，见 reports 验收记录 §4）。
+不碰生产配置/数据/进程。网关由 ensure_gateway_runtime 拉起（非独立 serve），
+脚本**不自动停止**网关：结束时须显式 `hermes gateway stop`（HERMES_HOME/HERMES_RUNTIME_DIR
+指向探针目录），并核对目标端口无 LISTENING、gateway.pid 不存在。
 真实网关证据：所有回执原样落盘 evidence 目录，禁止 mock。
 
-退出码：0=terminal/completed；3=轮询超时未达终态；4=terminal 但 outcome 非 completed。
+隔离门禁（任一不满足即失败，不得假绿）：
+  preflight  子进程环境白名单、config 显式 mcp_servers:{}、先停残留网关（强制 fresh）
+  create/resume 后  info 必须为 dict 且显式含 mcp_servers，值为 list 且空
+  运行前后     mcp-stderr 的 /heartbeat 计数必须可读且增量为 0
+
+退出码：
+  0=terminal/completed 且全部门禁通过
+  2=authority 检查失败（非 gateway runner 路径）
+  3=轮询超时未达终态
+  4=terminal 但 outcome 非 completed
+  5=隔离未知或失守（info/mcp_servers 缺失、类型异常或非空）
+  6=preflight 拒绝启动（环境/配置/残留网关）
+  7=session.resume 返回的 session_id 与 create 不一致
+  8=心跳门禁失败（mcp-stderr 不可读或 /heartbeat 有新增）
 """
 from __future__ import annotations
 
@@ -41,15 +55,17 @@ HERMES_EXE = PROBE_ROOT / "hermes-v0225" / ".hermes" / "bin" / "hermes.exe"
 # （pm repair 产物，ruamel/fastapi/websockets 全在此解释器）；PYTHONPATH 指向 worktree 源码根。
 import glob as _glob  # noqa: E402
 _env_venvs = sorted(_glob.glob(str(HERMES_HOME / "installs" / "*" / "environments" / "*"
-                                   / "venv" / "Scripts" / "python.exe")))
+                                   / "venv" / "Scripts" / "python.exe")),
+                    key=lambda p: Path(p).stat().st_mtime)
 assert _env_venvs, "probe dependency venv python.exe not found under gw-probe-home/installs"
-PROBE_PYTHON = Path(_env_venvs[-1])                  # 多 install 时取最新（排序末位）
+PROBE_PYTHON = Path(_env_venvs[-1])                  # 按 mtime 取最近安装的环境（非名称排序）
 WORKTREE_SRC = PROBE_ROOT / "hermes-v0225"
 EVIDENCE_DIR = Path(os.environ.get(
     "GW_EVIDENCE_DIR",
     Path(__file__).resolve().parents[1] / "reports" / "research" / "hermes-gateway"))
 RECEIPT_POLL_INTERVAL = 3.0
 RECEIPT_POLL_MAX = 900                              # 15 分钟兜底（真实 agent 一轮可能慢）
+ENSURE_GATEWAY_TIMEOUT = 120.0                      # 冷启动实测 >60s（reviewer 21:04 遗留端口事件）
 
 _json_id = 0
 _evidence_seq = 0
@@ -82,6 +98,7 @@ for k in ("XDG_GROUP_ENGINE_URL", "GROUP_ENGINE_URL", "XDG_GROUP_ENGINE_EXECUTIO
           "HERMES_MANAGED_DIR", "HERMES_CHAT_MODE", "TASK_QUEUE_ROLE"):
     os.environ.pop(k, None)
 os.environ["HERMES_HOME"] = sys.argv[1]
+ENSURE_TIMEOUT = float(sys.argv[2]) if len(sys.argv) > 2 else 120.0
 
 from hermes_cli import gateway_client
 from hermes_cli.gateway_runtime import attachable, ensure_gateway_runtime, gateway_profile_home
@@ -89,7 +106,8 @@ from hermes_constants import get_hermes_home
 
 async def main():
     home = gateway_profile_home(get_hermes_home())
-    result = await asyncio.to_thread(ensure_gateway_runtime, home, idle_exit=True)
+    result = await asyncio.to_thread(ensure_gateway_runtime, home,
+                                     timeout=ENSURE_TIMEOUT, idle_exit=True)
     if not attachable(result):
         print(json.dumps({"ok": False, "state": result.state,
                          "reason": result.reason_code, "detail": getattr(result, "detail", "")}))
@@ -152,18 +170,23 @@ def env_snapshot() -> dict:
 
 
 def config_mcp_issue() -> str:
-    """检查探针 home 的 config.yaml 是否含非空 mcp_servers；返回问题描述（空串=通过）。"""
+    """探针 home 配置校验：必须显式写 `mcp_servers: {}`（空映射）。
+
+    缺失、null、[]、非空内联值、缩进块条目一律不通过——「键不存在」等于配置失控权
+    仍在外部（managed scope / profile 覆盖层可注入），不能当作已关闭 MCP。
+    返回问题描述（空串=通过）。
+    """
     cfg = HERMES_HOME / "config.yaml"
     if not cfg.exists():
-        return "config.yaml missing"
+        return f"config.yaml missing at {cfg}"
     lines = cfg.read_text(encoding="utf-8", errors="replace").splitlines()
     for i, line in enumerate(lines):
         s = line.strip()
         if not s.startswith("mcp_servers:"):
             continue
-        rest = s.split(":", 1)[1].strip()
-        if rest not in ("", "{}", "[]", "null", "~"):
-            return f"mcp_servers inline value: {rest}"
+        rest = s.split(":", 1)[1].split("#", 1)[0].strip()
+        if rest.replace(" ", "") != "{}":
+            return f"mcp_servers must be exactly '{{}}', got: {rest or '<empty>'}"
         base_indent = len(line) - len(line.lstrip())
         for nxt in lines[i + 1:]:
             if not nxt.strip() or nxt.strip().startswith("#"):
@@ -171,24 +194,81 @@ def config_mcp_issue() -> str:
             indent = len(nxt) - len(nxt.lstrip())
             if indent <= base_indent:
                 break
-            return f"mcp_servers block entry: {nxt.strip()}"
+            return f"mcp_servers block entry not allowed: {nxt.strip()}"
         return ""
+    return "mcp_servers key missing (probe home must declare 'mcp_servers: {}')"
+
+
+def check_mcp_empty(snapshot, stage: str) -> str:
+    """严格校验会话快照里没有 MCP：必须 info 为 dict、显式含 mcp_servers、值为 list 且空。
+
+    「字段缺失 / None / 类型异常」是**未知**而非「空」——后者会让注入被静默放过，
+    所以一律判不通过。返回问题描述（空串=通过）。
+    """
+    if not isinstance(snapshot, dict):
+        return f"{stage}: snapshot not a dict (type={type(snapshot).__name__})"
+    if "info" not in snapshot:
+        return f"{stage}: 'info' key missing"
+    info = snapshot["info"]
+    if not isinstance(info, dict):
+        return f"{stage}: info not a dict (type={type(info).__name__})"
+    if "mcp_servers" not in info:
+        return f"{stage}: info.mcp_servers key missing"
+    servers = info["mcp_servers"]
+    if not isinstance(servers, list):
+        return f"{stage}: info.mcp_servers not a list (type={type(servers).__name__})"
+    if servers:
+        return f"{stage}: info.mcp_servers not empty ({len(servers)} entries)"
     return ""
 
 
 def mcp_log_snapshot() -> dict:
-    """记录探针 home 的 mcp-stderr 日志里 /heartbeat 计数与末条，用于前后对比证明无新增。"""
+    """记录探针 home 的 mcp-stderr 日志里 /heartbeat 计数与末条。
+
+    readable=False 表示文件不存在或读取失败——该情形是**未知**，不得当作「0 次心跳」。
+    """
     p = HERMES_HOME / "logs" / "mcp-stderr.log"
     if not p.exists():
-        return {"exists": False, "heartbeat_count": 0, "last_heartbeat": ""}
-    beats = [ln.strip() for ln in p.read_text(encoding="utf-8", errors="replace").splitlines()
-             if "/heartbeat" in ln]
-    return {"exists": True, "heartbeat_count": len(beats),
+        return {"exists": False, "readable": False, "heartbeat_count": 0,
+                "last_heartbeat": "", "error": "mcp-stderr.log missing"}
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return {"exists": True, "readable": False, "heartbeat_count": 0,
+                "last_heartbeat": "", "error": f"{type(exc).__name__}: {exc}"}
+    beats = [ln.strip() for ln in text.splitlines() if "/heartbeat" in ln]
+    return {"exists": True, "readable": True, "heartbeat_count": len(beats),
             "last_heartbeat": beats[-1] if beats else ""}
 
 
-def preflight() -> None:
-    """启动网关前的隔离校验。任一不通过即终止，绝不启动真实网关。"""
+def stop_existing_gateway() -> dict:
+    """强制干净起点：停掉探针 home 下可能残留的网关。
+
+    ensure_gateway_runtime 会 attach 已存在的网关，而旧实例的 env/config 可能与本轮
+    preflight 不同（正是第二次隔离事故的成因）。停止后再启动，保证校验对象与被测对象一致。
+    """
+    record = {"exe": str(HERMES_EXE), "exe_exists": HERMES_EXE.exists()}
+    if not HERMES_EXE.exists():
+        record["output"] = "hermes.exe not found; skip stop"
+        return record
+    try:
+        r = subprocess.run([str(HERMES_EXE), "gateway", "stop"], capture_output=True,
+                           text=True, env=probe_env(), timeout=120, cwd=str(WORKTREE_SRC))
+    except subprocess.TimeoutExpired:
+        record.update({"rc": None, "stopped": False, "output": "gateway stop timeout(120s)"})
+        return record
+    out = ((r.stdout or "") + (r.stderr or "")).strip()
+    record.update({"rc": r.returncode, "stopped": "Stopped gateway" in out,
+                   "output": out[-400:]})
+    return record
+
+
+def preflight() -> dict:
+    """启动网关前的隔离校验。任一不通过即终止，绝不启动真实网关。
+
+    校验项：①子进程环境白名单；②探针 home 显式 `mcp_servers: {}`；
+    ③停止残留网关（保证被测实例由本轮按白名单环境启动，而非 attach 旧实例）。
+    """
     snap = env_snapshot()
     save_evidence("env-snapshot", snap)
     log("preflight env", child_sensitive_keys=snap["child_sensitive_keys"],
@@ -196,23 +276,52 @@ def preflight() -> None:
     if snap["forbidden_in_child"]:
         log("PREFLIGHT FAILED: forbidden env in child", keys=snap["forbidden_in_child"])
         sys.exit(6)
+
     issue = config_mcp_issue()
     if issue:
-        log("PREFLIGHT FAILED: probe home config has mcp_servers", issue=issue)
+        log("PREFLIGHT FAILED: probe home config", issue=issue)
         sys.exit(6)
-    log("preflight ok", config_mcp="empty-or-absent", heartbeat_baseline=mcp_log_snapshot())
+
+    stop_rec = stop_existing_gateway()
+    save_evidence("preflight-gateway-stop", stop_rec)
+    log("preflight gateway stop", rc=stop_rec.get("rc"), stopped=stop_rec.get("stopped"),
+        exe_exists=stop_rec.get("exe_exists"))
+    if stop_rec.get("exe_exists") and stop_rec.get("rc") not in (0,):
+        # stop 非零且非「无网关」时不可假定环境干净
+        log("PREFLIGHT FAILED: gateway stop failed", output=stop_rec.get("output"))
+        sys.exit(6)
+    pid_file = HERMES_HOME / "gateway.pid"
+    if pid_file.exists():
+        log("PREFLIGHT FAILED: gateway.pid still present after stop", path=str(pid_file))
+        sys.exit(6)
+
+    baseline = mcp_log_snapshot()
+    if not baseline["readable"]:
+        log("PREFLIGHT FAILED: mcp-stderr unreadable, cannot gate heartbeats",
+            error=baseline.get("error"))
+        sys.exit(8)
+    log("preflight ok", config_mcp="explicit {}",
+        heartbeat_baseline=baseline["heartbeat_count"],
+        last_heartbeat=baseline["last_heartbeat"])
+    return {"env": snap, "stop": stop_rec, "heartbeat_baseline": baseline}
 
 
 def connect_gateway_info() -> dict:
     """在 v0.22.5 依赖环境（pm store python）里跑官方连接三步，回传 ws url + subprotocols。"""
     env = probe_env()
-    r = subprocess.run([str(PROBE_PYTHON), "-X", "utf8", "-c", CONNECT_CODE, str(HERMES_HOME)],
+    r = subprocess.run([str(PROBE_PYTHON), "-X", "utf8", "-c", CONNECT_CODE,
+                        str(HERMES_HOME), str(ENSURE_GATEWAY_TIMEOUT)],
                        capture_output=True, text=True, env=env, timeout=600,
                        cwd=str(WORKTREE_SRC))
     out = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "{}"
     info = json.loads(out)
     if not info.get("ok"):
-        log("ensure_gateway FAILED", stderr=r.stderr[-500:])
+        log("ensure_gateway FAILED", state=info.get("state"), reason=info.get("reason"),
+            detail=str(info.get("detail", ""))[:300], stderr=r.stderr[-500:])
+        pid_file = HERMES_HOME / "gateway.pid"
+        if pid_file.exists():
+            log("cleanup required: leftover gateway", pid_file=str(pid_file),
+                hint="hermes gateway stop with HERMES_HOME/HERMES_RUNTIME_DIR set to probe dirs")
         sys.exit(1)
     log("ensure_gateway OK", api_origin=info["api_origin"],
         instance_id=info["instance_id"][:12] + "…")
@@ -271,16 +380,16 @@ async def run(info: dict, prompt_text: str) -> int:
             revision=created.get("revision"))
         assert session_id, "未拿到 session_id"
 
-        # 隔离硬断言（隔离失守防线）：会话内的 MCP server 必须为空。
-        # 非空说明 managed scope 或 profile 配置注入成功——可能挂着生产写工具与心跳，
-        # 立即中止，不提交任何 prompt。
-        mcp_servers = (created.get("info") or {}).get("mcp_servers") or []
-        save_evidence("session-mcp-servers", {"mcp_servers": mcp_servers})
-        if mcp_servers:
-            names = [(m.get("name"), m.get("tools"), m.get("status")) for m in mcp_servers]
-            log("ISOLATION VIOLATION: mcp_servers not empty", servers=names)
+        # 隔离硬断言（隔离失守防线）：会话快照必须显式证明 MCP 为空。
+        # info 缺失 / mcp_servers 键缺失 / None / 类型异常都属「未知」，不得视为空——
+        # 否则 managed scope 或 profile 注入可被静默放过。任一异常立即中止，不提交 prompt。
+        create_issue = check_mcp_empty(created, "create")
+        save_evidence("session-mcp-check", {"stage": "create", "issue": create_issue,
+                                            "info": created.get("info")})
+        if create_issue:
+            log("ISOLATION UNKNOWN/VIOLATION (create)", issue=create_issue)
             return 5
-        log("isolation confirmed", mcp_servers=[]) 
+        log("isolation confirmed", mcp_servers=[], stage="create")
 
         # session.resume 独立路径（验收 2：须独立取得 resume 回执，非仅 create 内部 resume+attach）。
         # 先 detach 断开本连接订阅，再 resume 重新挂载。
@@ -289,8 +398,6 @@ async def run(info: dict, prompt_text: str) -> int:
             "session_id": session_id, "subscription_id": subscription_id})
         resumed = await rpc(ws, "session.resume", {"session_id": session_id})
         save_evidence("session-resume", resumed)
-        resumed_mcp = (resumed.get("info") or {}).get("mcp_servers") or []
-        save_evidence("session-resume-mcp-servers", {"mcp_servers": resumed_mcp})
         log("session resumed", session_id=str(resumed.get("session_id"))[:20] + "…",
             epoch=resumed.get("authority_epoch"),
             message_count=resumed.get("message_count"),
@@ -298,10 +405,13 @@ async def run(info: dict, prompt_text: str) -> int:
         if resumed.get("session_id") != session_id:
             log("RESUME ID MISMATCH", expected=session_id, got=resumed.get("session_id"))
             return 7
-        if resumed_mcp:
-            log("ISOLATION VIOLATION (resume): mcp_servers not empty", servers=resumed_mcp)
+        resume_issue = check_mcp_empty(resumed, "resume")
+        save_evidence("session-resume-mcp-check", {"stage": "resume", "issue": resume_issue,
+                                                   "info": resumed.get("info")})
+        if resume_issue:
+            log("ISOLATION UNKNOWN/VIOLATION (resume)", issue=resume_issue)
             return 5
-        log("isolation confirmed (resume)", mcp_servers=[])
+        log("isolation confirmed", mcp_servers=[], stage="resume")
 
         # 提交（session.create 已建订阅）。
         # v0.22.5 实测语义（session_finite.py:47/_may_run_unattended）：unattended=true
@@ -360,23 +470,49 @@ async def run(info: dict, prompt_text: str) -> int:
         log("ws closed")
 
 
+def heartbeat_gate(rc: int, before: dict, after: dict) -> tuple[int, str, int | None]:
+    """心跳门禁：证据可读且增量为 0 才算通过。
+
+    返回 (退出码, 判定, 增量)。rc 已非 0 时保留原码（不掩盖根因），但判定仍记录为失败。
+    """
+    readable = bool(before.get("readable")) and bool(after.get("readable"))
+    if not readable:
+        return (8 if rc == 0 else rc), "unknown", None
+    delta = after["heartbeat_count"] - before["heartbeat_count"]
+    if delta != 0:
+        return (8 if rc == 0 else rc), "violation", delta
+    return rc, "pass", delta
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prompt", default="请只回复两个字：收到")
+    parser.add_argument("--preflight-only", action="store_true",
+                        help="只跑启动前隔离校验并退出（门禁负向测试用，不启动网关）")
     args = parser.parse_args()
     t0 = time.time()
-    # 启动前隔离校验：环境白名单 + 探针 home 的 mcp_servers 为空；不通过即终止，绝不拉起网关。
-    preflight()
-    beats_before = mcp_log_snapshot()
+    # 启动前隔离校验：环境白名单 + 显式空 MCP 配置 + 停止残留网关；不通过即终止，绝不拉起网关。
+    pre = preflight()
+    if args.preflight_only:
+        log("PREFLIGHT ONLY: all static gates passed")
+        return 0
+    beats_before = pre["heartbeat_baseline"]
     info = connect_gateway_info()
     rc = asyncio.run(run(info, args.prompt))
-    # 心跳对比：本次运行前后 mcp-stderr 的 /heartbeat 计数差，证明未向生产引擎发心跳。
+
+    # 心跳门禁：证据必须可读，且本次运行前后 /heartbeat 计数差为 0。
+    # 增量非 0 说明探针仍连到了某个心跳端点（隔离失守）；证据不可读则属未知，都不是成功。
     beats_after = mcp_log_snapshot()
+    rc, verdict, delta = heartbeat_gate(rc, beats_before, beats_after)
     save_evidence("heartbeat-diff", {
         "before": beats_before, "after": beats_after,
-        "delta": beats_after["heartbeat_count"] - beats_before["heartbeat_count"]})
+        "readable": verdict != "unknown", "delta": delta, "gate": verdict})
     log("heartbeat check", before=beats_before["heartbeat_count"],
-        after=beats_after["heartbeat_count"])
+        after=beats_after["heartbeat_count"], delta=delta, gate=verdict)
+    if verdict == "unknown":
+        log("ISOLATION UNKNOWN (heartbeat): mcp-stderr unreadable")
+    elif verdict == "violation":
+        log("ISOLATION VIOLATION (heartbeat): /heartbeat increased", delta=delta)
     log("PROBE DONE", rc=rc, elapsed_s=round(time.time() - t0, 1))
     return rc
 
