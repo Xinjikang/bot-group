@@ -446,6 +446,12 @@ _LOG_CLOCK_TOLERANCE_S = 5.0
 # 进程启动到写 Auto-started 可能很慢（实测 81s：venv 首次导入 + 网关初始化）。
 # 只看「日志早于进程启动」这一侧才是上一实例残留；晚于启动只设诊断上限，
 # 超过上限说明日志与进程对不上，按 unknown 处理（不 stop），不能当 foreign 判死。
+#
+# 600s 是探针的**保守策略**，不是网关官方启动时限：参照 gateway.run 的
+# `unmanaged_idle_exit_seconds` 默认 600s（无客户端/适配器/任务时空闲退出阈值，
+# 见 gateway.log "exits after 600s with no clients..."）。正常实例若真超过 10 分钟
+# 才写出启动日志，已无法与「日志来自其他实例」区分；此时判 unknown、保留实例不清理，
+# 宁可人工确认也不误杀。上界含等号（delta=600 仍 owned），601 起落 unknown。
 _LOG_START_DELAY_MAX_S = 600.0
 
 

@@ -16,6 +16,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 os.environ.setdefault("GW_PROBE_ROOT", str(ROOT / ".probe-worktrees"))
@@ -790,6 +791,35 @@ class StopOwnershipTest(unittest.TestCase):
         rec = gw_probe.stop_ownership()
         self.assertEqual(rec["verdict"], "owned", rec.get("reason"))
         self.assertAlmostEqual(rec["log_start_deltas_s"]["auto_started"], 81.0, places=3)
+
+    def test_startup_delay_upper_boundary(self):
+        # 600s 是探针保守策略（参照 unmanaged_idle_exit_seconds=600 空闲退出阈值），
+        # 不是网关官方启动时限：delta=600 仍 owned（上界含），601 起落 unknown 且保留实例。
+        self._pid_file()
+        for offset, expected in ((600, "owned"), (601, "unknown")):
+            with self.subTest(offset=offset):
+                timestamp = (self.BASE + timedelta(seconds=offset)).strftime("%Y-%m-%d %H:%M:%S")
+                (self.home / "logs" / "gateway.log").write_text(
+                    f"{timestamp} INFO Auto-started gateway: current\n", encoding="utf-8")
+                rec = gw_probe.stop_ownership()
+                self.assertEqual(rec["verdict"], expected, rec.get("reason"))
+                self.assertAlmostEqual(rec["log_start_deltas_s"]["auto_started"],
+                                       float(offset), places=3)
+                if expected == "unknown":
+                    self.assertIsNone(rec["log_covers_instance"])
+                    self.assertIn("far later", rec["log_reason"])
+
+    def test_unknown_at_delay_boundary_keeps_instance(self):
+        # 超上限必须保留实例：清理入口只允许 absent/stale/owned，unknown 不得调用网关停止命令。
+        self._pid_file()
+        timestamp = (self.BASE + timedelta(seconds=601)).strftime("%Y-%m-%d %H:%M:%S")
+        (self.home / "logs" / "gateway.log").write_text(
+            f"{timestamp} INFO Auto-started gateway: current\n", encoding="utf-8")
+        self.assertEqual(gw_probe.stop_ownership()["verdict"], "unknown")
+        with mock.patch.object(gw_probe.subprocess, "run") as run:
+            cleanup = gw_probe.stop_instance({"ws_url": "ws://127.0.0.1:1/api/ws"}, 4242)
+        run.assert_not_called()
+        self.assertFalse(cleanup["clean"])
 
     def test_unparsable_events_are_diagnostics(self):
         self.log_line("2026-99-27 22:18:09 INFO inbound message: invalid date")
