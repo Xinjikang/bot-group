@@ -28,7 +28,7 @@ def classify(text):
     text = str(text).lower()
     if re.search(r'no usable credentials|missing.{0,40}(?:key|credential|config)|'
                  r'(?:key|credential).{0,40}(?:missing|not set|unset)|'
-                 r'configurationerror|config(?:uration)? (?:error|invalid)|'
+                 r'hermescompatibilityerror|configurationerror|config(?:uration)? (?:error|invalid)|'
                  r'no such file|filenotfounderror|missing executable|缺少|配置无效', text):
         return 'configuration'
     for code, kind in (('401', 'authentication'), ('403', 'permission'), ('429', 'rate_limit')):
@@ -124,7 +124,12 @@ def report(profile, project, thread_id, attempt, detail, *, exit_code=1, parent_
         parent_id = parent['id'] if parent else None
         if parent:
             round_no, depth = parent['round'], parent['depth'] + 1
-        content = f'{label}：{MESSAGES[category]}'
+        public_message = MESSAGES[category]
+        if 'HermesConfigurationError' in str(detail):
+            public_message = 'Hermes 入口与源码配置异常，请检查 HERMES_BIN、HERMES_HOME，并在修正后重启引擎。'
+        elif 'HermesCompatibilityError' in str(detail):
+            public_message = 'Hermes 会话接口不兼容，请更新或修复 Hermes 后重启引擎。'
+        content = f'{label}：{public_message}'
         cur = conn.execute("INSERT INTO messages(project,ts,sender,sender_type,content,mentions,thread_id,parent_id,round,depth,need_reply) "
                            "VALUES(?,?,'engine','engine',?,?,?,?,?,?,0)",
                            (project, db.now_iso(), content, json.dumps(['user', profile]), thread_id, parent_id, round_no, depth))
@@ -134,7 +139,7 @@ def report(profile, project, thread_id, attempt, detail, *, exit_code=1, parent_
         conn.execute("INSERT INTO inbox(message_id,profile,status) VALUES(?,'user','pending')", (message_id,))
         if job_id is not None:
             conn.execute("UPDATE wake_jobs SET status='failed',detail=?,exit_code=?,ended_at=? WHERE id=? AND project=? AND profile=? AND status IN ('running','done')",
-                         (MESSAGES[category], exit_code, db.now_iso(), job_id, project, profile))
+                         (public_message, exit_code, db.now_iso(), job_id, project, profile))
         conn.commit()
     finally:
         conn.close()

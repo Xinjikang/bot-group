@@ -289,7 +289,7 @@ Path(os.environ['TRANSPORT_PROBE_REPORT']).write_text(json.dumps({'argv':args,'q
             result = wake._spawn('fixture', 'work', '完整输入\n第二行', None, 'transport')
         self.assertFalse(result['ok'], result)
         from engine.execution_errors import MESSAGES
-        self.assertEqual(result['detail'], MESSAGES['unknown'])
+        self.assertEqual(result['detail'], MESSAGES['configuration'])
         self.assertFalse(self.capture.exists())
 
 

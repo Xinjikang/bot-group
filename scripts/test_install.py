@@ -194,7 +194,8 @@ class InstallFlowTest(unittest.TestCase):
     def test_detect_runtime_reports_missing_bin(self):
         # runtime 真实探测：环境变量空 + PATH 找不到可执行文件 → bin 为空（缺项报告）
         with mock.patch.dict(os.environ, {"HERMES_HOME": "", "HERMES_BIN": "", "CODEX_HOME": ""}), \
-                mock.patch.object(install, "_find_executable", return_value=""):
+                mock.patch.object(install, "_find_executable", return_value=""), \
+                mock.patch('engine.hermes_runtime.executable', side_effect=FileNotFoundError('missing executable')):
             runtime = install.detect_runtime()
         self.assertEqual(runtime["hermes"]["bin"], "")
         self.assertEqual(runtime["codex"]["bin"], "")

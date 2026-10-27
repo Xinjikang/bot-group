@@ -16,12 +16,11 @@ from __future__ import annotations
 
 import os
 import sqlite3
-import sys
 import threading
 import uuid
 from pathlib import Path
 
-from . import db
+from . import db, hermes_runtime
 
 # 引擎进程 HERMES_HOME 语义 = hermes 根目录（start.sh export 的 E:\home\admin\hermes），
 # 与 bot 进程（hermes -p <profile>）的 HERMES_HOME=profiles/<name> 不同。state.db 定位
@@ -37,23 +36,21 @@ def _hermes_home() -> Path:
 
 
 def _hermes_src() -> Path:
-    """Hermes 源码目录（hermes-agent）。优先 HERMES_BIN 推导，回退 HERMES_HOME/hermes-agent。"""
-    bin_env = os.environ.get("HERMES_BIN", "").strip()
-    if bin_env:
-        # <home>/hermes-agent/venv/Scripts/hermes.exe → <home>/hermes-agent
-        return Path(bin_env).resolve().parent.parent.parent
-    return _hermes_home() / "hermes-agent"
+    """Locate the source belonging to the selected Hermes executable."""
+    return hermes_runtime.source_directory(_hermes_home())
 
 
 def available() -> bool:
-    """引擎进程环境判定：HERMES_HOME 是 hermes 根（含 hermes-agent/ 子目录）时可用。
+    """Select binding for a source-root home or an explicitly configured entry.
 
-    生产引擎由 start.sh 显式 export HERMES_HOME=<根>（含 hermes-agent/ + profiles/），
-    会话绑定走真实 session_id；而 bot/测试进程的 HERMES_HOME 是 profile 目录
-    （<根>/profiles/<name>，不含 hermes-agent/），此时会话绑定不可用，spawn 降级旧行为
-    （-c <title> --create-if-missing），避免按错误根定位污染 profile 目录。
+    Capability validation runs before accessing SessionDB. A profile-scoped home
+    retains CLI-managed sessions and never becomes the parent of other profiles.
     """
-    return (_hermes_home() / "hermes-agent").is_dir()
+    if _hermes_home().parent.name == 'profiles':
+        return False
+    return ((_hermes_home() / "hermes-agent").is_dir()
+            or bool(os.environ.get('HERMES_HOME', '').strip()
+                    and os.environ.get('HERMES_BIN', '').strip()))
 
 
 def profile_state_db(profile: str) -> Path:
@@ -64,9 +61,7 @@ def profile_state_db(profile: str) -> Path:
 
 
 def _ensure_src_on_path() -> None:
-    src = str(_hermes_src())
-    if src not in sys.path:
-        sys.path.insert(0, src)
+    hermes_runtime.prepare_source(_hermes_src())
 
 
 def _ensure_profile_dir(profile: str) -> None:
@@ -84,10 +79,9 @@ def create_session(profile: str, title: str) -> str:
     """
     _ensure_src_on_path()
     _ensure_profile_dir(profile)
-    from hermes_state_ids import new_session_id
     from hermes_state_registry import acquire
 
-    sid = new_session_id()
+    sid = hermes_runtime.new_session_id(_hermes_src())
     db = acquire(str(profile_state_db(profile)))
     try:
         db.create_session(sid, source="cli")

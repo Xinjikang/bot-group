@@ -35,6 +35,18 @@ class ExecutionErrorTests(unittest.TestCase):
         self.assertEqual(errors.classify('主账户凭据已过期'), 'authentication')
         self.assertEqual(errors.classify('access token expired'), 'authentication')
 
+    def test_hermes_compatibility_notifications_are_actionable(self):
+        for exception, expected in [('HermesCompatibilityError', '更新或修复 Hermes'),
+                                    ('HermesConfigurationError', 'HERMES_BIN、HERMES_HOME')]:
+            with self.subTest(exception=exception), self.assertLogs('engine.execution_errors'):
+                message_id = errors.report('default', 'p', None, exception,
+                                           exception + ': private/source/path missing-interface')
+                row = self.conn.execute('SELECT category FROM execution_errors WHERE attempt=?', (exception,)).fetchone()
+                self.assertEqual(row['category'], 'configuration')
+                text = self.conn.execute('SELECT content FROM messages WHERE id=?', (message_id,)).fetchone()[0]
+                self.assertIn(expected, text)
+                self.assertNotIn('private/source/path', text)
+
     def test_profile_custom_secret_is_redacted(self):
         home = self.root / 'hermes'
         home.mkdir(exist_ok=True)

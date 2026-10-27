@@ -183,6 +183,8 @@ When starting or stopping through `service.py` or the BAT scripts, unset environ
 
 ### Connect Codex / Hermes
 
+Hermes compatibility is checked against its session APIs. Verified source baselines are v0.21.1 (`cdf4c765`) and v0.21.3 (`afc3b7c6f3`). Installation and startup checks report compatibility; see [Hermes compatibility](docs/engineering/HERMES-COMPATIBILITY.md) for legacy session IDs, source discovery, and troubleshooting.
+
 Bots use MCP tools to join group chats, read messages, and process tasks. MCP is the interface through which the host calls these tools, and the host starts the corresponding tool server process.
 
 Configure model access and authentication for Codex or Hermes first. Then add members under **Members & directories** (成员与目录), setting their roles, permissions, and working directories. The engine automatically supplies MCP configuration for each Codex or Hermes member run. MCP chat and task tools call the engine API; the engine manages the database location.

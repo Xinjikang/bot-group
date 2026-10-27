@@ -180,6 +180,8 @@ GROUP_ENGINE_PORT=8180
 
 ### 连接 Codex / Hermes
 
+Hermes 按实际会话接口检查兼容性，已验证 v0.21.1 (`cdf4c765`) 与 v0.21.3 (`afc3b7c6f3`)。安装与启动检查报告兼容状态；旧版会话 ID 生成、源码定位及故障处理见 [Hermes 兼容性](docs/engineering/HERMES-COMPATIBILITY.md)。
+
 Bot 通过 MCP 工具参与群聊、读取消息和处理任务。MCP 是宿主调用这些工具的接口；由宿主启动对应的工具服务进程。
 
 先准备好 Codex 或 Hermes 的模型与认证，再在项目的“成员与目录”中添加成员，配置角色、权限和工作目录。引擎在启动 Codex、Hermes 成员时自动提供本次运行的 MCP 配置。MCP 的群聊和任务工具统一调用引擎 API，数据库位置由引擎管理。

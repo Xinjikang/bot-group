@@ -41,6 +41,15 @@ class RuntimeForkTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="t152_")
+        environment = patch.dict(os.environ, {'GROUP_DATA_DIR': self.tmp,
+            'HERMES_MANAGED_DIR': os.path.join(self.tmp, 'managed'),
+            'HERMES_HOME': os.path.join(self.tmp, 'hermes'),
+            'CODEX_HOME': os.path.join(self.tmp, 'codex')})
+        environment.start()
+        self.addCleanup(environment.stop)
+        auth = patch('engine.codex_auth.sync', return_value=False)
+        auth.start()
+        self.addCleanup(auth.stop)
         self.dbfile = os.path.join(self.tmp, "group.db")
         self._patcher = patch.object(db, "db_path", return_value=self.dbfile)
         self._patcher.start()
@@ -346,7 +355,7 @@ class RuntimeForkTests(unittest.TestCase):
         """codex 跳过 Hermes 会话绑定（第四节第 5 条：无会话创建动作）。"""
         self._register_bot(host_type="codex", profile="default", runtime="codex")
         with patch.object(wake, "_codex_bin", return_value="codex"), \
-             patch("engine.session_adapter.available", return_value=True), \
+             patch("engine.session_adapter.available", side_effect=AssertionError('Codex must skip Hermes probing')), \
              patch("engine.session_adapter.resolve_or_create") as mock_resolve:
             mock_resolve.side_effect = AssertionError(
                 "codex spawn 不得触发 Hermes 会话绑定 resolve_or_create")

@@ -522,67 +522,14 @@ def _finalize_injection_signal(profile, kind, thread_id, project, trigger_msg_id
 
 
 def _native_hermes_entry(entry: str) -> str:
-    """Windows 只向原生 exe 传递正文；解析已知纯转发 cmd，复杂包装明确拒绝。
-
-    cmd.exe 会把 -q 中的换行当作批处理语法，首行仍可能 exit0。仅接受
-    可证明等价的单行 `<exe> %*`，保留显式 HERMES_BIN 的入口选择语义。
-    """
-    if sys.platform != "win32":
-        return entry
-    path = Path(entry)
-    if path.suffix.lower() not in (".cmd", ".bat"):
-        if path.suffix.lower() != ".exe":
-            raise RuntimeError("Hermes Windows 入口须为原生 .exe 或可解析的纯转发 .cmd/.bat")
-        return entry
-    raw = path.read_bytes()
-    try:
-        script = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        script = raw.decode("mbcs")
-    commands = [line.strip() for line in script.splitlines()
-                if line.strip() and line.strip().lower() not in ("@echo off", "echo off")
-                and not line.lstrip().lower().startswith(("rem ", "::"))]
-    match = re.fullmatch(r'@?(?:"([^"\r\n]+\.exe)"|([^\s"]+\.exe))\s+%\*',
-                         commands[0], re.IGNORECASE) if len(commands) == 1 else None
-    if match is None:
-        raise RuntimeError(f"Hermes 包装入口无法安全解析：{path}；请将 HERMES_BIN 指向真实 hermes.exe")
-    target = match.group(1) or match.group(2)
-    # 支持安装器常用的相对包装；其余批处理变量/控制流需要使用者选择真实 exe。
-    target = re.sub(r'%~dp0', lambda _: str(path.resolve().parent) + os.sep,
-                    target, flags=re.IGNORECASE)
-    if '%' in target:
-        raise RuntimeError(f"Hermes 包装入口含未解析变量：{path}；请设置原生 HERMES_BIN")
-    native = Path(target)
-    if not native.is_absolute():
-        raise RuntimeError(f"Hermes 包装目标须为绝对路径或 %~dp0 路径：{path}")
-    if not native.is_file():
-        raise FileNotFoundError(f"Hermes 包装目标不存在：{native}")
-    logging.getLogger(__name__).info("Hermes native entry resolved from wrapper: %s -> %s", path, native)
-    return str(native.resolve())
+    """Keep the transport entry point shared with installation/source checks."""
+    from . import hermes_runtime
+    return hermes_runtime.native_entry(entry)
 
 
 def _hermes_bin() -> str:
-    # 显式配置优先；Windows 优先 PATH 的 exe，避免 PATHEXT 先命中 cmd。
-    env = os.environ.get("HERMES_BIN", "").strip()
-    if env:
-        return _native_hermes_entry((shutil.which(env) or env) if sys.platform == "win32" else env)
-    if sys.platform == "win32":
-        native = shutil.which("hermes.exe")
-        if native:
-            return _native_hermes_entry(native)
-    found = shutil.which("hermes")
-    if found:
-        return _native_hermes_entry(found)
-    # 兜底：hermes-agent venv 的 hermes.exe
-    for candidate in (
-        Path.home() / "hermes" / "hermes-agent" / "venv" / "Scripts" / "hermes.exe",
-        Path.home() / "hermes" / "hermes-agent" / "venv" / "Scripts" / "hermes",
-    ):
-        if candidate.exists():
-            return _native_hermes_entry(str(candidate))
-    if sys.platform == "win32":
-        raise FileNotFoundError("未找到原生 Hermes 入口；请将 HERMES_BIN 指向 hermes.exe")
-    return "hermes"
+    from . import hermes_runtime
+    return hermes_runtime.executable()
 
 
 def _codex_bin() -> str:
@@ -925,7 +872,7 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                     codex_spawn_gen = row["generation"]
     finally:
         conn.close()
-    use_binding = session_adapter.available() and runtime != "codex"
+    use_binding = runtime != "codex" and session_adapter.available()
     if use_binding:
         conn = db.get_connection()
         try:

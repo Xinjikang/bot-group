@@ -140,16 +140,9 @@ def _find_executable(name: str) -> str:
 def detect_runtime() -> dict:
     """探测 Hermes/Codex 运行环境：验证可执行文件真实存在，缺项报告（只读，不安装，不阻塞引擎本体）。"""
     hermes_home = os.environ.get("HERMES_HOME", "").strip()
-    hermes_bin = os.environ.get("HERMES_BIN", "").strip()
     codex_home = os.environ.get("CODEX_HOME", "").strip()
-    exe = "hermes.exe" if sys.platform == "win32" else "hermes"
-
-    # Hermes 可执行文件：HERMES_BIN > HERMES_HOME/bin/hermes > PATH
-    hermes_candidates = [hermes_bin] if hermes_bin else []
-    if hermes_home:
-        hermes_candidates.append(str(Path(hermes_home) / "bin" / exe))
-    hermes_candidates.append(_find_executable("hermes"))
-    hermes_found = next((p for p in hermes_candidates if p and Path(p).exists()), "")
+    from engine import hermes_runtime
+    hermes = hermes_runtime.diagnostic(Path(hermes_home) if hermes_home else Path.home() / 'hermes')
 
     # Codex 可执行文件：CODEX_HOME/codex > PATH（codex 通常由 npm 全局装在 PATH）
     codex_candidates = []
@@ -159,7 +152,7 @@ def detect_runtime() -> dict:
     codex_found = next((p for p in codex_candidates if p and Path(p).exists()), "")
 
     return {
-        "hermes": {"home": hermes_home, "bin": hermes_found},
+        "hermes": hermes,
         "codex": {"home": codex_home, "bin": codex_found},
     }
 
@@ -298,6 +291,7 @@ def do_check() -> int:
     if state.get("lock_sha256") != _sha256(LOCKFILE):
         print("[check] 锁定清单变化，请重新运行 install", file=sys.stderr)
         return 1
+    print(f"[check] Hermes/Codex：{json.dumps(detect_runtime(), ensure_ascii=False)}")
     print("[check] 就绪")
     return 0
 
