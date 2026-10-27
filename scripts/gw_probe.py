@@ -14,8 +14,11 @@
   → prompt.receipt 轮询到 terminal
 
 隔离边界：独立 HERMES_HOME（gw-probe-home）、独立安装 worktree、分配资源；
-不碰生产配置/数据/进程；结束网关空闲自动退出。
+不碰生产配置/数据/进程。网关由 ensure_gateway_runtime 拉起，实测以 planned stop
+退出（idle-exit 尚未获得观测证据，见 reports 验收记录 §4）。
 真实网关证据：所有回执原样落盘 evidence 目录，禁止 mock。
+
+退出码：0=terminal/completed；3=轮询超时未达终态；4=terminal 但 outcome 非 completed。
 """
 from __future__ import annotations
 
@@ -29,23 +32,27 @@ import time
 from pathlib import Path
 
 # ── 隔离环境常量 ───────────────────────────────────────────────────────────
-PROBE_ROOT = Path("E:/Code/bot-group/.probe-worktrees")
+# PROBE_ROOT 可用 GW_PROBE_ROOT 覆盖；默认取仓库根下的 .probe-worktrees（脚本位于 <repo>/scripts/）。
+PROBE_ROOT = Path(os.environ.get("GW_PROBE_ROOT")
+                  or Path(__file__).resolve().parents[1] / ".probe-worktrees")
 HERMES_HOME = PROBE_ROOT / "gw-probe-home"          # 独立 profile 数据根（绝不指向生产）
 HERMES_EXE = PROBE_ROOT / "hermes-v0225" / ".hermes" / "bin" / "hermes.exe"
 # 依赖环境：hermes pm 装在 HERMES_HOME/installs/<install>/environments/<env>/venv
 # （pm repair 产物，ruamel/fastapi/websockets 全在此解释器）；PYTHONPATH 指向 worktree 源码根。
 import glob as _glob  # noqa: E402
-_env_venvs = _glob.glob(str(HERMES_HOME / "installs" / "*" / "environments" / "*"
-                            / "venv" / "Scripts" / "python.exe"))
+_env_venvs = sorted(_glob.glob(str(HERMES_HOME / "installs" / "*" / "environments" / "*"
+                                   / "venv" / "Scripts" / "python.exe")))
 assert _env_venvs, "probe dependency venv python.exe not found under gw-probe-home/installs"
-PROBE_PYTHON = Path(_env_venvs[0])
+PROBE_PYTHON = Path(_env_venvs[-1])                  # 多 install 时取最新（排序末位）
 WORKTREE_SRC = PROBE_ROOT / "hermes-v0225"
-EVIDENCE_DIR = Path(os.environ.get("GW_EVIDENCE_DIR",
-                                   "E:/Code/bot-group/reports/gateway-probe"))
+EVIDENCE_DIR = Path(os.environ.get(
+    "GW_EVIDENCE_DIR",
+    Path(__file__).resolve().parents[1] / "reports" / "research" / "hermes-gateway"))
 RECEIPT_POLL_INTERVAL = 3.0
 RECEIPT_POLL_MAX = 900                              # 15 分钟兜底（真实 agent 一轮可能慢）
 
 _json_id = 0
+_evidence_seq = 0
 
 
 def log(step: str, **kv) -> None:
@@ -56,8 +63,11 @@ def log(step: str, **kv) -> None:
 
 
 def save_evidence(name: str, payload) -> Path:
+    """落盘原始回执。文件名带序号，避免同秒同步骤相互覆盖。"""
+    global _evidence_seq
+    _evidence_seq += 1
     EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
-    p = EVIDENCE_DIR / f"{time.strftime('%H%M%S')}-{name}.json"
+    p = EVIDENCE_DIR / f"{time.strftime('%H%M%S')}-{_evidence_seq:02d}-{name}.json"
     p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return p
 
@@ -65,8 +75,11 @@ def save_evidence(name: str, payload) -> Path:
 # ── 连接三步：官方接口链（在 v0.22.5 安装的 Python 里跑） ──────────────────
 CONNECT_CODE = r"""
 import asyncio, json, sys, os
-# 隔离：绝不继承生产引擎指向
-for k in ("XDG_GROUP_ENGINE_URL", "GROUP_ENGINE_URL"):
+# 隔离：绝不继承生产引擎指向、managed scope 或执行凭据。
+# managed scope 经 HERMES_MANAGED_DIR 覆盖层注入 mcp_servers（含 GROUP_ENGINE_URL=生产 8180
+# 与成员凭据），v0.22.5 会在网关启动时合并并拉起 MCP server 周期心跳——必须一并清除。
+for k in ("XDG_GROUP_ENGINE_URL", "GROUP_ENGINE_URL", "XDG_GROUP_ENGINE_EXECUTION",
+          "HERMES_MANAGED_DIR", "HERMES_CHAT_MODE", "TASK_QUEUE_ROLE"):
     os.environ.pop(k, None)
 os.environ["HERMES_HOME"] = sys.argv[1]
 
@@ -94,14 +107,31 @@ asyncio.run(main())
 """
 
 
-def connect_gateway_info() -> dict:
-    """在 v0.22.5 依赖环境（pm store python）里跑官方连接三步，回传 ws url + subprotocols。"""
-    env = dict(os.environ)
+# 子进程环境白名单：只放行 Windows/Python 运行必需的基础变量。
+# 绝不继承 HERMES_*、GROUP_ENGINE*、XDG_*、TASK_QUEUE* 等会引入生产指向或 managed scope 的变量；
+# 模型凭据由隔离 home 的 .env 提供，不经父进程环境传递。
+_ENV_ALLOW = {
+    "PATH", "PATHEXT", "COMSPEC", "SYSTEMROOT", "SystemRoot", "WINDIR",
+    "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+    "LOCALAPPDATA", "APPDATA", "PROGRAMFILES", "PROGRAMW6432", "PROGRAMDATA",
+    "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER", "OS",
+    "PYTHONIOENCODING", "PYTHONUTF8", "PYTHONHOME", "PYTHONPATH",
+}
+
+
+def probe_env() -> dict:
+    """构造探针子进程环境：白名单基础变量 + 隔离 home/runtime，其他一律不继承。"""
+    env = {k: v for k, v in os.environ.items() if k in _ENV_ALLOW}
     env["HERMES_HOME"] = str(HERMES_HOME)
     env["HERMES_RUNTIME_DIR"] = str(PROBE_ROOT / "hermes-pm-store")
     env["PYTHONPATH"] = str(WORKTREE_SRC)
-    for k in ("XDG_GROUP_ENGINE_URL", "GROUP_ENGINE_URL"):
-        env.pop(k, None)
+    env.pop("HERMES_MANAGED_DIR", None)
+    return env
+
+
+def connect_gateway_info() -> dict:
+    """在 v0.22.5 依赖环境（pm store python）里跑官方连接三步，回传 ws url + subprotocols。"""
+    env = probe_env()
     r = subprocess.run([str(PROBE_PYTHON), "-X", "utf8", "-c", CONNECT_CODE, str(HERMES_HOME)],
                        capture_output=True, text=True, env=env, timeout=600,
                        cwd=str(WORKTREE_SRC))
@@ -208,10 +238,19 @@ async def run(info: dict, prompt_text: str) -> int:
                            "include_result": True})
         save_evidence("prompt-receipt-with-result", final)
         result = final.get("result") or ""
+        status = final.get("status")
+        outcome = final.get("outcome")
         log("terminal", admission_id=admission_id[:12] + "…",
-            status=final.get("status"), outcome=final.get("outcome"),
-            result=str(result)[:120])
-        return 0 if receipt.get("status") == "terminal" else 3
+            status=status, outcome=outcome, result=str(result)[:120])
+        # 退出码三态（失败不得假绿）：0=终态成功；3=轮询超时未达终态；4=终态失败。
+        # 仅 status=terminal 且 outcome=completed 才算成功——terminal/failed
+        # （如模型名错误导致的执行失败）返回 4，证据见 202118 outcome=failed。
+        if status != "terminal":
+            return 3
+        if outcome == "completed":
+            return 0
+        log("PROBE TERMINAL NOT COMPLETED", status=status, outcome=outcome)
+        return 4
     finally:
         await ws.close()
         log("ws closed")
