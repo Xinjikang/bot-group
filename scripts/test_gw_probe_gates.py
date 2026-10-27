@@ -14,6 +14,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -459,150 +460,274 @@ class StopInstanceTest(unittest.TestCase):
         self.assertFalse(rec["pid_file_stale"])
         self.assertEqual(rec["verdict"], "failed")
 
+class InstallRecordTest(unittest.TestCase):
+    """目标 install 由安装记录确定：无记录/多 install/记录越界都要明确失败，不猜。"""
 
-class ProbePythonSelectTest(unittest.TestCase):
-    """PROBE_PYTHON 确定性选取 + 双自检：不依赖 mtime，自检不过不采用。"""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self._orig = gw_probe.HERMES_HOME
+        gw_probe.HERMES_HOME = self.home
+        os.environ.pop("GW_PROBE_INSTALL", None)
 
-    def _cands(self, *names):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        root = Path(tmp.name)
-        out = []
-        for n in names:
-            p = root / n
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text("stub", encoding="utf-8")
-            out.append(p)
-        return out
+    def tearDown(self):
+        gw_probe.HERMES_HOME = self._orig
+        os.environ.pop("GW_PROBE_INSTALL", None)
+        self.tmp.cleanup()
 
-    def test_deterministic_same_input_same_choice(self):
-        cands = sorted(self._cands("b/python.exe", "a/python.exe"))
-        first, rec1 = gw_probe.select_probe_python(cands, selftest=False)
-        second, rec2 = gw_probe.select_probe_python(list(reversed(cands)), selftest=False)
-        self.assertEqual(first, second)
-        self.assertEqual(first.name, "python.exe")
-        self.assertIn("a", str(first))  # 排序末位
-        self.assertEqual(rec1["chosen"], rec2["chosen"])
+    def _make_install(self, install_id="aaaa1111", env_id="bbbb2222"):
+        install = self.home / "installs" / install_id
+        venv = install / "environments" / env_id / "venv"
+        (venv / "Scripts").mkdir(parents=True, exist_ok=True)
+        py = venv / "Scripts" / "python.exe"
+        py.write_text("stub", encoding="utf-8")
+        facts = {"packages": {"venv": {"environment": str(venv), "stamp": "deadbeef"}}}
+        (install / "facts.json").write_text(json.dumps(facts), encoding="utf-8")
+        return install, venv, py
 
-    def test_failed_selftest_excluded(self):
-        cands = self._cands("a/python.exe", "b/python.exe")
-        seen = {}
+    def test_missing_installs_dir(self):
+        record, meta = gw_probe.install_record()
+        self.assertIsNone(record)
+        self.assertIn("installs dir missing", meta["reason"])
 
-        def fake(py, src):
-            seen[str(py)] = True
-            return {"python": str(py), "ok": str(py).endswith("b\\python.exe")
-                    or str(py).endswith("b/python.exe")}
+    def test_missing_facts_json(self):
+        (self.home / "installs" / "aaaa1111").mkdir(parents=True)
+        record, meta = gw_probe.install_record()
+        self.assertIsNone(record)
+        self.assertIn("facts.json unusable", meta["reason"])
 
-        orig = gw_probe._selftest_probe_python
-        gw_probe._selftest_probe_python = fake
-        self.addCleanup(lambda: setattr(gw_probe, "_selftest_probe_python", orig))
-        chosen, rec = gw_probe.select_probe_python(cands)
-        self.assertIsNotNone(chosen)
-        self.assertTrue(str(chosen).endswith("b\\python.exe") or str(chosen).endswith("b/python.exe"))
-        self.assertEqual(len(rec["selftests"]), 2)
-        self.assertIn("single passing candidate", rec["reason"])
+    def test_single_install_resolved_from_facts(self):
+        install, venv, py = self._make_install()
+        record, meta = gw_probe.install_record()
+        self.assertIsNotNone(record)
+        self.assertEqual(meta["install_id"], install.name)
+        self.assertEqual(meta["env_id"], venv.parent.name)
+        self.assertEqual(Path(meta["python"]), py)
+        self.assertIn("single install", meta["install_id_source"])
 
-    def test_all_selftests_failed_returns_none(self):
-        cands = self._cands("a/python.exe")
-        orig = gw_probe._selftest_probe_python
-        gw_probe._selftest_probe_python = lambda py, src: {"python": str(py), "ok": False}
-        self.addCleanup(lambda: setattr(gw_probe, "_selftest_probe_python", orig))
-        chosen, rec = gw_probe.select_probe_python(cands)
-        self.assertIsNone(chosen)
-        self.assertIn("no candidate passed self-test", rec["reason"])
+    def test_ambiguous_installs_require_explicit_selection(self):
+        self._make_install("aaaa1111")
+        self._make_install("cccc3333")
+        record, meta = gw_probe.install_record()
+        self.assertIsNone(record)
+        self.assertIn("ambiguous", meta["reason"])
+        os.environ["GW_PROBE_INSTALL"] = "cccc3333"
+        record2, meta2 = gw_probe.install_record()
+        self.assertIsNotNone(record2)
+        self.assertEqual(meta2["install_id"], "cccc3333")
+        self.assertEqual(meta2["install_id_source"], "GW_PROBE_INSTALL")
 
-    def test_no_candidate_returns_none(self):
-        chosen, rec = gw_probe.select_probe_python([])
-        self.assertIsNone(chosen)
-        self.assertIn("no candidate", rec["reason"])
+    def test_explicit_install_not_found(self):
+        self._make_install("aaaa1111")
+        os.environ["GW_PROBE_INSTALL"] = "nope"
+        record, meta = gw_probe.install_record()
+        self.assertIsNone(record)
+        self.assertIn("not found", meta["reason"])
 
-    def test_selftest_rejects_empty_output(self):
-        # 空输出/rc 非 0/异常标记都不能算通过（缺项必须失败）
-        orig_run = gw_probe.subprocess.run
+    def test_facts_venv_outside_install_rejected(self):
+        install, _, _ = self._make_install()
+        facts = {"packages": {"venv": {"environment": str(self.home / "elsewhere" / "venv")}}}
+        (install / "facts.json").write_text(json.dumps(facts), encoding="utf-8")
+        record, meta = gw_probe.install_record()
+        self.assertIsNone(record)
+        self.assertIn("outside the selected install", meta["reason"])
 
+    def test_missing_venv_environment_field(self):
+        install, _, _ = self._make_install()
+        (install / "facts.json").write_text(json.dumps({"packages": {"venv": {}}}),
+                                            encoding="utf-8")
+        record, meta = gw_probe.install_record()
+        self.assertIsNone(record)
+        self.assertIn("no packages.venv.environment", meta["reason"])
+
+
+class ProbePythonSelftestTest(unittest.TestCase):
+    """自检两条：--version 的 Install directory + local 提交；能 import ruamel 读版本。"""
+
+    SRC = Path(r"E:\Code\bot-group\.probe-worktrees\hermes-v0225")
+    HEAD = "bf0203a794a07aac3ff764972ab9087baa4e4f4e"
+    VERSION_OK = ("Hermes Agent v0.22.5 (2026.9.24) · stable · local bf0203a794a0\n"
+                  "Install directory: E:\\Code\\bot-group\\.probe-worktrees\\hermes-v0225\n"
+                  "Install method: git\nPython: 3.14.9")
+
+    def _stub_runs(self, version_out, version_rc=0, ruamel_out="0.18.16", ruamel_rc=0):
         class R:
             def __init__(self, rc, out):
                 self.returncode, self.stdout, self.stderr = rc, out, ""
 
-        seq = [R(0, ""), R(0, "3.14.9")]  # interpreter 空 -> 不通过
+        seq = [R(version_rc, version_out), R(ruamel_rc, ruamel_out)]
+        orig = gw_probe.subprocess.run
         gw_probe.subprocess.run = lambda *a, **k: seq.pop(0)
-        self.addCleanup(lambda: setattr(gw_probe.subprocess, "run", orig_run))
-        rec = gw_probe._selftest_probe_python(Path("x/python.exe"), Path("src"))
+        self.addCleanup(lambda: setattr(gw_probe.subprocess, "run", orig))
+
+    def test_parses_version_install_dir_commit_and_ruamel(self):
+        self._stub_runs(self.VERSION_OK)
+        rec = gw_probe._selftest_probe_python(Path("x/python.exe"), self.SRC, commit=self.HEAD)
+        self.assertEqual(rec["hermes_version"], "0.22.5")
+        self.assertEqual(rec["hermes_commit"], "bf0203a794a0")
+        self.assertTrue(rec["install_directory_matches_worktree"])
+        self.assertTrue(rec["commit_matches_worktree"])
+        self.assertEqual(rec["ruamel_version"], "0.18.16")
+        self.assertTrue(rec["ok"])
+
+    def test_wrong_install_directory_fails(self):
+        out = self.VERSION_OK.replace(
+            r"E:\Code\bot-group\.probe-worktrees\hermes-v0225",
+            r"E:\home\admin\hermes\hermes-agent")
+        self._stub_runs(out)
+        rec = gw_probe._selftest_probe_python(Path("x/python.exe"), self.SRC, commit=self.HEAD)
+        self.assertFalse(rec["install_directory_matches_worktree"])
+        self.assertFalse(rec["ok"])
+
+    def test_wrong_commit_fails(self):
+        self._stub_runs(self.VERSION_OK)
+        rec = gw_probe._selftest_probe_python(Path("x/python.exe"), self.SRC, commit="0" * 40)
+        self.assertFalse(rec["commit_matches_worktree"])
+        self.assertFalse(rec["ok"])
+
+    def test_missing_ruamel_fails(self):
+        self._stub_runs(self.VERSION_OK, ruamel_out="ModuleNotFoundError: No module named 'ruamel'",
+                        ruamel_rc=1)
+        rec = gw_probe._selftest_probe_python(Path("x/python.exe"), self.SRC, commit=self.HEAD)
+        self.assertIsNone(rec["ruamel_version"])
+        self.assertFalse(rec["ok"])
+
+    def test_version_command_failure_fails(self):
+        self._stub_runs("hermes: Could not determine home directory.", version_rc=1)
+        rec = gw_probe._selftest_probe_python(Path("x/python.exe"), self.SRC, commit=self.HEAD)
         self.assertFalse(rec["ok"])
 
 
 class StopOwnershipTest(unittest.TestCase):
-    """停前归属校验：只允许停本探针 home 的实例（foreign/unknown 一律拒绝）。"""
+    """停前归属校验：三方（pid 文件 / Win32 / 日志）实际判定，字段缺失判 unknown 不停止。"""
+
+    CST = timezone(timedelta(hours=8))
+    BASE = datetime(2026, 10, 27, 22, 18, 6, tzinfo=CST)
+    START_CS = int(BASE.timestamp() * 100)              # Windows 上 gateway.pid 的厘秒
+    WIN32 = ("CommandLine=\"C:\\...\\python.exe\" -m hermes_cli.main gateway run --quiet\r\n"
+             "\r\nCreationDate=20261027221806.000000+480\r\n\r\n")
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
-        self._orig_home = gw_probe.HERMES_HOME
+        self._orig = (gw_probe.HERMES_HOME, gw_probe._pid_alive, gw_probe._win32_process)
         gw_probe.HERMES_HOME = self.home
+        (self.home / "logs").mkdir(parents=True, exist_ok=True)
+        self.log_line("2026-10-27 22:18:07,000 INFO gateway.run: Auto-started gateway: exits "
+                      "after 600s")
+        self.log_line("2026-10-27 22:18:09,000 INFO gateway.run: inbound message: platform=local")
+        gw_probe._pid_alive = lambda pid: True
+        gw_probe._win32_process = lambda pid: {"rc": 0, "output": self.WIN32}
 
     def tearDown(self):
-        gw_probe.HERMES_HOME = self._orig_home
+        (gw_probe.HERMES_HOME, gw_probe._pid_alive, gw_probe._win32_process) = self._orig
         self.tmp.cleanup()
 
-    def _write(self, payload):
-        text = payload if isinstance(payload, str) else json.dumps(payload)
-        (self.home / "gateway.pid").write_text(text, encoding="utf-8")
+    def log_line(self, text):
+        with (self.home / "logs" / "gateway.log").open("a", encoding="utf-8") as fh:
+            fh.write(text + "\n")
 
-    def test_absent_when_no_pid_file(self):
-        self.assertEqual(gw_probe.stop_ownership()["verdict"], "absent")
+    def _pid_file(self, **overrides):
+        meta = {"pid": 4242, "kind": "hermes-gateway",
+                "hermes_home": str(self.home), "start_time": self.START_CS,
+                "argv": [r"E:\Code\bot-group\.probe-worktrees\hermes-v0225\hermes_cli\main.py",
+                         "gateway", "run", "--quiet"]}
+        meta.update(overrides)
+        (self.home / "gateway.pid").write_text(json.dumps(meta), encoding="utf-8")
+        return meta
 
-    def test_owned_when_home_matches(self):
-        self._write({"pid": 123, "hermes_home": str(self.home), "argv": ["x"]})
+    def test_absent_without_pid_file(self):
         rec = gw_probe.stop_ownership()
-        self.assertEqual(rec["verdict"], "owned")
-        self.assertEqual(rec["pid"], 123)
+        self.assertEqual(rec["verdict"], "absent")
 
-    def test_owned_with_slash_case_differences(self):
-        self._write({"pid": 1, "hermes_home": str(self.home).replace("\\", "/").upper()})
-        self.assertEqual(gw_probe.stop_ownership()["verdict"], "owned")
-
-    def test_foreign_when_other_home(self):
-        self._write({"pid": 1, "hermes_home": "E:/home/admin/hermes/prod-home"})
+    def test_owned_when_three_way_aligned_and_log_covers(self):
+        self._pid_file()
         rec = gw_probe.stop_ownership()
-        self.assertEqual(rec["verdict"], "foreign")
-        self.assertIn("mismatch", rec["reason"])
+        self.assertEqual(rec["verdict"], "owned", rec.get("reason"))
+        self.assertTrue(rec["log_covers_instance"])
+        self.assertEqual(rec["alignment"]["verdict"], "aligned")
 
-    def test_foreign_when_home_missing(self):
-        self._write({"pid": 1})
+    def test_stale_when_process_exited_and_state_stopped(self):
+        self._pid_file()
+        (self.home / "gateway_state.json").write_text(
+            json.dumps({"gateway_state": "stopped"}), encoding="utf-8")
+        gw_probe._pid_alive = lambda pid: False
         rec = gw_probe.stop_ownership()
-        self.assertEqual(rec["verdict"], "foreign")
-        self.assertIn("missing", rec["reason"])
+        self.assertEqual(rec["verdict"], "stale")
 
-    def test_unknown_when_unparsable(self):
-        self._write("{not json")
+    def test_unknown_when_process_exited_but_state_running(self):
+        self._pid_file()
+        (self.home / "gateway_state.json").write_text(
+            json.dumps({"gateway_state": "running"}), encoding="utf-8")
+        gw_probe._pid_alive = lambda pid: False
         self.assertEqual(gw_probe.stop_ownership()["verdict"], "unknown")
 
-    def test_unknown_when_not_object(self):
-        self._write("12345")
+    def test_unknown_when_liveness_query_failed(self):
+        self._pid_file()
+        gw_probe._pid_alive = lambda pid: None
+        self.assertEqual(gw_probe.stop_ownership()["verdict"], "unknown")
+
+    def test_unknown_when_field_missing(self):
+        for field in ("start_time", "argv", "hermes_home"):
+            with self.subTest(field=field):
+                self._pid_file(**{field: None})
+                rec = gw_probe.stop_ownership()
+                self.assertEqual(rec["verdict"], "unknown", rec.get("reason"))
+                self.assertIn(field, rec["missing_fields"])
+
+    def test_unknown_when_win32_query_empty(self):
+        self._pid_file()
+        gw_probe._win32_process = lambda pid: {"rc": 1, "output": ""}
+        self.assertEqual(gw_probe.stop_ownership()["verdict"], "unknown")
+
+    def test_foreign_when_home_mismatch(self):
+        self._pid_file(hermes_home=r"E:\home\admin\hermes\hermes-agent")
+        self.assertEqual(gw_probe.stop_ownership()["verdict"], "foreign")
+
+    def test_foreign_when_log_does_not_cover_instance(self):
+        # 日志只有很早以前的事件：说明这份日志不是本实例写的
+        (self.home / "logs" / "gateway.log").write_text(
+            "2026-10-27 10:00:00,000 INFO gateway.run: Auto-started gateway: old\n",
+            encoding="utf-8")
+        self._pid_file()
+        rec = gw_probe.stop_ownership()
+        self.assertEqual(rec["verdict"], "foreign")
+        self.assertFalse(rec["log_covers_instance"])
+
+    def test_unknown_when_log_missing(self):
+        (self.home / "logs" / "gateway.log").unlink()
+        self._pid_file()
+        self.assertEqual(gw_probe.stop_ownership()["verdict"], "unknown")
+
+    def test_unknown_when_pid_file_not_object(self):
+        (self.home / "gateway.pid").write_text("12345", encoding="utf-8")
         self.assertEqual(gw_probe.stop_ownership()["verdict"], "unknown")
 
 
 class StopRefusedTest(unittest.TestCase):
-    """归属不符时 stop_existing_gateway 必须拒绝执行，且不得调用任何子进程。"""
+    """归属不是 absent/stale/owned 时 stop 必须拒绝执行，且不调用任何子进程。"""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
-        self._orig = (gw_probe.HERMES_HOME, gw_probe.subprocess.run)
+        self._orig = (gw_probe.HERMES_HOME, gw_probe._pid_alive, gw_probe._win32_process,
+                      gw_probe.probe_python, gw_probe.subprocess.run)
         gw_probe.HERMES_HOME = self.home
+        (self.home / "logs").mkdir(parents=True, exist_ok=True)
 
     def tearDown(self):
-        gw_probe.HERMES_HOME, gw_probe.subprocess.run = self._orig
+        (gw_probe.HERMES_HOME, gw_probe._pid_alive, gw_probe._win32_process,
+         gw_probe.probe_python, gw_probe.subprocess.run) = self._orig
         self.tmp.cleanup()
 
     def test_foreign_instance_refused_without_subprocess(self):
-        (self.home / "gateway.pid").write_text(
-            json.dumps({"pid": 1, "hermes_home": "E:/home/admin/hermes/prod-home"}),
-            encoding="utf-8")
+        gw_probe._pid_alive = lambda pid: True
+        gw_probe._win32_process = lambda pid: {"rc": 0, "output": StopOwnershipTest.WIN32}
+        (self.home / "gateway.pid").write_text(json.dumps({
+            "pid": 1, "hermes_home": r"E:\home\admin\hermes\hermes-agent",
+            "argv": ["x"], "start_time": StopOwnershipTest.START_CS}), encoding="utf-8")
         calls = []
-        gw_probe.subprocess.run = lambda *a, **k: calls.append(a) or (_ for _ in ()).throw(
-            AssertionError("stop 不应在归属不符时执行"))
-
+        gw_probe.subprocess.run = lambda *a, **k: calls.append(a)
         rec = gw_probe.stop_existing_gateway()
         self.assertEqual(rec["verdict"], "refused")
         self.assertEqual(rec["ownership"]["verdict"], "foreign")
@@ -618,20 +743,14 @@ class StopRefusedTest(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_absent_pid_file_proceeds_to_stop(self):
-        # 无 pid 文件：没有实例可停，允许走 CLI（会返回 no-gateway，幂等安全）
+        # 无 pid 文件：没有实例可停，允许走 CLI（返回 no-gateway，幂等安全）
         calls = []
 
         class R:
             returncode, stdout, stderr = 0, "✗ No gateway running", ""
 
-        def fake(*a, **k):
-            calls.append(a)
-            return R()
-
-        orig_py = gw_probe.probe_python
-        gw_probe.subprocess.run = fake
+        gw_probe.subprocess.run = lambda *a, **k: (calls.append(a), R())[1]
         gw_probe.probe_python = lambda: Path(sys.executable)
-        self.addCleanup(lambda: setattr(gw_probe, "probe_python", orig_py))
         rec = gw_probe.stop_existing_gateway()
         self.assertEqual(rec["ownership"]["verdict"], "absent")
         self.assertEqual(len(calls), 1)

@@ -67,7 +67,7 @@ HERMES_RUNTIME = PROBE_DATA / "task-250" / "hermes-pm-store"  # pm 依赖存储
 # （pm repair 产物，ruamel/fastapi/websockets 全在此解释器）；PYTHONPATH 指向 worktree 源码根。
 # 解释器不在此处固定：见 select_probe_python()——按路径字典序确定性选取，
 # 并对候选做双自检（解释器可执行 + 能 import hermes_cli），任一不通过不采用。
-import glob as _glob  # noqa: E402
+
 WORKTREE_SRC = PROBE_ROOT / "hermes-v0225"
 EVIDENCE_DIR = Path(os.environ.get(
     "GW_EVIDENCE_DIR",
@@ -89,9 +89,14 @@ def log(step: str, **kv) -> None:
 
 def _git(*args: str) -> str | None:
     """在仓库内执行只读 git 命令；失败返回 None（证据元数据缺失不影响探针）。"""
+    return _git_cwd(PROBE_ROOT.parent, *args)
+
+
+def _git_cwd(cwd: Path, *args: str) -> str | None:
+    """在指定目录执行只读 git 命令（用于取源码 worktree 的提交）。"""
     try:
-        r = subprocess.run(["git", "-C", str(PROBE_ROOT.parent), *args],
-                           capture_output=True, text=True, timeout=30)
+        r = subprocess.run(["git", "-C", str(cwd), *args],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
     except (OSError, subprocess.SubprocessError):
         return None
     return (r.stdout or "").strip() if r.returncode == 0 else None
@@ -231,87 +236,180 @@ class ProbePythonError(RuntimeError):
 # 解释器选取结果（首次调用计算并缓存，避免每次 import 都跑自检子进程）
 _PROBE_PYTHON: dict = {}
 
-
-def _venv_candidates() -> list[Path]:
-    """枚举 pm 安装的解释器候选，按路径字典序（install/env 哈希稳定，结果与时间戳无关）。"""
-    pattern = str(HERMES_HOME / "installs" / "*" / "environments" / "*" / "venv"
-                  / "Scripts" / "python.exe")
-    return sorted(Path(p) for p in _glob.glob(pattern))
+_VERSION_OUT_VERSION = re.compile(r"Hermes Agent v([0-9][^\s]*)")
+_VERSION_OUT_INSTALL_DIR = re.compile(r"Install directory:\s*(.+)")
+_VERSION_OUT_COMMIT = re.compile(r"\blocal\s+([0-9a-f]{7,40})\b")
 
 
-def _selftest_probe_python(py: Path, src: Path) -> dict:
-    """双自检：①解释器自身可执行；②在 worktree 源码下能 import hermes_cli。
+def install_record() -> tuple[dict | None, dict]:
+    """用安装记录确定目标 install 与项目依赖环境（不写死 ID、不按 mtime/字典序猜）。
 
-    只有两项都给出正常输出才算可用——单看文件存在会被残留/半安装环境骗过
-    （重装后 shim 失效时 hermes.exe 正是「存在但 rc=1 无输出」）。
+    记录链：`HERMES_HOME/installs/<install_id>/facts.json` 的
+    `packages.venv.environment`（pm 安装时写入的绝对路径）→ 该 venv 的 `Scripts/python.exe`。
+    installs 下存在多个 install 而无法判定时，必须用 `GW_PROBE_INSTALL` 明确指定，不猜。
+    （`pm-runtime/selected.json` 指向 PM 自身 runtime venv，不是项目依赖环境，不使用。）
+    """
+    rec: dict = {"hermes_home": str(HERMES_HOME)}
+    installs_dir = HERMES_HOME / "installs"
+    if not installs_dir.is_dir():
+        rec["reason"] = f"installs dir missing: {installs_dir}"
+        return None, rec
+    explicit = (os.environ.get("GW_PROBE_INSTALL") or "").strip()
+    if explicit:
+        chosen = installs_dir / explicit
+        rec["install_id_source"] = "GW_PROBE_INSTALL"
+        if not chosen.is_dir():
+            rec["reason"] = f"GW_PROBE_INSTALL={explicit} not found"
+            return None, rec
+    else:
+        found = sorted(p for p in installs_dir.iterdir() if p.is_dir())
+        rec["installs_found"] = [p.name for p in found]
+        if not found:
+            rec["reason"] = "no install under HERMES_HOME/installs"
+            return None, rec
+        if len(found) > 1:
+            rec["reason"] = (f"ambiguous: {len(found)} installs under HERMES_HOME/installs; "
+                             "set GW_PROBE_INSTALL to choose one")
+            return None, rec
+        chosen = found[0]
+        rec["install_id_source"] = "single install under HERMES_HOME/installs"
+    rec["install_id"] = chosen.name
+
+    facts_path = chosen / "facts.json"
+    try:
+        facts = json.loads(facts_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        rec["reason"] = f"facts.json unusable ({type(exc).__name__}): {facts_path}"
+        return None, rec
+    venv_rec = (facts.get("packages") or {}).get("venv") or {}
+    env_path = venv_rec.get("environment")
+    rec["facts_venv_environment"] = env_path
+    rec["facts_venv_stamp"] = venv_rec.get("stamp")
+    if not env_path:
+        rec["reason"] = "facts.json has no packages.venv.environment"
+        return None, rec
+    venv_dir = Path(str(env_path))
+    if not _norm_path(venv_dir).startswith(_norm_path(chosen)):
+        rec["reason"] = "facts.json venv path is outside the selected install"
+        return None, rec
+    py = venv_dir / "Scripts" / "python.exe"
+    rec.update({"env_id": venv_dir.parent.name, "venv_dir": str(venv_dir), "python": str(py)})
+    if not py.exists():
+        rec["reason"] = f"python.exe missing: {py}"
+        return None, rec
+    rec["reason"] = ""
+    return {"install_dir": chosen, "venv_dir": venv_dir, "python": py}, rec
+
+
+def _selftest_probe_python(py: Path, src: Path, *, commit: str | None = None) -> dict:
+    """双自检（验收口径）：① `-m hermes_cli.main --version` 的 Install directory 指到
+    预期源码 worktree、`local <commit>` 与 worktree HEAD 一致；② 能 import ruamel 读版本。
+
+    两项都要有实际输出并符合预期才采用：文件存在、python 能启动都不足以证明这个环境
+    跑的是本 worktree 的 v0.22.5 源码（重装后的残留环境正是这种情形）。
     """
     rec: dict = {"python": str(py)}
-    checks = (("interpreter", "import sys; print(sys.version.split()[0])"),
-              ("hermes_cli", "import hermes_cli; print(hermes_cli.__file__)"))
-    for key, code in checks:
-        try:
-            r = subprocess.run([str(py), "-c", code], capture_output=True, text=True,
-                               env=probe_env(), timeout=120, cwd=str(src))
-        except (OSError, subprocess.SubprocessError) as exc:
-            rec[key] = f"error:{type(exc).__name__}"
-            continue
+    env = probe_env()
+    head = commit if commit is not None else _git_cwd(src, "rev-parse", "HEAD")
+    rec["worktree_head"] = head
+    try:
+        r = subprocess.run([str(py), "-m", "hermes_cli.main", "--version"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=180, cwd=str(src))
         out = ((r.stdout or "") + (r.stderr or "")).strip()
-        rec[key] = (out.splitlines()[-1][:160] if r.returncode == 0 and out
-                    else f"rc{r.returncode}:{out[-160:]}")
-
-    def _passed(value) -> bool:
-        """通过＝有实际输出且不是错误标记；空值不算通过（缺项必须失败）。"""
-        s = str(value or "")
-        return bool(s) and not s.startswith("error:") and not s.startswith("rc")
-
-    rec["ok"] = all(_passed(rec.get(k)) for k in ("interpreter", "hermes_cli"))
+        rec["version_rc"] = r.returncode
+        rec["version_output"] = out[-500:]
+        m_ver = _VERSION_OUT_VERSION.search(out)
+        m_dir = _VERSION_OUT_INSTALL_DIR.search(out)
+        m_commit = _VERSION_OUT_COMMIT.search(out)
+        rec["hermes_version"] = m_ver.group(1) if m_ver else None
+        rec["install_directory"] = m_dir.group(1).strip() if m_dir else None
+        rec["hermes_commit"] = m_commit.group(1) if m_commit else None
+        rec["install_directory_matches_worktree"] = bool(
+            rec["install_directory"] and _norm_path(rec["install_directory"]) == _norm_path(src))
+        rec["commit_matches_worktree"] = bool(
+            head and rec["hermes_commit"]
+            and (str(head).lower().startswith(str(rec["hermes_commit"]).lower())
+                 or str(rec["hermes_commit"]).lower().startswith(str(head)[:12].lower())))
+    except (OSError, subprocess.SubprocessError) as exc:
+        rec["version_rc"] = None
+        rec["version_error"] = type(exc).__name__
+        rec["install_directory_matches_worktree"] = False
+        rec["commit_matches_worktree"] = False
+    try:
+        r2 = subprocess.run([str(py), "-c", "import ruamel.yaml as y; print(y.__version__)"],
+                            capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=120, cwd=str(src))
+        out2 = ((r2.stdout or "") + (r2.stderr or "")).strip()
+        rec["ruamel_rc"] = r2.returncode
+        rec["ruamel_version"] = (out2.splitlines()[-1].strip()
+                                 if r2.returncode == 0 and out2 else None)
+        if r2.returncode != 0:
+            rec["ruamel_error"] = out2[-200:]
+    except (OSError, subprocess.SubprocessError) as exc:
+        rec["ruamel_version"] = None
+        rec["ruamel_error"] = type(exc).__name__
+    rec["ok"] = bool(rec.get("version_rc") == 0
+                     and rec.get("install_directory_matches_worktree")
+                     and rec.get("commit_matches_worktree")
+                     and rec.get("ruamel_version"))
     return rec
 
 
-def select_probe_python(candidates: list[Path] | None = None, *,
-                        selftest: bool = True) -> tuple[Path | None, dict]:
-    """确定性选取探针解释器：候选按路径排序，只采用自检通过者，取排序末位。
+def select_probe_python(*, selftest: bool = True) -> tuple[Path | None, dict]:
+    """按安装记录取项目依赖解释器并做双自检。
 
-    多候选同时可用时仍然取末位并在记录里列出全部候选与原因——同一文件系统状态下
-    结果恒定，不依赖 mtime 或 glob 返回顺序。无候选/全部自检失败时返回 None，
-    由调用方按失败处理（不能悄悄退化成系统 python 去跑真实网关）。
+    与旧实现的区别：不再 glob 全部 `installs/*/environments/*` 按 mtime 或路径排序挑选——
+    目标 install 由安装记录（facts.json）确定，多 install 时要求显式 `GW_PROBE_INSTALL`；
+    自检不通过就在启动网关前明确失败，不退回系统 python。
     """
-    cands = sorted(candidates if candidates is not None else _venv_candidates())
-    rec: dict = {"candidates": [str(c) for c in cands], "selftests": [], "chosen": None,
-                 "reason": ""}
-    if not cands:
-        rec["reason"] = "no candidate under HERMES_HOME/installs/*/environments/*/venv/Scripts"
+    record, rec = install_record()
+    rec["selftests"] = []
+    if record is None:
         return None, rec
-    passed: list[Path] = []
-    for py in cands:
-        st = _selftest_probe_python(py, WORKTREE_SRC) if selftest else {"python": str(py), "ok": True}
-        rec["selftests"].append(st)
-        if st.get("ok"):
-            passed.append(py)
-    if not passed:
-        rec["reason"] = "no candidate passed self-test (interpreter + hermes_cli)"
-        return None, rec
-    rec["chosen"] = str(passed[-1])
-    rec["reason"] = ("single passing candidate" if len(passed) == 1 else
-                     f"{len(passed)} passing candidates; deterministic pick = path-sorted last")
-    return passed[-1], rec
+    py = record["python"]
+    if not selftest:
+        rec["chosen"] = str(py)
+        rec["ok"] = True
+        return py, rec
+    st = _selftest_probe_python(py, WORKTREE_SRC)
+    rec["selftests"].append(st)
+    rec["ok"] = bool(st.get("ok"))
+    rec["chosen"] = str(py) if st.get("ok") else None
+    if not st.get("ok"):
+        rec["reason"] = (f"self-test failed: install_dir_ok="
+                         f"{st.get('install_directory_matches_worktree')}, "
+                         f"commit_ok={st.get('commit_matches_worktree')}, "
+                         f"ruamel={st.get('ruamel_version')}")
+    return (py if st.get("ok") else None), rec
 
 
 def probe_python() -> Path | None:
-    """探针解释器（首次调用做确定性选取 + 双自检并缓存）。"""
+    """探针解释器（首次调用按安装记录选取 + 双自检并缓存）。"""
     if not _PROBE_PYTHON:
         chosen, rec = select_probe_python()
         _PROBE_PYTHON.update(rec)
-        log("probe python select", chosen=rec.get("chosen"), reason=rec.get("reason"),
-            candidates=len(rec.get("candidates") or []))
+        log("probe python select", chosen=rec.get("chosen"), install_id=rec.get("install_id"),
+            env_id=rec.get("env_id"), ok=rec.get("ok"), reason=rec.get("reason"))
     chosen = _PROBE_PYTHON.get("chosen")
     return Path(chosen) if chosen else None
 
 
 def probe_python_record() -> dict:
-    """解释器选取/自检记录（写进证据 meta，便于追溯用的是哪个环境）。"""
+    """解释器选取/自检记录（证据 meta 用）：install/env ID、版本、提交、ruamel 版本。"""
     probe_python()
-    return {k: _PROBE_PYTHON.get(k) for k in ("chosen", "reason", "candidates", "selftests")}
+    keys = ("install_id", "install_id_source", "installs_found", "env_id", "venv_dir", "python",
+            "hermes_version", "hermes_commit", "worktree_head", "install_directory",
+            "install_directory_matches_worktree", "commit_matches_worktree", "ruamel_version",
+            "ok", "reason")
+    rec = {k: _PROBE_PYTHON.get(k) for k in keys if k in _PROBE_PYTHON}
+    # 自检产物在 selftests[0]，回填到顶层，证据文件可直接读出用了哪个版本/提交/ruamel
+    st = (_PROBE_PYTHON.get("selftests") or [{}])[0]
+    for k in ("hermes_version", "hermes_commit", "worktree_head", "install_directory",
+              "install_directory_matches_worktree", "commit_matches_worktree", "ruamel_version",
+              "version_rc", "ruamel_rc", "version_error", "ruamel_error"):
+        if rec.get(k) in (None, "") and k in st:
+            rec[k] = st[k]
+    rec["selftest_ok"] = st.get("ok")
+    return rec
 
 
 def _norm_path(p) -> str:
@@ -322,37 +420,143 @@ def _norm_path(p) -> str:
         return os.path.normcase(str(p).replace("/", "\\"))
 
 
-def stop_ownership() -> dict:
-    """停前归属校验：只允许停本探针 home 的实例。
+def _gateway_state_name() -> str | None:
+    """gateway_state.json 的当前状态（读不到返回 None）。"""
+    p = HERMES_HOME / "gateway_state.json"
+    try:
+        meta = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return meta.get("gateway_state") if isinstance(meta, dict) else None
 
-    所有 stop 入口都要先过这里——`gateway stop` 按 HERMES_HOME 定位，但 pid 文件
-    可能属于别的 home（迁移/残留/串台），盲目 stop 会打到不是本次拉起的实例。
-      absent   无 pid 文件：没有实例可停，stop 幂等安全
-      owned    pid 文件记录 hermes_home 与本探针一致：允许停
-      foreign  hermes_home 不同：拒绝停（不得触碰其他实例）
-      unknown  pid 文件不可解析：无法确认归属，同样拒绝停（fail-closed）
+
+def _win32_process(pid: int) -> dict:
+    """Win32_Process 的 CommandLine/CreationDate（与实例取证同一来源）。"""
+    try:
+        r = subprocess.run(["wmic", "process", "where", f"processid={pid}",
+                            "get", "CommandLine,CreationDate", "/format:list"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"rc": None, "error": type(exc).__name__}
+    return {"rc": r.returncode, "output": (r.stdout or "").strip()[:1200]}
+
+
+_LOG_TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+
+
+def log_instance_window() -> dict:
+    """网关日志里与本实例相关的时间点（Auto-started / 最后 inbound / 停止）。"""
+    log_file = HERMES_HOME / "logs" / "gateway.log"
+    if not log_file.exists():
+        return {"exists": False}
+    try:
+        lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        return {"exists": True, "readable": False, "error": type(exc).__name__}
+    started = inbound = shutdown = None
+    for ln in lines:
+        m = _LOG_TS.match(ln)
+        if not m:
+            continue
+        low = ln.lower()
+        if "auto-started gateway" in low:
+            started = m.group(1)
+        elif "inbound message:" in low:
+            inbound = m.group(1)
+        elif "gateway stopped" in low:
+            shutdown = m.group(1)
+    return {"exists": True, "readable": True, "auto_started": started,
+            "last_inbound": inbound, "last_shutdown": shutdown, "total_lines": len(lines)}
+
+
+def stop_ownership() -> dict:
+    """停前归属校验（验收口径）：用采集到的三方信息实际判定，字段缺失判 unknown 不停止。
+
+    判据 = `gateway.pid` 的 pid/hermes_home/argv/start_time + Win32_Process 的
+    CommandLine/CreationDate + `logs/gateway.log` 的启动与 inbound 时间；PID 不单独作准。
+
+      absent   无 pid 文件 → 无实例可停（允许 stop，CLI 幂等返回 no-gateway）
+      stale    记录的进程已退出且状态为 stopped → 无实例可停（允许 stop 清残留）
+      owned    三方一致且日志窗口覆盖本实例 → 允许 stop
+      foreign  明确不一致（home/入口/启动时间/日志窗口）→ 保留实例，不 stop
+      unknown  字段缺失、解析或查询失败 → 不 stop（fail-closed）
     """
     pid_file = HERMES_HOME / "gateway.pid"
-    rec: dict = {"verdict": "absent", "pid_file": str(pid_file),
-                 "expected_home": str(HERMES_HOME)}
+    rec: dict = {"pid_file": str(pid_file), "expected_home": str(HERMES_HOME)}
     if not pid_file.exists():
+        rec.update({"verdict": "absent", "reason": "no gateway.pid"})
         return rec
     try:
         meta = json.loads(pid_file.read_text(encoding="utf-8", errors="replace"))
     except (json.JSONDecodeError, OSError) as exc:
-        rec.update({"verdict": "unknown", "reason": f"{type(exc).__name__}"})
+        rec.update({"verdict": "unknown",
+                    "reason": f"pid file unreadable ({type(exc).__name__})"})
         return rec
     if not isinstance(meta, dict):
         rec.update({"verdict": "unknown", "reason": "pid file is not an object"})
         return rec
-    home = meta.get("hermes_home")
-    rec.update({"pid": meta.get("pid"), "hermes_home": home,
-                "argv": meta.get("argv") if isinstance(meta.get("argv"), list) else None})
-    if home and _norm_path(home) == _norm_path(HERMES_HOME):
-        rec["verdict"] = "owned"
+
+    pid = meta.get("pid")
+    missing = [k for k in ("pid", "hermes_home", "argv", "start_time") if not meta.get(k)]
+    alive = _pid_alive(int(pid)) if isinstance(pid, int) else None
+    state = _gateway_state_name()
+    rec.update({"pid": pid, "hermes_home": meta.get("hermes_home"), "argv": meta.get("argv"),
+                "start_time": meta.get("start_time"), "missing_fields": missing,
+                "pid_alive": alive, "gateway_state": state})
+
+    if alive is False:
+        if state in (None, "stopped"):
+            rec.update({"verdict": "stale",
+                        "reason": f"process exited, gateway_state={state or 'absent'}"})
+        else:
+            rec.update({"verdict": "unknown",
+                        "reason": f"process exited but gateway_state={state}"})
+        return rec
+    if alive is None:
+        rec.update({"verdict": "unknown", "reason": "pid liveness query failed"})
+        return rec
+    if missing:
+        rec.update({"verdict": "unknown", "reason": f"missing fields: {','.join(missing)}"})
+        return rec
+
+    win = _win32_process(int(pid))
+    rec["win32"] = win
+    if win.get("rc") != 0 or not (win.get("output") or "").strip():
+        rec.update({"verdict": "unknown", "reason": "Win32 process query failed or empty"})
+        return rec
+
+    alignment = alignment_verdict(meta, win.get("output") or "", HERMES_HOME)
+    rec["alignment"] = alignment
+    loginfo = log_instance_window()
+    rec["gateway_log"] = loginfo
+
+    # 日志窗口必须覆盖本实例：Auto-started / 最后 inbound 不早于 start_time（容忍 60s）
+    log_ok = None
+    pid_start = alignment.get("pid_start_time_parsed")
+    if loginfo.get("readable") and pid_start:
+        anchors = [loginfo.get(k) for k in ("auto_started", "last_inbound") if loginfo.get(k)]
+        deltas = []
+        for anchor in anchors:
+            try:
+                t = datetime.strptime(anchor, "%Y-%m-%d %H:%M:%S").astimezone(timezone.utc)
+            except ValueError:
+                continue
+            deltas.append(round((t - datetime.fromisoformat(
+                pid_start.replace("Z", "+00:00"))).total_seconds(), 3))
+        if deltas:
+            log_ok = all(d >= -60 for d in deltas)
+            rec["log_start_deltas_s"] = deltas
+    rec["log_covers_instance"] = log_ok
+
+    verdict = alignment.get("verdict")
+    if verdict == "mismatched" or log_ok is False:
+        rec.update({"verdict": "foreign", "reason": "three-way ownership mismatch"})
+    elif verdict == "aligned" and log_ok is True:
+        rec.update({"verdict": "owned",
+                    "reason": "three-way aligned and log window covers this instance"})
     else:
-        rec.update({"verdict": "foreign", "reason": "hermes_home mismatch" if home
-                    else "hermes_home missing"})
+        rec.update({"verdict": "unknown",
+                    "reason": f"insufficient evidence (alignment={verdict}, log_ok={log_ok})"})
     return rec
 
 
@@ -508,14 +712,14 @@ def stop_existing_gateway() -> dict:
     """
     own = stop_ownership()
     record: dict = {"ownership": own, "verdict": None}
-    if own["verdict"] in ("foreign", "unknown"):
+    if own["verdict"] not in ("absent", "stale", "owned"):
         record.update({"cli": None, "cli_exists": True, "rc": None, "stopped": False,
                        "verdict": "refused",
                        "output": f"stop refused: gateway.pid ownership={own['verdict']}"
                                  f" ({own.get('reason', '')})"})
-        log("STOP REFUSED: gateway.pid 不属于本探针 home，未执行 stop",
+        log("STOP REFUSED: 无法确认实例属于本探针 home，未执行 stop",
             verdict=own["verdict"], hermes_home=own.get("hermes_home"),
-            expected=own.get("expected_home"))
+            expected=own.get("expected_home"), reason=own.get("reason"))
         return record
     py = probe_python()
     if py is None or not py.exists():
@@ -527,7 +731,7 @@ def stop_existing_gateway() -> dict:
     record.update({"cli": f"{py.name} -m hermes_cli.main", "cli_exists": True})
     try:
         r = subprocess.run([str(py), "-m", "hermes_cli.main", "gateway", "stop"],
-                           capture_output=True, text=True, env=probe_env(),
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", env=probe_env(),
                            timeout=180, cwd=str(WORKTREE_SRC))
     except subprocess.TimeoutExpired:
         record.update({"rc": None, "stopped": False, "output": "gateway stop timeout(180s)"})
@@ -625,7 +829,7 @@ def _ensure_once() -> dict:
         raise ProbePythonError("probe venv python unavailable; see probe python select record")
     r = subprocess.run([str(py), "-X", "utf8", "-c", CONNECT_CODE,
                         str(HERMES_HOME), str(ENSURE_GATEWAY_TIMEOUT)],
-                       capture_output=True, text=True, env=probe_env(), timeout=600,
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", env=probe_env(), timeout=600,
                        cwd=str(WORKTREE_SRC))
     out = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "{}"
     try:
@@ -833,7 +1037,7 @@ def _pid_alive(pid: int) -> bool | None:
     """进程是否存活；查询本身失败返回 None（未知，不当作已退出）。"""
     try:
         r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
     except (OSError, subprocess.SubprocessError):
         return None
     return str(pid) in (r.stdout or "")
@@ -842,7 +1046,7 @@ def _pid_alive(pid: int) -> bool | None:
 def _port_listening(port: int) -> bool | None:
     """端口是否有 LISTENING；netstat 查询失败返回 None。"""
     try:
-        r = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, timeout=30)
+        r = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
     except (OSError, subprocess.SubprocessError):
         return None
     needle = f":{port} "
@@ -1045,7 +1249,7 @@ def instance_forensics(info: dict) -> dict:
         try:
             r = subprocess.run(["wmic", "process", "where", f"processid={pid}",
                                 "get", "CommandLine,CreationDate", "/format:list"],
-                               capture_output=True, text=True, timeout=30)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
             rec["win32_process"] = {"pid": pid, "rc": r.returncode,
                                     "output": (r.stdout or "").strip()[:1200]}
         except (OSError, subprocess.SubprocessError) as exc:
