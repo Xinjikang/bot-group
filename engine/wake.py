@@ -457,27 +457,26 @@ def _requirement_signal(conn, profile, kind, project):
     """Refresh actionable requirements even when work queue triggers coalesce."""
     if kind != "work":
         return ""
-    from . import project_permissions
-    if project_permissions.check(conn, project, profile, "task.create"):
-        return ""
-    rows = conn.execute(
-        "SELECT r.* FROM requirements r JOIN projects p ON p.name=r.project "
-        "WHERE r.project=? AND r.status='open' AND r.archived=0 AND p.archived=0 "
-        "AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.requirement_id=r.id) "
-        "ORDER BY r.priority,r.id", (project,),
-    ).fetchall()
-    from . import requirement_gate
-    rows = [r for r in rows if not requirement_gate.check(conn, r)][:21]
+    from . import requirement_recovery
+    rows, coordinate = requirement_recovery.context(conn, profile, project)
     if not rows:
         return ""
     ids = ", ".join(f"#{r['id']}" for r in rows[:20])
     more = "（另有待拆需求，以实时查询为准）" if len(rows) > 20 else ""
     import json
     project_arg = json.dumps(project, ensure_ascii=False)
+    if coordinate:
+        return (
+            f"\n[系统唤醒信号] 需求恢复配置协调：当前项目 {project_arg} 有待恢复需求 {ids}{more}。"
+            "当前缺少有效的 task.create 授权成员；请联系管理员在项目设置中补齐成员及授权。"
+            "按项目负责人职责协调配置，授权成员就绪后由扫描器安排拆解恢复。"
+        )
     return (
         f"\n[系统唤醒信号] 需求拆解：当前项目 {project_arg} 有待拆需求 {ids}{more}。"
         f"调用 req_list(project={project_arg}, status='open') 读取当前需求，"
-        "核对关联任务后，为尚无任务的需求按项目流程拆解并创建任务，避免重复创建。"
+        "先调用 task_list/task_get 读取并复用已有任务、设计依据与来源消息，"
+        "为尚无任务的需求按项目流程创建任务；已有部分任务时恢复拆解，补齐说明与依赖。"
+        "按实时拆解凭据契约续写，最后显式提交 complete=true 完成拆解，避免重复创建任务。"
         "已绑定任务先按本次任务指令处理，再检查待拆需求。"
         "即使 inbox 为空也须检查需求；以实时需求和任务状态为准。"
     )
@@ -509,7 +508,10 @@ def _finalize_injection_signal(profile, kind, thread_id, project, trigger_msg_id
         if _fits_command_budget(cmd_without_q + ["-q", body]):
             return body
     # 退化：纯信号 + upper_id 分页游标（I2/R1）。chat 单 thread 全量现场无需 upper_id。
-    signal = signal_for(kind)
+    if kind == "work" and not snapshot and (bound_task is not None or requirement_signal):
+        signal = "[系统唤醒信号] 本次为任务或需求调度，当前点对点收件箱为空。"
+    else:
+        signal = signal_for(kind)
     if kind == "work" and upper_id:
         signal += f" 本次快照消息上界 upper_id={upper_id}，"
         signal += "调用 group_read_inbox(after_id=<上一页最后一条 id>, upper_id=%d) 分页补读，读完统一处理。" % upper_id

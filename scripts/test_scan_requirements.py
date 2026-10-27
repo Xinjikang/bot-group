@@ -1,11 +1,4 @@
-"""scanner 第五来源：未拆解需求按项目 task.create 权限唤醒。
-
-契约（req#62）：
-- requirements 表 status=open 且无关联 task 的需求 → 唤醒获授权成员 work 拆解（scan:req）
-- 有 task 的需求（已拆）→ 不唤醒
-- 非 open 状态（done/blocked/cancelled）→ 不唤醒
-- 纯新增只读扫描，零 schema 改动
-"""
+"""Requirement scanning, permission selection and fresh recovery context."""
 import os
 import sqlite3
 import sys
@@ -107,6 +100,7 @@ class ScanRequirementsTests(unittest.TestCase):
         self.conn.commit()
         scanner.scan_requirements(self.conn)
         self._task(1, 86)
+        self.conn.execute("UPDATE requirements SET decompose_state='done' WHERE id=86")
         self.assertNotIn("需求拆解", self._signal())
 
     def test_requirement_context_respects_scope_and_status(self):
@@ -114,6 +108,7 @@ class ScanRequirementsTests(unittest.TestCase):
         self._req(87, status="done")
         self._req(88)
         self._task(1, 88)
+        self.conn.execute("UPDATE requirements SET decompose_state='done' WHERE id=88")
         self._req(89, project="other")
         self._req(90)
         self.conn.execute("UPDATE requirements SET archived=1 WHERE id=90")
@@ -199,11 +194,12 @@ class ScanRequirementsTests(unittest.TestCase):
         self.assertEqual(scanner.scan_requirements(self.conn), 0)
 
     def test_mixed_open_and_done(self):
-        """open 无任务 + done 无任务 + open 有任务 混合 → 只唤醒 open 无任务那个。"""
+        """Pending decomposition remains recoverable alongside completed rows."""
         self._req(1, status="open")   # 无 task → 唤醒
         self._req(2, status="done")   # 无 task → 不唤醒（非 open）
         self._req(3, status="open")   # 有 task → 不唤醒（已拆）
         self._task(30, 3)
+        self.conn.execute("UPDATE requirements SET decompose_state='done' WHERE id=3")
         self.conn.commit()
         self.assertEqual(scanner.scan_requirements(self.conn), 1)
 

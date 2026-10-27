@@ -2,6 +2,8 @@
 
 当前发布说明：[v0.1.5](releases/v0.1.5.md)。历史版本：[v0.1.4](releases/v0.1.4.md)、[v0.1.3](releases/v0.1.3.md)、[v0.1.2](releases/v0.1.2.md)。
 
+需求超时拆解、部分任务恢复和队列空唤醒抑制见 [需求恢复契约](engineering/REQUIREMENT-RECOVERY.md) 与 [设计依据](design/2026-10-27-requirement-recovery.md)。
+
 Profile 凭证继承与异常可见性见 [设计依据](design/2026-10-25-profile-credentials-errors.md)、[创建 profile](engineering/PROFILE-CREATE.md) 和 [执行异常反馈](engineering/EXECUTION-ERRORS.md)。
 
 成员候选的配置识别、失效登记过滤与历史保留规则见 [成员候选识别](engineering/PROFILE-CREATE.md#成员候选识别)。

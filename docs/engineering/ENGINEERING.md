@@ -40,7 +40,7 @@ bot-group 是常驻协作服务：保存项目、需求、任务、消息和执�
 | 子系统 | 主要代码 | 职责与专题 |
 | --- | --- | --- |
 | 服务与配置 | `main.py`、`api.py`、`config.py`、`auth.py`、`events.py` | HTTP、身份检查、SSE、有效实例配置；[安装部署](../guides/RELEASE-GUIDE.md) |
-| 数据与任务 | `db.py`、`schema.sql`、`taskpool.py`、`task_brief.py`、`requirement_gate.py`、`task_retry.py`、`taskqueue_proxy.py` | 迁移、事务、需求拆解、任务领取/流转/重试；[任务契约](TASK-BRIEF-CONTRACT.md)、[拆解设计](../design/DECOMPOSE-AUTH-REDESIGN-2026-10-11.md) |
+| 数据与任务 | `db.py`、`schema.sql`、`taskpool.py`、`task_brief.py`、`requirement_gate.py`、`requirement_recovery.py`、`task_retry.py`、`taskqueue_proxy.py` | 迁移、事务、需求拆解、任务领取/流转/重试；[任务契约](TASK-BRIEF-CONTRACT.md)、[拆解设计](../design/DECOMPOSE-AUTH-REDESIGN-2026-10-11.md) |
 | 消息与执行 | `router.py`、`delivery.py`、`mentions.py`、`message_execution.py`、`queue.py`、`scanner.py`、`wake.py`、`heartbeat.py` | 发言轮次、未读、注入、派发与运行判活；[消息注入](../design/MESSAGE-INJECTION-DESIGN-2026-09-27.md)、[执行归属](BOT-MESSAGE-EXECUTION.md) |
 | 会话与控制 | `session_adapter.py`、`commands.py`、`steer_ledger.py`、`stop.py` | 会话绑定、命令、纠偏回执与范围内停止；[命令与回执](../design/SLASH-COMMAND-DESIGN-2026-09-27.md) |
 | 宿主与配置 | `bot_identity.py`、`discovery.py`、`profile_create.py`、`profile_config.py`、`codex_profile_config.py`、`codex_project_access.py`、`project_models.py` | 双宿主发现、入组、配置读写、目录授权、项目模型覆盖；[创建 profile](PROFILE-CREATE.md)、[统一模型编辑](UNIFIED-MODEL-EDITOR.md) |
@@ -111,6 +111,8 @@ HTTP 路由以 `engine/api.py`、`engine/main.py` 为准。FastAPI 默认 `/docs
 扫描周期为 **180 秒**，五个来源依次为 inbox、任务、话题静默、轮次收口、需求拆解。调度按项目就绪、归档/移除、成员启停、任务状态和执行存活过滤。待领任务要求已发布、说明完整、前置任务全部 done，并精确派发给 `next_bot`。任务失败按 `task_retry` 共尝试三次，最终 technical blocked 并通知有效负责人或 user；人工停止、撤回、完成和交接保留各自结果。
 
 需求扫描处理 `pending` 或占用超时的 `decomposing` 状态。通过门禁后，从有效 `task.create` 授权成员按 role_id、profile 顺序确定一名候选；无候选时记录 gate_reason，并尝试通知已配置负责人。拆解以凭据占用、续期及幂等键控制多次提交；`task_create(..., complete=True)` 显式提交完成，也支持 `tasks=[]` 完成已有批次。
+
+需求扫描与唤醒上下文共用恢复查询：blocked 子任务暂停自动拆解恢复，已有部分任务的有效需求携带续拆指令，缺少拆解成员时负责人取得配置协调提示。`scan:req` 在投递前复查需求、未读消息及可执行任务，三项均为空时取消队列项；合并消息或任务保持投递。详见 [需求恢复与空唤醒抑制](REQUIREMENT-RECOVERY.md)。
 
 ### 宿主与会话
 
