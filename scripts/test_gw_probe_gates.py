@@ -684,15 +684,47 @@ class StopOwnershipTest(unittest.TestCase):
         self._pid_file(hermes_home=r"E:\home\admin\hermes\hermes-agent")
         self.assertEqual(gw_probe.stop_ownership()["verdict"], "foreign")
 
-    def test_foreign_when_log_does_not_cover_instance(self):
-        # 日志只有很早以前的事件：说明这份日志不是本实例写的
+    def test_unknown_when_log_has_no_event_in_instance_window(self):
+        # 日志只有很早以前的事件：本实例窗口内没有 Auto-started，证据不足判 unknown
         (self.home / "logs" / "gateway.log").write_text(
             "2026-10-27 10:00:00,000 INFO gateway.run: Auto-started gateway: old\n",
             encoding="utf-8")
         self._pid_file()
         rec = gw_probe.stop_ownership()
-        self.assertEqual(rec["verdict"], "foreign")
-        self.assertFalse(rec["log_covers_instance"])
+        self.assertEqual(rec["verdict"], "unknown")
+        self.assertIsNone(rec["log_covers_instance"])
+        self.assertIn("no Auto-started", rec["log_reason"])
+
+    def test_owned_when_no_inbound_in_this_instance(self):
+        # 上一实例的 inbound 残留在日志里，本实例刚启动尚无 inbound：不得因此判 foreign
+        (self.home / "logs" / "gateway.log").write_text(
+            "2026-10-27 21:00:00,000 INFO gateway.run: Auto-started gateway: old\n"
+            "2026-10-27 21:00:05,000 INFO gateway.run: inbound message: platform=local\n"
+            "2026-10-27 22:18:07,000 INFO gateway.run: Auto-started gateway: new\n",
+            encoding="utf-8")
+        self._pid_file()
+        rec = gw_probe.stop_ownership()
+        self.assertEqual(rec["verdict"], "owned", rec.get("reason"))
+        self.assertIsNone(rec["gateway_log"]["last_inbound"])
+        self.assertGreaterEqual(rec["gateway_log"]["events_before_since"], 2)
+
+    def test_shutdown_event_participates_in_window(self):
+        # 本实例的停止记录与启动记录同属一个窗口，必须都参与判定
+        self.log_line("2026-10-27 22:20:00,000 INFO gateway.run: Gateway stopped "
+                      "(total teardown 1.4s)")
+        self._pid_file()
+        rec = gw_probe.stop_ownership()
+        self.assertEqual(rec["verdict"], "owned", rec.get("reason"))
+        self.assertIn("last_shutdown", rec["log_start_deltas_s"])
+        self.assertGreater(rec["log_start_deltas_s"]["last_shutdown"], 0)
+
+    def test_unknown_when_state_file_missing(self):
+        # 进程已退出但状态文件缺失：不得按 stale 放行 stop
+        self._pid_file()
+        gw_probe._pid_alive = lambda pid: False
+        rec = gw_probe.stop_ownership()
+        self.assertEqual(rec["verdict"], "unknown")
+        self.assertIsNone(rec["gateway_state"])
 
     def test_unknown_when_log_missing(self):
         (self.home / "logs" / "gateway.log").unlink()
@@ -702,6 +734,46 @@ class StopOwnershipTest(unittest.TestCase):
     def test_unknown_when_pid_file_not_object(self):
         (self.home / "gateway.pid").write_text("12345", encoding="utf-8")
         self.assertEqual(gw_probe.stop_ownership()["verdict"], "unknown")
+
+
+class LogInstanceWindowTest(unittest.TestCase):
+    """日志窗口过滤：只取本实例 start_time 之后的事件，上一实例的 inbound/停止不算本实例证据。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self._orig = gw_probe.HERMES_HOME
+        gw_probe.HERMES_HOME = self.home
+        (self.home / "logs").mkdir(parents=True, exist_ok=True)
+        (self.home / "logs" / "gateway.log").write_text(
+            "2026-10-27 21:00:00,000 INFO gateway.run: Auto-started gateway: old\n"
+            "2026-10-27 21:00:05,000 INFO gateway.run: inbound message: platform=local\n"
+            "2026-10-27 21:30:00,000 INFO gateway.run: Gateway stopped (total teardown 1.2s)\n"
+            "2026-10-27 22:18:07,000 INFO gateway.run: Auto-started gateway: new\n",
+            encoding="utf-8")
+
+    def tearDown(self):
+        gw_probe.HERMES_HOME = self._orig
+        self.tmp.cleanup()
+
+    def test_filters_previous_instance_events(self):
+        rec = gw_probe.log_instance_window("2026-10-27T14:18:06+00:00")
+        self.assertEqual(rec["auto_started"], "2026-10-27 22:18:07")
+        self.assertIsNone(rec["last_inbound"])
+        self.assertIsNone(rec["last_shutdown"])
+        self.assertEqual(rec["events_before_since"], 3)
+
+    def test_without_since_returns_global_last(self):
+        rec = gw_probe.log_instance_window()
+        self.assertEqual(rec["auto_started"], "2026-10-27 22:18:07")
+        self.assertEqual(rec["last_inbound"], "2026-10-27 21:00:05")
+        self.assertEqual(rec["last_shutdown"], "2026-10-27 21:30:00")
+        self.assertNotIn("since", rec)
+
+    def test_missing_log_reports_absent(self):
+        (self.home / "logs" / "gateway.log").unlink()
+        self.assertEqual(gw_probe.log_instance_window("2026-10-27T14:18:06+00:00"),
+                         {"exists": False})
 
 
 class StopRefusedTest(unittest.TestCase):

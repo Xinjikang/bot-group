@@ -444,8 +444,13 @@ def _win32_process(pid: int) -> dict:
 _LOG_TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 
 
-def log_instance_window() -> dict:
-    """网关日志里与本实例相关的时间点（Auto-started / 最后 inbound / 停止）。"""
+def log_instance_window(since: str | None = None) -> dict:
+    """网关日志中的实例事件时间点（Auto-started / inbound / 停止）。
+
+    `since` 传本实例 start_time（ISO UTC）时只统计该时刻之后的事件（留 60s 时钟容差）。
+    不按实例过滤会把上一实例遗留的 inbound 当成本实例最后一条，delta 变成大负数，
+    使 owned 被误判 foreign；刚启动尚未产生 inbound 的实例同样会踩到。
+    """
     log_file = HERMES_HOME / "logs" / "gateway.log"
     if not log_file.exists():
         return {"exists": False}
@@ -453,33 +458,57 @@ def log_instance_window() -> dict:
         lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError as exc:
         return {"exists": True, "readable": False, "error": type(exc).__name__}
+    since_dt = None
+    if since:
+        try:
+            since_dt = (datetime.fromisoformat(since.replace("Z", "+00:00"))
+                        - timedelta(seconds=60))
+        except ValueError:
+            since_dt = None
     started = inbound = shutdown = None
+    skipped = 0
     for ln in lines:
         m = _LOG_TS.match(ln)
         if not m:
             continue
+        ts = m.group(1)
+        if since_dt is not None:
+            try:
+                if datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").astimezone(timezone.utc) < since_dt:
+                    skipped += 1
+                    continue
+            except ValueError:
+                continue
         low = ln.lower()
         if "auto-started gateway" in low:
-            started = m.group(1)
+            started = ts
         elif "inbound message:" in low:
-            inbound = m.group(1)
+            inbound = ts
         elif "gateway stopped" in low:
-            shutdown = m.group(1)
-    return {"exists": True, "readable": True, "auto_started": started,
-            "last_inbound": inbound, "last_shutdown": shutdown, "total_lines": len(lines)}
+            shutdown = ts
+    out = {"exists": True, "readable": True, "auto_started": started,
+           "last_inbound": inbound, "last_shutdown": shutdown, "total_lines": len(lines)}
+    if since_dt is not None:
+        out["since"] = since
+        out["events_before_since"] = skipped
+    return out
 
 
 def stop_ownership() -> dict:
     """停前归属校验（验收口径）：用采集到的三方信息实际判定，字段缺失判 unknown 不停止。
 
     判据 = `gateway.pid` 的 pid/hermes_home/argv/start_time + Win32_Process 的
-    CommandLine/CreationDate + `logs/gateway.log` 的启动与 inbound 时间；PID 不单独作准。
+    CommandLine/CreationDate + `logs/gateway.log` 的启动/inbound/停止时间；PID 不单独作准。
 
       absent   无 pid 文件 → 无实例可停（允许 stop，CLI 幂等返回 no-gateway）
-      stale    记录的进程已退出且状态为 stopped → 无实例可停（允许 stop 清残留）
+      stale    记录的进程已退出且 gateway_state 明确为 stopped → 允许 stop 清残留；
+               状态文件缺失（None）或为其他值 → unknown，不按 stale 放行
       owned    三方一致且日志窗口覆盖本实例 → 允许 stop
-      foreign  明确不一致（home/入口/启动时间/日志窗口）→ 保留实例，不 stop
-      unknown  字段缺失、解析或查询失败 → 不 stop（fail-closed）
+      foreign  明确不一致（home/入口/启动时间/日志事件早于实例启动）→ 保留实例，不 stop
+      unknown  字段缺失、解析或查询失败、日志不足以证明本实例 → 不 stop（fail-closed）
+
+    日志窗口以本实例 start_time 为界（容差 60s）只取之后的事件：必须存在 Auto-started，
+    且 inbound/停止事件都不得早于 start_time；日志缺失或不覆盖按 unknown 处理。
     """
     pid_file = HERMES_HOME / "gateway.pid"
     rec: dict = {"pid_file": str(pid_file), "expected_home": str(HERMES_HOME)}
@@ -505,12 +534,12 @@ def stop_ownership() -> dict:
                 "pid_alive": alive, "gateway_state": state})
 
     if alive is False:
-        if state in (None, "stopped"):
+        if state == "stopped":
             rec.update({"verdict": "stale",
-                        "reason": f"process exited, gateway_state={state or 'absent'}"})
+                        "reason": "process exited, gateway_state=stopped"})
         else:
             rec.update({"verdict": "unknown",
-                        "reason": f"process exited but gateway_state={state}"})
+                        "reason": f"process exited but gateway_state={state or 'absent'}"})
         return rec
     if alive is None:
         rec.update({"verdict": "unknown", "reason": "pid liveness query failed"})
@@ -527,36 +556,56 @@ def stop_ownership() -> dict:
 
     alignment = alignment_verdict(meta, win.get("output") or "", HERMES_HOME)
     rec["alignment"] = alignment
-    loginfo = log_instance_window()
+    pid_start = alignment.get("pid_start_time_parsed")
+    loginfo = log_instance_window(pid_start)
     rec["gateway_log"] = loginfo
 
-    # 日志窗口必须覆盖本实例：Auto-started / 最后 inbound 不早于 start_time（容忍 60s）
+    # 日志窗口必须以本实例 start_time 为界：Auto-started 必须在窗口内（证明日志里有这次启动），
+    # inbound / 停止事件也参与判定，任一早于 start_time 说明日志不属于本实例。
     log_ok = None
-    pid_start = alignment.get("pid_start_time_parsed")
-    if loginfo.get("readable") and pid_start:
-        anchors = [loginfo.get(k) for k in ("auto_started", "last_inbound") if loginfo.get(k)]
-        deltas = []
-        for anchor in anchors:
-            try:
-                t = datetime.strptime(anchor, "%Y-%m-%d %H:%M:%S").astimezone(timezone.utc)
-            except ValueError:
+    log_reason = None
+    if loginfo.get("exists") is False:
+        log_reason = "gateway.log missing"
+    elif not loginfo.get("readable"):
+        log_reason = "gateway.log unreadable"
+    elif not pid_start:
+        log_reason = "instance start_time unavailable"
+    elif not loginfo.get("auto_started"):
+        log_reason = "no Auto-started event in this instance window"
+    else:
+        start_dt = datetime.fromisoformat(str(pid_start).replace("Z", "+00:00"))
+        deltas: dict = {}
+        outside = []
+        for key in ("auto_started", "last_inbound", "last_shutdown"):
+            val = loginfo.get(key)
+            if not val:
                 continue
-            deltas.append(round((t - datetime.fromisoformat(
-                pid_start.replace("Z", "+00:00"))).total_seconds(), 3))
-        if deltas:
-            log_ok = all(d >= -60 for d in deltas)
-            rec["log_start_deltas_s"] = deltas
+            try:
+                t = datetime.strptime(val, "%Y-%m-%d %H:%M:%S").astimezone(timezone.utc)
+            except ValueError:
+                outside.append(key)
+                continue
+            deltas[key] = round((t - start_dt).total_seconds(), 3)
+            if deltas[key] < -60:
+                outside.append(key)
+        rec["log_start_deltas_s"] = deltas
+        if outside:
+            log_reason = f"log events outside instance window: {','.join(outside)}"
+        else:
+            log_ok = True
     rec["log_covers_instance"] = log_ok
+    if log_reason:
+        rec["log_reason"] = log_reason
 
     verdict = alignment.get("verdict")
-    if verdict == "mismatched" or log_ok is False:
+    if verdict == "mismatched":
         rec.update({"verdict": "foreign", "reason": "three-way ownership mismatch"})
     elif verdict == "aligned" and log_ok is True:
         rec.update({"verdict": "owned",
                     "reason": "three-way aligned and log window covers this instance"})
     else:
         rec.update({"verdict": "unknown",
-                    "reason": f"insufficient evidence (alignment={verdict}, log_ok={log_ok})"})
+                    "reason": f"insufficient evidence (alignment={verdict}, log={log_reason or 'ok'})"})
     return rec
 
 
