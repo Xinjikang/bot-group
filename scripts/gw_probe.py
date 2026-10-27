@@ -65,8 +65,7 @@ HERMES_HOME = PROBE_DATA / "task-250" / "gw-probe-home"      # 独立 profile �
 HERMES_RUNTIME = PROBE_DATA / "task-250" / "hermes-pm-store"  # pm 依赖存储
 # 依赖环境：hermes pm 装在 HERMES_HOME/installs/<install>/environments/<env>/venv
 # （pm repair 产物，ruamel/fastapi/websockets 全在此解释器）；PYTHONPATH 指向 worktree 源码根。
-# 解释器不在此处固定：见 select_probe_python()——按路径字典序确定性选取，
-# 并对候选做双自检（解释器可执行 + 能 import hermes_cli），任一不通过不采用。
+# select_probe_python() 从安装记录选择解释器，再核对 CLI 源码路径/提交及 ruamel 版本。
 
 WORKTREE_SRC = PROBE_ROOT / "hermes-v0225"
 EVIDENCE_DIR = Path(os.environ.get(
@@ -74,7 +73,7 @@ EVIDENCE_DIR = Path(os.environ.get(
     Path(__file__).resolve().parents[1] / "reports" / "research" / "hermes-gateway"))
 RECEIPT_POLL_INTERVAL = 3.0
 RECEIPT_POLL_MAX = 900                              # 15 分钟兜底（真实 agent 一轮可能慢）
-ENSURE_GATEWAY_TIMEOUT = 120.0                      # 冷启动实测 >60s（reviewer 21:04 遗留端口事件）
+ENSURE_GATEWAY_TIMEOUT = 120.0                      # 冷启动可能超过 60s
 
 _json_id = 0
 _evidence_seq = 0
@@ -442,21 +441,17 @@ def _win32_process(pid: int) -> dict:
 
 
 _LOG_TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
-# 过滤余量：早于实例 start_time 超过该值的日志事件属上一实例，不参与本实例判定
-_LOG_WINDOW_MARGIN_S = 60.0
-# 判定容差：窗口内事件允许的时钟偏差，超出即与本实例不一致（判 foreign）
+# 启动日志与进程创建时间的允许偏差。
 _LOG_CLOCK_TOLERANCE_S = 5.0
 
 
 def log_instance_window(since: str | None = None) -> dict:
     """网关日志中的实例事件时间点（Auto-started / inbound / 停止）。
 
-    `since` 传本实例 start_time（ISO UTC）时只统计该时刻之后的事件（留过滤余量）。
-    不按实例过滤会把上一实例遗留的 inbound 当成本实例最后一条，delta 变成大负数，
-    使 owned 被误判 foreign；刚启动尚未产生 inbound 的实例同样会踩到。
-
-    `since` 无法解析时返回 `since_invalid`，由调用方按 unknown 处理——静默退回全局窗口
-    会让上一实例的事件混进本实例判定。
+    `since` 为带时区的实例启动时间。选取时间最接近的 Auto-started，
+    以该日志行至下一条 Auto-started 为实例窗口，排除时间早于窗口起点的事件。
+    启动时间偏差由 stop_ownership 校验；无法解析的日志仅计入诊断。
+    无 since 时保留全局末值查询；非法 since 返回 since_invalid。
     """
     log_file = HERMES_HOME / "logs" / "gateway.log"
     if not log_file.exists():
@@ -466,41 +461,55 @@ def log_instance_window(since: str | None = None) -> dict:
     except OSError as exc:
         return {"exists": True, "readable": False, "error": type(exc).__name__}
     since_dt = None
-    if since:
+    if since is not None:
         try:
-            since_dt = (datetime.fromisoformat(str(since).replace("Z", "+00:00"))
-                        - timedelta(seconds=_LOG_WINDOW_MARGIN_S))
+            since_dt = datetime.fromisoformat(str(since).replace("Z", "+00:00"))
+            if since_dt.tzinfo is None:
+                raise ValueError("instance start_time needs timezone")
         except ValueError:
             return {"exists": True, "readable": True, "since_invalid": True, "since": str(since)}
-    started = inbound = shutdown = None
-    skipped = 0
+    events = []
     unparsable = 0
-    for ln in lines:
-        m = _LOG_TS.match(ln)
-        if not m:
-            continue
-        ts = m.group(1)
-        if since_dt is not None:
-            try:
-                if datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").astimezone(timezone.utc) < since_dt:
-                    skipped += 1
-                    continue
-            except ValueError:
-                unparsable += 1
-                continue
+    for line_index, ln in enumerate(lines):
         low = ln.lower()
         if "auto-started gateway" in low:
-            started = ts
+            kind = "auto_started"
         elif "inbound message:" in low:
-            inbound = ts
+            kind = "last_inbound"
         elif "gateway stopped" in low:
-            shutdown = ts
-    out = {"exists": True, "readable": True, "auto_started": started,
-           "last_inbound": inbound, "last_shutdown": shutdown, "total_lines": len(lines)}
+            kind = "last_shutdown"
+        else:
+            continue
+        m = _LOG_TS.match(ln)
+        if not m:
+            unparsable += 1
+            continue
+        ts = m.group(1)
+        try:
+            dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").astimezone(timezone.utc)
+        except ValueError:
+            unparsable += 1
+            continue
+        events.append((line_index, kind, ts, dt))
+    out = {"exists": True, "readable": True, "auto_started": None,
+           "last_inbound": None, "last_shutdown": None, "total_lines": len(lines),
+           "unparsable_events": unparsable}
     if since_dt is not None:
         out["since"] = since
-        out["events_before_since"] = skipped
-        out["unparsable_events"] = unparsable
+        starts = [event for event in events if event[1] == "auto_started"]
+        if not starts:
+            out["events_before_since"] = len(events)
+            return out
+        selected = min(starts, key=lambda event: abs((event[3] - since_dt).total_seconds()))
+        next_line = next((event[0] for event in starts if event[0] > selected[0]), len(lines))
+        out["events_before_since"] = sum(
+            event[0] < selected[0] or event[3] < selected[3] for event in events)
+        out["window_start_line"] = selected[0] + 1
+        out["window_end_line"] = next_line
+        events = [event for event in events
+                  if selected[0] <= event[0] < next_line and event[3] >= selected[3]]
+    for _, kind, ts, _ in events:
+        out[kind] = ts
     return out
 
 
@@ -514,12 +523,12 @@ def stop_ownership() -> dict:
       stale    记录的进程已退出且 gateway_state 明确为 stopped → 允许 stop 清残留；
                状态文件缺失（None）或为其他值 → unknown，不按 stale 放行
       owned    三方一致且日志窗口覆盖本实例 → 允许 stop
-      foreign  明确不一致（home/入口/启动时间/日志事件早于实例启动）→ 保留实例，不 stop
+      foreign  明确不一致（home/入口/进程或日志启动时间）→ 保留实例，不 stop
       unknown  字段缺失、解析或查询失败、日志不足以证明本实例 → 不 stop（fail-closed）
 
-    日志窗口以本实例 start_time 为界只取之后的事件（过滤余量 60s）：必须存在 Auto-started；
-    窗口内 inbound/停止事件早于 start_time 超过时钟容差（5s）或时间戳不可解析，说明日志与本
-    实例不一致，判 foreign；日志缺失、start_time 非法或无本实例 Auto-started 按 unknown。
+    日志窗口从时间最接近 start_time 的 Auto-started 起至下一次启动。
+    Auto-started 与 start_time 的绝对偏差超过 5s 判 foreign；前序实例事件排除，
+    无法解析的日志仅作诊断。日志缺失、start_time 非法或无启动记录按 unknown。
     """
     pid_file = HERMES_HOME / "gateway.pid"
     rec: dict = {"pid_file": str(pid_file), "expected_home": str(HERMES_HOME)}
@@ -571,9 +580,7 @@ def stop_ownership() -> dict:
     loginfo = log_instance_window(pid_start)
     rec["gateway_log"] = loginfo
 
-    # 日志窗口必须以本实例 start_time 为界：Auto-started 必须在窗口内（证明日志里有这次启动），
-    # inbound / 停止事件也参与判定；窗口内事件早于 start_time 超出时钟容差，或时间戳无法解析，
-    # 说明日志内容与本实例不一致 → foreign（与 description 的归属口径一致）。
+    # 启动记录关联进程创建时间；inbound/停止末值只来自该启动的日志窗口。
     log_ok = None
     log_reason = None
     if loginfo.get("exists") is False:
@@ -589,9 +596,6 @@ def stop_ownership() -> dict:
     else:
         start_dt = datetime.fromisoformat(str(pid_start).replace("Z", "+00:00"))
         deltas: dict = {}
-        outside = []
-        if loginfo.get("unparsable_events"):
-            outside.append(f"unparsable={loginfo['unparsable_events']}")
         for key in ("auto_started", "last_inbound", "last_shutdown"):
             val = loginfo.get(key)
             if not val:
@@ -599,15 +603,15 @@ def stop_ownership() -> dict:
             try:
                 t = datetime.strptime(val, "%Y-%m-%d %H:%M:%S").astimezone(timezone.utc)
             except ValueError:
-                outside.append(key)
                 continue
             deltas[key] = round((t - start_dt).total_seconds(), 3)
-            if deltas[key] < -_LOG_CLOCK_TOLERANCE_S:
-                outside.append(key)
         rec["log_start_deltas_s"] = deltas
-        if outside:
+        startup_delta = deltas.get("auto_started")
+        if startup_delta is None:
+            log_reason = "Auto-started timestamp unavailable"
+        elif abs(startup_delta) > _LOG_CLOCK_TOLERANCE_S:
             log_ok = False
-            log_reason = f"log events inconsistent with instance start: {','.join(outside)}"
+            log_reason = "Auto-started inconsistent with instance start"
         else:
             log_ok = True
     rec["log_covers_instance"] = log_ok
