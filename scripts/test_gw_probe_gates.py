@@ -970,6 +970,48 @@ class StopRefusedTest(unittest.TestCase):
         self.assertEqual(rec["ownership"]["verdict"], "absent")
         self.assertEqual(len(calls), 1)
 
+    # ---- force=True 的边界：#252 清理需要 --yes，但 force 不得绕过归属校验 ----
+
+    def test_force_does_not_bypass_foreign_refusal(self):
+        """force=True 只是给官方 CLI 加 --yes，foreign 实例仍在调子进程前被拒。"""
+        gw_probe._pid_alive = lambda pid: True
+        gw_probe._win32_process = lambda pid: {"rc": 0, "output": StopOwnershipTest.WIN32}
+        (self.home / "gateway.pid").write_text(json.dumps({
+            "pid": 1, "hermes_home": r"E:\home\admin\hermes\hermes-agent",
+            "argv": ["x"], "start_time": StopOwnershipTest.START_CS}), encoding="utf-8")
+        calls = []
+        gw_probe.subprocess.run = lambda *a, **k: calls.append(a)
+        rec = gw_probe.stop_existing_gateway(force=True)
+        self.assertEqual(rec["verdict"], "refused")
+        self.assertEqual(rec["ownership"]["verdict"], "foreign")
+        self.assertEqual(calls, [])
+
+    def test_force_does_not_bypass_unknown_refusal(self):
+        """force=True 下 pid 文件损坏（unknown）同样拒绝，不调子进程。"""
+        (self.home / "gateway.pid").write_text("{broken", encoding="utf-8")
+        calls = []
+        gw_probe.subprocess.run = lambda *a, **k: calls.append(a)
+        rec = gw_probe.stop_existing_gateway(force=True)
+        self.assertEqual(rec["verdict"], "refused")
+        self.assertEqual(rec["ownership"]["verdict"], "unknown")
+        self.assertEqual(calls, [])
+
+    def test_force_appends_yes_only_after_ownership_pass(self):
+        """归属校验通过后才追加 --yes；默认（force=False）命令行不含 --yes。"""
+        class R:
+            returncode, stdout, stderr = 0, "✗ No gateway", ""
+
+        calls = []
+        gw_probe.subprocess.run = lambda *a, **k: (calls.append(a), R())[1]
+        gw_probe.probe_python = lambda: Path(sys.executable)
+        gw_probe.stop_existing_gateway(force=True)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("--yes", calls[0][0])
+        calls.clear()
+        gw_probe.stop_existing_gateway()
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("--yes", calls[0][0])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
