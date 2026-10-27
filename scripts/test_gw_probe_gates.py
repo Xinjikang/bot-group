@@ -337,6 +337,50 @@ class ForensicsWiringTest(unittest.TestCase):
         self.assertEqual(rec["alignment"]["verdict"], "aligned")
 
 
+class AlignmentGateTest(unittest.TestCase):
+    """归属不一致必须是失败门禁（rc=10），不能只打日志继续提交。"""
+
+    def test_mismatched_raises(self):
+        with self.assertRaises(gw_probe.InstanceMismatch):
+            gw_probe.assert_alignment_or_raise({"alignment": {"verdict": "mismatched"}})
+
+    def test_aligned_and_partial_pass(self):
+        for verdict in ("aligned", "partial"):
+            with self.subTest(verdict=verdict):
+                gw_probe.assert_alignment_or_raise({"alignment": {"verdict": verdict}})
+
+    def test_missing_alignment_does_not_raise(self):
+        gw_probe.assert_alignment_or_raise({})
+
+
+class EvidenceMetaTest(unittest.TestCase):
+    """每条证据必须能追溯到脚本 hash 与提交（reviewer 曾因无 commit/hash 打回）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self._orig = (gw_probe.EVIDENCE_DIR, gw_probe._EVIDENCE_META, gw_probe._evidence_seq)
+        gw_probe.EVIDENCE_DIR = Path(self.tmp.name)
+        gw_probe._EVIDENCE_META = None
+        gw_probe._evidence_seq = 0
+
+    def tearDown(self):
+        gw_probe.EVIDENCE_DIR, gw_probe._EVIDENCE_META, gw_probe._evidence_seq = self._orig
+        self.tmp.cleanup()
+
+    def test_meta_has_commit_and_script_hash(self):
+        meta = gw_probe.evidence_meta()
+        self.assertEqual(len(meta["script_sha256_16"]), 16)
+        self.assertIsNotNone(meta["commit"])
+        self.assertIn("hermes_home", meta)
+
+    def test_saved_evidence_wraps_meta(self):
+        p = gw_probe.save_evidence("demo", {"k": 1})
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        self.assertIn("meta", doc)
+        self.assertEqual(doc["data"], {"k": 1})
+        self.assertEqual(len(doc["meta"]["script_sha256_16"]), 16)
+
+
 class StopInstanceTest(unittest.TestCase):
     """stop-after：pid 存活 / gateway.pid / 端口 LISTENING 三方全干净才算释放（未知不算）。"""
 
@@ -382,8 +426,23 @@ class StopInstanceTest(unittest.TestCase):
     def test_gateway_pid_file_left_not_clean(self):
         self._stub(False, False)
         (self.home / "gateway.pid").write_text("4242", encoding="utf-8")
-        self.assertFalse(
-            gw_probe.stop_instance({"api_origin": "127.0.0.1:58123"}, 4242)["clean"])
+        rec = gw_probe.stop_instance({"api_origin": "127.0.0.1:58123"}, 4242)
+        self.assertFalse(rec["clean"])
+        self.assertEqual(rec["verdict"], "failed")
+
+    def test_ensure_failure_path_is_clean(self):
+        # ensure 失败时 info 空、pid/端口未知：gateway.pid 不存在即为已释放，
+        # 不能因为「查不到 pid」就把清理判成失败（node 1330 的语义要求）。
+        self._stub(None, None)
+        rec = gw_probe.stop_instance({}, None)
+        self.assertEqual(rec["verdict"], "clean")
+        self.assertTrue(rec["clean"])
+
+    def test_unknown_state_verdict_is_unknown(self):
+        self._stub(None, False)
+        self.assertEqual(
+            gw_probe.stop_instance({"api_origin": "127.0.0.1:58123"}, 4242)["verdict"],
+            "unknown")
 
 
 if __name__ == "__main__":

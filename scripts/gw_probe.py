@@ -35,7 +35,8 @@
   6=preflight 拒绝启动（环境/配置/残留网关）
   7=session.resume 返回的 session_id 与 create 不一致
   8=心跳门禁失败（mcp-stderr 不可读/不一致或 /heartbeat 有新增）
-  9=清理失败（网关资源未释放）
+  9=清理失败（明确有残留：pid 存活 / 端口 LISTENING / gateway.pid 未消失）
+  10=实例归属不一致（gateway.pid / Win32 / 探针 home 无法对齐，拒绝继续提交）
 """
 from __future__ import annotations
 
@@ -89,13 +90,54 @@ def log(step: str, **kv) -> None:
     print(line, flush=True)
 
 
+def _git(*args: str) -> str | None:
+    """在仓库内执行只读 git 命令；失败返回 None（证据元数据缺失不影响探针）。"""
+    try:
+        r = subprocess.run(["git", "-C", str(PROBE_ROOT.parent), *args],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return (r.stdout or "").strip() if r.returncode == 0 else None
+
+
+_EVIDENCE_META: dict | None = None
+
+
+def evidence_meta() -> dict:
+    """证据溯源：脚本 sha256、被测提交、工作树是否干净。只算一次。"""
+    global _EVIDENCE_META
+    if _EVIDENCE_META is None:
+        import hashlib
+        try:
+            digest = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+        except OSError:
+            digest = None
+        dirty = _git("status", "--porcelain")
+        _EVIDENCE_META = {
+            "script": "scripts/gw_probe.py",
+            "script_sha256_16": digest,
+            "commit": _git("rev-parse", "--short", "HEAD"),
+            "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
+            "worktree_clean": (dirty == "") if dirty is not None else None,
+            "probe_python": str(PROBE_PYTHON),
+            "hermes_home": str(HERMES_HOME),
+            "hermes_runtime": str(HERMES_RUNTIME),
+        }
+    return _EVIDENCE_META
+
+
 def save_evidence(name: str, payload) -> Path:
-    """落盘原始回执。文件名带序号，避免同秒同步骤相互覆盖。"""
+    """落盘原始回执。文件名带序号，避免同秒同步骤相互覆盖。
+
+    每条证据都带 meta（脚本 hash / commit / 工作树状态），否则无法证明
+    「这份证据来自哪个提交」——reviewer 已就此打回过一次。
+    """
     global _evidence_seq
     _evidence_seq += 1
     EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
     p = EVIDENCE_DIR / f"{time.strftime('%H%M%S')}-{_evidence_seq:02d}-{name}.json"
-    p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    doc = {"meta": evidence_meta(), "data": payload}
+    p.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
     return p
 
 
@@ -182,6 +224,10 @@ def env_snapshot() -> dict:
 
 class ConfigError(ValueError):
     """探针 home config.yaml 不满足隔离要求。"""
+
+
+class InstanceMismatch(RuntimeError):
+    """gateway.pid / Win32 / 探针 home 三方归属无法对齐：按失败处理，不继续提交。"""
 
 
 def _strict_yaml_load(text: str) -> dict:
@@ -671,12 +717,21 @@ def stop_instance(info: dict, pid: int | None) -> dict:
     port = _origin_port(origin)
     rec: dict = {"api_origin": origin or None, "port": port, "pid": pid}
     rec["stop"] = stop_existing_gateway()
-    rec["pid_alive_after"] = _pid_alive(pid) if pid else None
-    rec["gateway_pid_exists"] = (HERMES_HOME / "gateway.pid").exists()
-    rec["port_listening"] = _port_listening(port) if port else None
-    rec["clean"] = bool(rec["pid_alive_after"] is False
-                        and rec["gateway_pid_exists"] is False
-                        and (rec["port_listening"] is False or port is None))
+    pid_file_exists = (HERMES_HOME / "gateway.pid").exists()
+    pid_alive = _pid_alive(pid) if pid else None
+    listening = _port_listening(port) if port else None
+    rec.update({"pid_alive_after": pid_alive, "gateway_pid_exists": pid_file_exists,
+                "port_listening": listening})
+    # 三态而不是两态：ensure 失败时 pid/端口未知，此时「查不到」不等于「没释放」。
+    #   failed  明确有残留（pid 存活 / 端口 LISTENING / gateway.pid 还在）
+    #   unknown 有关键项查不到（pid 或端口已知但查询失败）
+    #   clean   所有可核验项都确认已释放（pid 文件不存在 + 无 pid 存活 + 端口无监听）
+    failed = bool(pid_file_exists or pid_alive is True or listening is True)
+    unknown = (not failed) and ((pid is not None and pid_alive is None)
+                                or (port is not None and listening is None))
+    verdict = "failed" if failed else ("unknown" if unknown else "clean")
+    rec["verdict"] = verdict
+    rec["clean"] = verdict == "clean"
     return rec
 
 
@@ -843,6 +898,14 @@ def instance_forensics(info: dict) -> dict:
     return rec
 
 
+def assert_alignment_or_raise(forensics: dict) -> None:
+    """归属不一致即失败。只打 INSTANCE MISMATCH 日志继续跑，等于没有核验。"""
+    alignment = (forensics or {}).get("alignment") or {}
+    if alignment.get("verdict") == "mismatched":
+        log("INSTANCE MISMATCH: 归属无法对齐，拒绝继续提交", checks=alignment.get("checks"))
+        raise InstanceMismatch("gateway.pid / Win32 / probe home 不一致")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prompt", default="请只回复两个字：收到")
@@ -869,10 +932,10 @@ def main() -> int:
             log_lines=forensics.get("gateway_log", {}).get("total_lines"),
             alignment=forensics.get("alignment", {}).get("verdict"),
             start_delta_s=forensics.get("alignment", {}).get("start_time_delta_s"))
-        if forensics.get("alignment", {}).get("verdict") == "mismatched":
-            log("INSTANCE MISMATCH: gateway.pid / Win32 / probe home 不一致",
-                checks=forensics["alignment"].get("checks"))
+        assert_alignment_or_raise(forensics)
         rc = asyncio.run(run(info, args.prompt))
+    except InstanceMismatch:
+        rc = 10
     except SystemExit as exc:
         # 内层 sys.exit（如 ensure 失败）不直接终止：先走 finally 清理可能半启动的实例
         rc = rc or int(exc.code or 1)
@@ -902,16 +965,21 @@ def main() -> int:
         try:
             cleanup = stop_instance(info, pid)
         except Exception as exc:  # noqa: BLE001 - 清理自身的异常同样要如实反映
-            cleanup = {"clean": False, "error": f"{type(exc).__name__}: {exc}"}
+            cleanup = {"clean": False, "verdict": "failed",
+                       "error": f"{type(exc).__name__}: {exc}"}
         save_evidence("stop-after", cleanup)
-        log("stop-after", clean=cleanup.get("clean"), port=cleanup.get("port"),
+        log("stop-after", verdict=cleanup.get("verdict"), port=cleanup.get("port"),
             pid_alive_after=cleanup.get("pid_alive_after"),
             gateway_pid_exists=cleanup.get("gateway_pid_exists"),
             port_listening=cleanup.get("port_listening"))
-        if not cleanup.get("clean"):
+        if cleanup.get("verdict") == "failed":
+            # 明确残留：没有更早的失败码时才归因到清理（不掩盖根因）
             log("CLEANUP FAILED: gateway resources not released", detail=cleanup)
             if rc == 0:
                 rc = 9
+        elif cleanup.get("verdict") == "unknown":
+            log("CLEANUP UNKNOWN: pid/端口未知，无法核验释放（保留原退出码）",
+                detail=cleanup)
     log("PROBE DONE", rc=rc, elapsed_s=round(time.time() - t0, 1))
     return rc
 
