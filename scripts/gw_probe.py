@@ -249,6 +249,23 @@ def mcp_log_snapshot() -> dict:
             "last_heartbeat": beats[-1] if beats else ""}
 
 
+_NO_GATEWAY_MARKERS = ("no gateway", "not running", "no running", "gateway not running")
+
+
+def stop_verdict(rc: int | None, output: str) -> tuple[bool, str]:
+    """判定 gateway stop 是否把环境留成干净起点。
+
+    「无网关运行」对 stop 而言就是幂等成功——不能因为 rc 非 0 就当成隔离失败，
+    否则干净环境下探针反而起不来。只有真正未知的失败（超时/报错且无此语义）才阻断。
+    """
+    if rc == 0:
+        return True, "rc0"
+    low = (output or "").lower()
+    if any(marker in low for marker in _NO_GATEWAY_MARKERS):
+        return True, "no-gateway"
+    return False, "failed"
+
+
 def stop_existing_gateway() -> dict:
     """强制干净起点：停掉探针 home 下可能残留的网关。
 
@@ -292,10 +309,13 @@ def preflight() -> dict:
         sys.exit(6)
 
     stop_rec = stop_existing_gateway()
+    clean, verdict = stop_verdict(stop_rec.get("rc"), stop_rec.get("output", ""))
+    stop_rec["verdict"] = verdict
     save_evidence("preflight-gateway-stop", stop_rec)
-    log("preflight gateway stop", rc=stop_rec.get("rc"), stopped=stop_rec.get("stopped"))
-    if stop_rec.get("rc") != 0:
-        # stop 非零时不可假定环境干净（rc=None 为超时，同样阻断）
+    log("preflight gateway stop", rc=stop_rec.get("rc"), stopped=stop_rec.get("stopped"),
+        verdict=verdict)
+    if not clean:
+        # 既非成功也非「无网关运行」：不能假定环境干净
         log("PREFLIGHT FAILED: gateway stop failed", output=stop_rec.get("output"))
         sys.exit(6)
     pid_file = HERMES_HOME / "gateway.pid"

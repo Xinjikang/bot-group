@@ -149,9 +149,30 @@ class HeartbeatGateTest(unittest.TestCase):
                          (4, "violation", 1))
 
 
+class StopVerdictTest(unittest.TestCase):
+    """gateway stop 判定：rc=0 或明确「无网关运行」都算干净起点（干净环境必须能启动）。"""
+
+    def test_rc_zero_is_clean(self):
+        self.assertEqual(gw_probe.stop_verdict(0, "✓ Stopped gateway for this profile"),
+                         (True, "rc0"))
+
+    def test_no_gateway_message_is_clean(self):
+        for text in ("No gateway running", "gateway not running", "no running gateway"):
+            with self.subTest(text=text):
+                self.assertEqual(gw_probe.stop_verdict(1, text), (True, "no-gateway"))
+
+    def test_unknown_nonzero_fails(self):
+        self.assertEqual(gw_probe.stop_verdict(1, ""), (False, "failed"))
+        self.assertEqual(gw_probe.stop_verdict(2, "Traceback (most recent call last)"),
+                         (False, "failed"))
+
+    def test_timeout_none_fails(self):
+        self.assertEqual(gw_probe.stop_verdict(None, "gateway stop timeout(180s)"),
+                         (False, "failed"))
+
+
 class McpLogSnapshotTest(unittest.TestCase):
     """心跳证据可读性：缺失/不可读必须 readable=False，不得按 0 次计。"""
-
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
