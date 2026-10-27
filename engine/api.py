@@ -65,6 +65,10 @@ def _admin_only(identity: tuple[str, str], message: str) -> None:
         raise HTTPException(403, message)
 
 
+from .hud_api import router as _hud_router
+router_api.include_router(_hud_router(_resolve_identity, _admin_only))
+
+
 # --------------------------------------------------------------------------
 # 写
 # --------------------------------------------------------------------------

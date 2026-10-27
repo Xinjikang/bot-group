@@ -19,6 +19,7 @@ group.db.bak_*
 # CodeGraph 本地索引（不入库）
 .codegraph/
 /runtime/
+/hud-runtime/
 
 # Test/research reports and development/runtime artifacts
 /reports/

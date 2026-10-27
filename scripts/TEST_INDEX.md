@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+项目维护 HUD：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud -q` 使用隔离 SQLite、临时宿主与模型替身，覆盖身份边界、逐项目启用、模板上下文、问题/自由回答、超时换代、修订冲突、提案确认、阶段切换、成功回执绑定、共享事实及临时运行配置清理。以 `scripts/preview_project_hud.py --data-dir <独立空目录> --port <独立端口>` 启动固定响应预览；使用带 Playwright 的 Python 运行 `scripts/test_project_hud_browser.py --url http://127.0.0.1:<端口> --evidence <主目录报告路径>`，覆盖桌面、390px 深浅主题、选择加补充、刷新恢复、向导草稿恢复及 Escape 焦点。预览有专用测试重置接口，仅用于该隔离实例。真实模型联调须明确模型服务和发送资料范围，独立记录宿主兼容性与实际提问质量。
+
 任务链与三层结构提示：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_prompt_entry_points scripts.test_project_templates scripts.test_template_role_rename scripts.test_product_prototype_template scripts.test_algorithm_template scripts.test_testing_template scripts.test_flow -q`，随后运行 `.venv\Scripts\python.exe -X utf8 -B scripts/test_mcp_handshake.py`。覆盖 work/chat 公共定义、六类模板预览与落盘中的完整任务链及返修路径、角色替换、同一任务的实际节点流转，以及两种模式真实 MCP 暴露的第一个接手人说明。使用隔离 SQLite、项目和宿主配置；这些检查验证提示与工具契约，真实模型的自主拆解行为需在隔离场景另行验收。
 
 Hermes 兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_compatibility scripts.test_execution_errors scripts.test_install scripts.test_hermes_transport scripts.test_runtime_fork -q`。覆盖新旧 ID、入口与源码身份、静态能力、导入错误、配置提示、多行传输及 Codex 隔离。对 v0.21.1 `cdf4c765` 和 v0.21.3 `afc3b7c6f3` 的真实源码分别执行 `.venv\Scripts\python.exe -X utf8 -B scripts/verify_hermes_compatibility.py --source <源码目录>`；脚本在临时 home/SQLite 与独立子进程中检查创建、恢复、标题迁移、历史保留、`/new`、generation、压缩续接、失效绑定及重启恢复。源码只读，使用本地已取得的对应提交，报告保存到项目主目录。契约见 [Hermes 兼容性](../docs/engineering/HERMES-COMPATIBILITY.md)。

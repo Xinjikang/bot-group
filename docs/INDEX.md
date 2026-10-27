@@ -1,5 +1,7 @@
 # 项目文档索引
 
+项目维护 HUD 的独立会话、提问与创建向导联动见 [设计](design/2026-10-27-project-maintenance-hud.md) 和 [工程契约](engineering/PROJECT-HUD.md)。
+
 Hermes 新旧会话接口、安装定位和兼容提示见 [Hermes 兼容性](engineering/HERMES-COMPATIBILITY.md) 与 [设计依据](design/2026-10-27-hermes-compatibility.md)。
 
 当前发布说明：[v0.1.6](releases/v0.1.6.md)。历史版本：[v0.1.5](releases/v0.1.5.md)、[v0.1.4](releases/v0.1.4.md)、[v0.1.3](releases/v0.1.3.md)、[v0.1.2](releases/v0.1.2.md)。

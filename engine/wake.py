@@ -362,6 +362,7 @@ def wake_system_prompt(kind: str, project: str, workdir: str) -> str:
     try:
         row = get_project(conn, project)
         owner = project_owner(conn, project)
+        maintenance = conn.execute("SELECT value FROM settings WHERE project=? AND key='maintenance_facts'", (project,)).fetchone()
         with LOCK:
             resources = workspace_resources.prompt_config(conn, project, workdir)
     finally:
@@ -375,6 +376,7 @@ def wake_system_prompt(kind: str, project: str, workdir: str) -> str:
         '目录模式': '共用项目主目录' if Path(workdir).resolve() == Path(row['root']).resolve() else '独立 worktree',
         '当前工作目录': workdir,
         '工作区配置': resources,
+        '用户确认的项目维护资料': json.loads(maintenance['value']) if maintenance else [],
     }
     return (system_prompt_for(kind) + '\n\n' + workspace_resources.RULE + '\n\n## 当前项目\n'
             + json.dumps(context, ensure_ascii=False, indent=2)
