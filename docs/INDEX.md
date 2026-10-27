@@ -1,5 +1,7 @@
 # 项目文档索引
 
+Hermes 新旧会话接口、安装定位和兼容提示见 [Hermes 兼容性](engineering/HERMES-COMPATIBILITY.md) 与 [设计依据](design/2026-10-27-hermes-compatibility.md)。
+
 当前发布说明：[v0.1.6](releases/v0.1.6.md)。历史版本：[v0.1.5](releases/v0.1.5.md)、[v0.1.4](releases/v0.1.4.md)、[v0.1.3](releases/v0.1.3.md)、[v0.1.2](releases/v0.1.2.md)。
 
 需求超时拆解、部分任务恢复和队列空唤醒抑制见 [需求恢复契约](engineering/REQUIREMENT-RECOVERY.md) 与 [设计依据](design/2026-10-27-requirement-recovery.md)。

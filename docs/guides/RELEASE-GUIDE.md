@@ -4,6 +4,8 @@
 
 ## 支持环境与版本
 
+Hermes 会话兼容按能力检查，已验证 v0.21.1 (`cdf4c765`) 与 v0.21.3 (`afc3b7c6f3`)。安装和启动检查报告源码、版本及兼容状态；成员运行前验证实际接口。旧版缺少独立 ID 模块时采用兼容生成规则。配置 `HERMES_BIN` 时同时提供对应的 `HERMES_HOME`；定位冲突或缺失接口按提示修正、更新并重启引擎。具体接口和布局见 [Hermes 兼容性](../engineering/HERMES-COMPATIBILITY.md)。
+
 公开安装入口支持 64 位 Windows 10/11 和 PowerShell 5.1。安装器自动选择 64 位 Python 3.11–3.13，缺失时从 Python 官方下载并核验安装程序，安装到 `%LOCALAPPDATA%\bot-group-runtime\Python313`。源码开发安装要求 Python 3.11+。Hermes/Codex 使用各自运行环境；安装时探测并报告缺项，配置完整后才可执行相应模型任务。其他平台发布前需完成对应环境的安装验证。
 
 `VERSION` 是 Release 源码包的安装版本，正式版本格式为 `v1.2.3`，由发布负责人分配版本号和发布地址。Git 源码运行时，页面读取本地 tag、提交号与修改状态；没有本地 tag 时显示开发版提交号。维护命令入口位于 `tools/`，实现按 `engine.maintenance` 导入；`scripts/` 保存测试及测试支持。
