@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+公开安装三入口：`verify_public_install.py` 在 `start.bat` 重启后核验健康与资源归属，再调用桌面对应的 `tools/service.py start`，确认复用相同实例并打开页面；随后验证默认升级查询及 `stop.bat` 释放端口。使用分配的隔离端口和 test-data 目录。
+
 Hermes 重启接管：设置 `GW_PROBE_DATA` 为分配测试数据根，运行 `.venv\Scripts\python.exe -X utf8 -B scripts/verify_gateway_restart_live.py --backend <分配后端 origin> --evidence <主目录报告下的新绝对路径>`。程序安装须通过 `tools/install.py check`；复用隔离安装及已配置测试模型，两话题各通过真实 task_queue MCP 读消息、专用 MCP 等待并发送一次消息。真实引擎分别执行 UI 重启、运行超过 150 秒后的脚本重启与快捷方式健康复用；核验原 admission/submission/截止时间、原 MCP 凭据、PID、消息单次落库和终态撤销。home、密钥及数据库位于分配 test-data，报告保存脱敏回执/历史；退出停止本次引擎和网关。调用真实模型，需已有隔离模型配置。单元回归使用 gateway、gateway_ledger、engine_shutdown、access_contract、browser_resources 模块，覆盖关闭期间并发连接、总预算、终态清理、同 session 后继身份、网关连接阻塞时引擎就绪，以及长任务断线后继续查询原 admission。
 
 Hermes 配置刷新与真实模型：设置 `GW_PROBE_DATA` 为分配测试数据根，运行 `.venv\Scripts\python.exe -X utf8 -B scripts/verify_gateway_refresh_live.py --live --evidence <主目录报告下的新绝对路径>`。复用 task-250 隔离测试安装及模型凭证，在新 home/workspace 核验官方 resume 后 toolsets、max_turns、checkpoints、terminal 策略修改/删除和 editor MCP 冻结边界；策略证据只读隔离 state.db 并仅输出非敏感字段。四轮真实模型验证同 sid 规则缓存、新 sid 规则修改/删除、SOUL/记忆及工具描述刷新，并检查模型实际取得的 tool_search 结果。`--live` 调用已配置模型；仅核验策略时以 `--policy-only` 替换。结束通过官方 stop 停止本次网关并核验端口释放，原始回执/历史与结果放报告目录。

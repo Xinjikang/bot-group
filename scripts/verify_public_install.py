@@ -83,11 +83,14 @@ def main():
         env['PATH'] = str(Path(os.environ['SystemRoot']) / 'System32')
         started = True
         run('03-start', bat('start.bat'), program)
-        assert (base / 'browser_calls.txt').read_text().splitlines() == [f'http://127.0.0.1:{args.port}/app/']
         health = json.loads(get('/health'))
         assert health['status'] == 'ok', health
         assert Path(health['program_root']).resolve() == program
         assert Path(health['db_path']).resolve() == program / 'group.db'
+        run('03-desktop-launch', [str(program / '.venv/Scripts/python.exe'),
+                                 'tools/service.py', 'start'], program)
+        assert json.loads(get('/health'))['instance_id'] == health['instance_id']
+        assert (base / 'browser_calls.txt').read_text().splitlines() == [f'http://127.0.0.1:{args.port}/app/']
         assert json.loads(get('/auth/status')) == {'configured': False}
         html = get('/app/')
         assert b'<html' in html.lower()
