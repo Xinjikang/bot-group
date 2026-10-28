@@ -62,6 +62,8 @@ def run(evidence):
         page.locator('#btn-settings').click()
         button.click()
         assert '120 秒' in page.locator('#app-alert-message').inner_text()
+        assert '运行中的执行收尾' in page.locator('#app-alert-message').inner_text()
+        assert '再启动新实例' in page.locator('#app-alert-message').inner_text()
         page.get_by_role('button', name='确定', exact=True).click()
         page.wait_for_function('S.restarting && document.querySelector("#btn-restart").disabled')
         page.wait_for_function('document.querySelector("#conn-text").textContent.includes("等待 Bot")')
@@ -86,15 +88,40 @@ def run(evidence):
         button.click()
         page.get_by_role('button', name='确定', exact=True).click()
         page.wait_for_function('document.querySelector("#app-alert-message")?.textContent.includes("启动失败")')
+        assert '重启失败' in page.locator('#app-alert-message').inner_text()
+        assert 'service-restart.log' in page.locator('#app-alert-message').inner_text()
         assert state['posts'] == 2
         assert state['loads'] == loads + 1
         page.get_by_role('button', name='确定', exact=True).click()
         screenshot = evidence / 'service-restart-topbar.png'
         page.locator('#topbar').screenshot(path=str(screenshot))
+        # 超时：沿用回执恢复监控（不重复 POST），到点给出明确的超时结果并保留回执。
+        # 用可控时钟把 5 分钟窗口跳到过期，避免真等 300 秒。
+        page.add_init_script("""(() => {
+            const real = Date.now.bind(Date);
+            window.__clockSkew = 0;
+            Date.now = () => real() + window.__clockSkew;
+        })();""")
+        state['fail'] = False
+        state['health_id'] = 'old'
+        page.evaluate("""() => sessionStorage.setItem('ge_service_restart',
+            JSON.stringify({id: 'operation', instance_id: 'old'}))""")
+        page.reload()
+        page.wait_for_function('S.restarting === true')
+        page.evaluate('window.__clockSkew = 400000')
+        page.wait_for_function('document.querySelector("#app-alert")?.open === true')
+        timeout_text = page.locator('#app-alert-message').inner_text()
+        assert '等待重启结果超时' in timeout_text and '5 分钟' in timeout_text, timeout_text
+        assert '刷新页面可继续核对回执' in timeout_text, timeout_text
+        assert state['posts'] == 2
+        page.get_by_role('button', name='确定', exact=True).click()
+        assert page.evaluate("sessionStorage.getItem('ge_service_restart')") is not None
+        page.evaluate("sessionStorage.removeItem('ge_service_restart')")
         page.evaluate('logout()')
         assert button.is_hidden()
         browser.close()
-    print('PASS: button order, confirmation/cancel, stop progress, reload recovery, new-instance gate, automatic reload once, failure without reload, login visibility')
+    print('PASS: button order, confirmation/cancel, stop progress, reload recovery, new-instance gate, '
+          'automatic reload once, failure without reload, wait timeout with receipt kept, login visibility')
 
 
 if __name__ == '__main__':

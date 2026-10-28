@@ -47,9 +47,11 @@
         try {
           const receipt = await request('/admin/restart');
           if (receipt.id === operation.id) {
-            if (receipt.state === 'failed') throw Object.assign(new Error(receipt.error), {terminal: true});
+            if (receipt.state === 'failed') throw Object.assign(new Error(
+              `重启失败：${receipt.error || '未知原因'}。详情见 logs/service-restart.log。`), {terminal: true});
             progress(stages[receipt.shutdown?.state] || '等待服务启动…');
             if (receipt.state === 'succeeded') {
+              progress('服务已启动，正在校验实例…');
               const health = await request('/health');
               if (health.status === 'ok' && health.instance_id === receipt.new_instance_id &&
                   health.instance_id !== operation.instance_id &&
@@ -70,7 +72,7 @@
         }
         await pause(1000);
       }
-      throw new Error('等待重启结果超时，请查看服务日志 service-restart.log；刷新页面可继续核对');
+      throw new Error('等待重启结果超时（5 分钟）：服务可能仍在启动或启动失败。刷新页面可继续核对回执；详情见 logs/service-restart.log。');
     } catch (error) {
       failure = error.message;
       if (error.terminal) clear();
@@ -92,7 +94,7 @@
     if (button.disabled || !S.isUserIdentity) return;
     button.disabled = true;
     try {
-      if (!await showConfirm('重启服务？将暂停新任务派发，等待 Bot 收尾最多 120 秒；超时后停止剩余 Bot 进程树，回收浏览器资源，再启动服务。服务恢复后自动刷新界面。')) return;
+      if (!await showConfirm('重启服务？将暂停新任务派发，等待运行中的执行收尾（最多 120 秒）；超时后停止尚未结束的 Bot 执行并回收浏览器资源，再启动新实例。服务恢复后自动刷新界面；重启失败会保留回执，可刷新页面继续核对。')) return;
       let operation;
       try { operation = await request('/admin/restart', 'POST'); }
       catch (error) {

@@ -317,8 +317,14 @@ body::before{
 .think-bubble-head .tb-dots span:nth-child(3){animation-delay:.3s}
 .think-bubble-head .tb-dots-still span{animation:none;opacity:.45}
 .think-bubble-head .tb-caret{color:var(--accent);width:10px;flex-shrink:0;transition:transform .2s}
-.think-bubble-head .tb-name{font-weight:600;color:var(--fg)}
-.think-bubble-head .tb-state{color:var(--fg-3)}
+.think-bubble-head .tb-name{font-weight:600;color:var(--fg);flex-shrink:0;white-space:nowrap}
+.think-bubble-head .tb-state{color:var(--fg-3);min-width:0;overflow-wrap:anywhere}
+/* 执行状态无法确认（manual 或查询失败）：标签承担状态，不再显示「思考中」。
+   颜色是第二层表达，文字本身已说明停止请求超时或查询失败，不指派接手人。 */
+.think-bubble.stalled .tb-state{color:var(--danger);font-weight:600}
+.think-bubble.stalled .think-bubble-head{color:var(--danger)}
+.think-bubble.stalled .tb-dots-still span{background:var(--danger);opacity:.6}
+.think-bubble.stalled .think-bubble-head{border-bottom-color:var(--border-soft)}
 .think-bubble-body{
   max-height:320px;overflow-y:auto;padding:10px 14px;font-size:12.5px;line-height:1.7;
   color:var(--fg-2);white-space:pre-wrap;word-break:break-word;
@@ -4000,14 +4006,17 @@ function startThinkBubble(data) {
   if (!data || !data.profile || data.profile === "user" || !data.session) return;
   if (!Number.isFinite(data.wake_started_at)) return;
   const key = `${data.session}:${data.wake_started_at}`;
-  if (S.thinkRuns.has(key)) return;
+  const existing = S.thinkRuns.get(key);
+  if (existing) { syncThinkRunState(existing, data); return; }
   for (const prior of S.thinkRuns.values()) {
     if (prior.session === data.session && prior.wake_started_at < data.wake_started_at && prior.wake_ended_at == null) {
       prior.wake_ended_at = data.wake_started_at;
     }
   }
   const source = {...data, key, after_id: 0, currentKey: null, segment: 0,
-    lastContentAt: Date.now(), finished: false, polling: false, timer: null};
+    lastContentAt: Date.now(), finished: false, polling: false, timer: null,
+    state: typeof data.state === "string" ? data.state : "",
+    cancel_reason: data.cancel_reason || ""};
   S.thinkRuns.set(key, source);
   for (const newer of S.thinkRuns.values()) {
     if (newer.session === source.session && newer.wake_started_at > source.wake_started_at &&
@@ -4016,6 +4025,7 @@ function startThinkBubble(data) {
     }
   }
   createThinkSegment(source);
+  applyExecutionState(source);
   renderThinkBubbles();
   pollReasoning(source);
 }
@@ -4035,6 +4045,102 @@ function createThinkSegment(source) {
   S.thinkBubbles.set(key, bubble);
   source.currentKey = key;
   return bubble;
+}
+
+// ======================== 执行状态提示（req#134 task#256） ========================
+// 引擎 /thinking 的 run.state 是执行账本的权威状态（submitting/queued/running/unknown/
+// cancelling/manual/terminal）。state=manual 表示自动对账已到截止时间并停止、执行占用保留
+// （设计 4.3/6.3，验收 A3），此时思考条不得继续显示「思考中」。
+// 界面只报告事实，不要求用户接手：
+//   ①本页发起过叫停 →「停止请求已发送，结束状态确认超时」；
+//   ②没有叫停意图（回执/查询中断）→「执行状态查询失败」；
+//   ③/thinking 查询本身失败 →「执行状态查询失败」。
+// 停止按钮保留，是否再次点击由用户决定。run 载荷当前不带 cancel_reason，
+// 故以本页记录的取消意图区分；载荷带该字段时以引擎为准。
+const CANCEL_INTENT_KEY = "group-engine.cancel-intent.v1";
+function cancelIntentKey(source) { return `${source.session}:${source.wake_started_at}`; }
+function readCancelIntents() {
+  try {
+    const raw = JSON.parse(sessionStorage.getItem(CANCEL_INTENT_KEY));
+    return raw && typeof raw === "object" ? raw : {};
+  } catch { return {}; }
+}
+function writeCancelIntents(intents) {
+  try { sessionStorage.setItem(CANCEL_INTENT_KEY, JSON.stringify(intents)); } catch { /* 隐私模式不阻断提示 */ }
+}
+function markCancelIntent(source) {
+  if (!source?.session || !Number.isFinite(source.wake_started_at)) return;
+  const intents = readCancelIntents();
+  source.cancelIntentAt = Date.now();
+  intents[cancelIntentKey(source)] = source.cancelIntentAt;
+  writeCancelIntents(intents);
+}
+function clearCancelIntent(source) {
+  if (!source?.session || !Number.isFinite(source.wake_started_at)) return;
+  const intents = readCancelIntents();
+  delete intents[cancelIntentKey(source)];
+  writeCancelIntents(intents);
+  source.cancelIntentAt = null;
+}
+function cancelIntentActive(source) {
+  if (!source?.session || !Number.isFinite(source.wake_started_at)) return false;
+  if (source.cancelIntentAt) return true;
+  return Number.isFinite(readCancelIntents()[cancelIntentKey(source)]);
+}
+function executionStallLabel(source) {
+  if (!source) return "";
+  // 终态、已停止、进程退出是硬信号，优先于任何状态标签。
+  if (source.finished || source.stopped || source.processEndedAt != null) return "";
+  if (source.state === "manual") {
+    // manual 只说明自动对账到点停止。发起过叫停的执行是「已发送停止请求、未确认结束」；
+    // 没有叫停意图的执行（回执/查询中断）只能报告查询失败。两者都不指派接手人。
+    const cancelled = typeof source.cancel_reason === "string" && source.cancel_reason
+      ? true : cancelIntentActive(source);
+    return cancelled ? "停止请求已发送，结束状态确认超时" : "执行状态查询失败";
+  }
+  if (source.state === "cancelling") return "正在取消…";
+  if (source.stateQueryFailed) return "执行状态查询失败";
+  return "";
+}
+
+// 把执行状态落到当前气泡：manual 标红停住，状态回正常时恢复思考态。
+function applyExecutionState(source) {
+  const label = executionStallLabel(source);
+  for (const item of S.thinkBubbles.values()) {
+    if (item.sourceKey !== source.key || item.status === "replied") continue;
+    if (label) {
+      item.status = "stalled";
+      item.stallLabel = label;
+    } else if (item.status === "stalled") {
+      item.status = "thinking";
+      item.stallLabel = "";
+    }
+  }
+  return label;
+}
+
+// /thinking 与 wake.spawned 的同一次 run 会重复到达：更新已有 run 的状态而不是丢弃。
+function syncThinkRunState(source, run) {
+  if (!source || !run) return false;
+  if (run.cancel_reason !== undefined) source.cancel_reason = run.cancel_reason || "";
+  const state = typeof run.state === "string" ? run.state : "";
+  const previous = source.state || "";
+  const stateChanged = state !== previous;
+  source.state = state;
+  // manual 状态下取消意图可能变化而 state 不变，标签同样需要重绘。
+  const previousLabel = source.stallLabel || "";
+  const label = applyExecutionState(source);
+  const labelChanged = label !== previousLabel;
+  source.stallLabel = label;
+  // 只在观察到「运行中 → manual」的实时跃迁且本页叫停过时提示；首次载入即 manual
+  // 只显示常驻标签，避免每次刷新都弹窗。
+  if (label && stateChanged && previous && !source.stallNotified && cancelIntentActive(source)) {
+    // 用户叫停后的截止时间事实：只报告一次，之后由常驻标签承担提示。
+    source.stallNotified = true;
+    showAlert(`${NAME_OF(source.profile)}：停止请求已发送，结束状态确认超时（150 秒内未确认结束）。`);
+  }
+  if (stateChanged || labelChanged) renderThinkBubbles();
+  return stateChanged || labelChanged;
 }
 
 // 判活纯函数（req#58 ②：判定逻辑收纯函数，不再散在 pollReasoning——96e22a2 修过一次
@@ -4058,12 +4164,21 @@ function evaluateWakeLiveness(source, nowMs = Date.now()) {
 async function heartbeatAlive(source) {
   try {
     const tr = await api("/thinking");
-    return (tr.runs || tr.thinking || []).some(e =>
+    const match = (tr.runs || tr.thinking || []).find(e =>
       e.profile === source.profile &&
       (e.thread_id ?? null) === (source.thread_id ?? null) &&
       e.session === source.session && Number.isFinite(e.wake_started_at) &&
       e.wake_started_at === source.wake_started_at);
-  } catch { return null; }
+    // 查询成功即解除「执行状态查询失败」，再按 run 载荷推进 manual/cancelling
+    // （心跳条目没有 state，不覆盖已有状态）。
+    source.stateQueryFailed = false;
+    if (match && typeof match.state === "string") syncThinkRunState(source, match);
+    return !!match;
+  } catch {
+    // 查询失败是可见事实：界面停在「执行状态查询失败」，不臆测运行中或已结束。
+    source.stateQueryFailed = true;
+    return null;
+  }
 }
 
 async function pollReasoning(source, refreshReply = false) {
@@ -4090,7 +4205,7 @@ async function pollReasoning(source, refreshReply = false) {
         // A reply ends its segment, while the execution may keep working.
         if (bubble.reply_message_id != null) bubble = createThinkSegment(source);
         bubble.entries.push(entry);
-        bubble.status = "thinking";
+        if (bubble.status !== "stalled") bubble.status = "thinking";
       }
       if (entry.reply_message_id != null) {
         bubble = bubble || createThinkSegment(source);
@@ -4117,14 +4232,23 @@ async function pollReasoning(source, refreshReply = false) {
     if (source.finished) source.replyReconciled = true;
     if (source.finished || source.processEndedAt != null || source.stopped) foldFinishedThinkTail(source);
     const bubble = S.thinkBubbles.get(source.currentKey);
+    // manual 的执行没有后续推理也不会 finish：状态优先于静默判活，保持停住标签。
+    applyExecutionState(source);
     const verdict = evaluateWakeLiveness(source);
-    if (bubble && !verdict.active && bubble.status !== "replied") {
+    // 查询失败标签需要后续轮次复核；manual/取消中标签不跑心跳兜底。
+    const recheckQueryFailure = bubble?.status === "stalled" && source.stateQueryFailed;
+    if (bubble && !verdict.active && bubble.status !== "replied" &&
+        (bubble.status !== "stalled" || recheckQueryFailure)) {
       // req#58 心跳兜底：只有静默判定可被心跳复核；进程退出/叫停/完成是硬信号不复核。
-      // 复核有心跳 → 不判 inactive（保持/恢复 thinking）；查询失败 → 维持原判定（保守不折叠）。
+      // 复核有心跳 → 不判 inactive（保持/恢复 thinking）；查询失败 → 显示事实标签。
       if (verdict.reason === "silent") {
         const alive = await heartbeatAlive(source);
-        if (alive !== false) {
-          if (bubble.status === "inactive" && alive === true) {
+        // 查询结果会改变状态标签（失败/恢复），同步到当前气泡。
+        applyExecutionState(source);
+        if (alive === null) {
+          // 查询失败：停在「执行状态查询失败」，不折叠、不复活，停止入口保留。
+        } else if (alive === true) {
+          if (bubble.status === "inactive") {
             // 心跳兜底复活：误判 inactive 的气泡恢复思考态，补跑迟到的推理取数。
             bubble.status = "thinking";
           }
@@ -4179,7 +4303,8 @@ function reconcileExecutionReplies(source, replies) {
   if (!ended && tailEntries.length) {
     const tail = previousTail || createThinkSegment(source);
     tail.entries = tailEntries;
-    tail.status = 'thinking';
+    tail.status = executionStallLabel(source) ? "stalled" : "thinking";
+    if (tail.status === "stalled") tail.stallLabel = executionStallLabel(source);
     tail.parent_id = source.lastReplyId;
     keep.add(tail.key);
     source.currentKey = tail.key;
@@ -4214,8 +4339,8 @@ function thinkingLayoutSignature() {
 
 function thinkingBubbleSignature(bubble) {
   const source = S.thinkRuns.get(bubble.sourceKey);
-  return JSON.stringify([bubble.status, bubble.collapsed, bubble.entries, bubble.displayKeys,
-    bubble.spawned_at, source?.stopped, source?.finished, NAME_OF(bubble.profile)]);
+  return JSON.stringify([bubble.status, bubble.stallLabel, bubble.collapsed, bubble.entries, bubble.displayKeys,
+    bubble.spawned_at, source?.stopped, source?.finished, source?.state, NAME_OF(bubble.profile)]);
 }
 
 function renderThinkBubbles() {
@@ -4421,8 +4546,10 @@ function thinkingBubblesForDisplay() {
 
 function renderThinkBubble(bubble, attached = false) {
   const div = document.createElement("div");
+  const stalled = bubble.status === "stalled";
   const quiet = attached || bubble.status !== "thinking";
   div.className = "think-bubble" + (bubble.collapsed ? " collapsed" : "")
+    + (stalled ? " stalled" : "")
     + (attached ? " think-attached" : quiet ? " think-quiet" : "");
   div.dataset.session = bubble.session;
   div.dataset.bubbleKey = bubble.key;
@@ -4434,6 +4561,7 @@ function renderThinkBubble(bubble, attached = false) {
   if (attached) head.dataset.bubbleKey = bubble.key;
   const name = NAME_OF(bubble.profile);
   const state = bubble.status === "replied" ? "已回复"
+    : stalled ? (bubble.stallLabel || "执行状态未能确认")
     : bubble.status === "inactive" ? "未检测到活跃状态" : "思考中";
   // Dots reflect activity; folding only controls content visibility.
   const dots = bubble.status !== "thinking"
@@ -4443,19 +4571,32 @@ function renderThinkBubble(bubble, attached = false) {
     ${dots}
     <span class="tb-name">${esc(name)}</span>
     <span class="tb-state">${state}</span>
-    ${bubble.status === "thinking" ? `<button type="button" class="tb-stop" title="停止 ${esc(name)}" aria-label="停止 ${esc(name)}">
+    ${bubble.status === "thinking" || stalled ? `<button type="button" class="tb-stop" title="停止 ${esc(name)}" aria-label="停止 ${esc(name)}">
       <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8.5" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="6.5" y="6.5" width="7" height="7" rx=".5" fill="currentColor"/></svg>
     </button>` : ""}`;
+  if (stalled) {
+    // 状态标签即事实；停止入口保留，是否再次点击由用户决定。
+    head.title = bubble.stallLabel || "执行状态未能确认";
+  }
   if (quiet) {
     const source = S.thinkRuns.get(bubble.sourceKey);
-    const label = attached ? "思考过程" : `${name}·${fmtTs(bubble.spawned_at)}·${source?.stopped ? "已停止" : source?.finished ? "已结束" : "未检测到活跃状态"}·查看过程`;
-    head.textContent = `${bubble.collapsed ? "▸" : "▾"} ${label}`;
-    head.setAttribute("role", "button");
-    head.setAttribute("aria-expanded", String(!bubble.collapsed));
-    head.tabIndex = 0;
-    if (attached) head.type = "button";
+    if (attached) {
+      const label = stalled ? bubble.stallLabel || "执行状态未能确认" : "思考过程";
+      head.textContent = `${bubble.collapsed ? "▸" : "▾"} ${label}`;
+      head.setAttribute("role", "button");
+      head.setAttribute("aria-expanded", String(!bubble.collapsed));
+      head.tabIndex = 0;
+      head.type = "button";
+    } else if (!stalled) {
+      const label = `${name}·${fmtTs(bubble.spawned_at)}·${source?.stopped ? "已停止" : source?.finished ? "已结束" : "未检测到活跃状态"}·查看过程`;
+      head.textContent = `${bubble.collapsed ? "▸" : "▾"} ${label}`;
+      head.setAttribute("role", "button");
+      head.setAttribute("aria-expanded", String(!bubble.collapsed));
+      head.tabIndex = 0;
+    }
   }
   if (!attached) head.addEventListener("keydown", event => {
+    if (event.target.closest?.(".tb-stop")) return;
     if (event.key === "Enter" || event.key === " ") { event.preventDefault(); head.click(); }
   });
   head.querySelector(".tb-stop")?.addEventListener("click", event => {
@@ -4492,7 +4633,9 @@ function renderThinkBubble(bubble, attached = false) {
     body.appendChild(hint);
   }
   if (!bubble.entries.length) {
-    body.textContent = bubble.cacheTruncated ? "较早内容已超出浏览器缓存保留范围。" : "（正在思考…）";
+    body.textContent = bubble.cacheTruncated ? "较早内容已超出浏览器缓存保留范围。"
+      : stalled ? "执行状态未能确认。"
+      : "（正在思考…）";
   } else {
     for (const e of bubble.entries) {
       const step = document.createElement("div");
@@ -4541,26 +4684,35 @@ async function stopBot(profile, project, threadId = null) {
     if (r.stopped === true) {
       for (const source of runs) {
         source.stopped = true;
+        source.stateQueryFailed = false;
+        clearCancelIntent(source);
         for (const bubble of S.thinkBubbles.values()) {
-          if (bubble.sourceKey === source.key && bubble.status === "thinking") {
+          if (bubble.sourceKey === source.key && bubble.status !== "replied") {
             bubble.status = "inactive";
+            bubble.stallLabel = "";
           }
         }
       }
       renderThinkBubbles();
+    } else {
+      // 网关尚未确认终态（cancel_deadline 30s 到期）：记下取消意图，供 manual 时报告
+      // 「停止请求已发送，结束状态确认超时」；下方统一刷新一次执行状态。
+      for (const source of runs) markCancelIntent(source);
     }
     const parts = [];
     if (r.killed) parts.push(`已停止 ${r.killed} 个进程`);
-    else parts.push(`⚠ 未找到 ${profile} 的活进程（可能已退出或引擎刚重启）`);
     if (r.soft_deleted > 0) parts.push(`清理 ${r.soft_deleted} 条半截任务`);
-    else if (r.soft_deleted === -1) parts.push(`⚠ 进程未确认死透，半截任务本轮跳过（下次叫停再清）`);
+    else if (r.soft_deleted === -1 && r.stopped === true) parts.push(`⚠ 进程未确认死透，半截任务本轮跳过（下次叫停再清）`);
     if (r.seen) parts.push(`追回 ${r.seen} 条指令`);
     if (r.cancelled) parts.push(`取消 ${r.cancelled} 条排队唤醒`);
     if (r.released) parts.push(`任务池退回 ${r.released} 个已领任务`);
     if (r.pending_cancelled) parts.push(`作废 ${r.pending_cancelled} 个未领任务`);
-    showAlert(`${profile}：${r.stopped === true ? '当前会话已停止' : '停止状态待确认'}\n` + parts.join("\n"));
+    if (!r.stopped && r.detail) parts.push(r.detail);
+    const lead = r.stopped === true ? '当前会话已停止'
+      : '停止请求已发送，网关尚未确认执行终态（最多等待 150 秒确认）';
+    showAlert(`${profile}：${lead}` + (parts.length ? `\n` + parts.join("\n") : ''));
     loadThinking();
-  } catch (err) { showAlert("叫停失败: " + err.message); }
+  } catch (err) { showAlert("停止失败：" + err.message); }
 }
 
 // ======================== 深浅主题切换 ========================

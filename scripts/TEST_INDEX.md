@@ -64,6 +64,8 @@ Hermes 兼容性配套回归：设置 `HERMES_TEST_SOURCE` 为本机 Hermes 源�
 
 启动、桌面入口与自动刷新：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_service scripts.test_desktop scripts.test_install scripts.test_service_restart scripts.test_app_upgrade scripts.test_app_upgrade_integration -q`。覆盖 BAT 冷启动与再次优雅重启、桌面入口复用同一实例、健康后打开配置地址、失败/维护流程保持浏览器调用次数、实例身份与数据目录隔离、真实 Windows `.lnk` 创建/幂等/多实例及特殊字符路径。桌面验证全部使用临时目录与惰性启动替身。Chrome 回归使用 `python -X utf8 -B scripts/test_service_restart_browser.py --evidence <主目录报告目录>/restart-browser` 和 `python -X utf8 -B scripts/test_app_upgrade_browser.py --evidence <主目录报告目录>/upgrade-browser`；验证新实例门槛、刷新续查、成功自动刷新一次、失败保留页面及升级窗口 390px 深浅主题。设计见 [启动与刷新](../docs/design/2026-10-26-startup-ui.md)。
 
+执行状态提示：`python -X utf8 -B scripts/test_execution_state_browser.py --evidence <主目录报告目录>/execution-state-browser`。真实 Chrome + 合成 HTTP，验证 manual/查询失败时只显示事实标签（「停止请求已发送，结束状态确认超时」「执行状态查询失败」）、停止入口保留、叫停失败提示「停止失败：原因」、确认超时一次性提示、取消中标签，以及桌面/390px 深浅主题无溢出；不新增查询入口。
+
 成员候选识别：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_discovery scripts.test_profile_create scripts.test_codex_driver_regressions scripts.test_member_identity -q`。使用隔离配置与 SQLite，覆盖浏览器配置误识别、空或无效配置、仅会话文件、独立认证 home、嵌套 home、根配置与外部命名 profile、删除后刷新过滤、读取失败隔离，以及历史 Bot 登记保留。两处选择列表的端到端验证复用 `scripts/test_profile_create_browser.py`。
 
 后台重启诊断：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_service_restart scripts.test_service scripts.test_install -q`。隔离 Windows 程序目录、数据和端口，验证失败安装检查的 stdout/stderr 写入重启日志且旧实例保留，随后连续两次正常重启；配套覆盖安装就绪检查与依赖核验。手动更新依赖声明后，先运行 `tools/install.py repair` 并确认 `tools/install.py check` 通过，再手动重启生产实例。
@@ -217,7 +219,7 @@ MCP API 与运行时配置：`test_task_api.py` 验证成员/项目/执行校验
 | 项目与模板 | `test_project_entry_browser.py`、`test_project_import_browser.py`、`test_project_setup_browser.py`、`test_project_templates_browser.py`、`test_project_settings_browser.py`、`test_project_history_browser.py`、`test_project_removal_browser.py`、`test_project_menu_loading_browser.py`、`test_workspace_save_browser.py` |
 | 成员、角色与配置 | `test_profile_create_browser.py`、`test_profile_soul_templates_browser.py`、`test_codex_config_browser.py`、`test_project_models_browser.py`、`test_member_name_browser.py`、`test_member_role_dropdown_browser.py`、`test_member_mentions_browser.py` |
 | 消息与需求 | `test_message_navigation_browser.py`、`test_requirement_details_browser.py`、`test_thread_creation_browser.py`、`test_image_browser.py` |
-| 外观和控件 | `test_alert_dialog.py`、`test_appearance_browser.py`、`test_background_storage_browser.py`、`test_directory_picker_browser.py`、`test_fixed_controls_browser.py`、`test_thinking_cache_browser.py`、`test_thinking_compaction_browser.py`、`test_service_restart_browser.py` |
+| 外观和控件 | `test_alert_dialog.py`、`test_appearance_browser.py`、`test_background_storage_browser.py`、`test_directory_picker_browser.py`、`test_fixed_controls_browser.py`、`test_thinking_cache_browser.py`、`test_thinking_compaction_browser.py`、`test_execution_state_browser.py`、`test_service_restart_browser.py` |
 
 ## MCP 协议与专项探针
 

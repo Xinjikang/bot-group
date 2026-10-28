@@ -16,12 +16,22 @@ const WAKE = 120000; // 与前端 WAKE_SILENCE_MS 一致，防漂移
 
 function harness({ thinking = [], failThinking = false } = {}) {
   const requests = [];
+  const alerts = [];
+  const store = new Map();
   const ctx = {
     S: {thinkRuns: new Map(), thinkBubbles: new Map()},
     console, Date, Map, Symbol, Number, JSON, encodeURIComponent,
     setTimeout() { return 1; }, clearTimeout() {}, renderMessages() {},
     window: {addEventListener() {}},
     localStorage: {getItem: () => null, setItem: () => {}},
+    // req#134 task#256：manual 状态的取消意图与提示需要会话存储与告警出口。
+    sessionStorage: {
+      getItem: key => store.has(key) ? store.get(key) : null,
+      setItem: (key, value) => store.set(key, String(value)),
+      removeItem: key => store.delete(key),
+    },
+    NAME_OF: profile => profile,
+    showAlert(message) { alerts.push(message); },
     api(url) {
       return new Promise((resolve, reject) => {
         if (url === '/thinking' && failThinking) reject(new Error('engine down'));
@@ -35,7 +45,7 @@ function harness({ thinking = [], failThinking = false } = {}) {
   vm.runInContext(section('function startThinkBubble(', 'window.addEventListener("pagehide"'), ctx);
   // The browser regression covers bubble rendering independently of liveness.
   ctx.renderThinkBubbles = () => ctx.saveThinkingState();
-  return {ctx, requests};
+  return {ctx, requests, alerts};
 }
 const wake = (over = {}) => ({profile: 'bot', session: 'bot-xjk-chat-42', thread_id: 42,
   wake_started_at: 100, ...over});
@@ -135,14 +145,69 @@ async function main() {
   assert.equal(currentBubble(hard).status, 'inactive',
     'processEndedAt is a hard signal; heartbeat must not override it');
 
-  // ---------- 6. /thinking 查询失败：维持原判定（保守不折叠） ----------
+  // ---------- 6. /thinking 查询失败：显示事实标签，不折叠也不臆测运行中 ----------
   const fail = harness({failThinking: true});
   fail.ctx.startThinkBubble(wake());
   await makeStale(fail, currentRun(fail));
   const failBubble = currentBubble(fail);
-  assert.equal(failBubble.status, 'thinking', 'heartbeat query failure keeps thinking state (conservative)');
+  assert.equal(failBubble.status, 'stalled', 'heartbeat query failure shows a factual state');
+  assert.equal(failBubble.stallLabel, '执行状态查询失败', 'query failure label is factual');
   assert.equal(failBubble.collapsed, false, 'heartbeat query failure must not fold');
+  // 查询恢复且心跳在 → 解除查询失败标签，回到思考态。
+  fail.ctx.api = async (url) => url === '/thinking'
+    ? {thinking: [beat()]}
+    : {entries: [], latest_id: 0};
+  await fail.ctx.pollReasoning(currentRun(fail));
+  await tick();
+  assert.equal(currentBubble(fail).status, 'thinking', 'successful query clears the failure label');
+  assert.equal(currentBubble(fail).stallLabel || '', '', 'no stale query failure label');
 
-  console.log('PASS: wake liveness with exact session/run matching, null isolation, hard signals and query failure');
+  // ---------- 7. 执行停在 manual（req#134 task#256，验收 A3） ----------
+  // 未发起叫停（回执/查询中断）→「执行状态查询失败」，只报告事实，不打断用户。
+  const stall = harness();
+  stall.ctx.startThinkBubble(wake({state: 'manual'}));
+  const stallBubble = currentBubble(stall);
+  assert.equal(stallBubble.status, 'stalled', 'manual execution must not keep showing 思考中');
+  assert.equal(stallBubble.stallLabel, '执行状态查询失败', 'no cancel intent -> 执行状态查询失败');
+  assert.equal(stall.alerts.length, 0, 'non-cancel stall only labels, never interrupts');
+
+  // 本页发起叫停后到达截止时间 →「停止请求已发送，结束状态确认超时」，一次性告警。
+  const timeout = harness();
+  timeout.ctx.startThinkBubble(wake({state: 'running'}));
+  timeout.ctx.markCancelIntent(currentRun(timeout));
+  timeout.ctx.syncThinkRunState(currentRun(timeout), wake({state: 'manual'}));
+  assert.equal(currentBubble(timeout).stallLabel, '停止请求已发送，结束状态确认超时',
+    'cancel intent -> stop request sent, confirmation timed out');
+  assert.equal(timeout.alerts.length, 1, 'stop timeout announces once');
+  assert.ok(!/待人工|需人工|人工处理/.test(timeout.alerts[0]), timeout.alerts[0]);
+  timeout.ctx.syncThinkRunState(currentRun(timeout), wake({state: 'manual'}));
+  assert.equal(timeout.alerts.length, 1, 'stop timeout alert is one-shot');
+
+  // 引擎载荷带 cancel_reason 时以引擎为准（不再依赖本页意图）。
+  const authoritative = harness();
+  authoritative.ctx.startThinkBubble(wake({state: 'manual', cancel_reason: 'user'}));
+  assert.equal(currentBubble(authoritative).stallLabel, '停止请求已发送，结束状态确认超时',
+    'engine cancel_reason is authoritative when present');
+
+  // 取消进行中先给「正在取消…」。
+  const cancelling = harness();
+  cancelling.ctx.startThinkBubble(wake({state: 'cancelling'}));
+  assert.equal(currentBubble(cancelling).stallLabel, '正在取消…', 'cancelling label before deadline');
+
+  // 静默判活不得覆盖 manual；状态回正常时才恢复思考态。
+  const silentManual = harness();
+  silentManual.ctx.startThinkBubble(wake({state: 'manual'}));
+  await makeStale(silentManual, currentRun(silentManual));
+  assert.equal(currentBubble(silentManual).status, 'stalled', 'silence must not fold a manual execution');
+  silentManual.ctx.syncThinkRunState(currentRun(silentManual), wake({state: 'running'}));
+  assert.equal(currentBubble(silentManual).status, 'thinking', 'state back to running clears the stall label');
+
+  // 硬信号优先：已停止/进程退出不再显示状态标签。
+  const hardStop = harness();
+  hardStop.ctx.startThinkBubble(wake({state: 'manual', stopped: true}));
+  assert.notEqual(currentBubble(hardStop).status, 'stalled', 'stopped hard signal clears the manual label');
+
+  console.log('PASS: wake liveness with exact session/run matching, null isolation, hard signals, '
+    + 'query failure and factual execution state labels');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
