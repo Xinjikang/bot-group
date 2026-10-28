@@ -4,7 +4,7 @@
 
 ## 支持环境与版本
 
-Hermes 会话兼容按能力检查，已验证 v0.21.1 (`cdf4c765`) 与 v0.21.3 (`afc3b7c6f3`)。安装和启动检查报告源码、版本及兼容状态；成员运行前验证实际接口。旧版缺少独立 ID 模块时采用兼容生成规则。配置 `HERMES_BIN` 时同时提供对应的 `HERMES_HOME`；定位冲突或缺失接口按提示修正、更新并重启引擎。具体接口和布局见 [Hermes 兼容性](../engineering/HERMES-COMPATIBILITY.md)。
+Hermes 网关版已实测 v0.22.5 (`bf0203a7`)，旧版 CLI 会话兼容已验证 v0.21.1 (`cdf4c765`) 与 v0.21.3 (`afc3b7c6f3`)。旧版保留本地子进程和每次执行的 MCP 注入；缺少独立 ID 模块时采用兼容生成规则。网关版通过官方协议及会话级 MCP 执行。其他构建按实际接口和协议能力检查，逐版本验证范围见 [v0.1.7 发布说明](../releases/v0.1.7.md)。安装和启动检查报告源码、版本及兼容状态；成员运行前验证实际接口。配置 `HERMES_BIN` 时同时提供对应的 `HERMES_HOME`；定位冲突或缺失接口按提示修正、更新并重启引擎。具体接口和布局见 [Hermes 兼容性](../engineering/HERMES-COMPATIBILITY.md)。
 
 公开安装入口支持 64 位 Windows 10/11 和 PowerShell 5.1。安装器自动选择 64 位 Python 3.11–3.13，缺失时从 Python 官方下载并核验安装程序，安装到 `%LOCALAPPDATA%\bot-group-runtime\Python313`。源码开发安装要求 Python 3.11+。Hermes/Codex 使用各自运行环境；安装时探测并报告缺项，配置完整后才可执行相应模型任务。其他平台发布前需完成对应环境的安装验证。
 
@@ -104,7 +104,7 @@ Windows 安装和升级会创建或维护当前用户桌面的“Bot Group”快
 
 桌面快捷方式使用 `tools/service.py start`：核验现有实例的程序根与数据库，健康的同一实例直接复用；服务未启动时执行就绪检查、后台启动和健康验证。成功后复用本机已连接的 UI 页面并请求唤回，所有页面关闭后自动打开默认浏览器。地址使用实际配置端口（默认 `http://127.0.0.1:8180/app/`），通配监听地址转换为本机回环地址。登录页同样参与复用；连续打开请求合并 10 秒，页面连接后清除占位。切到前台的实际效果由浏览器策略决定。`start --no-browser` 跳过打开界面。未配置密码时直接进入应用；已有密码配置沿用。前端由同一后端进程静态托管。
 
-运行中的服务可使用页面主题按钮右侧的“重启服务”。后台助手复用 `start.bat`，旧实例停止及浏览器资源回收由引擎负责：最多等待 Bot 自然结束 120 秒，超时终止剩余进程树后继续收尾。停机客户端默认等待 180 秒，页面每次轮询等待 300 秒。成功以新 instance_id 和相同程序根/数据库为依据；失败查看 `logs/service-restart.json`、`logs/service-restart.log`。详见 [服务重启](../engineering/SERVICE-RESTART-2026-10-17.md)。
+运行中的服务可使用页面主题按钮右侧的“重启服务”。后台助手复用 `start.bat`：Hermes 网关托管执行继续运行，本地 viewer 使用 5 秒总预算关闭，启动后按原 admission 接管；Codex 和旧版 CLI 本地执行最多等待自然结束 120 秒，超时终止剩余进程树后继续收尾。停机客户端默认等待 180 秒，页面每次轮询等待 300 秒。成功以新 instance_id 和相同程序根/数据库为依据；失败查看 `logs/service-restart.json`、`logs/service-restart.log`。网关执行契约见 [Hermes 网关执行适配](../engineering/HERMES-GATEWAY.md)，本地生命周期见 [服务重启](../engineering/SERVICE-RESTART-2026-10-17.md)。
 
 Windows 四个 BAT 入口使用 ASCII 注释/提示与 CRLF，兼容默认及 UTF-8 CMD 代码页。`start.bat` 失败时显示错误并等待按键，确认后保留原退出码；成功时正常关闭启动窗口。自动化可直接调用 `tools/service.py`。Git 属性保留 BAT 原始 CRLF 字节，发布构建原样写入 ZIP；维护入口后执行 `python -X utf8 -B -m unittest scripts.test_windows_bat -q` 核对检出、归档及真实 CMD 参数/退出码。详见 [批处理兼容验证](../engineering/WINDOWS-BAT-COMPATIBILITY-2026-10-17.md)。
 

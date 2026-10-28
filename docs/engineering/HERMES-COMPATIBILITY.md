@@ -1,6 +1,8 @@
 # Hermes 会话兼容
 
-引擎按实际接口检查 Hermes 会话能力。已验证的源码基线为 v0.21.1 (`cdf4c765213d7f4f7562f642e2b2df00d42c8ffd`) 和 v0.21.3 (`afc3b7c6f3`)；其他构建需满足相同接口契约。
+引擎按实际接口检查 Hermes 会话能力。旧版 CLI 已验证的源码基线为 v0.21.1 (`cdf4c765213d7f4f7562f642e2b2df00d42c8ffd`) 和 v0.21.3 (`afc3b7c6f3`)；网关版已实测 v0.22.5 (`bf0203a794a07aac3ff764972ab9087baa4e4f4e`)。其他构建需满足对应接口契约，完整可用性仍需隔离验证。
+
+`hermes_runtime.gateway_source()` 按 `gateway_runtime_cli.py` 与 `gateway_chat_startup.py` 源码布局识别网关路径，连接时继续校验协议及所需能力。旧版继续由 CLI 子进程执行，使用 `hermes_overlay` 注入每次执行的 MCP 配置与凭据；网关版使用官方会话级 MCP 和 admission 回执，详见 [网关执行适配](HERMES-GATEWAY.md)。版本字符串用于诊断。
 
 ## 入口与源码
 
