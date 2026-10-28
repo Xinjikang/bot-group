@@ -12,6 +12,8 @@ Hermes 兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_he
 
 真实隔离 task_queue 归属/并发/凭据（#253，E1-E9）：`python -B scripts/gw_ownership_probe.py`（`--only e5,e7` 或 `--only e9` 分段复跑）。引擎以隔离 `GROUP_DB`/`GROUP_DATA_DIR`/`GROUP_ENGINE_KEY` + 内核分配端口启动（每次运行 `ownership/run-<HHMMSS>/engine/group.db`，不复用旧库）；MCP 配置直接取 `wake._mcp_server_config()`，overlay 取 `mcp_runtime.hermes_overlay()`，拉起真实 `mcp/server.py`；E9 由隔离网关显式注入 managed overlay、真实模型调用 `group_read_inbox`。E1 数据/执行上下文；E2 配置字段；E3 读分流；E4 写落点；E5 写路径 403（跨 thread/项目、work→topic、chat 调 work-only、非成员）与读路径不校验执行 thread（200 + 他话题数据，限制项）；E6 chat 26/work 30 工具；E7 同 profile work/A/B 三执行并发不串台；E8 执行凭据 ended/superseded/重启孤儿收尸/密钥轮换 401/重绑；E9 网关加载 managed overlay 并返回隔离库话题数据。证据落 `reports/research/hermes-gateway/evidence-2026-10-28-task253-ownership/`，报告 `reports/tests/unreleased/2026-10-28-253/REPORT.md`。
 
+安装运行时探测（CODEX_HOME）：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_install -q`（35 项）。`DetectRuntimeCodexHomeTest` 显式控制进程环境，覆盖 CODEX_HOME 设置/未设置、Windows 候选 `codex.exe`/`.cmd`/`.bat` 的存在与缺失、PATH 回退、非 Windows 只认裸 `codex`，以及 `do_check` 启动检查经 `detect_runtime` 的调用路径。`e48560e` 之前 CODEX_HOME 非空即抛 NameError，该组用例在修复前 RED、修复后 GREEN；用例 patch `CODEX_HOME` 而非依赖运行环境，避免像既有检查用例那样受本机 Codex 安装影响。
+
 Hermes 兼容性配套回归：设置 `HERMES_TEST_SOURCE` 为本机 Hermes 源码根，运行 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_maintenance_namespace scripts.test_slash_injection_review scripts.test_service -q`，验证实际会话 API 与维护模块双向导入、会话控制和安装/启动入口共存。
 
 当前发布验收说明：[v0.1.6](../docs/releases/v0.1.6.md)。本版组合执行需求恢复、正式 Release 验收，以及设置菜单和服务重启浏览器回归；报告保存到主目录 `reports/tests/v0.1.6/2026-10-27-release/`。
