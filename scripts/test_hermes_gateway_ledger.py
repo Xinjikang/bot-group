@@ -43,10 +43,13 @@ class LedgerTests(unittest.TestCase):
     def test_terminal_is_absorbing_and_cleanup_is_durable(self):
         self.accept('terminal')
         self.accept('started')
-        self.assertEqual(ledger.active(self.conn)[0]['state'], 'terminal')
+        # 收紧 active：terminal 即释放执行占用（cleanup_pending 不算 active）。
+        self.assertEqual(ledger.active(self.conn), [])
+        self.assertEqual(len(ledger.cleanup_pending(self.conn)), 1)
         ledger.finish_cleanup(self.conn, self.eid)
         ledger.finish_cleanup(self.conn, self.eid)
         self.assertEqual(ledger.active(self.conn), [])
+        self.assertEqual(ledger.cleanup_pending(self.conn), [])
 
     def test_cancel_retries_keep_original_reason_and_deadlines(self):
         first = ledger.cancel(self.conn, self.eid, 'user', now=115)
@@ -96,6 +99,79 @@ class LedgerTests(unittest.TestCase):
             ledger.reconcile(client, self.conn, self.eid)
         self.assertEqual(ledger.read(self.conn, self.eid)['admission_id'], 'a')
         self.assertEqual(client.rpc.call_count, 1)
+
+    def test_terminal_sets_cleanup_deadline(self):
+        self.accept('terminal')
+        row = ledger.read(self.conn, self.eid)
+        self.assertEqual(row['cleanup_pending'], 1)
+        self.assertEqual(row['cleanup_deadline'], 110 + ledger.CLEANUP_BUDGET_SECONDS)
+        self.assertEqual(row['retry_count'], 0)
+
+    def test_cleanup_retry_persists_count_and_backoff(self):
+        self.accept('terminal')
+        first = ledger.register_cleanup_retry(self.conn, self.eid, 'offline', now=120)
+        self.assertEqual(first, 1)
+        row = ledger.read(self.conn, self.eid)
+        self.assertEqual(row['retry_count'], 1)
+        self.assertEqual(row['next_retry_at'], 120 + 1.0)
+        second = ledger.register_cleanup_retry(self.conn, self.eid, 'offline', now=130)
+        self.assertEqual(second, 2)
+        self.assertEqual(ledger.read(self.conn, self.eid)['next_retry_at'], 130 + 2.0)
+
+    def test_cleanup_exhaustion_marks_failed_and_keeps_pending(self):
+        self.accept('terminal')
+        attempts = 0
+        for i in range(ledger.CLEANUP_MAX_ATTEMPTS):
+            attempts = ledger.register_cleanup_retry(self.conn, self.eid, 'offline', now=100 + i * 10)
+        self.assertEqual(attempts, ledger.CLEANUP_MAX_ATTEMPTS)
+        ledger.mark_cleanup_failed(self.conn, self.eid, 'offline')
+        row = ledger.read(self.conn, self.eid)
+        self.assertEqual(row['retry_count'], ledger.CLEANUP_MAX_ATTEMPTS)
+        self.assertEqual(row['cleanup_pending'], 1)
+        self.assertIn('cleanup_failed after 5 attempts', row['detail'])
+        # 耗尽后仍是清理待办（会话禁用保留），但不占执行占用。
+        self.assertEqual(ledger.active(self.conn), [])
+        self.assertEqual(len(ledger.cleanup_pending(self.conn)), 1)
+
+    def test_finish_cleanup_resets_retry_fields(self):
+        self.accept('terminal')
+        ledger.register_cleanup_retry(self.conn, self.eid, 'offline', now=120)
+        ledger.finish_cleanup(self.conn, self.eid)
+        row = ledger.read(self.conn, self.eid)
+        self.assertEqual(row['cleanup_pending'], 0)
+        self.assertEqual(row['retry_count'], 0)
+        self.assertIsNone(row['next_retry_at'])
+        self.assertIsNone(row['cleanup_deadline'])
+
+    def test_register_cleanup_retry_ignores_non_terminal(self):
+        self.accept('started')
+        self.assertEqual(ledger.register_cleanup_retry(self.conn, self.eid, 'x', now=120), 0)
+        self.assertEqual(ledger.read(self.conn, self.eid)['retry_count'], 0)
+
+    def test_reconcile_rpc_timeout_caps_to_remaining_budget(self):
+        self.accept()
+        ledger.cancel(self.conn, self.eid, now=115)  # reconcile_deadline=115+150=265
+        client = Mock()
+        client.rpc.side_effect = [self.receipt(), {'execution_state': 'idle'}]
+        ledger.reconcile(client, self.conn, self.eid, now=240)  # remaining=25 < 30
+        self.assertEqual(client.rpc.call_args_list[0].kwargs['timeout'], 25.0)
+        self.assertEqual(client.rpc.call_args_list[1].kwargs['timeout'], 25.0)
+
+    def test_reconcile_rpc_timeout_caps_to_default_thirty(self):
+        self.accept()
+        ledger.cancel(self.conn, self.eid, now=115)
+        client = Mock()
+        client.rpc.side_effect = [self.receipt(), {'execution_state': 'idle'}]
+        ledger.reconcile(client, self.conn, self.eid, now=180)  # remaining=85 → cap 30
+        self.assertEqual(client.rpc.call_args_list[0].kwargs['timeout'], 30.0)
+
+    def test_reconcile_rpc_timeout_zero_when_budget_exhausted(self):
+        self.accept()
+        ledger.cancel(self.conn, self.eid, now=115)
+        client = Mock()
+        client.rpc.side_effect = [self.receipt(), {'execution_state': 'idle'}]
+        ledger.reconcile(client, self.conn, self.eid, now=270)  # remaining=0
+        self.assertEqual(client.rpc.call_args_list[0].kwargs['timeout'], 0.0)
 
 
 if __name__ == '__main__':

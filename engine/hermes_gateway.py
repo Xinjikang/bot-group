@@ -18,7 +18,6 @@ from .hermes_gateway_client import GatewayClient, GatewayRefusal, GatewayTranspo
 logger = logging.getLogger(__name__)
 _workers = set()
 _lock = threading.Lock()
-_CLEANUP_ATTEMPTS = 3
 
 
 def enabled():
@@ -116,6 +115,8 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
     try:
         if ledger.active(conn, session):
             return {'ok': False, 'busy': True, 'detail': 'gateway execution still active'}
+        if ledger.cleanup_pending(conn, session):
+            return {'ok': False, 'busy': True, 'detail': 'gateway cleanup pending'}
         client, home, command = connection(profile)
         description = client.rpc('runtime.describe')
         if not {'durable-admission-v1', 'acp-session-mcp-v1'} <= set(description['capabilities']):
@@ -223,7 +224,6 @@ def _finish(conn, row, client):
 
 def _watch(execution_id):
     client = None
-    cleanup_failures = 0
     conn = db.get_connection()
     try:
         while True:
@@ -235,36 +235,39 @@ def _watch(execution_id):
                 if row['state'] == 'terminal':
                     if _finish(conn, row, client):
                         return
-                else:
-                    if row['execution_deadline'] and time.time() >= row['execution_deadline'] and not row['cancel_reason']:
-                        ledger.cancel(conn, execution_id, 'timeout')
-                    row = ledger.reconcile(client, conn, execution_id)
-                    from . import wake
-                    with wake._session_lock:
-                        if row['session'] in wake._running_wakes:
-                            wake._running_wakes[row['session']]['state'] = row['state']
-                    if row['state'] == 'terminal':
-                        continue
-                    if row['state'] == 'manual' and not row['admission_id']:
-                        logger.error('Hermes admission receipt unavailable for %s; execution remains held', row['session'])
-                        return
+                    time.sleep(1)
+                    continue
+                if row['execution_deadline'] and time.time() >= row['execution_deadline'] and not row['cancel_reason']:
+                    ledger.cancel(conn, execution_id, 'timeout')
+                row = ledger.reconcile(client, conn, execution_id)
+                from . import wake
+                with wake._session_lock:
+                    if row['session'] in wake._running_wakes:
+                        wake._running_wakes[row['session']]['state'] = row['state']
+                if row['state'] == 'terminal':
+                    continue
+                if row['state'] == 'manual':
+                    logger.error('Hermes execution %s entered manual; automatic reconciliation stopped', execution_id)
+                    return
             except Exception as exc:
                 detail = exc.reason if isinstance(exc, GatewayRefusal) else type(exc).__name__
-                ledger.uncertain(conn, execution_id, detail)
                 if row['state'] == 'terminal':
-                    cleanup_failures += 1
-                    paused = cleanup_failures >= _CLEANUP_ATTEMPTS
-                    detail = (f'cleanup_paused after {cleanup_failures} attempts: {detail}' if paused
-                              else f'cleanup_retry {cleanup_failures}/{_CLEANUP_ATTEMPTS}: {detail}')
-                    conn.execute('UPDATE hermes_executions SET detail=? WHERE execution_id=?', (detail, execution_id))
-                    conn.commit()
+                    attempts = ledger.register_cleanup_retry(conn, execution_id, detail)
+                    if attempts >= ledger.CLEANUP_MAX_ATTEMPTS:
+                        ledger.mark_cleanup_failed(conn, execution_id, detail)
+                        logger.error('Hermes cleanup failed for execution %s after %d attempts; '
+                                     'manual retry required: %s', execution_id, attempts, detail)
+                        return
+                    delay = (ledger.read(conn, execution_id)['next_retry_at'] or 0) - time.time()
+                    if client:
+                        client.close()
+                        client = None
+                    time.sleep(delay if delay > 0 else 0)
+                    continue
+                ledger.uncertain(conn, execution_id, detail)
                 if client:
                     client.close()
                     client = None
-                if row['state'] == 'terminal' and cleanup_failures >= _CLEANUP_ATTEMPTS:
-                    logger.error('Hermes cleanup paused for execution %s; occupancy retained; '
-                                 'retry stop or recover after restoring the gateway: %s', execution_id, detail)
-                    return
             time.sleep(3)
     finally:
         if client:
@@ -288,6 +291,11 @@ def recover():
         for row in ledger.active(conn):
             _publish(row)
             _start_worker(row['execution_id'])
+        # terminal 后未清理的行重启清理 worker（不 _publish：已终态不再发 spawned）。
+        # 已耗尽（cleanup_failed）的行不自动重试，只续剩余额度（设计 6.3 / D2）。
+        for row in ledger.cleanup_pending(conn):
+            if (row['retry_count'] or 0) < ledger.CLEANUP_MAX_ATTEMPTS:
+                _start_worker(row['execution_id'])
     finally:
         conn.close()
 
@@ -302,7 +310,19 @@ def cancel(session, *, reason='user', timeout=30):
     try:
         rows = ledger.active(conn, session)
         if not rows:
-            return None
+            # 无执行占用：terminal 后可能只剩清理待办（会话禁用但不算 active）。
+            pending = ledger.cleanup_pending(conn, session)
+            if not pending:
+                return None
+            for row in pending:
+                if (row['retry_count'] or 0) < ledger.CLEANUP_MAX_ATTEMPTS:
+                    _start_worker(row['execution_id'])
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if not ledger.cleanup_pending(conn, session):
+                    return True
+                time.sleep(0.1)
+            return False
         for row in rows:
             ledger.cancel(conn, row['execution_id'], reason)
             _start_worker(row['execution_id'])

@@ -67,6 +67,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(schema_path.read_text(encoding="utf-8"))
     from . import hermes_gateway_ledger
     hermes_gateway_ledger.initialize(conn)
+    _migrate_hermes_execution_cleanup(conn)
     # req#101: additive readiness contract; ALTER DEFAULT backfills existing rows.
     # Repeated initialization preserves states owned by future setup workflows.
     with conn:
@@ -268,6 +269,24 @@ def _migrate_add_column(conn: sqlite3.Connection, table: str, column: str, ddl: 
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
         return True
     return False
+
+
+def _migrate_hermes_execution_cleanup(conn: sqlite3.Connection) -> None:
+    """req#134 task#255：清理状态机字段 + 唯一索引收紧（cleanup_pending 不再占执行占用）。
+
+    老库 hermes_execution_active 是宽口径（state!='terminal' OR cleanup_pending=1），
+    需 DROP 重建为窄口径（state!='terminal'）；terminal 行不参与唯一约束，故可累积待清理。
+    """
+    _migrate_add_column(conn, "hermes_executions", "retry_count", "INTEGER NOT NULL DEFAULT 0")
+    _migrate_add_column(conn, "hermes_executions", "next_retry_at", "REAL")
+    _migrate_add_column(conn, "hermes_executions", "cleanup_deadline", "REAL")
+    try:
+        conn.execute("DROP INDEX IF EXISTS hermes_execution_active")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS hermes_execution_active "
+                     "ON hermes_executions(session) WHERE state != 'terminal'")
+    except sqlite3.OperationalError:
+        # 存量数据存在同一 session 多个非 terminal 行时保留旧索引，由运行时校验兜底。
+        pass
 
 
 # messages 表完整列定义（req#61 重建迁移用）：与 schema.sql 保持一致。

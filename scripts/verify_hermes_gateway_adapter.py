@@ -21,7 +21,7 @@ from engine import hermes_gateway_sessions as sessions
 
 def verify_engine(endpoint, home, command, evidence):
     """Run the actual engine adapter and task_queue against isolated HTTP/SQLite."""
-    from engine import db, wake, reasoning, session_adapter, hermes_gateway as gateway
+    from engine import db, wake, reasoning, session_adapter, hermes_gateway as gateway, hermes_gateway_ledger as ledger
     from scripts.unified_test_support import isolated_database, isolated_api
     with isolated_database(), patch.dict(os.environ, {'GROUP_ENGINE_KEY': uuid.uuid4().hex}):
         conn = db.get_connection()
@@ -42,7 +42,8 @@ def verify_engine(endpoint, home, command, evidence):
                 assert result['ok'], result
                 logical = wake.session_name('default', 'work', None, 'alpha')
                 deadline = time.monotonic() + 240
-                while gateway.active(logical) and time.monotonic() < deadline:
+                while (gateway.active(logical) or ledger.cleanup_pending(conn, logical)) \
+                        and time.monotonic() < deadline:
                     time.sleep(1)
                 row = conn.execute('SELECT state,outcome,cleanup_pending,detail FROM hermes_executions '
                                    'WHERE session=?', (logical,)).fetchone()

@@ -38,12 +38,15 @@ CREATE TABLE IF NOT EXISTS hermes_executions (
     outcome TEXT,
     ended_at REAL,
     cleanup_pending INTEGER NOT NULL DEFAULT 0,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_at REAL,
+    cleanup_deadline REAL,
     rewind_target INTEGER,
     detail TEXT NOT NULL DEFAULT '',
     UNIQUE(session, started_at)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS hermes_execution_active
-ON hermes_executions(session) WHERE state != 'terminal' OR cleanup_pending=1;
+ON hermes_executions(session) WHERE state != 'terminal';
 CREATE TABLE IF NOT EXISTS hermes_session_migrations (
     profile TEXT NOT NULL, old_session_id TEXT NOT NULL, new_session_id TEXT NOT NULL,
     created_at REAL NOT NULL, PRIMARY KEY(profile, old_session_id)
@@ -78,9 +81,26 @@ def read(conn, execution_id):
     return conn.execute('SELECT * FROM hermes_executions WHERE execution_id=?', (execution_id,)).fetchone()
 
 
+CLEANUP_MAX_ATTEMPTS = 5
+CLEANUP_BUDGET_SECONDS = 300.0
+_CLEANUP_BACKOFF = (1.0, 2.0, 4.0, 8.0, 16.0)
+
+
 def active(conn, session=None):
-    query = "SELECT * FROM hermes_executions WHERE (state!='terminal' OR cleanup_pending=1)"
+    """执行占用：只看 state != terminal；cleanup_pending 不算占用（设计 4.1）。"""
+    query = "SELECT * FROM hermes_executions WHERE state != 'terminal'"
     return conn.execute(query + (' AND session=?' if session else ''), (session,) if session else ()).fetchall()
+
+
+def cleanup_pending(conn, session=None):
+    """清理待办：terminal 后尚未完成本地清理的行（会话禁用与清理 worker 重启用）。"""
+    query = "SELECT * FROM hermes_executions WHERE state='terminal' AND cleanup_pending=1"
+    return conn.execute(query + (' AND session=?' if session else ''), (session,) if session else ()).fetchall()
+
+
+def _cleanup_backoff(retry_count):
+    idx = min(retry_count, len(_CLEANUP_BACKOFF) - 1)
+    return _CLEANUP_BACKOFF[idx]
 
 
 def cancel(conn, execution_id, reason='user', *, now=None):
@@ -131,8 +151,9 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
             if not isinstance(receipt.get('outcome'), str) or not receipt['outcome']:
                 raise ValueError('Terminal receipt has no outcome')
             conn.execute("UPDATE hermes_executions SET admission_id=?,generation=?,authority_epoch=?,"
-                         "state='terminal',outcome=?,ended_at=?,cleanup_pending=1,detail='' WHERE execution_id=?",
-                         (aid, gen, epoch, receipt['outcome'], now, execution_id))
+                         "state='terminal',outcome=?,ended_at=?,cleanup_pending=1,cleanup_deadline=?,detail='' "
+                         "WHERE execution_id=?",
+                         (aid, gen, epoch, receipt['outcome'], now, now + CLEANUP_BUDGET_SECONDS, execution_id))
         else:
             state = 'running' if status == 'started' else 'submitting' if status == 'queued' else 'unknown'
             if row['state'] == 'manual' or status == 'unknown' and now >= row['reconcile_deadline']:
@@ -149,8 +170,36 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
 
 
 def finish_cleanup(conn, execution_id):
-    conn.execute("UPDATE hermes_executions SET cleanup_pending=0,detail='' WHERE execution_id=? AND state='terminal'",
-                 (execution_id,))
+    conn.execute("UPDATE hermes_executions SET cleanup_pending=0,retry_count=0,"
+                 "next_retry_at=NULL,cleanup_deadline=NULL,detail='' "
+                 "WHERE execution_id=? AND state='terminal'", (execution_id,))
+    conn.commit()
+
+
+def register_cleanup_retry(conn, execution_id, detail, *, now=None):
+    """登记一次清理失败：retry_count 递增、按退避序列写 next_retry_at、记录原因。
+
+    返回新的 retry_count；retry_count 达到上限即耗尽（由调用方判定 cleanup_failed）。
+    计数与 next_retry_at 持久化，重启后只续剩余额度（设计 6.2/6.3）。
+    """
+    now = time.time() if now is None else now
+    row = read(conn, execution_id)
+    if row is None or row['state'] != 'terminal':
+        return 0
+    attempts = (row['retry_count'] or 0) + 1
+    conn.execute("UPDATE hermes_executions SET retry_count=?,next_retry_at=?,detail=? "
+                 "WHERE execution_id=?", (attempts, now + _cleanup_backoff(attempts - 1), detail, execution_id))
+    conn.commit()
+    return attempts
+
+
+def mark_cleanup_failed(conn, execution_id, cause):
+    """清理耗尽：保留 cleanup_pending=1 与会话禁用，detail 打 cleanup_failed 标记（设计 6.3）。"""
+    row = read(conn, execution_id)
+    if row is None or row['state'] != 'terminal':
+        return
+    conn.execute("UPDATE hermes_executions SET detail=? WHERE execution_id=?",
+                 (f'cleanup_failed after {row["retry_count"]} attempts: {cause}', execution_id))
     conn.commit()
 
 
@@ -163,21 +212,31 @@ def not_submitted(conn, execution_id, detail):
 
 
 def reconcile(client, conn, execution_id, *, now=None):
-    """Query before cancelling; transport loss never triggers prompt resubmission."""
+    """Query before cancelling; transport loss never triggers prompt resubmission.
+
+    单次 RPC 超时 = min(默认 30s, 剩余 reconcile 预算)（设计 6.1 / D3），
+    卡住的 RPC 不得越过首次 cancel + 150s 的硬门槛。
+    """
+    now = time.time() if now is None else now
     row = read(conn, execution_id)
     if row['state'] == 'terminal':
         return row
     if not row['admission_id']:
         uncertain(conn, execution_id, 'Submission receipt unavailable; manual reconciliation required', now=now)
         return read(conn, execution_id)
-    receipt = client.rpc('prompt.receipt', session_id=row['session_id'], admission_id=row['admission_id'])
+    remaining = max(0.0, (row['reconcile_deadline'] or 0) - now)
+    rpc_timeout = min(30.0, remaining) if remaining > 0 else 0.0
+    receipt = client.rpc('prompt.receipt', session_id=row['session_id'], admission_id=row['admission_id'],
+                         timeout=rpc_timeout)
     row = apply_receipt(conn, execution_id, receipt, now=now)
     if row['state'] == 'terminal' or not row['cancel_reason']:
         return row
     if receipt['status'] == 'queued':
-        reply = client.rpc('prompt.cancel', session_id=row['session_id'], admission_id=row['admission_id'])
+        reply = client.rpc('prompt.cancel', session_id=row['session_id'], admission_id=row['admission_id'],
+                           timeout=rpc_timeout)
         row = apply_receipt(conn, execution_id, reply, now=now)
     elif receipt['status'] == 'started' and row['generation'] is not None:
-        client.rpc('session.interrupt', session_id=row['session_id'], execution_generation=row['generation'])
+        client.rpc('session.interrupt', session_id=row['session_id'],
+                   execution_generation=row['generation'], timeout=rpc_timeout)
     # An interrupt acknowledgement is a session handle, not an admission receipt.
     return row

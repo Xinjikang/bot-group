@@ -56,7 +56,8 @@ class GatewayTests(unittest.TestCase):
     def test_terminal_revokes_token_before_transport_cleanup(self):
         self.assertEqual(self.client.get('/commands', headers=self.headers).status_code, 200)
         self.terminal()
-        self.assertTrue(gateway.active(self.session))
+        self.assertFalse(gateway.active(self.session))
+        self.assertEqual(len(ledger.cleanup_pending(self.conn, self.session)), 1)
         self.assertEqual(self.client.get('/commands', headers=self.headers).status_code, 401)
         ledger.finish_cleanup(self.conn, self.eid)
         self.assertEqual(gateway.process_state(self.session), [])
@@ -240,7 +241,7 @@ class GatewayTests(unittest.TestCase):
         new.assert_called_once()
         self.assertEqual(self.conn.execute('SELECT session_id FROM session_bindings').fetchone()[0], 'new')
 
-    def test_terminal_cleanup_pauses_and_recovers_without_resubmission(self):
+    def test_terminal_cleanup_fails_boundedly_and_marks_failed(self):
         self.terminal()
         remote = Mock()
         with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
@@ -249,33 +250,51 @@ class GatewayTests(unittest.TestCase):
              patch.object(gateway.time, 'sleep') as sleep, \
              patch.object(wake, '_handle_task_exit'):
             gateway._watch(self.eid)
-            row = ledger.read(self.conn, self.eid)
-            self.assertEqual(clear.call_count, 3)
-            self.assertEqual(sleep.call_args_list, [call(3), call(3)])
-            self.assertEqual(row['state'], 'terminal')
-            self.assertEqual(row['cleanup_pending'], 1)
-            self.assertIn('cleanup_paused after 3 attempts', row['detail'])
-            self.assertIsNone(gateway.process_state(self.session))
-            self.assertNotIn(self.eid, gateway._workers)
-            self.assertEqual(self.client.get('/commands', headers=self.headers).status_code, 401)
-            clear.side_effect = None
-            with patch.object(gateway, '_publish'), \
-                 patch.object(gateway, '_start_worker', side_effect=gateway._watch) as worker:
-                gateway.recover()
-            worker.assert_called_once_with(self.eid)
-        self.assertFalse(gateway.active(self.session))
-        self.assertEqual(ledger.read(self.conn, self.eid)['detail'], '')
+        row = ledger.read(self.conn, self.eid)
+        self.assertEqual(clear.call_count, 5)
+        self.assertEqual(len(sleep.call_args_list), 4)
+        for expected, actual in zip((1.0, 2.0, 4.0, 8.0), [c.args[0] for c in sleep.call_args_list]):
+            self.assertAlmostEqual(actual, expected, delta=0.5)
+        self.assertEqual(row['state'], 'terminal')
+        self.assertEqual(row['cleanup_pending'], 1)
+        self.assertEqual(row['retry_count'], 5)
+        self.assertIn('cleanup_failed after 5 attempts', row['detail'])
+        self.assertIsNone(gateway.process_state(self.session))
+        self.assertNotIn(self.eid, gateway._workers)
+        self.assertEqual(self.client.get('/commands', headers=self.headers).status_code, 401)
+        # 耗尽后 recover() 不自动重试（D2：不刷新重试预算、不自动续办）
+        with patch.object(gateway, '_publish') as publish, \
+             patch.object(gateway, '_start_worker') as worker:
+            gateway.recover()
+        worker.assert_not_called()
+        publish.assert_not_called()
         remote.rpc.assert_not_called()
+
+    def test_recover_resumes_pending_cleanup_within_budget(self):
+        self.terminal()
+        ledger.register_cleanup_retry(self.conn, self.eid, 'offline', now=self.start + 200)
+        ledger.register_cleanup_retry(self.conn, self.eid, 'offline', now=self.start + 210)
+        remote = Mock()
+        with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
+             patch.object(gateway.sessions, 'attach'), \
+             patch.object(gateway.sessions, 'clear_mcp') as clear, \
+             patch.object(wake, '_handle_task_exit'), \
+             patch.object(gateway, '_start_worker', side_effect=gateway._watch):
+            gateway.recover()
+        clear.assert_called_once_with(remote, 'sid')
+        self.assertEqual(ledger.read(self.conn, self.eid)['cleanup_pending'], 0)
+        self.assertEqual(ledger.read(self.conn, self.eid)['retry_count'], 0)
 
     def test_gateway_unavailable_during_terminal_cleanup_has_bounded_attempts(self):
         self.terminal()
         with patch.object(gateway, 'connection', side_effect=ConnectionError('offline')) as connect, \
              patch.object(gateway.time, 'sleep') as sleep:
             gateway._watch(self.eid)
-        self.assertEqual(connect.call_count, 3)
-        self.assertEqual(sleep.call_count, 2)
-        self.assertTrue(gateway.active(self.session))
-        self.assertIn('cleanup_paused', ledger.read(self.conn, self.eid)['detail'])
+        self.assertEqual(connect.call_count, 5)
+        self.assertEqual(sleep.call_count, 4)
+        self.assertFalse(gateway.active(self.session))
+        self.assertEqual(len(ledger.cleanup_pending(self.conn, self.session)), 1)
+        self.assertIn('cleanup_failed', ledger.read(self.conn, self.eid)['detail'])
 
     def test_transient_cleanup_failure_finishes_within_retry_limit(self):
         self.terminal()
@@ -288,6 +307,27 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(clear.call_count, 2)
         self.assertFalse(gateway.active(self.session))
         self.assertEqual(ledger.read(self.conn, self.eid)['detail'], '')
+
+    def test_manual_state_stops_automatic_reconciliation(self):
+        ledger.uncertain(self.conn, self.eid, 'lost', now=self.start + 151)
+        self.assertEqual(ledger.read(self.conn, self.eid)['state'], 'manual')
+        remote = Mock()
+        with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
+             patch.object(gateway.sessions, 'attach'):
+            gateway._watch(self.eid)
+        remote.rpc.assert_not_called()
+        self.assertNotIn(self.eid, gateway._workers)
+        # manual 保留安全占用（state != terminal）。
+        self.assertTrue(gateway.active(self.session))
+
+    def test_cleanup_pending_blocks_same_session_spawn(self):
+        self.terminal()
+        with patch.object(gateway, 'connection') as connect:
+            result = gateway.spawn('default', 'work', 'sig', None, 'alpha',
+                                   bot={'id': 1}, workdir='/w', model_args=[])
+        self.assertTrue(result['busy'])
+        self.assertEqual(result['detail'], 'gateway cleanup pending')
+        connect.assert_not_called()
 
     def test_stop_retries_paused_cleanup_and_preserves_original_cancel_reason(self):
         ledger.cancel(self.conn, self.eid, 'shutdown')

@@ -26,7 +26,7 @@ queued 执行通过 `prompt.cancel` 取消；started 执行通过携带 generati
 
 终态立即撤销执行凭据；清理临时 MCP、浏览器资源和引擎记录后释放占用。MCP 心跳使用自身 PID，避免多个会话共享网关 PID；凭据校验约束项目、话题和 inbox 类型。引擎停机按执行发送取消，保持 HTTP/MCP 可用直到收尾完成。
 
-终态后的清理每轮最多尝试 3 次，失败间隔 3 秒；网关连接失败同样计入次数。连续失败达到上限后退出该重试线程，在 `hermes_executions.detail` 记录 `cleanup_paused` 及失败类型，并记录错误日志。terminal 状态、已撤销的执行凭据、`cleanup_pending=1` 和会话占用均保留。网关恢复后，管理员再次执行该 Bot 的停止操作会发起新一轮有限清理；引擎启动恢复也会读取原记录并重试。恢复沿用原 admission 和取消原因，成功后清除待清理标记及错误详情并释放占用。
+执行终态与清理完成是两个独立状态机。终态回执落库即撤销执行凭据并释放执行占用：`active()` 只看 `state != 'terminal'`，`cleanup_pending` 不算占用（不进入 busy 判定）；同一逻辑会话仍受「清理禁用」约束，清理恢复后才可复用，其他独立会话可运行。清理待办（`cleanup_pending=1`）按退避序列重试（1/2/4/8 秒）最多 5 次；`retry_count`、`next_retry_at` 与 `cleanup_deadline` 持久化。耗尽转 `cleanup_failed`（`detail` 标记）并停止自动循环，保留 `cleanup_pending=1` 与会话禁用，仅人工明确重试才开启新预算。引擎启动恢复只续剩余额度，已耗尽不自动重试；恢复沿用原 admission 与取消原因。取消有界：`cancel_deadline`=首次 cancel+30s、`reconcile_deadline`=首次 cancel+150s，超时转 `manual` 停止自动循环；单次 RPC 超时=min(默认 30s, 剩余预算)。清理走引擎自身 GatewayClient（ensure+ticket），非 run.token 执行凭据，撤销凭据不影响清理重试。清理登记按 execution_id/started_at 精确匹配，不按 session 删除，避免迟到清理误删后继执行。
 
 提交回执缺失时，当前公开接口缺少按 submission ID 只读找回 admission 的入口。适配器保留 `unknown`，到固定截止时间转 `manual` 并保留占用。管理员需核对原执行，自动重提保持关闭。已有 admission 的执行在断线后重新取一次性 ticket，并查询原回执。
 
