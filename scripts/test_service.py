@@ -70,6 +70,16 @@ class ServiceFlowTest(unittest.TestCase):
         with mock.patch.object(service, "venv_python", return_value=Path("/nonexistent/python")):
             self.assertEqual(service.do_stop(), 1)
 
+    def test_failed_graceful_stop_blocks_new_engine(self):
+        with mock.patch.object(service, 'venv_python', return_value=Path(sys.executable)), \
+             mock.patch.object(service, '_run_install_check', return_value=0), \
+             mock.patch.object(service, 'do_stop', return_value=1), \
+             mock.patch.object(service.subprocess, 'run') as run, \
+             mock.patch.object(service, '_health_check') as health:
+            self.assertEqual(service.main(['restart']), 1)
+        run.assert_not_called()
+        health.assert_not_called()
+
     def test_start_full_chain(self):
         # 缺陷1：安装→启动→健康检查全链，仅调 Python 入口（不探测 Git Bash）。
         with mock.patch.object(service, "venv_python", return_value=Path(sys.executable)), \

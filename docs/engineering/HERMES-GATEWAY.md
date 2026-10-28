@@ -20,6 +20,8 @@
 
 queued 执行通过 `prompt.cancel` 取消；started 执行通过携带 generation 的 `session.interrupt` 取消。只有对应 admission 的 terminal 回执才能结束执行。中断 ACK、WebSocket 断开和查看客户端退出均保留占用。用户停止工作执行时，经原生 `rewind` 回退本次指令；目标消息限定本次执行，回退目标和请求 ID 持久化后重试。
 
+引擎优雅停止先关闭新任务入口，并等待正在执行的任务自然结束，默认等待 120 秒。超时后通过上述官方取消接口停止 Hermes 执行，等待 terminal 与临时 MCP 清理完成，再释放浏览器资源并退出引擎；共享网关进程保留。终态或清理尚未确认时，本次停机失败并恢复服务入口。`start.bat` / `start.sh` 只有确认旧引擎进程退出和端口释放后才启动新引擎。停机取消使用 `shutdown` 原因，保留会话历史。
+
 终态立即撤销执行凭据；清理临时 MCP、浏览器资源和引擎记录后释放占用。MCP 心跳使用自身 PID，避免多个会话共享网关 PID；凭据校验约束项目、话题和 inbox 类型。引擎停机按执行发送取消，保持 HTTP/MCP 可用直到收尾完成。
 
 提交回执缺失时，当前公开接口缺少按 submission ID 只读找回 admission 的入口。适配器保留 `unknown`，到固定截止时间转 `manual` 并保留占用。管理员需核对原执行，自动重提保持关闭。已有 admission 的执行在断线后重新取一次性 ticket，并查询原回执。

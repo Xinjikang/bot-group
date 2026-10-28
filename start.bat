@@ -15,7 +15,7 @@ if not defined PY (
   pause
   exit /b 1
 )
-%PY% tools\service.py start
+%PY% tools\service.py restart
 set "START_EXIT=%errorlevel%"
 if not "%START_EXIT%"=="0" (
   echo [start-engine] Startup failed. See the error above. Exit code: %START_EXIT%

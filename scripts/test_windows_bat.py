@@ -23,7 +23,7 @@ from engine.maintenance import make_release
 ROOT = Path(__file__).resolve().parents[1]
 ENTRIES = ('start.bat', 'stop.bat', 'install.bat', 'bootstrap.bat')
 CASES = (
-    ('start.bat', '', ['tools\\service.py', 'start']),
+    ('start.bat', '', ['tools\\service.py', 'restart']),
     ('stop.bat', '', ['tools\\service.py', 'stop']),
     ('install.bat', '', ['tools\\install.py', 'install']),
     ('install.bat', 'install', ['tools\\install.py', 'install']),

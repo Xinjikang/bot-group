@@ -1,8 +1,9 @@
 """Gateway ownership across engine recovery, HTTP credentials and stop boundaries."""
 import os
+import threading
 import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -89,6 +90,85 @@ class GatewayTests(unittest.TestCase):
         ledger.reconcile(remote, self.conn, self.eid, now=self.start + 151)
         self.assertEqual(ledger.read(self.conn, self.eid)['state'], 'manual')
         remote.rpc.assert_not_called()
+
+    def test_shutdown_waits_for_remote_terminal_and_mcp_cleanup(self):
+        from engine import browser_resources, process_tree
+        from engine.lifecycle import Shutdown
+        self.addCleanup(wake._shutting_down.clear)
+        exited = Mock()
+        controller = Shutdown(threading.Event(), exited, timeout=5)
+        with patch.object(wake, 'active_runs', return_value=[]), \
+             patch.object(browser_resources, 'release', return_value={'ok': True}) as release, \
+             patch.object(gateway, 'cancel') as cancel, \
+             patch.object(process_tree, 'terminate') as kill:
+            controller.begin()
+            try:
+                self.assertTrue(wake._shutting_down.wait(2))
+                self.assertTrue(controller._busy())
+                self.terminal()
+                self.assertTrue(controller._busy())
+                release.assert_not_called()
+                exited.assert_not_called()
+                ledger.finish_cleanup(self.conn, self.eid)
+            finally:
+                controller.worker.join(7)
+            self.assertFalse(controller.worker.is_alive())
+            self.assertEqual(controller.snapshot()['state'], 'stopping')
+            release.assert_called_once_with()
+            exited.assert_called_once_with()
+            cancel.assert_not_called()
+            kill.assert_not_called()
+
+    def test_shutdown_timeout_settles_gateway_before_releasing_resources(self):
+        from engine import browser_resources, process_tree
+        from engine.lifecycle import Shutdown
+        self.addCleanup(wake._shutting_down.clear)
+        exited = Mock()
+        controller = Shutdown(threading.Event(), exited, timeout=0)
+
+        def settle(execution_id):
+            self.assertEqual(ledger.read(self.conn, execution_id)['cancel_reason'], 'shutdown')
+            exited.assert_not_called()
+            gateway._finish(self.conn, self.terminal(), Mock())
+
+        with patch.object(wake, 'active_runs', return_value=[]), \
+             patch.object(gateway, '_start_worker', side_effect=settle), \
+             patch.object(gateway.sessions, 'clear_mcp') as clear, \
+             patch.object(gateway.sessions, 'mutate') as rewind, \
+             patch.object(browser_resources, 'release', return_value={'ok': True}) as release, \
+             patch.object(process_tree, 'terminate') as kill:
+            controller._run()
+        self.assertEqual(controller.snapshot()['state'], 'stopping')
+        self.assertFalse(gateway.active(self.session))
+        clear.assert_called_once()
+        rewind.assert_not_called()
+        kill.assert_not_called()
+        self.assertEqual(release.call_args_list, [
+            call(session=self.session, started_at=self.start, pending_only=True), call()])
+        exited.assert_called_once_with()
+
+    def test_unconfirmed_gateway_cancel_keeps_engine_available(self):
+        from engine import browser_resources, process_tree
+        from engine.lifecycle import Shutdown
+        self.addCleanup(wake._shutting_down.clear)
+        exited = Mock()
+        controller = Shutdown(threading.Event(), exited, timeout=0)
+        native_cancel = gateway.cancel
+        with patch.object(wake, 'active_runs', return_value=[]), \
+             patch.object(gateway, '_start_worker'), \
+             patch.object(gateway, 'cancel', side_effect=lambda session, reason:
+                          native_cancel(session, reason=reason, timeout=0)), \
+             patch.object(browser_resources, 'release') as release, \
+             patch.object(process_tree, 'terminate') as kill:
+            controller._run()
+        self.assertEqual(controller.snapshot()['state'], 'failed')
+        self.assertTrue(gateway.active(self.session))
+        self.assertEqual(ledger.read(self.conn, self.eid)['cancel_reason'], 'shutdown')
+        self.assertFalse(wake._shutting_down.is_set())
+        self.assertFalse(controller.stop_event.is_set())
+        release.assert_not_called()
+        exited.assert_not_called()
+        kill.assert_not_called()
 
     def test_newer_direct_execution_uses_its_own_process_lifecycle(self):
         self.terminal()
