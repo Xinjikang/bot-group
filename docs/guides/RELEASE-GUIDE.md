@@ -98,7 +98,7 @@ Windows 安装和升级会创建或维护当前用户桌面的“Bot Group”快
 
 运行中的服务可使用页面主题按钮右侧的“重启服务”。后台助手复用 `start.bat`，旧实例停止及浏览器资源回收由引擎负责：最多等待 Bot 自然结束 120 秒，超时终止剩余进程树后继续收尾。停机客户端默认等待 180 秒，页面每次轮询等待 300 秒。成功以新 instance_id 和相同程序根/数据库为依据；失败查看 `logs/service-restart.json`、`logs/service-restart.log`。详见 [服务重启](../engineering/SERVICE-RESTART-2026-10-17.md)。
 
-Windows 四个 BAT 入口使用 ASCII 注释/提示与 CRLF，兼容默认及 UTF-8 CMD 代码页。Git 属性保留 BAT 原始 CRLF 字节，发布构建原样写入 ZIP；维护入口后执行 `python -X utf8 -B -m unittest scripts.test_windows_bat -q` 核对检出、归档及真实 CMD 参数/退出码。详见 [批处理兼容验证](../engineering/WINDOWS-BAT-COMPATIBILITY-2026-10-17.md)。
+Windows 四个 BAT 入口使用 ASCII 注释/提示与 CRLF，兼容默认及 UTF-8 CMD 代码页。`start.bat` 失败时显示错误并等待按键，确认后保留原退出码；成功时正常关闭启动窗口。自动化可直接调用 `tools/service.py`。Git 属性保留 BAT 原始 CRLF 字节，发布构建原样写入 ZIP；维护入口后执行 `python -X utf8 -B -m unittest scripts.test_windows_bat -q` 核对检出、归档及真实 CMD 参数/退出码。详见 [批处理兼容验证](../engineering/WINDOWS-BAT-COMPATIBILITY-2026-10-17.md)。
 
 `GROUP_ENGINE_URL` / `XDG_GROUP_ENGINE_URL` 是 bot 回调覆盖项。管理入口检查它们与当前 host/port 一致，并在停机前核对服务报告的程序目录、数据库和实例身份；配置不一致时先修正实例配置。日志位于数据目录 `logs/engine-startup.log` 和 `logs/engine.log`。
 

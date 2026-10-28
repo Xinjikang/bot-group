@@ -12,7 +12,13 @@ if not defined PY (
 )
 if not defined PY (
   echo [start-engine] Python not found. Install Python 3.11+ and retry.
+  pause
   exit /b 1
 )
 %PY% tools\service.py start
-exit /b %errorlevel%
+set "START_EXIT=%errorlevel%"
+if not "%START_EXIT%"=="0" (
+  echo [start-engine] Startup failed. See the error above. Exit code: %START_EXIT%
+  pause
+)
+exit /b %START_EXIT%

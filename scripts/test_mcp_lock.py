@@ -18,6 +18,24 @@ PROGRAM_ROOT = Path(__file__).resolve().parents[1]
 
 
 class McpLockTest(unittest.TestCase):
+    def test_every_direct_dependency_has_a_compatible_lock(self):
+        from pip._vendor.packaging.requirements import Requirement
+        from pip._vendor.packaging.utils import canonicalize_name
+        locked = {}
+        for raw in (PROGRAM_ROOT / 'requirements.lock').read_text(encoding='utf-8').splitlines():
+            line = raw.split('#', 1)[0].strip()
+            if line:
+                req = Requirement(line)
+                locked[canonicalize_name(req.name)] = next(iter(req.specifier)).version
+        for raw in (PROGRAM_ROOT / 'requirements.txt').read_text(encoding='utf-8').splitlines():
+            line = raw.split('#', 1)[0].strip()
+            if line:
+                req = Requirement(line)
+                name = canonicalize_name(req.name)
+                with self.subTest(dependency=name):
+                    self.assertIn(name, locked)
+                    self.assertIn(locked[name], req.specifier)
+
     def test_process_query_dependency_is_installed_and_checked(self):
         from engine import process_query
         self.assertTrue(callable(process_query.psutil.Process))
