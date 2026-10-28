@@ -49,10 +49,14 @@ def _handle_task_exit(profile, project, kind, session, started_at, ended_at, exi
     with _session_lock:
         intentional = session in _intentional_stops
         if kind == 'work' and not intentional and not _shutting_down.is_set():
-            reason = error or (f'process exited with code {exit_code}' if exit_code else
-                               'process exited without task completion or handoff')
             from .execution_errors import MESSAGES, classify
-            reason = MESSAGES[classify(reason)]
+            if error.startswith('execution timed out'):
+                reason = MESSAGES['timeout']
+            elif exit_code == 0:
+                # Task state and handoff events determine whether a completed run needs retry.
+                reason = MESSAGES['incomplete']
+            else:
+                reason = MESSAGES[classify(error or f'process exited with code {exit_code}')]
             return task_retry.finish(profile, project, task_id, f'{session}:{started_at}', reason, job_id, event_floor)
     return {"blocked": []}
 

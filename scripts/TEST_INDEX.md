@@ -1,6 +1,6 @@
 # 测试脚本索引
 
-执行异常分类：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_execution_errors scripts.test_task_retry -q`。使用隔离 SQLite 与合成 JSONL，覆盖模型容量已满提示、终态失败优先于工具输出、最后一条有效失败事件、普通 error 回退、未知错误、Hermes 专用提示与完整脱敏诊断保留。
+执行异常分类：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_execution_errors scripts.test_task_retry scripts.test_abnormal_exit -q`。使用隔离 SQLite 与合成 JSONL，覆盖模型容量已满提示、终态失败优先于工具输出、最后一条有效失败事件、普通 error 回退、未知错误、Hermes 专用提示与完整脱敏诊断保留；正常退出未交接时使用独立原因及三次失败汇总、已交接保持成功、引擎超时优先与真实运行时错误分类。
 
 MCP 离线重试与回执：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_mcp_operations scripts.test_task_api scripts.test_access_contract scripts.test_message_execution scripts.test_inbox_seen_gate scripts.test_task_brief scripts.test_requirement_lifecycle -q`。覆盖连接失败 1/2/4/8 秒退避、最多 5 次与 30 秒总预算、读超时/5xx 只查证、原操作 ID 复用、并发去重、业务与回执同事务、提交前异常回滚、外部副作用结果未知、成员撤权和后继执行隔离。
 
