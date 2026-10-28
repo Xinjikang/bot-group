@@ -85,7 +85,8 @@ def begin(request_id, version, instance_id):
                    'created_at': time.time(), 'instance_id': instance_id, 'error': '',
                    'current_version': info['current_version'], 'target_version': target.version,
                    'target': asdict(target), 'program_root': str(root),
-                   'db_path': str(Path(config.db_path()).resolve())}
+                   'db_path': str(Path(config.db_path()).resolve()),
+                   'database_layout_version': 1}
         env = dict(os.environ)
         host, port = config.host(), config.port()
         env.update(GROUP_ENGINE_HOST=host, GROUP_ENGINE_PORT=str(port),

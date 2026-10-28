@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+数据库目录布局与 WAL 生命周期：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_database_layout scripts.test_config scripts.test_install scripts.test_service scripts.test_upgrade scripts.test_app_upgrade scripts.test_legacy_release_upgrade scripts.test_release_upgrade -q`。覆盖默认 `data/group.db`、旧根目录库一次迁移、附件与自定义路径保留、源库损坏、目标冲突、活动引擎/事务阻断、中断恢复、升级绑定回滚、旧界面升级器兼容，以及空闲连接保留 WAL 文件时的写入与检查点行为。所有迁移用例使用临时目录和隔离数据库。
+
 Hermes 会话绑定与清理重试：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_stop_scope scripts.test_engine_shutdown -q`。覆盖首次绑定的零/单/多候选、已有 ID 绑定复用、终态清理失败和网关连接失败的三次尝试上限、短暂失败恢复、暂停清理后凭据撤销及占用保留、引擎恢复与再次停止触发有限重试、恢复成功清除错误详情，以及原有取消和优雅停止边界。使用隔离数据库与模拟网关回执。
 
 启动脚本与桌面入口边界：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_windows_bat scripts.test_service scripts.test_service_restart scripts.test_desktop scripts.test_engine_shutdown scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger -q`。真实 CMD 验证 `start.bat` 调用完整优雅重启；隔离服务验证再次执行脚本更换实例并释放旧 PID、桌面启动命令复用实例、停止失败阻断新服务启动。Hermes WS 用例覆盖等待 terminal 及 MCP 清理、超时调用官方取消链路、终态未确认时保留引擎与执行占用。

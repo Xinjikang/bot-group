@@ -89,7 +89,7 @@ class ConfigDefaultsTest(unittest.TestCase):
                 self.assertFalse((root / 'group.db').exists())
                 self.assertEqual(config.data_dir(), root)
                 self.assertEqual(config.port(), 18765)
-                self.assertEqual(config.db_path(), str(root / 'group.db'))
+                self.assertEqual(config.db_path(), str(root / 'data' / 'group.db'))
                 self.assertEqual(config.attachments_dir(), root / 'attachments')
                 self.assertEqual(config.backups_dir(), root / 'backups')
                 self.assertEqual(config.logs_dir(), root / 'logs')

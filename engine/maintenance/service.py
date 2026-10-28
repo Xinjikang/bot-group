@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -162,6 +163,12 @@ def do_start() -> int:
     if do_stop() != 0:
         return 1
     _load_env()
+    from engine.maintenance.database_layout import migrate
+    try:
+        migrate()
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        print(f"[start-engine] 数据库目录迁移失败：{exc}", file=sys.stderr)
+        return 1
     host = config.host()
     port = config.port()
     print(f"[start-engine] 启动引擎，监听 {host}:{port}")

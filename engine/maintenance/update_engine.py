@@ -26,10 +26,16 @@ def start_and_verify(receipt):
     headers = upgrade._admin_headers()
     with opener.open(urllib.request.Request(config.engine_url() + '/health', headers=headers), timeout=5) as response:
         health = json.load(response)
+    expected_db = receipt['db_path']
+    from engine.maintenance import database_layout
+    layout = database_layout._read_state(database_layout._paths()[2])
+    if (layout and layout['state'] == 'complete' and layout['source'] == expected_db
+            and layout['target'] == str(Path(config.db_path()).resolve())):
+        expected_db = layout['target']
     if (health.get('status') != 'ok' or not health.get('instance_id')
             or health['instance_id'] == receipt['instance_id']
             or health.get('program_root') != receipt['program_root']
-            or health.get('db_path') != receipt['db_path']):
+            or health.get('db_path') != expected_db):
         raise RuntimeError('启动后实例校验失败，请查看 logs/app-upgrade.log。')
     return health['instance_id']
 

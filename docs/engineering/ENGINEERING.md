@@ -160,7 +160,9 @@ Bot 通过统一 MCP 进行群聊及任务操作。身份从进程配置和执�
 
 MCP 工具经 HTTP 调用引擎；`task_api.py` 提供需求与任务操作的固定白名单及输入、成员和执行校验，再调用任务业务模块。Codex 通过命令行、Hermes 通过每次运行的配置覆盖目录接收 API 地址、身份和上下文。`mcp_runtime.py` 管理 Hermes 临时配置的创建与清理；成员配置生成时仅保存个人设置。详见 [MCP 接入与 API 契约](../../mcp/README.md)。
 
-`GROUP_DB` 可覆盖数据库路径；附件默认跟随数据库目录，可用 `GROUP_ATTACHMENTS_DIR` 覆盖。日志、备份、安装状态及背景跟随数据目录。`service.py` 导入该目录 `.env` 中尚未定义的环境变量；直接启动 `python -m engine.main` 时，进程环境控制数据库、密码等环境项。Bot 回调 URL 优先 `GROUP_ENGINE_URL`，其次 `XDG_GROUP_ENGINE_URL`，最后按 host/port 派生。
+默认安装使用 `data/group.db`，附件保留在根目录 `attachments/`。`GROUP_DB` 可覆盖数据库路径；其他自定义数据库的附件默认跟随数据库目录，可用 `GROUP_ATTACHMENTS_DIR` 覆盖。数据库和附件路径支持进程环境及 `.env`，进程环境优先。日志、备份、安装状态及背景跟随数据目录。`service.py` 导入该目录 `.env` 中尚未定义的环境变量。Bot 回调 URL 优先 `GROUP_ENGINE_URL`，其次 `XDG_GROUP_ENGINE_URL`，最后按 host/port 派生。
+
+`maintenance/database_layout.py` 在停机后的标准启动和升级阶段迁移根目录旧库，保留原库及恢复记录，拒绝目标冲突和活动连接。升级回滚校验对应迁移记录后恢复旧路径；旧界面升级器的身份绑定兼容边界见发布指南。引擎生命周期保持一个无活动事务的 SQLite 连接，短请求仍使用各自连接，从而保留 WAL/SHM 文件并允许写入、检查点和正常退出。
 
 安装采用专用 `.venv` 与发布锁定依赖。`bootstrap` 负责下载校验和安装，`install` 检查/安装或修复旧环境就绪记录，`service start/stop` 负责启停，`upgrade` 负责正式版本发现、资产校验、备份、文件级升级及失败恢复。执行方式和受管文件边界见 [发布指南](../guides/RELEASE-GUIDE.md)。
 

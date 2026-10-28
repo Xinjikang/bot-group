@@ -137,17 +137,30 @@ def data_dir(cli=None) -> Path:
 
 def db_path(cli=None) -> str:
     """group.db 路径。GROUP_DB 显式覆盖优先级最高（向后兼容既有测试/部署）。"""
-    env = os.environ.get("GROUP_DB", "").strip()
+    env = _pick(None, ("GROUP_DB",), "").strip()
     if env:
+        if Path(env).resolve() == (program_root() / "group.db").resolve():
+            from .maintenance.database_layout import relocated_path
+            return str(relocated_path(Path(env).resolve()))
         return env
-    return str(data_dir(cli) / "group.db")
+    root = data_dir(cli)
+    if root.resolve() != program_root().resolve():
+        return str(root / "group.db")
+    legacy = root / "group.db"
+    # Maintenance must identify a running legacy instance before relocating it.
+    if legacy.exists():
+        return str(legacy)
+    from .maintenance.database_layout import relocated_path
+    return str(relocated_path(root / "data" / "group.db"))
 
 
 def attachments_dir(cli=None) -> Path:
     """附件目录。GROUP_ATTACHMENTS_DIR 覆盖；默认随 db 目录（保持既有语义）。"""
-    env = os.environ.get("GROUP_ATTACHMENTS_DIR", "").strip()
+    env = _pick(None, ("GROUP_ATTACHMENTS_DIR",), "").strip()
     if env:
         return Path(env).expanduser().resolve()
+    if Path(db_path(cli)).resolve() == (program_root() / "data" / "group.db").resolve():
+        return program_root() / "attachments"
     return Path(db_path(cli)).resolve().parent / "attachments"
 
 

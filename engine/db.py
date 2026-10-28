@@ -12,6 +12,7 @@ import os
 import sqlite3
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 def db_path() -> str:
@@ -40,6 +41,19 @@ def get_connection() -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+@contextmanager
+def keep_wal_open():
+    """Keep WAL sidecars stable between short requests without retaining a transaction."""
+    connection = get_connection()
+    try:
+        connection.execute('SELECT count(*) FROM sqlite_master').fetchone()
+        if connection.in_transaction:
+            raise RuntimeError('Idle database connection unexpectedly holds a transaction')
+        yield connection
+    finally:
+        connection.close()
 
 
 def init_schema(conn: sqlite3.Connection) -> None:

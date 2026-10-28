@@ -57,7 +57,7 @@ def _setup_logging() -> None:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def _engine_lifespan(app: FastAPI):
     from . import wake
     wake._shutting_down.clear()
     # 启动：建表 + 重启恢复
@@ -105,6 +105,15 @@ async def lifespan(app: FastAPI):
             result = await asyncio.to_thread(browser_resources.release)
             if not result['ok']:
                 logger.error('Browser resources remain: %s', result['errors'])
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from .maintenance.database_layout import migrate
+    migrate()
+    with db.keep_wal_open():
+        async with _engine_lifespan(app):
+            yield
 
 
 app = FastAPI(title="group-engine", version="0.1.0", lifespan=lifespan)
@@ -187,6 +196,8 @@ def main(argv=None) -> None:
     # 命令行数据目录固定本次进程，db/attachments/日志均按此定位（日志目录随 --data-dir，不再 import 期固定）
     if args.data_dir:
         os.environ['GROUP_DATA_DIR'] = args.data_dir
+    from .maintenance.database_layout import migrate
+    migrate()
     _setup_logging()
     server = ManagedServer(uvicorn.Config(app, host=config.host(args.host),
         port=config.port(args.port), log_level='info',

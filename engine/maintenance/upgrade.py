@@ -55,7 +55,7 @@ from engine.maintenance import releases
 
 # 固定数据项：升级只换程序，这些跳过（保留在数据目录/程序根存量环境）。
 # .git 纳入保护（VCS 元数据不是程序文件，不得被正向删除/回滚残留清理当程序删掉）。
-_DATA_ITEMS = {"group.db", "attachments", ".env", "backups", "logs", ".venv", "install.json", ".git"}
+_DATA_ITEMS = {"group.db", "data", "attachments", ".env", "backups", "logs", ".venv", "install.json", ".git"}
 MANIFEST = "manifest.json"
 # 受管理发布清单：版本随附的程序文件清单（node 1079 缺陷1）。落地新源码时随包带来并
 # 持久化到程序根；升级的覆盖/删除只认它，绝不用程序根扫描结果当清单（用户笔记等非受管
@@ -607,7 +607,13 @@ def _rollback(backup_dir: Path) -> int:
         print("[upgrade] 备份完整性校验失败（缺文件/摘要不符），拒绝回滚不删原数据", file=sys.stderr)
         return 1
     # 快照绑定路径/实例身份：配置变化拒绝（防跨库覆盖）
-    if not _check_instance_binding(manifest):
+    from engine.maintenance import database_layout
+    layout = database_layout._read_state(database_layout._paths()[2])
+    binding = manifest
+    if (layout and layout.get('upgrade_backup') == str(backup_dir.resolve())
+            and layout['source'] == manifest.get('instance', {}).get('db_path')):
+        binding = {**manifest, 'instance': {**manifest['instance'], 'db_path': layout['target']}}
+    if not _check_instance_binding(binding):
         print("[upgrade] 快照绑定路径与当前实例不一致，拒绝回滚（防跨库覆盖）", file=sys.stderr)
         return 1
 
@@ -617,6 +623,7 @@ def _rollback(backup_dir: Path) -> int:
         return 1
 
     # 恢复数据快照（走 config 统一路径；db 先清 WAL/-shm 边车再整文件覆盖，防陈旧 WAL 回放进恢复库）
+    database_layout.rollback(backup_dir)
     data_src = backup_dir / "data"
     for name in ("group.db", ".env"):
         s = data_src / name
@@ -878,6 +885,8 @@ def do_upgrade(url: str | None = None, sha256: str | None = None,
         report('checking')
         if _verify_ready() != 0:
             raise RuntimeError("就绪验证失败")
+        from engine.maintenance.database_layout import migrate
+        migrate(upgrade_backup=backup_dir)
         print("[upgrade] 升级成功，请运行 start 启动新引擎恢复任务派发")
         return 0
     except (OSError, ValueError, RuntimeError, sqlite3.Error, subprocess.CalledProcessError) as exc:
