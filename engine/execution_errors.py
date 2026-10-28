@@ -4,7 +4,7 @@ import logging
 import os
 import re
 
-from . import db, events
+from . import db, events, hermes_profile_names
 
 MESSAGES = {
     'configuration': '配置不完整或无效，请检查配置。',
@@ -52,6 +52,8 @@ def _failure_text(detail):
 
 def classify(text):
     text = _failure_text(text).lower()
+    if hermes_profile_names.failure_message(text) or '被 hermes 保留' in text:
+        return 'configuration'
     if re.search(r'\bmodel\b[^\n.]{0,80}\bat capacity\b', text):
         return 'capacity'
     if re.search(r'no usable credentials|missing.{0,40}(?:key|credential|config)|'
@@ -154,7 +156,10 @@ def report(profile, project, thread_id, attempt, detail, *, exit_code=1, parent_
             round_no, depth = parent['round'], parent['depth'] + 1
         public_message = MESSAGES[category]
         failure = _failure_text(detail)
-        if 'HermesConfigurationError' in failure:
+        reserved_message = hermes_profile_names.failure_message(failure)
+        if reserved_message:
+            public_message = reserved_message
+        elif 'HermesConfigurationError' in failure:
             public_message = 'Hermes 入口与源码配置异常，请检查 HERMES_BIN、HERMES_HOME，并在修正后重启引擎。'
         elif 'HermesCompatibilityError' in failure:
             public_message = 'Hermes 会话接口不兼容，请更新或修复 Hermes 后重启引擎。'
