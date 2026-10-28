@@ -93,16 +93,88 @@ class SigningTests(unittest.TestCase):
         self.conn.commit()
         self.assertEqual(self.client.get('/commands', headers=headers).status_code, 401)
 
-    def test_current_codex_path_works_old_generation_rejected(self):
+    def test_current_native_paths_work_old_generation_rejected(self):
+        keys.initialize(self.conn)
+        headers_by_runtime = {}
+        for runtime in ('codex', 'hermes'):
+            context = dict(profile='default', project='alpha', thread_id=None,
+                           session='native-' + runtime, wake_started_at=2)
+            headers = {'X-Group-Profile': 'default', 'X-Group-Key': auth.execution_token('default', context)}
+            headers_by_runtime[runtime] = headers
+            self.conn.execute('INSERT INTO wake_runs(session,started_at,profile,project,runtime) VALUES(?,?,?,?,?)',
+                              (context['session'], 2, 'default', 'alpha', runtime))
+        self.conn.commit()
+        for runtime, headers in headers_by_runtime.items():
+            with self.subTest(runtime=runtime, state='active'):
+                self.assertEqual(self.client.get('/commands', headers=headers).status_code, 200)
+        keys.initialize(self.conn)
+        for runtime, headers in headers_by_runtime.items():
+            with self.subTest(runtime=runtime, state='old-generation'):
+                self.assertEqual(self.client.get('/commands', headers=headers).status_code, 401)
+
+    def test_native_execution_identity_and_terminal_revocation(self):
         keys.initialize(self.conn)
         context = dict(profile='default', project='alpha', thread_id=None, session='native', wake_started_at=2)
-        token = auth.execution_token('default', context)
-        self.conn.execute("INSERT INTO wake_runs(session,started_at,profile,project,runtime) VALUES('native',2,'default','alpha','codex')")
-        self.conn.commit()
-        headers = {'X-Group-Profile': 'default', 'X-Group-Key': token}
-        self.assertEqual(self.client.get('/commands', headers=headers).status_code, 200)
-        keys.initialize(self.conn)
+        headers = {'X-Group-Profile': 'default', 'X-Group-Key': auth.execution_token('default', context)}
         self.assertEqual(self.client.get('/commands', headers=headers).status_code, 401)
+        self.conn.execute("INSERT INTO wake_runs(session,started_at,profile,project,runtime) VALUES('native',2,'default','alpha','hermes')")
+        self.conn.commit()
+        self.assertEqual(self.client.get('/commands', headers=headers).status_code, 200)
+        for field, value, original in (('profile', 'architect', 'default'), ('project', 'beta', 'alpha'),
+                                       ('thread_id', 7, None), ('started_at', 3, 2),
+                                       ('runtime', 'unknown', 'hermes'), ('ended_at', 3, None)):
+            with self.subTest(field=field):
+                self.conn.execute(f'UPDATE wake_runs SET {field}=? WHERE session=?', (value, 'native'))
+                self.conn.commit()
+                for method, url in (('GET', '/commands'), ('GET', '/members?project=alpha'),
+                                    ('POST', '/task-tools/task_get'), ('POST', '/msg'),
+                                    ('POST', '/inbox/seen'), ('POST', '/heartbeat')):
+                    response = self.client.request(method, url, headers=headers)
+                    self.assertEqual(response.status_code, 401, (field, method, url, response.text))
+                self.conn.execute(f'UPDATE wake_runs SET {field}=? WHERE session=?', (original, 'native'))
+                self.conn.commit()
+                self.assertEqual(self.client.get('/commands', headers=headers).status_code, 200)
+
+    def test_legacy_hermes_reply_seen_cycle_stops_inbox_rewake(self):
+        from engine import scanner, wake
+        keys.initialize(self.conn)
+        context = dict(profile='default', project='alpha', thread_id=None, session='native', wake_started_at=2)
+        server = wake._mcp_server_config('default', context=context)
+        headers = {'X-Group-Profile': server['env']['TASK_QUEUE_ROLE'],
+                   'X-Group-Key': server['env']['GROUP_ENGINE_TOKEN']}
+        self.conn.execute("INSERT INTO wake_runs(session,started_at,profile,project,runtime) VALUES('native',2,'default','alpha','hermes')")
+        mid = self.conn.execute(
+            "INSERT INTO messages(project,ts,sender,sender_type,content,mentions,need_reply) "
+            "VALUES('alpha',?,'user','user','@default reply','[\"default\"]',1)", (db.now_iso(),)).lastrowid
+        self.conn.execute("INSERT INTO inbox(message_id,profile,status) VALUES(?,'default','pending')", (mid,))
+        self.conn.commit()
+        inbox = '/inbox?profile=default&project=alpha&kind=work'
+        result = self.client.get(inbox, headers=headers)
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()['pending_total'], 1)
+        seen_body = {'message_ids': [mid]}
+        self.assertEqual(self.client.post('/inbox/seen', json=seen_body, headers=headers).json()['blocked'], [mid])
+        with patch('engine.heartbeat.beat') as beat:
+            response = self.client.post('/heartbeat', json={'profile': 'default', 'pid': 123}, headers=headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            beat.assert_called_once()
+        response = self.client.post('/msg', headers=headers, json={
+            'project': 'alpha', 'thread_id': None, 'text': '@user handled', 'need_reply': False,
+            'execution': {'session': 'native', 'wake_started_at': 2}})
+        self.assertEqual(response.status_code, 200, response.text)
+        reply_id = response.json()['message_id']
+        self.assertIsNotNone(self.conn.execute(
+            'SELECT 1 FROM message_executions WHERE message_id=? AND session=? AND wake_started_at=?',
+            (reply_id, 'native', 2)).fetchone())
+        self.assertEqual(self.client.get(inbox, headers=headers).json()['pending_total'], 1)
+        self.assertEqual(self.client.post('/inbox/seen', json=seen_body, headers=headers).json(), {'seen': 1})
+        self.assertEqual(self.client.get(inbox, headers=headers).json()['pending_total'], 0)
+        self.conn.execute("UPDATE wake_runs SET ended_at=3 WHERE session='native'")
+        self.conn.commit()
+        with patch.object(wake, 'enqueue') as enqueue:
+            self.assertEqual(scanner.scan_inbox(self.conn), 0)
+            enqueue.assert_not_called()
+        self.assertEqual(self.client.get(inbox, headers=headers).status_code, 401)
 
     def test_legacy_env_import_preserves_existing_signature(self):
         with patch.dict(os.environ, {'GROUP_ENGINE_KEY': 'isolated-legacy-key'}):

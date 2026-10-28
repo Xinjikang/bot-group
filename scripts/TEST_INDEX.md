@@ -6,7 +6,9 @@ Hermes 重启接管：设置 `GW_PROBE_DATA` 为分配测试数据根，运行 `
 
 Hermes 配置刷新与真实模型：设置 `GW_PROBE_DATA` 为分配测试数据根，运行 `.venv\Scripts\python.exe -X utf8 -B scripts/verify_gateway_refresh_live.py --live --evidence <主目录报告下的新绝对路径>`。复用 task-250 隔离测试安装及模型凭证，在新 home/workspace 核验官方 resume 后 toolsets、max_turns、checkpoints、terminal 策略修改/删除和 editor MCP 冻结边界；策略证据只读隔离 state.db 并仅输出非敏感字段。四轮真实模型验证同 sid 规则缓存、新 sid 规则修改/删除、SOUL/记忆及工具描述刷新，并检查模型实际取得的 tool_search 结果。`--live` 调用已配置模型；仅核验策略时以 `--policy-only` 替换。结束通过官方 stop 停止本次网关并核验端口释放，原始回执/历史与结果放报告目录。
 
-两代执行签名：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_signing_keys scripts.test_access_contract scripts.test_mcp_runtime scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway_migration -q`。隔离 SQLite 与 secrets 目录，覆盖首次生成、环境密钥迁移、两次轮换、逐执行终态撤销、旧代通用凭据拒绝、代次与身份匹配、Codex 当前代兼容、损坏/缺失/写失败/提交失败恢复、Windows ACL 或 POSIX 权限、停机前预检。执行身份和验签使用同一密钥快照，签发使用已登记代次。
+两代执行签名：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_signing_keys scripts.test_access_contract scripts.test_mcp_runtime scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway_migration -q`。隔离 SQLite 与 secrets 目录，覆盖首次生成、环境密钥迁移、两次轮换、逐执行终态撤销、旧代通用凭据拒绝、代次与身份匹配、Codex 与旧版 Hermes CLI 当前代兼容、损坏/缺失/写失败/提交失败恢复、Windows ACL 或 POSIX 权限、停机前预检。原生执行覆盖身份/运行时不符、记录缺失、结束后多路由撤销，以及回复确认后扫描器停止重投。执行身份和验签使用同一密钥快照，签发使用已登记代次。
+
+旧版 Hermes 鉴权闭环：`.venv\Scripts\python.exe -X utf8 -B scripts/test_mcp_message_execution.py`。临时 SQLite、签名目录及动态回环端口中启动真实 stdio MCP；持久代次签名绑定 `runtime=hermes` 执行，验证读取、回复前已读门禁、发送、执行归属、确认已读、收件箱清空及结束后 401。测试使用合成消息、临时凭据，结束清理进程和数据；调用链覆盖 MCP 与 HTTP API，模型推理无需参与。
 
 真实进程签名延续：`.venv\Scripts\python.exe -X utf8 -B scripts/verify_signing_restarts.py --url <分配后端 origin> --data-root <分配测试数据根> --evidence <主目录报告下的新绝对路径>`。三个独立 API 进程使用同一隔离账本和 secrets 文件；模拟旧版环境密钥迁移，同 profile 两话题凭据跨两次进程重启，A 终态后多路由 401、B 继续有效，最后只退役旧代。测试只启动 API，不启动模型/派发队列；真实网关执行接管另行验收。检查实际 PID、数据库、数据目录和端口释放，隔离密钥留测试数据根，报告不含凭据。
 

@@ -147,12 +147,14 @@ async def authorize(request: Request, identity=Depends(resolve_identity)):
                     if expected_kind == 'work' and requested_project != scope['project']:
                         raise HTTPException(403, 'Execution project required')
             elif scope['signing_generation'] != 0:
-                # Previous generations require a registered Hermes execution.
+                # Local Codex and legacy Hermes CLI runs use the current generation;
+                # only gateway executions retain credentials across engine restarts.
                 native = conn.execute('SELECT runtime,ended_at,profile,project,thread_id FROM wake_runs '
                                       'WHERE session=? AND started_at=?',
                                       (scope['session'], scope['wake_started_at'])).fetchone()
                 if (scope['signing_generation'] != auth.signing_keys()[0]
-                        or native is None or native['runtime'] != 'codex' or native['ended_at'] is not None
+                        or native is None or native['runtime'] not in ('codex', 'hermes')
+                        or native['ended_at'] is not None
                         or any(native[k] != scope[k] for k in ('profile', 'project', 'thread_id'))):
                     raise HTTPException(401, 'Execution credential expired or unregistered')
         # Task operations and attachments enforce their own project/resource scope.

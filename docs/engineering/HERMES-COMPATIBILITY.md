@@ -22,6 +22,10 @@
 
 ## MCP 注入
 
+旧版 CLI 的每次执行登记在 `wake_runs`，`runtime='hermes'`。引擎通过 `hermes_overlay` 注入当前代签名凭据；HTTP 鉴权按 `(session, started_at)` 查找活动执行，并核对成员、项目、话题和当前签名代次。该路径与 Codex 本地执行共用校验，执行结束、身份不符、记录缺失或签名代次轮换后返回 401。网关执行优先按 `hermes_executions` 校验，终态和跨重启代次契约见 [网关执行适配](HERMES-GATEWAY.md)。
+
+旧版 CLI 回复链路的验收覆盖持久密钥初始化后的 MCP 读消息、`group_send`、`group_mark_seen` 和结束撤销。完整交付需要核对消息落库和原收件箱状态。
+
 固定 MCP 写在 `HERMES_HOME/config.yaml` 顶层 `mcp_servers`（`{name: {command, args, env}}`），网关启动时加载，会话快照 `info.mcp_servers` 列出已加载名称。该字段缺失或类型异常按「未知」处理，不能当作空列表。
 
 会话级 MCP 走 `session.mutate` 的 `editor_mcp` 操作，必填 `session_id`、`request_id`、`expected_revision`、`expected_generation`、`operation`、`payload={"mcp_servers":[spec…]}`。`spec` 为 ACP `McpServerStdio`，`env` 必须写成 `[{name, value}]` 列表。该操作只对 `policy.source == "acp"` 的会话开放；`session.create(source="tool"|"cli")` 的会话调用返回 `invalid_params`。
