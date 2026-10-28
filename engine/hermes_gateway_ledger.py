@@ -83,7 +83,9 @@ def read(conn, execution_id):
 
 CLEANUP_MAX_ATTEMPTS = 5
 CLEANUP_BUDGET_SECONDS = 300.0
-_CLEANUP_BACKOFF = (1.0, 2.0, 4.0, 8.0, 16.0)
+# 退避序列只覆盖前 4 次失败（第 5 次失败即 mark_cleanup_failed 不再 sleep），
+# 故不设第 5 档 16s（reviewer #255 次要③）。
+_CLEANUP_BACKOFF = (1.0, 2.0, 4.0, 8.0)
 
 
 def active(conn, session=None):
@@ -214,8 +216,10 @@ def not_submitted(conn, execution_id, detail):
 def reconcile(client, conn, execution_id, *, now=None):
     """Query before cancelling; transport loss never triggers prompt resubmission.
 
-    单次 RPC 超时 = min(默认 30s, 剩余 reconcile 预算)（设计 6.1 / D3），
-    卡住的 RPC 不得越过首次 cancel + 150s 的硬门槛。
+    有界超时只作用于取消/对账循环（cancel_reason 已设）：单次 RPC 超时 =
+    min(默认 30s, 剩余 reconcile 预算)（设计 6.1 / D3）。正常轮询（未取消）
+    保持默认 30s，不得因 reconcile_deadline（prepare 固定 started_at+150）
+    过期而把长时间运行执行打成 manual（reviewer #255 高危回归）。
     """
     now = time.time() if now is None else now
     row = read(conn, execution_id)
@@ -224,8 +228,11 @@ def reconcile(client, conn, execution_id, *, now=None):
     if not row['admission_id']:
         uncertain(conn, execution_id, 'Submission receipt unavailable; manual reconciliation required', now=now)
         return read(conn, execution_id)
-    remaining = max(0.0, (row['reconcile_deadline'] or 0) - now)
-    rpc_timeout = min(30.0, remaining) if remaining > 0 else 0.0
+    if row['cancel_reason']:
+        remaining = max(0.0, (row['reconcile_deadline'] or 0) - now)
+        rpc_timeout = min(30.0, remaining) if remaining > 0 else 0.0
+    else:
+        rpc_timeout = 30.0
     receipt = client.rpc('prompt.receipt', session_id=row['session_id'], admission_id=row['admission_id'],
                          timeout=rpc_timeout)
     row = apply_receipt(conn, execution_id, receipt, now=now)

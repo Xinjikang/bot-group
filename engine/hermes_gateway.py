@@ -252,6 +252,12 @@ def _watch(execution_id):
             except Exception as exc:
                 detail = exc.reason if isinstance(exc, GatewayRefusal) else type(exc).__name__
                 if row['state'] == 'terminal':
+                    # 清理最终期限（cleanup_deadline）到期：预算耗尽，不再重试（reviewer #255 次要②）。
+                    if row['cleanup_deadline'] and time.time() >= row['cleanup_deadline']:
+                        ledger.mark_cleanup_failed(conn, execution_id, detail + '; cleanup deadline exceeded')
+                        logger.error('Hermes cleanup deadline exceeded for execution %s; '
+                                     'manual retry required: %s', execution_id, detail)
+                        return
                     attempts = ledger.register_cleanup_retry(conn, execution_id, detail)
                     if attempts >= ledger.CLEANUP_MAX_ATTEMPTS:
                         ledger.mark_cleanup_failed(conn, execution_id, detail)
@@ -294,6 +300,10 @@ def recover():
         # terminal 后未清理的行重启清理 worker（不 _publish：已终态不再发 spawned）。
         # 已耗尽（cleanup_failed）的行不自动重试，只续剩余额度（设计 6.3 / D2）。
         for row in ledger.cleanup_pending(conn):
+            # 清理最终期限已过：不重启 worker，直接转 cleanup_failed（reviewer #255 次要②）。
+            if row['cleanup_deadline'] and time.time() >= row['cleanup_deadline']:
+                ledger.mark_cleanup_failed(conn, row['execution_id'], 'cleanup deadline exceeded')
+                continue
             if (row['retry_count'] or 0) < ledger.CLEANUP_MAX_ATTEMPTS:
                 _start_worker(row['execution_id'])
     finally:

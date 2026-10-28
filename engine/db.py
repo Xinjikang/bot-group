@@ -280,13 +280,12 @@ def _migrate_hermes_execution_cleanup(conn: sqlite3.Connection) -> None:
     _migrate_add_column(conn, "hermes_executions", "retry_count", "INTEGER NOT NULL DEFAULT 0")
     _migrate_add_column(conn, "hermes_executions", "next_retry_at", "REAL")
     _migrate_add_column(conn, "hermes_executions", "cleanup_deadline", "REAL")
-    try:
-        conn.execute("DROP INDEX IF EXISTS hermes_execution_active")
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS hermes_execution_active "
-                     "ON hermes_executions(session) WHERE state != 'terminal'")
-    except sqlite3.OperationalError:
-        # 存量数据存在同一 session 多个非 terminal 行时保留旧索引，由运行时校验兜底。
-        pass
+    # 旧宽口径唯一索引存在即保证「同一 session 至多一个非 terminal 行」，DROP 重建窄口径
+    # 必然成功；存量数据已违反窄口径的极端老库会在本层 CREATE 抛 OperationalError，
+    # 由上层启动流程 fail-fast 暴露，不静默吞掉（reviewer #255 次要①）。
+    conn.execute("DROP INDEX IF EXISTS hermes_execution_active")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS hermes_execution_active "
+                 "ON hermes_executions(session) WHERE state != 'terminal'")
 
 
 # messages 表完整列定义（req#61 重建迁移用）：与 schema.sql 保持一致。

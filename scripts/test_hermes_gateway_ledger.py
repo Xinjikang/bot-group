@@ -173,6 +173,15 @@ class LedgerTests(unittest.TestCase):
         ledger.reconcile(client, self.conn, self.eid, now=270)  # remaining=0
         self.assertEqual(client.rpc.call_args_list[0].kwargs['timeout'], 0.0)
 
+    def test_reconcile_rpc_timeout_keeps_thirty_when_not_cancelled(self):
+        # 非取消 running 执行运行超 reconcile_deadline（started_at+150）时，
+        # 有界超时裁剪不得生效：正常轮询保持 30s（reviewer #255 高危回归）。
+        self.accept()  # state=running，无 cancel_reason，reconcile_deadline=250
+        client = Mock()
+        client.rpc.side_effect = [self.receipt()]
+        ledger.reconcile(client, self.conn, self.eid, now=260)  # now > 250，但未取消
+        self.assertEqual(client.rpc.call_args_list[0].kwargs['timeout'], 30.0)
+
 
 if __name__ == '__main__':
     unittest.main()

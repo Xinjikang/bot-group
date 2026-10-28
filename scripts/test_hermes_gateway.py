@@ -270,6 +270,45 @@ class GatewayTests(unittest.TestCase):
         publish.assert_not_called()
         remote.rpc.assert_not_called()
 
+    def test_cleanup_deadline_expired_marks_failed_without_retry(self):
+        self.terminal()
+        # 手动把 cleanup_deadline 改为已过期，模拟清理最终期限已到（reviewer #255 次要②）。
+        self.conn.execute("UPDATE hermes_executions SET cleanup_deadline=? WHERE execution_id=?",
+                          (time.time() - 1, self.eid))
+        self.conn.commit()
+        remote = Mock()
+        with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
+             patch.object(gateway.sessions, 'attach'), \
+             patch.object(gateway.sessions, 'clear_mcp', side_effect=ConnectionError('offline')) as clear, \
+             patch.object(gateway.time, 'sleep'), patch.object(wake, '_handle_task_exit'):
+            gateway._watch(self.eid)
+        row = ledger.read(self.conn, self.eid)
+        self.assertEqual(clear.call_count, 1)  # 期限已过，不再登记重试
+        self.assertEqual(row['retry_count'], 0)
+        self.assertIn('cleanup deadline exceeded', row['detail'])
+        self.assertEqual(row['cleanup_pending'], 1)
+
+    def test_late_cleanup_does_not_touch_successor_execution(self):
+        # D1：A terminal 后清理 worker 迟到，后继 B（同 session 不同 started_at）已登记，
+        # A 的收尾按 started_at 精确匹配，不误删 B 的 wake_runs（reviewer #255 次要④）。
+        self.terminal()
+        b_start = self.start + 5
+        self.conn.execute('INSERT INTO wake_runs(session,started_at,project,profile,runtime_session_id) '
+                          "VALUES(?,?,'alpha','default','sid-b')", (self.session, b_start))
+        self.conn.commit()
+        remote = Mock()
+        with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
+             patch.object(gateway.sessions, 'attach'), \
+             patch.object(gateway.sessions, 'clear_mcp'), \
+             patch.object(wake, '_handle_task_exit'):
+            gateway._watch(self.eid)
+        a_ended = self.conn.execute('SELECT ended_at FROM wake_runs WHERE started_at=?',
+                                    (self.start,)).fetchone()[0]
+        b_ended = self.conn.execute('SELECT ended_at FROM wake_runs WHERE started_at=?',
+                                    (b_start,)).fetchone()[0]
+        self.assertIsNotNone(a_ended)  # A 收尾
+        self.assertIsNone(b_ended)     # B 未被 A 的迟到清理误删
+
     def test_recover_resumes_pending_cleanup_within_budget(self):
         self.terminal()
         ledger.register_cleanup_retry(self.conn, self.eid, 'offline', now=self.start + 200)
