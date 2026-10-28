@@ -41,7 +41,7 @@ _MANAGED_TOP = (
 
 # 受管目录内的排除模式（测试/缓存/运行期产物不入清单不入包）
 _EXCLUDE_PARTS = {"__pycache__", "node_modules", ".venv", "venv", ".git",
-                  "dist", "build", ".pytest_cache", ".mypy_cache"}
+                  "dist", "build", "secrets", ".pytest_cache", ".mypy_cache"}
 _EXCLUDE_SUFFIXES = (".pyc", ".pyo", ".log", ".bak", ".tmp", ".orig", ".rej", "~")
 _EXCLUDE_NAMES = {"install.json", "release_manifest.json", "group.db",
                   "group.db-wal", "group.db-shm", ".env"}

@@ -64,6 +64,8 @@ async def _engine_lifespan(app: FastAPI):
     conn = db.get_connection()
     try:
         db.init_schema(conn)
+        from . import signing_keys
+        signing_keys.initialize(conn)
         recovered = db.recover_on_startup(conn)
         if recovered:
             logger.info("重启恢复：%d 个投递或话题执行重新入队", recovered)

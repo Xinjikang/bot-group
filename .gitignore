@@ -10,6 +10,7 @@ venv/
 node_modules/
 dist/
 .env
+secrets/
 frontend/index.html.bak
 logs/
 engine_start.log

@@ -30,10 +30,15 @@ def resolve_identity(
     if isinstance(x_group_profile, str):
         profile = x_group_profile.strip()
         key = x_group_key if isinstance(x_group_key, str) else ""
-        if not auth.verify_bot(profile, key) or db.is_builtin_user(profile):
+        from .signing_keys import RecoveryError
+        try:
+            ring = auth.signing_keys()
+        except RecoveryError as exc:
+            raise HTTPException(503, str(exc)) from None
+        if not auth.verify_bot(profile, key, ring=ring) or db.is_builtin_user(profile):
             raise HTTPException(401, "Invalid member credential")
         if request is not None:
-            request.state.execution_scope = auth.execution_scope(profile, key)
+            request.state.execution_scope = auth.execution_scope(profile, key, ring[1])
         return profile, "bot"
     if isinstance(authorization, str):
         if authorization.startswith("Bearer ") and auth.verify_token(authorization[7:].strip()):
@@ -103,9 +108,13 @@ async def authorize(request: Request, identity=Depends(resolve_identity)):
         scope = getattr(request.state, 'execution_scope', None)
         gateway_run = None
         if scope is not None:
-            gateway_run = conn.execute('SELECT state FROM hermes_executions WHERE session=? AND started_at=?',
+            gateway_run = conn.execute('SELECT * FROM hermes_executions WHERE session=? AND started_at=?',
                                        (scope['session'], scope['wake_started_at'])).fetchone()
             if gateway_run is not None:
+                if (gateway_run['signing_generation'] != scope['signing_generation']
+                        or any(gateway_run[k] != scope[k] for k in ('profile', 'project', 'thread_id'))
+                        or gateway_run['kind'] != ('work' if scope['thread_id'] is None else 'chat')):
+                    raise HTTPException(401, 'Execution credential identity mismatch')
                 if gateway_run['state'] == 'terminal':
                     raise HTTPException(401, 'Execution credential expired')
                 require_project(conn, profile, scope['project'])
@@ -124,6 +133,15 @@ async def authorize(request: Request, identity=Depends(resolve_identity)):
                         raise HTTPException(403, 'Execution topic required')
                     if expected_kind == 'work' and requested_project != scope['project']:
                         raise HTTPException(403, 'Execution project required')
+            elif scope['signing_generation'] != 0:
+                # Previous generations require a registered Hermes execution.
+                native = conn.execute('SELECT runtime,ended_at,profile,project,thread_id FROM wake_runs '
+                                      'WHERE session=? AND started_at=?',
+                                      (scope['session'], scope['wake_started_at'])).fetchone()
+                if (scope['signing_generation'] != auth.signing_keys()[0]
+                        or native is None or native['runtime'] != 'codex' or native['ended_at'] is not None
+                        or any(native[k] != scope[k] for k in ('profile', 'project', 'thread_id'))):
+                    raise HTTPException(401, 'Execution credential expired or unregistered')
         # Task operations and attachments enforce their own project/resource scope.
         if path == "/members":
             require_project(conn, profile, request.query_params.get("project", ""))

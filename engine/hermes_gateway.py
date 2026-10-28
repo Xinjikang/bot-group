@@ -145,7 +145,8 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
             workdir=workdir, session_id=snapshot['session_id'], profile_id=description['profile_id'], started_at=start,
             parent_id=topic['turn_parent_id'] if topic else None, round_no=topic['round'] if topic else None)
         _publish(row)
-        server = wake._mcp_server_config(profile, context=context, chat=kind == 'chat')
+        server = wake._mcp_server_config(profile, context=context, chat=kind == 'chat',
+                                       signing_generation=row['signing_generation'])
         resource_env = dict(os.environ)
         browser_resources.register(conn, resource_env, project=project, profile=profile, session=session,
                                    started_at=start, thread_id=thread_id, task_id=bound_task)

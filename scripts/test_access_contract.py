@@ -144,7 +144,8 @@ class AccessContractTests(unittest.TestCase):
         context = {"profile": "default", "project": "alpha", "thread_id": None,
                    "session": "test-work", "wake_started_at": 100}
         scoped = wake._mcp_server_config("default", context=context)["env"]
-        self.assertEqual(auth.execution_scope("default", scoped["GROUP_ENGINE_TOKEN"]), context)
+        self.assertEqual(auth.execution_scope("default", scoped["GROUP_ENGINE_TOKEN"], auth.signing_keys()[1]),
+                         {**context, 'signing_generation': auth.signing_keys()[0]})
         self.assertNotEqual(scoped["GROUP_ENGINE_TOKEN"], auth.bot_token("default"))
 
     def test_member_provisioning_and_health_path_visibility(self):

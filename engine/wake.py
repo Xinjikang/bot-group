@@ -586,7 +586,7 @@ def _codex_bin() -> str:
     raise FileNotFoundError('未找到 Codex CLI：请安装 Codex，或将 CODEX_BIN 指向原生可执行文件')
 
 
-def _mcp_server_config(profile: str, *, context=None, chat=False) -> dict:
+def _mcp_server_config(profile: str, *, context=None, chat=False, signing_generation=None) -> dict:
     """Connection and execution metadata shared by Codex and Hermes MCP clients."""
     import json as _json
     from .auth import bot_token, execution_token
@@ -597,7 +597,8 @@ def _mcp_server_config(profile: str, *, context=None, chat=False) -> dict:
             "TASK_QUEUE_ROLE": profile,
             "HERMES_PROFILE": profile,
             "GROUP_ENGINE_URL": _engine_url(),
-            "GROUP_ENGINE_TOKEN": execution_token(profile, context) if context is not None else bot_token(profile),
+            "GROUP_ENGINE_TOKEN": execution_token(profile, context, signing_generation=signing_generation)
+            if context is not None else bot_token(profile),
             "HERMES_CHAT_MODE": '1' if chat else '0',
         },
     }

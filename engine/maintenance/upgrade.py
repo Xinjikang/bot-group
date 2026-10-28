@@ -55,7 +55,7 @@ from engine.maintenance import releases
 
 # 固定数据项：升级只换程序，这些跳过（保留在数据目录/程序根存量环境）。
 # .git 纳入保护（VCS 元数据不是程序文件，不得被正向删除/回滚残留清理当程序删掉）。
-_DATA_ITEMS = {"group.db", "data", "attachments", ".env", "backups", "logs", ".venv", "install.json", ".git"}
+_DATA_ITEMS = {"group.db", "data", "secrets", "attachments", ".env", "backups", "logs", ".venv", "install.json", ".git"}
 MANIFEST = "manifest.json"
 # 受管理发布清单：版本随附的程序文件清单（node 1079 缺陷1）。落地新源码时随包带来并
 # 持久化到程序根；升级的覆盖/删除只认它，绝不用程序根扫描结果当清单（用户笔记等非受管
@@ -827,6 +827,8 @@ def do_upgrade(url: str | None = None, sha256: str | None = None,
         if old_managed is None:
             raise RuntimeError("当前环境缺受管理发布清单（release_manifest.json），"
                                "请走可核验迁移流程建立旧版本文件归属后重试")
+        from engine.signing_keys import preflight
+        preflight()
         print("[upgrade] 安全停机（停止引擎/MCP 等写入方）")
         report('stopping')
         if _safe_stop() != 0:

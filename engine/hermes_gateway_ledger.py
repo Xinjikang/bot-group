@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS hermes_executions (
     admission_id TEXT,
     generation INTEGER,
     authority_epoch INTEGER,
+    signing_generation INTEGER,
     state TEXT NOT NULL DEFAULT 'submitting',
     cancel_reason TEXT,
     submit_deadline REAL NOT NULL,
@@ -71,8 +72,9 @@ def prepare(conn, *, session, project, profile, kind, thread_id, task_id, job_id
         (eid, session, start, project, profile, kind, thread_id, task_id, job_id, event_floor,
          str(source), str(python), str(home), str(workdir), session_id, profile_id, submission,
          start + 30, start + 150, start + 3600 if task_id is not None else None))
-    conn.execute('UPDATE hermes_executions SET parent_id=?,round=? WHERE execution_id=?',
-                 (parent_id, round_no, eid))
+    from . import auth
+    conn.execute('UPDATE hermes_executions SET parent_id=?,round=?,signing_generation=? WHERE execution_id=?',
+                 (parent_id, round_no, auth.signing_keys()[0], eid))
     conn.commit()
     return read(conn, eid)
 
@@ -165,6 +167,9 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
             conn.execute('UPDATE hermes_executions SET admission_id=?,generation=?,authority_epoch=?,'
                          'state=? WHERE execution_id=?', (aid, gen, epoch, state, execution_id))
         conn.commit()
+        if status == 'terminal':
+            from . import signing_keys
+            signing_keys.retire(conn)
         return read(conn, execution_id)
     except BaseException:
         conn.rollback()
@@ -211,6 +216,8 @@ def not_submitted(conn, execution_id, detail):
                  "ended_at=?,cleanup_pending=1,detail=? WHERE execution_id=? AND admission_id IS NULL",
                  (time.time(), detail, execution_id))
     conn.commit()
+    from . import signing_keys
+    signing_keys.retire(conn)
 
 
 def reconcile(client, conn, execution_id, *, now=None):

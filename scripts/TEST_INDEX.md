@@ -1,5 +1,9 @@
 # 测试脚本索引
 
+两代执行签名：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_signing_keys scripts.test_access_contract scripts.test_mcp_runtime scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway_migration -q`。隔离 SQLite 与 secrets 目录，覆盖首次生成、环境密钥迁移、两次轮换、逐执行终态撤销、旧代通用凭据拒绝、代次与身份匹配、Codex 当前代兼容、损坏/缺失/写失败/提交失败恢复、Windows ACL 或 POSIX 权限、停机前预检。执行身份和验签使用同一密钥快照，签发使用已登记代次。
+
+真实进程签名延续：`.venv\Scripts\python.exe -X utf8 -B scripts/verify_signing_restarts.py --url <分配后端 origin> --data-root <分配测试数据根> --evidence <主目录报告下的新绝对路径>`。三个独立 API 进程使用同一隔离账本和 secrets 文件；模拟旧版环境密钥迁移，同 profile 两话题凭据跨两次进程重启，A 终态后多路由 401、B 继续有效，最后只退役旧代。测试只启动 API，不启动模型/派发队列；真实网关执行接管另行验收。检查实际 PID、数据库、数据目录和端口释放，隔离密钥留测试数据根，报告不含凭据。
+
 Hermes 保留名称：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_profile_names scripts.test_profile_create scripts.test_discovery scripts.test_member_identity scripts.test_execution_errors -q`。使用临时宿主与 SQLite，验证创建前拒绝、注册及旧 Bot ID 入组校验、扫描与已登记外部候选过滤、历史文件和登记保留、default 别名及 Codex 同名隔离、运行失败的配置分类与明确提示。保留名规则集中在 `engine/hermes_profile_names.py`，升级 Hermes 时核对 `hermes_cli/profiles.py` 的 `_RESERVED_NAMES` 与 default 例外。
 
 Hermes 刷新出站载荷：设置 `GW_PROBE_DATA` 为分配测试数据根，运行 `.venv\Scripts\python.exe -X utf8 -B scripts/verify_gateway_refresh_payload.py --url <分配后端 origin> --evidence <主目录报告下的新绝对路径>`。复用隔离安装记录选择 Hermes 解释器，在全新 home/workspace 中经官方 gateway ensure 和 RPC 执行七轮会话；本地推理夹具保存实际 HTTP messages/tools，并请求原生 tool_search 获取 MCP 描述。核对 AGENTS 修改/删除、工具描述修改与工具删除、reasoning 默认刷新/删除、引擎覆盖持久化与删除 reset、reset 后原生选择保留、SOUL/记忆续会话稳定和新会话刷新。该证据验证真实网关出站载荷，真实模型生成和引擎 `/new` 绑定切换另行验收。使用合成凭据，结束停止本次网关和 HTTP 夹具；原始载荷与结果写报告目录。v0.22.5 的 AGENTS 修改/删除仍有已知失败，用例保持红灯。

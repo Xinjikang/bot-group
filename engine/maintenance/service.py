@@ -161,6 +161,13 @@ def do_start() -> int:
         return 1
     if _run_install_check() != 0:
         return 1
+    _load_env()
+    from engine.signing_keys import preflight
+    try:
+        preflight()
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        print(f'[start-engine] {exc}', file=sys.stderr)
+        return 1
     # 启动前请求旧引擎优雅退出，失败保留旧进程并中止启动
     if do_stop() != 0:
         return 1
