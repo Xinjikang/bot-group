@@ -5,10 +5,10 @@
   probe_whoami 返回本进程 pid / HERMES_HOME / HERMES_PROFILE / argv / PROBE_*，
                用于核对"每次执行注入的 MCP 子进程拿到的是哪个 home、哪个 tag"；
   probe_engine 访问 ${PROBE_ENGINE_URL}/whoami，返回隔离测试引擎的回执，
-               用于证明 MCP 配置里的引擎地址指向隔离实例而不是生产 8180。
+               用于证明 MCP 配置里的引擎地址指向隔离实例。
 
-设计约束：只读、无生产访问能力。引擎地址只从环境变量取，默认空（未设置时返回错误
-而不是去猜 8180）。stdout 只输出 JSON-RPC 行，日志一律不写，避免污染 MCP 通道。
+设计约束：只读、面向隔离引擎。引擎地址由调用方通过环境变量显式传入，未设置时返回错误。
+stdout 只输出 JSON-RPC 行，日志一律不写，避免污染 MCP 通道。
 """
 from __future__ import annotations
 

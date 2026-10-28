@@ -50,17 +50,17 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from probe_config import required_directory, absolute_path
 
 # ── 隔离环境常量 ───────────────────────────────────────────────────────────
 # 代码/源码隔离：git worktree + uv 包，可用 GW_PROBE_ROOT 覆盖；
 # 默认取仓库根下的 .probe-worktrees（脚本位于 <repo>/scripts/）。
-PROBE_ROOT = Path(os.environ.get("GW_PROBE_ROOT")
-                  or Path(__file__).resolve().parents[1] / ".probe-worktrees")
+PROBE_ROOT = (absolute_path(os.environ["GW_PROBE_ROOT"], "GW_PROBE_ROOT")
+              if os.environ.get("GW_PROBE_ROOT")
+              else Path(__file__).resolve().parents[1] / ".probe-worktrees")
 # 持久测试数据根：HERMES_HOME 属测试持久数据，必须落在引擎分配的 test-data 下
-# （不用 .probe-worktrees 代替）；GW_PROBE_DATA 可覆盖以在其他工作区复跑。
-PROBE_DATA = Path(os.environ.get("GW_PROBE_DATA")
-                  or r"E:\Code\.bot-group-resources\dcc5f7fd43510c8f"
-                     r"\ws_6043478a1e82665dc05e9604\test-data")
+# （不用 .probe-worktrees 代替）；GW_PROBE_DATA 必须显式指向当前工作区分配目录。
+PROBE_DATA = required_directory("GW_PROBE_DATA")
 HERMES_HOME = PROBE_DATA / "task-250" / "gw-probe-home"      # 独立 profile 数据根（绝不指向生产）
 HERMES_RUNTIME = PROBE_DATA / "task-250" / "hermes-pm-store"  # pm 依赖存储
 # 依赖环境：hermes pm 装在 HERMES_HOME/installs/<install>/environments/<env>/venv
@@ -68,9 +68,9 @@ HERMES_RUNTIME = PROBE_DATA / "task-250" / "hermes-pm-store"  # pm 依赖存储
 # select_probe_python() 从安装记录选择解释器，再核对 CLI 源码路径/提交及 ruamel 版本。
 
 WORKTREE_SRC = PROBE_ROOT / "hermes-v0225"
-EVIDENCE_DIR = Path(os.environ.get(
-    "GW_EVIDENCE_DIR",
-    Path(__file__).resolve().parents[1] / "reports" / "research" / "hermes-gateway"))
+EVIDENCE_DIR = (absolute_path(os.environ["GW_EVIDENCE_DIR"], "GW_EVIDENCE_DIR")
+                if os.environ.get("GW_EVIDENCE_DIR")
+                else Path(__file__).resolve().parents[1] / "reports" / "research" / "hermes-gateway")
 RECEIPT_POLL_INTERVAL = 3.0
 RECEIPT_POLL_MAX = 900                              # 15 分钟兜底（真实 agent 一轮可能慢）
 ENSURE_GATEWAY_TIMEOUT = 120.0                      # 冷启动可能超过 60s
@@ -147,7 +147,7 @@ def save_evidence(name: str, payload) -> Path:
 CONNECT_CODE = r"""
 import asyncio, json, sys, os
 # 隔离：绝不继承生产引擎指向、managed scope 或执行凭据。
-# managed scope 经 HERMES_MANAGED_DIR 覆盖层注入 mcp_servers（含 GROUP_ENGINE_URL=生产 8180
+# managed scope 经 HERMES_MANAGED_DIR 覆盖层注入 mcp_servers（可能含生产 GROUP_ENGINE_URL
 # 与成员凭据），v0.22.5 会在网关启动时合并并拉起 MCP server 周期心跳——必须一并清除。
 for k in ("XDG_GROUP_ENGINE_URL", "GROUP_ENGINE_URL", "XDG_GROUP_ENGINE_EXECUTION",
           "HERMES_MANAGED_DIR", "HERMES_CHAT_MODE", "TASK_QUEUE_ROLE"):

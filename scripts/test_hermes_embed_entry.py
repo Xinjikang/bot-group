@@ -15,18 +15,19 @@ agent 的原生 steer()。前提是 Hermes 提供「可嵌入 + 线程安全」�
   5. interrupt()/redirect() 无 provider、无活跃模型请求时不崩（fail-safe）
 
 运行（需 Hermes 源码的 Python 3.11 venv）：
-    E:/home/admin/hermes/hermes-agent/venv/Scripts/python.exe \
-        E:/Code/bot-group/scripts/test_hermes_embed_entry.py
+    python scripts/test_hermes_embed_entry.py
 
-本脚本依赖 Hermes 源码路径（硬编码 E:\\home\\admin\\hermes\\hermes-agent），不进
+通过 HERMES_TEST_SOURCE 指定已安装的 Hermes 源码绝对路径，不进
 group-engine 的 unittest discovery（import 零副作用，仅 __main__ 时执行验证）。
 """
 import os
 import sys
 import tempfile
 import threading
+from pathlib import Path
 
-_HERMES_SRC = r"E:\home\admin\hermes\hermes-agent"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts.probe_config import hermes_source
 
 
 def _isolate_home() -> str:
@@ -39,7 +40,7 @@ def _isolate_home() -> str:
 def _import_entries():
     """延迟导入 Hermes 入口，返回 (AIAgent, SessionManager, HermesACPAgent, InterruptControlMixin,
     _set_defaults, _CONTROL_STATE)。"""
-    sys.path.insert(0, _HERMES_SRC)
+    sys.path.insert(0, hermes_source())
     from run_agent import AIAgent  # noqa: F401
     from acp_adapter.session import SessionManager  # noqa: F401
     from acp_adapter.server import HermesACPAgent  # noqa: F401
@@ -74,6 +75,7 @@ def _make_agent(InterruptControlMixin, _set_defaults, _CONTROL_STATE):
 
 
 def main() -> int:
+    hermes_source()
     iso = _isolate_home()
     AIAgent, SessionManager, HermesACPAgent, InterruptControlMixin, _set_defaults, _CONTROL_STATE = _import_entries()
 

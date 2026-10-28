@@ -1,9 +1,17 @@
 """全弹窗层级回归测试，覆盖弹窗堆叠及交互可达性。
 六项：新建话题/全局成员/项目详情/全部项目下拉/话题⋯菜单/背景交互。
-用法：D:/Python/Python310/python.exe scripts/verify_zindex.py
+用法：python scripts/verify_zindex.py --url <隔离服务origin> --project <测试项目ID>
 每项验证：完整在视口 + 右边缘 elementFromPoint 命中（不被任何栏盖住）。
 注意：选择器必须 grep 代码实际 id（chip-all→#pj-dropdown 动态创建；菜单按钮=.tc-menu-btn）。
 """
+import argparse
+import os
+from probe_config import loopback_url
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--url', type=loopback_url, required=True)
+parser.add_argument('--project', required=True)
+args = parser.parse_args()
 from playwright.sync_api import sync_playwright
 
 results = []
@@ -16,9 +24,11 @@ with sync_playwright() as p:
     pg = b.new_page(viewport={'width': 1400, 'height': 850})
     errs = []
     pg.on('pageerror', lambda e: errs.append(str(e)))
-    pg.goto('http://127.0.0.1:8180/app/', wait_until='domcontentloaded')
+    pg.goto(args.url + '/app/', wait_until='domcontentloaded')
     pg.wait_for_timeout(1500)
-    pg.locator('#login-pwd').fill('testbot123'); pg.keyboard.press('Enter')
+    if pg.locator('#login-pwd').is_visible():
+        pg.locator('#login-pwd').fill(os.environ.get('PROBE_ADMIN_PASSWORD', ''))
+        pg.keyboard.press('Enter')
     pg.wait_for_timeout(2500)
 
     def edge_hit(sel):
@@ -36,14 +46,15 @@ with sync_playwright() as p:
     pg.locator('#dlg-cancel').click(); pg.wait_for_timeout(400)
 
     # 2 项目成员
-    pg.locator('.project-chip[data-project="xjk"]').first.click()
+    project_selector = pg.evaluate('value => ".project-chip[data-project=" + CSS.escape(value) + "]"', args.project)
+    pg.locator(project_selector).first.click()
     pg.locator('#pj-tab-members').click(); pg.wait_for_timeout(700)
     v, h = edge_hit('#dlg-project-detail')
     check('②项目成员 视口', v is True); check('②项目成员 不被盖', h is True)
     pg.keyboard.press('Escape'); pg.wait_for_timeout(400)
 
-    # 3 项目详情（xjk chip）
-    pg.locator('.project-chip[data-project="xjk"]').first.click(); pg.wait_for_timeout(700)
+    # 3 指定项目详情
+    pg.locator(project_selector).first.click(); pg.wait_for_timeout(700)
     v, h = edge_hit('#dlg-project-detail')
     check('③项目详情 视口', v is True); check('③项目详情 不被盖', h is True)
     pg.keyboard.press('Escape'); pg.wait_for_timeout(400)

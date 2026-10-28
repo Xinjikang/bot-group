@@ -424,7 +424,7 @@ async def run_all(info: dict, only: list[str] | None) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--scenarios", default="", help="r1,r3,r4,r5；默认全部")
+    parser.add_argument("--scenarios", default="", help="r1,r3,r4,r5,r6；默认全部")
     parser.add_argument("--preflight-only", action="store_true")
     args = parser.parse_args()
     only = [s.strip() for s in args.scenarios.split(",") if s.strip()] or None

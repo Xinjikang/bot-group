@@ -22,10 +22,10 @@ ROOT = Path(__file__).resolve().parents[1]
 os.environ.setdefault("GW_PROBE_ROOT", str(ROOT / ".probe-worktrees"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-try:
+_probe_data = tempfile.TemporaryDirectory(prefix="gw-gate-fixtures-")
+unittest.addModuleCleanup(_probe_data.cleanup)
+with mock.patch.dict(os.environ, {"GW_PROBE_DATA": _probe_data.name}):
     import gw_probe
-except AssertionError as exc:  # 探针运行时未安装（非本机环境）
-    raise unittest.SkipTest(f"probe runtime not available: {exc}")
 
 
 class CheckMcpEmptyTest(unittest.TestCase):
@@ -242,15 +242,14 @@ class McpLogSnapshotTest(unittest.TestCase):
 class AlignmentTest(unittest.TestCase):
     """实例归属三方对齐：解析 gateway.pid start_time 与 Win32 CreationDate 并逐项判定。"""
 
-    HOME = Path(r"E:\Code\.bot-group-resources\dcc5f7fd43510c8f"
-                r"\ws_6043478a1e82665dc05e9604\test-data\task-250\gw-probe-home")
+    HOME = Path(_probe_data.name) / "task-250" / "gw-probe-home"
 
     def _pid_meta(self, **over):
         meta = {
             "pid": 2604,
             "start_time": 179310864340,
             "hermes_home": str(self.HOME),
-            "argv": [r"E:\Code\bot-group\.probe-worktrees\hermes-v0225\hermes_cli\main.py",
+            "argv": [str(ROOT / ".probe-worktrees/hermes-v0225/hermes_cli/main.py"),
                      "gateway", "run", "--quiet", "--idle-exit"],
         }
         meta.update(over)
@@ -290,7 +289,7 @@ class AlignmentTest(unittest.TestCase):
 
     def test_home_mismatch_is_mismatched(self):
         rec = gw_probe.alignment_verdict(
-            self._pid_meta(hermes_home=r"E:\Code\bot-group\.probe-worktrees\gw-probe-home"),
+            self._pid_meta(hermes_home=str(Path(_probe_data.name) / "other-home")),
             self._win(), self.HOME)
         self.assertEqual(rec["verdict"], "mismatched")
         self.assertFalse(rec["checks"]["hermes_home_matches"])
@@ -545,10 +544,10 @@ class InstallRecordTest(unittest.TestCase):
 class ProbePythonSelftestTest(unittest.TestCase):
     """自检两条：--version 的 Install directory + local 提交；能 import ruamel 读版本。"""
 
-    SRC = Path(r"E:\Code\bot-group\.probe-worktrees\hermes-v0225")
+    SRC = Path(_probe_data.name) / "hermes-source"
     HEAD = "bf0203a794a07aac3ff764972ab9087baa4e4f4e"
     VERSION_OK = ("Hermes Agent v0.22.5 (2026.9.24) · stable · local bf0203a794a0\n"
-                  "Install directory: E:\\Code\\bot-group\\.probe-worktrees\\hermes-v0225\n"
+                  f"Install directory: {SRC}\n"
                   "Install method: git\nPython: 3.14.9")
 
     def _stub_runs(self, version_out, version_rc=0, ruamel_out="0.18.16", ruamel_rc=0):
@@ -573,8 +572,8 @@ class ProbePythonSelftestTest(unittest.TestCase):
 
     def test_wrong_install_directory_fails(self):
         out = self.VERSION_OK.replace(
-            r"E:\Code\bot-group\.probe-worktrees\hermes-v0225",
-            r"E:\home\admin\hermes\hermes-agent")
+            str(self.SRC),
+            str(Path(_probe_data.name) / "other-source"))
         self._stub_runs(out)
         rec = gw_probe._selftest_probe_python(Path("x/python.exe"), self.SRC, commit=self.HEAD)
         self.assertFalse(rec["install_directory_matches_worktree"])
@@ -631,7 +630,7 @@ class StopOwnershipTest(unittest.TestCase):
     def _pid_file(self, **overrides):
         meta = {"pid": 4242, "kind": "hermes-gateway",
                 "hermes_home": str(self.home), "start_time": self.START_CS,
-                "argv": [r"E:\Code\bot-group\.probe-worktrees\hermes-v0225\hermes_cli\main.py",
+                "argv": [str(ROOT / ".probe-worktrees/hermes-v0225/hermes_cli/main.py"),
                          "gateway", "run", "--quiet"]}
         meta.update(overrides)
         (self.home / "gateway.pid").write_text(json.dumps(meta), encoding="utf-8")
@@ -682,7 +681,7 @@ class StopOwnershipTest(unittest.TestCase):
         self.assertEqual(gw_probe.stop_ownership()["verdict"], "unknown")
 
     def test_foreign_when_home_mismatch(self):
-        self._pid_file(hermes_home=r"E:\home\admin\hermes\hermes-agent")
+        self._pid_file(hermes_home=str(Path(_probe_data.name) / "other-home"))
         self.assertEqual(gw_probe.stop_ownership()["verdict"], "foreign")
 
     def test_foreign_when_only_old_startup_exists(self):
@@ -939,7 +938,7 @@ class StopRefusedTest(unittest.TestCase):
         gw_probe._pid_alive = lambda pid: True
         gw_probe._win32_process = lambda pid: {"rc": 0, "output": StopOwnershipTest.WIN32}
         (self.home / "gateway.pid").write_text(json.dumps({
-            "pid": 1, "hermes_home": r"E:\home\admin\hermes\hermes-agent",
+            "pid": 1, "hermes_home": str(Path(_probe_data.name) / "other-home"),
             "argv": ["x"], "start_time": StopOwnershipTest.START_CS}), encoding="utf-8")
         calls = []
         gw_probe.subprocess.run = lambda *a, **k: calls.append(a)
@@ -977,7 +976,7 @@ class StopRefusedTest(unittest.TestCase):
         gw_probe._pid_alive = lambda pid: True
         gw_probe._win32_process = lambda pid: {"rc": 0, "output": StopOwnershipTest.WIN32}
         (self.home / "gateway.pid").write_text(json.dumps({
-            "pid": 1, "hermes_home": r"E:\home\admin\hermes\hermes-agent",
+            "pid": 1, "hermes_home": str(Path(_probe_data.name) / "other-home"),
             "argv": ["x"], "start_time": StopOwnershipTest.START_CS}), encoding="utf-8")
         calls = []
         gw_probe.subprocess.run = lambda *a, **k: calls.append(a)

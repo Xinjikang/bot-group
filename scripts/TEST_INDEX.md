@@ -1,5 +1,13 @@
 # 测试脚本索引
 
+脚本可移植性：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_probe_config scripts.test_gw_probe_gates -q`。覆盖仓库迁移到含空格/中文的目录、显式测试数据根、源码配置缺失提前失败、回环地址与端口校验。`probe_config.py` 提供公共配置校验；纯模拟夹具的地址只用于解析与断言。
+
+真实探针运行配置：运行 `gw_probe.py`、`gw_stop_probe.py`、`gw_recovery_probe.py`、`gw_mcp_probe.py`、`gw_ownership_probe.py` 和 `verify_hermes_gateway_adapter.py` 前，必须设置 `GW_PROBE_DATA` 为当前工作区分配的测试数据根绝对路径。`GW_PROBE_ROOT` 可指定隔离源码父目录（默认仓库内 `.probe-worktrees`），`GW_EVIDENCE_DIR` 可指定证据目录。ownership 探针使用当前 Python 解释器，scratch 位于本次运行的测试数据子目录；可选 `GW_OBSERVER_URL=http://127.0.0.1:<授权观察端口>` 仅用于显式授权的心跳观察，未配置时报告 skipped。网关自身的日志心跳隔离门禁保持启用。
+
+Hermes 旧接口专项：设置 `HERMES_TEST_SOURCE` 为已安装 Hermes 源码的绝对路径，使用含对应依赖的 Python 运行 `test_hermes_embed_entry.py`、`test_hermes_session_restore.py`、`test_hermes_steer_delivery.py` 或 `test_session_binding.py`。缺少源码配置时，在创建隔离 home 前报错。
+
+现场浏览器与安装验证：`verify_release_install.py` 必须传 `--port <分配后端端口> --debug-port <分配浏览器端口>` 以及原有目录/解释器参数；`verify_release_browser.py --url http://127.0.0.1:<分配后端端口> --debug-port <分配浏览器端口> --profile <分配浏览器目录> --report-dir <报告目录>` 核验实际监听。`verify_zindex.py --url <隔离服务origin> --project <测试项目ID>` 使用可选 `PROBE_ADMIN_PASSWORD`；`verify_hide_chain.py --url <隔离服务origin> --database <隔离数据库绝对路径>` 先核对服务 `/health` 的实际数据库，再执行测试及清理。`verify_directory_picker_live.py --port <授权隔离端口>` 或 `--isolated` 显式选择目标。所有现场地址由调用方提供，禁止将生产地址作为默认值。
+
 数据库目录布局与 WAL 生命周期：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_database_layout scripts.test_config scripts.test_install scripts.test_service scripts.test_upgrade scripts.test_app_upgrade scripts.test_legacy_release_upgrade scripts.test_release_upgrade -q`。覆盖默认 `data/group.db`、旧根目录库一次迁移、附件与自定义路径保留、源库损坏、目标冲突、活动引擎/事务阻断、中断恢复、升级绑定回滚、旧界面升级器兼容，以及空闲连接保留 WAL 文件时的写入与检查点行为。所有迁移用例使用临时目录和隔离数据库。
 
 Hermes 会话绑定与清理重试：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_stop_scope scripts.test_engine_shutdown -q`。覆盖首次绑定的零/单/多候选、已有 ID 绑定复用、执行终态与清理分离（`active()` 只看 `state!='terminal'`、terminal 即释放占用并撤销凭据、`cleanup_pending` 归会话禁用）、清理退避重试五次上限（1/2/4/8 秒）与 `retry_count`/`next_retry_at`/`cleanup_deadline` 持久化、耗尽转 `cleanup_failed` 停止自动循环、恢复只续剩余额度、短暂失败恢复、manual 态停止自动 reconcile、取消 RPC 超时 min(默认,剩余预算)，以及原有取消和优雅停止边界。使用隔离数据库与模拟网关回执。
@@ -58,7 +66,7 @@ Windows 进程查询：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.
 
 未入组候选过滤与成员卡片：复用 `test_profile_create_browser.py --evidence <主目录报告目录>`，验证选择列表隐藏当前项目成员、刷新后继续过滤并保留选择、批量加入部分成功后移除成功成员，以及创建 profile 和新项目向导选择。检查详情窗口与新建项目向导的圆角成员卡片、名字与宿主 / profile 的两行布局，覆盖 1280px / 390px 深浅主题并保存截图；同时验证向导移除角色的协作流程调整提示、取消保留及确认后移除。
 
-网关探针（req#132 #250）：`python -B scripts/gw_probe.py`。源码 worktree 位于 `.probe-worktrees/hermes-v0225`（v0.22.5 `bf0203a7`），持久数据位于分配的 `<test-data>/task-250/gw-probe-home` 和 `hermes-pm-store`，可用 `GW_PROBE_DATA` 覆盖。通过官方 `ensure_gateway_runtime` 启动随机回环端口，走 `/api/ws`、`hermes-gateway-v1`、control socket ticket（purpose=interactive），验证 authority、create（source=tool）、detach/resume、submit/receipt 及真实结果。生产配置、数据和进程保持原样。
+网关探针（req#132 #250）：设置 `GW_PROBE_DATA` 后运行 `python -B scripts/gw_probe.py`。源码 worktree 位于 `.probe-worktrees/hermes-v0225`（v0.22.5 `bf0203a7`），持久数据位于显式分配的 `<test-data>/task-250/gw-probe-home` 和 `hermes-pm-store`。通过官方 `ensure_gateway_runtime` 启动随机回环端口，走 `/api/ws`、`hermes-gateway-v1`、control socket ticket（purpose=interactive），验证 authority、create（source=tool）、detach/resume、submit/receipt 及真实结果。生产配置、数据和进程保持原样。
 
 启动门禁要求环境白名单、显式顶层空 MCP 映射（YAML 安全解析，重复键/缺失/null/列表/非空映射拒绝）、残留网关归属校验。解释器来自 `HERMES_HOME/installs/<install_id>/facts.json` 的 `packages.venv.environment`；多 install 用 `GW_PROBE_INSTALL` 显式选择。双自检核对 CLI Install directory、源码提交和 ruamel 版本；PM 自身 runtime 与旧 launcher 均不作为依赖入口。create/resume 必须显式返回空 `info.mcp_servers` 列表。心跳计数必须可信且增量为零；空 home 的缺失日志记 `no-mcp-log`，不可读或不一致按未知处理。`--preflight-only` 执行启动前检查（可能停止已确认归属的残留实例），不启动新网关。
 

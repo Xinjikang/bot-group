@@ -88,13 +88,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--evidence', type=Path, required=True)
     args = parser.parse_args()
+    import gw_probe as probe
     directory = args.evidence.resolve()
     directory.mkdir(parents=True, exist_ok=False)
-    import gw_probe as probe
     record, _ = probe.install_record()
     if not record:
         raise RuntimeError('Isolated Hermes dependency environment unavailable')
-    source = ROOT / '.probe-worktrees' / 'hermes-v0225'
+    source = probe.WORKTREE_SRC
     home = directory / 'hermes-home'
     workspace = directory / 'workspace'
     home.mkdir()

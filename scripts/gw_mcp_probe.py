@@ -13,7 +13,7 @@
   M5 editor_mcp    session.mutate 注入/更新（连续两轮）+ 两会话各自的 tag 隔离；重启后需重新注入
 
 隔离：探针 home + 独立测试引擎（127.0.0.1 随机端口 + test-data 下 SQLite）+ 测试 MCP（stdio）。
-生产 8180 不触碰；所有子进程走 gw_probe.probe_env() 白名单。
+所有子进程走 gw_probe.probe_env() 白名单，与生产资源隔离。
 """
 from __future__ import annotations
 
@@ -31,8 +31,7 @@ import gw_probe as G
 import gw_stop_probe as S
 
 ROOT = Path(__file__).resolve().parent.parent
-TASK_DIR = Path(r"E:\Code\.bot-group-resources\dcc5f7fd43510c8f\ws_6043478a1e82665dc05e9604"
-                r"\test-data\task-253")
+TASK_DIR = G.PROBE_DATA / "task-253"
 ENGINE_DB = TASK_DIR / "probe-engine.db"
 ENGINE_READY = TASK_DIR / "probe-engine.json"
 MCP_SCRIPT = ROOT / "scripts" / "probe_mcp_server.py"

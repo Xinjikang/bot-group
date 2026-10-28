@@ -50,18 +50,20 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from probe_config import required_directory, loopback_url, absolute_path
 
-ROOT = Path(r"E:\Code\bot-group")
-PY = ROOT / ".venv" / "Scripts" / "python.exe"
-BASE = Path(r"E:\Code\.bot-group-resources\dcc5f7fd43510c8f\ws_6043478a1e82665dc05e9604"
-            r"\test-data\task-253\ownership")
+ROOT = Path(__file__).resolve().parents[1]
+PY = Path(sys.executable)
+BASE = required_directory("GW_PROBE_DATA") / "task-253" / "ownership"
 RUN = time.strftime("%H%M%S")
 # 每次运行独立数据目录：旧库不会被复用，E1 的计数断言只对本场景行成立。
 DATA = BASE / f"run-{RUN}" / "engine"
 DB = DATA / "group.db"
 HOME = BASE / f"run-{RUN}" / "home"
-EVIDENCE = ROOT / "reports" / "research" / "hermes-gateway" / "evidence-2026-10-28-task253-ownership"
-SCRATCH = Path(r"E:\home\admin\hermes\profiles\be-dev-01\cache\scratch")
+EVIDENCE = (absolute_path(os.environ["GW_EVIDENCE_DIR"], "GW_EVIDENCE_DIR")
+            if os.environ.get("GW_EVIDENCE_DIR") else
+            ROOT / "reports" / "research" / "hermes-gateway" / "evidence-2026-10-28-task253-ownership")
+SCRATCH = BASE / f"run-{RUN}" / "scratch"
 MCP = ROOT / "mcp" / "server.py"
 
 P1 = "probe253"
@@ -152,10 +154,10 @@ def iso(offset=0) -> str:
 def system_env() -> dict:
     """MCP/引擎子进程共用的系统最小环境（不含任何 GROUP_/HERMES_ 业务变量）。"""
     return {
+        **{k: os.environ[k] for k in ("SYSTEMROOT", "WINDIR") if k in os.environ},
         "PATH": os.environ.get("PATH", ""),
-        "SYSTEMROOT": os.environ.get("SYSTEMROOT", r"C:\Windows"),
-        "TEMP": os.environ.get("TEMP", r"C:\Windows\Temp"),
-        "TMP": os.environ.get("TMP", r"C:\Windows\Temp"),
+        "TEMP": str(SCRATCH),
+        "TMP": str(SCRATCH),
         "PYTHONIOENCODING": "utf-8",
         "PYTHONPATH": str(ROOT),
         "USERPROFILE": str(HOME),
@@ -995,11 +997,16 @@ def e9_gateway_managed(eng: Engine, threads: dict, runs: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def heartbeat() -> dict:
-    st, body = http("GET", "http://127.0.0.1:8180/heartbeat", timeout=3)
+    origin = os.environ.get("GW_OBSERVER_URL", "")
+    if not origin:
+        return {"status": None, "skipped": True, "reason": "GW_OBSERVER_URL not configured"}
+    st, body = http("GET", loopback_url(origin) + "/heartbeat", timeout=3)
     return {"status": st, "body": body if st == 200 else str(body)[:120]}
 
 
 def main() -> int:
+    if os.environ.get("GW_OBSERVER_URL"):
+        loopback_url(os.environ["GW_OBSERVER_URL"])
     BASE.mkdir(parents=True, exist_ok=True)
     DATA.mkdir(parents=True, exist_ok=True)
     HOME.mkdir(parents=True, exist_ok=True)

@@ -5,19 +5,20 @@ import os
 from pathlib import Path
 import subprocess
 from urllib.parse import urlsplit
-from playwright.sync_api import sync_playwright
+from probe_config import loopback_url, port_number
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--url', required=True)
+    p.add_argument('--url', required=True, type=loopback_url)
     p.add_argument('--profile', required=True)
-    p.add_argument('--debug-port', required=True, type=int)
+    p.add_argument('--debug-port', required=True, type=port_number)
     p.add_argument('--report-dir', required=True)
     args = p.parse_args()
     target = urlsplit(args.url)
-    if target.hostname != '127.0.0.1' or target.port != 18042 or args.debug_port != 18043:
-        p.error('本工作区验证仅允许 127.0.0.1:18042，浏览器端口 18043')
+    if target.port == args.debug_port:
+        p.error('服务端口与浏览器调试端口须不同')
+    from playwright.sync_api import sync_playwright
     report = Path(args.report_dir)
     report.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as pw:
@@ -70,12 +71,12 @@ def main():
             listeners = []
             if os.name == 'nt':
                 raw = subprocess.check_output(['powershell', '-NoProfile', '-Command',
-                    'Get-NetTCPConnection -State Listen -LocalPort 18042,18043 | '
+                    f'Get-NetTCPConnection -State Listen -LocalPort {target.port},{args.debug_port} | '
                     'Select-Object LocalAddress,LocalPort,OwningProcess | ConvertTo-Json -Compress'])
                 listeners = json.loads(raw)
                 if isinstance(listeners, dict):
                     listeners = [listeners]
-                assert {r['LocalPort'] for r in listeners} == {18042, 18043}, listeners
+                assert {r['LocalPort'] for r in listeners} == {target.port, args.debug_port}, listeners
                 assert all(r['LocalAddress'] == '127.0.0.1' for r in listeners), listeners
             (report / 'browser.json').write_text(json.dumps({
                 'thread_id': thread['thread_id'], 'login_submissions': len(login_requests),
