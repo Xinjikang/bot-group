@@ -190,6 +190,7 @@ bot 通过引擎注入的 `editor_mcp`（task_queue）访问引擎 API；引擎�
 - bot-group 的 sessions.attach 调用 session.resume，触发 refresh_resumed_policy：空闲会话 resume 时从 profile 当前 config 重新派生字段并提交新 policy generation，保留会话历史。
 - 刷新字段：toolsets、MCP servers、terminal（backend/cwd）、max_turns、checkpoints、reasoning default（除非 pinned/chosen）。
 - 不刷新：model/provider（stored session 保持）、creation flags、committed reasoning 与 workspace pick、editor_mcp 的 frozen servers。
+- editor MCP 会话的工具集与 editor manifest 一起冻结，profile 的 platform_toolsets 修改不会替换该工具集；引擎通过每轮 editor_mcp mutation 刷新会话工具。普通 CLI 会话未显式选择工具集时，toolsets 随 profile 配置刷新。terminal 的显式 cwd/workspace 选择保持，会话其余配置派生 terminal 字段可刷新。
 - 限制：busy（turn running/queued）保持该 turn 准入时的 policy；显式创建参数与已选设置覆盖配置；refresh 失败不 fail resume。
 - 精确表述：config 派生字段「下次空闲唤醒生效」，busy 时保持旧 policy 等下次空闲。
 
@@ -216,7 +217,7 @@ bot 通过引擎注入的 `editor_mcp`（task_queue）访问引擎 API；引擎�
 
 - A1 首次 cancel 后 30s 内返回「取消待确认」，cancel() 不阻塞调用方。
 - A2 首次取消起 150s 为硬门槛：超时转 manual、worker 停止自动循环（RPC 调用计数封顶不涨）。
-- A3 manual 态保留安全占用，明确标「取消超时」不显示「执行中」。
+- A3 manual 态保留安全占用，显示事实状态：已发起停止的执行显示「停止请求已发送，结束状态确认超时」，其他查询失败显示「执行状态查询失败」。停止请求本身失败时提示「停止失败：原因」。保留原停止入口，后续是否操作由用户决定。
 - A4 cancel/reconcile deadline 用绝对时间戳持久化，重启不重置预算。
 
 ### 场景 B：终态后网关断线（清理可恢复）
