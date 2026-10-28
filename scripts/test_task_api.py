@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from fastapi import FastAPI
@@ -291,18 +291,19 @@ class TaskApiTest(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         poison = str(Path(self.path).parent / "must-not-exist" / "group.db")
-        def post(url, *, json, headers, timeout):
+        async def post(method, url, *, body=None, headers, params=None):
             with patch.dict(os.environ, {"GROUP_DB": self.path}):
-                return self.client.post(url.replace("http://test-engine", ""), json=json, headers=headers)
+                return self.client.request(method, url.replace("http://test-engine", ""), json=body, headers=headers, params=params)
         with patch.dict(os.environ, {"GROUP_DB": poison, "TASK_QUEUE_ROLE": "default",
                                     "HERMES_PROFILE": "default", "GROUP_ENGINE_URL": "http://test-engine",
                                     "GROUP_ENGINE_TOKEN": auth.bot_token("default"),
-                                    "XDG_GROUP_ENGINE_EXECUTION": ""}), patch.object(module.httpx, "post", side_effect=post):
+                                    "XDG_GROUP_ENGINE_EXECUTION": ""}), patch.object(module.mcp_http, "_send", side_effect=post):
             result = module.req_create("alpha", "Via HTTP", **REQUIREMENT_FIELDS)
             self.assertIn("requirement_id", result)
             self.assertFalse(Path(poison).parent.exists())
             self.assertFalse(hasattr(module, "taskpool"))
-        with patch.object(module.httpx, "post", side_effect=httpx.ConnectError("offline")), \
+        with patch.object(module.mcp_http, "_send", side_effect=httpx.ConnectError("offline")), \
+             patch.object(module.mcp_http.asyncio, 'sleep', AsyncMock()), \
              patch.dict(os.environ, {"TASK_QUEUE_ROLE": "default", "XDG_GROUP_ENGINE_EXECUTION": ""}):
             self.assertIn("API unavailable", module.task_list("alpha")["error"])
 

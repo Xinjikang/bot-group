@@ -28,7 +28,7 @@ from mcp.server.fastmcp.utilities.types import Image
 
 # Direct stdio entry points may start in a Bot workspace outside the source root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from engine import process_query
+from engine import mcp_http, process_query
 
 mcp = FastMCP("group-engine")
 
@@ -521,29 +521,20 @@ def _task_call(operation: str, arguments: dict) -> dict:
 
 
 def _post(path: str, body: dict) -> dict:
-    try:
-        resp = httpx.post(f"{_engine_url()}{path}", json=body, headers=_engine_headers(), timeout=30.0)
-    except httpx.RequestError as exc:
-        return {"error": f"Engine API unavailable: {type(exc).__name__}"}
-    if resp.status_code >= 400:
-        return {"error": f"engine {resp.status_code}: {resp.text[:200]}"}
-    try:
-        return resp.json()
-    except Exception:
-        return {"error": f"engine non-json: {resp.text[:200]}"}
+    return mcp_http.request('POST', _engine_url(), path, body=body, headers=_engine_headers())
 
 
 def _get(path: str, params: dict | None = None) -> dict:
-    try:
-        resp = httpx.get(f"{_engine_url()}{path}", params=params, headers=_engine_headers(), timeout=30.0)
-    except httpx.RequestError as exc:
-        return {"error": f"Engine API unavailable: {type(exc).__name__}"}
-    if resp.status_code >= 400:
-        return {"error": f"engine {resp.status_code}: {resp.text[:200]}"}
-    try:
-        return resp.json()
-    except Exception:
-        return {"error": f"engine non-json: {resp.text[:200]}"}
+    return mcp_http.request('GET', _engine_url(), path, params=params, headers=_engine_headers())
+
+
+@mcp.tool()
+def operation_get(operation_id: str) -> dict:
+    """查证结果未知的操作回执。使用错误返回中的 operation_id，只读查询原操作。
+    completed 返回原 HTTP 状态码和业务结果；unknown 保留待核对状态。
+    回执绑定原成员及执行凭据，后继执行无法读取前次回执。
+    """
+    return _get('/mcp-operations/' + quote(operation_id, safe=''))
 
 
 @mcp.tool()

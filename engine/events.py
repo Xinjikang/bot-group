@@ -39,6 +39,11 @@ class EventBus:
         """async 请求上下文内直接调；后台线程（reaper/心跳线程）也可调——
         内部经 call_soon_threadsafe 切回主 loop，asyncio.Queue 竞态安全。
         loop 未注入时（引擎启动早期）静默丢弃。"""
+        from .operation_transaction import current
+        transaction = current.get()
+        if transaction is not None:
+            transaction.events.append((event_type, dict(data)))
+            return
         payload = json.dumps({"type": event_type, "data": data}, ensure_ascii=False)
         loop = _loop
         if loop is None or loop.is_closed():

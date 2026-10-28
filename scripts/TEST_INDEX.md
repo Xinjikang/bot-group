@@ -2,6 +2,10 @@
 
 执行异常分类：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_execution_errors scripts.test_task_retry -q`。使用隔离 SQLite 与合成 JSONL，覆盖模型容量已满提示、终态失败优先于工具输出、最后一条有效失败事件、普通 error 回退、未知错误、Hermes 专用提示与完整脱敏诊断保留。
 
+MCP 离线重试与回执：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_mcp_operations scripts.test_task_api scripts.test_access_contract scripts.test_message_execution scripts.test_inbox_seen_gate scripts.test_task_brief scripts.test_requirement_lifecycle -q`。覆盖连接失败 1/2/4/8 秒退避、最多 5 次与 30 秒总预算、读超时/5xx 只查证、原操作 ID 复用、并发去重、业务与回执同事务、提交前异常回滚、外部副作用结果未知、成员撤权和后继执行隔离。
+
+真实离线窗口：`.venv\Scripts\python.exe -X utf8 -B scripts/verify_mcp_retry.py --url <分配后端 origin> --data-root <分配测试数据根绝对路径> --evidence <主目录报告下的新绝对路径>`。参数缺失或端口冲突时提前失败；在测试数据根建立临时库，仅启动 API 路由，禁止 worker 调用模型。保持同一 stdio MCP 会话，停止并重新启动同地址的隔离 API；再强制 API 在提交后、回复前退出，验证旧 MCP 查到持久回执、重复 ID 返回相同结果、需求/任务节点/话题开场不重复。报告记录实际数据库、地址、各次服务 PID 与资源释放。正常退出清除临时库、停止本次子进程；异常强杀后的残留由报告中的归属信息核对。
+
 脚本可移植性：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_probe_config scripts.test_gw_probe_gates -q`。覆盖仓库迁移到含空格/中文的目录、显式测试数据根、源码配置缺失提前失败、回环地址与端口校验。`probe_config.py` 提供公共配置校验；纯模拟夹具的地址只用于解析与断言。
 
 真实探针运行配置：运行 `gw_probe.py`、`gw_stop_probe.py`、`gw_recovery_probe.py`、`gw_mcp_probe.py`、`gw_ownership_probe.py` 和 `verify_hermes_gateway_adapter.py` 前，必须设置 `GW_PROBE_DATA` 为当前工作区分配的测试数据根绝对路径。`GW_PROBE_ROOT` 可指定隔离源码父目录（默认仓库内 `.probe-worktrees`），`GW_EVIDENCE_DIR` 可指定证据目录。ownership 探针使用当前 Python 解释器，scratch 位于本次运行的测试数据子目录；可选 `GW_OBSERVER_URL=http://127.0.0.1:<授权观察端口>` 仅用于显式授权的心跳观察，未配置时报告 skipped。网关自身的日志心跳隔离门禁保持启用。

@@ -9,6 +9,7 @@ from . import auth, db
 
 PUBLIC = {("POST", "/auth/login"), ("GET", "/auth/status")}
 BOT_ROUTES = {
+    ("GET", "/mcp-operations/{operation_id}"),
     ("GET", "/commands"), ("POST", "/task-tools/{operation}"),
     ("GET", "/members"), ("GET", "/threads"), ("GET", "/thread"),
     ("GET", "/inbox"), ("GET", "/wake/check"), ("GET", "/attachments/{attachment_id}"),

@@ -31,6 +31,10 @@ def now_iso(seconds_offset: int = 0) -> str:
 
 def get_connection() -> sqlite3.Connection:
     """打开 group.db 连接，统一 WAL + busy_timeout=30s + foreign_keys。"""
+    from .operation_transaction import current
+    transaction = current.get()
+    if transaction is not None:
+        return transaction.lease()
     path = db_path()
     parent = os.path.dirname(path)
     if parent:
@@ -58,6 +62,9 @@ def keep_wal_open():
 
 def init_schema(conn: sqlite3.Connection) -> None:
     """建表（schema.sql）。幂等。"""
+    from .operation_transaction import Lease
+    if isinstance(conn, Lease):
+        return  # The operation owner initializes schema before starting its transaction.
     schema_path = Path(__file__).resolve().parent / "schema.sql"
     # Rename before schema.sql creates the index referencing the new column.
     cols = {r['name'] for r in conn.execute('PRAGMA table_info(tasks)')}
