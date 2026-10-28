@@ -221,7 +221,9 @@ def _stop_session(profile: str, project: str, thread_id: int | None) -> dict:
     # 1. 硬杀进程树（🔴 2026-09-09 修：壳 pid 全废——_active_procs 恒空、心跳 pid 是
     # 真 agent pid 但只在首调 group_read_inbox 后才有。改命令行实时匹配（照
     # stop_engine.py 模式），找到真 agent 进程后 taskkill /T 连树杀（venv 中间层+MCP）。
-    _found = wake.find_bot_processes(profile, session=session)
+    from . import hermes_gateway
+    gateway_stop = hermes_gateway.cancel(session)
+    _found = wake.find_bot_processes(profile, session=session) if gateway_stop is None else []
     pids = set(_found) if _found else set()   # None(查询失败)=按空处理：靠心跳pid兜底
     # Heartbeats lack project identity: only the exact session matcher is safe.
     for pid in pids:
@@ -232,10 +234,11 @@ def _stop_session(profile: str, project: str, thread_id: int | None) -> dict:
     #    确认失败时跳过软删除；8s 超时说明进程
     #    卡在不可中断态或 reaper 阻塞，此时软删会撞「软删后 bot 再 flush 悬空行」
     #    的坑。宁可这轮不清（下次叫停再清），不可硬上。
-    dead = _wait_dead(profile, session)
+    dead = _wait_dead(profile, session) if gateway_stop is None else gateway_stop
     result["stopped"] = dead
     if not dead:
-        result['detail'] = '进程仍存活或无法确认退出，保留任务与队列占用'
+        result['detail'] = ('Hermes 执行终态尚未确认，保留任务与队列占用' if gateway_stop is not None
+                            else '进程仍存活或无法确认退出，保留任务与队列占用')
         result['soft_deleted'] = -1
         return result
 
@@ -256,7 +259,7 @@ def _stop_session(profile: str, project: str, thread_id: int | None) -> dict:
         ).fetchone()
         from . import bot_identity
         bot = bot_identity.resolve(conn, project, profile)
-        if kind == 'work' and job is not None and dead and (not bot or bot['runtime'] == 'hermes'):
+        if kind == 'work' and job is not None and dead and gateway_stop is None and (not bot or bot['runtime'] == 'hermes'):
             _tid = job["thread_id"] if "thread_id" in job.keys() else None
             _proj = job["project"] if "project" in job.keys() else "xjk"
             session = wake.session_name(profile, "work", _tid, _proj)

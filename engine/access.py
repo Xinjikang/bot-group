@@ -99,6 +99,30 @@ async def authorize(request: Request, identity=Depends(resolve_identity)):
         if not conn.execute("SELECT 1 FROM members WHERE profile=?", (profile,)).fetchone():
             raise HTTPException(403, "Unknown member")
         path = route[1]
+        scope = getattr(request.state, 'execution_scope', None)
+        gateway_run = None
+        if scope is not None:
+            gateway_run = conn.execute('SELECT state FROM hermes_executions WHERE session=? AND started_at=?',
+                                       (scope['session'], scope['wake_started_at'])).fetchone()
+            if gateway_run is not None:
+                if gateway_run['state'] == 'terminal':
+                    raise HTTPException(401, 'Execution credential expired')
+                require_project(conn, profile, scope['project'])
+                requested_project = request.query_params.get('project')
+                if requested_project and requested_project != scope['project']:
+                    raise HTTPException(403, 'Execution project mismatch')
+                requested_thread = request.query_params.get('id' if path == '/thread' else 'thread_id')
+                if path in ('/thread', '/inbox') and requested_thread is not None:
+                    if str(scope['thread_id']) != requested_thread:
+                        raise HTTPException(403, 'Execution topic mismatch')
+                if path == '/inbox':
+                    expected_kind = 'chat' if scope['thread_id'] is not None else 'work'
+                    if request.query_params.get('kind') != expected_kind:
+                        raise HTTPException(403, 'Execution inbox kind mismatch')
+                    if expected_kind == 'chat' and requested_thread is None:
+                        raise HTTPException(403, 'Execution topic required')
+                    if expected_kind == 'work' and requested_project != scope['project']:
+                        raise HTTPException(403, 'Execution project required')
         # Task operations and attachments enforce their own project/resource scope.
         if path == "/members":
             require_project(conn, profile, request.query_params.get("project", ""))
@@ -122,6 +146,15 @@ async def authorize(request: Request, identity=Depends(resolve_identity)):
                 raise HTTPException(422, "JSON object required")
             if not isinstance(body, dict):
                 raise HTTPException(422, "JSON object required")
+            if gateway_run is not None and path == '/heartbeat':
+                if body.get('thread_id') != scope['thread_id']:
+                    raise HTTPException(403, 'Heartbeat topic mismatch')
+                pid = body.get('pid')
+                if type(pid) is not int or pid <= 0:
+                    raise HTTPException(422, 'Heartbeat process required')
+                conn.execute('UPDATE wake_runs SET pid=? WHERE session=? AND started_at=? AND ended_at IS NULL',
+                             (pid, scope['session'], scope['wake_started_at']))
+                conn.commit()
             if path == "/msg":
                 from .message_execution import validate_shape
                 validate_shape(profile, body)

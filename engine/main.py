@@ -82,6 +82,8 @@ async def lifespan(app: FastAPI):
     # SSE 跨线程投递：后台线程（reaper/心跳线程/queue worker）发事件要 threadsafe 切回主 loop
     from . import events
     events.set_loop(asyncio.get_running_loop())
+    from . import hermes_gateway
+    hermes_gateway.recover()
 
     t_queue = threading.Thread(target=queue.run_forever, args=(stop_event,), daemon=True, name="queue-worker")
     t_scanner = threading.Thread(target=scanner.run_forever, args=(stop_event,), daemon=True, name="scanner")

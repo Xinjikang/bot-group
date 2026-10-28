@@ -29,6 +29,12 @@ SESSION_METHODS = ('create_session', 'get_session', 'set_session_title',
 _IMPORT_LOCK = threading.RLock()
 
 
+def gateway_source(source: Path) -> bool:
+    """Recognize the gateway CLI layout; wire capabilities are checked on attach."""
+    return ((source / 'hermes_cli/gateway_runtime_cli.py').is_file()
+            and (source / 'hermes_cli/gateway_chat_startup.py').is_file())
+
+
 def native_entry(entry: str) -> str:
     """Resolve pure Windows forwarding wrappers without invoking a command shell."""
     if sys.platform != 'win32':

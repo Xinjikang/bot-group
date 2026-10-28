@@ -51,6 +51,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
         conn.execute('ALTER TABLE tasks RENAME COLUMN next_role TO next_bot')
     had_project_roles = any(r['name'] == 'role' for r in conn.execute('PRAGMA table_info(project_members)'))
     conn.executescript(schema_path.read_text(encoding="utf-8"))
+    from . import hermes_gateway_ledger
+    hermes_gateway_ledger.initialize(conn)
     # req#101: additive readiness contract; ALTER DEFAULT backfills existing rows.
     # Repeated initialization preserves states owned by future setup workflows.
     with conn:
@@ -1017,6 +1019,8 @@ def recover_on_startup(conn: sqlite3.Connection) -> int:
 
     startup = time.time()
     conn.execute("BEGIN IMMEDIATE")
+    conn.execute("UPDATE wake_jobs SET status='done',ended_at=? WHERE status='running' AND EXISTS "
+                 "(SELECT 1 FROM hermes_executions h WHERE h.job_id=wake_jobs.id)", (now_iso(),))
     cur = conn.execute(
         "UPDATE wake_jobs SET status='queued', started_at=NULL, ended_at=NULL "
         "WHERE status='running'"
@@ -1040,6 +1044,9 @@ def recover_on_startup(conn: sqlite3.Connection) -> int:
         if responded:
             continue
         session = wake.session_name(profile, "chat", thread["id"], thread["project"])
+        if conn.execute("SELECT 1 FROM hermes_executions WHERE session=? "
+                        "AND (state!='terminal' OR cleanup_pending=1)", (session,)).fetchone():
+            continue
         run = conn.execute(
             "SELECT started_at,ended_at,project FROM wake_runs WHERE session=? "
             "ORDER BY started_at DESC LIMIT 1", (session,),
@@ -1067,7 +1074,9 @@ def recover_on_startup(conn: sqlite3.Connection) -> int:
     # req#58 孤儿行收尸：只补「启动时刻之前、还没收尸」的行（启动后新写的行不动）
     conn.execute(
         "UPDATE wake_runs SET ended_at=?, exit_code=-1 "
-        "WHERE ended_at IS NULL AND started_at < ?",
+        "WHERE ended_at IS NULL AND started_at < ? AND NOT EXISTS "
+        "(SELECT 1 FROM hermes_executions h WHERE h.session=wake_runs.session "
+        "AND h.started_at=wake_runs.started_at AND (h.state!='terminal' OR h.cleanup_pending=1))",
         (startup, startup),
     )
     conn.commit()

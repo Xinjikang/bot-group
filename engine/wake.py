@@ -107,6 +107,11 @@ def find_bot_processes(profile: str, session: str | None = None) -> "list[int] |
     native = _find_codex_processes(profile, session)
     if native is not False:
         return native
+    if session is not None:
+        from . import hermes_gateway
+        managed = hermes_gateway.process_state(session)
+        if managed is not False:
+            return managed
     physical_profile = profile
     if profile.startswith('bot-'):
         from . import bot_identity
@@ -896,6 +901,12 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                     codex_spawn_gen = row["generation"]
     finally:
         conn.close()
+    if runtime == 'hermes':
+        from . import hermes_gateway
+        if hermes_gateway.enabled():
+            return hermes_gateway.spawn(profile, kind, signal, thread_id, project,
+                bot=bot, workdir=workdir, model_args=model_args, bound_task=bound_task,
+                job_id=job_id, trigger_msg_id=trigger_msg_id)
     use_binding = runtime != "codex" and session_adapter.available()
     if use_binding:
         conn = db.get_connection()

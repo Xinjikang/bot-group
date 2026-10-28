@@ -792,7 +792,7 @@ def _start_heartbeat() -> None:
 
     _heartbeat_started.set()
 
-    _pid = os.getppid()
+    _pid = os.getpid() if os.environ.get('GROUP_GATEWAY_EXECUTION') == '1' else os.getppid()
     # req#51 task#93：心跳按话题会话分槽——chat 进程带上自己解析的 thread_id，
     # work 进程 thread_id=None。超时判活跃只认本话题，work 心跳不再替 chat 背书。
     _kind, _self_tid = _self_session()

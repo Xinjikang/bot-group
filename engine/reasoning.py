@@ -95,12 +95,52 @@ def _parse_tool_calls(raw: str | None) -> list[dict]:
     return out
 
 
+def _gateway_entries(rows, after_id, started_at, ended_at):
+    """Project an official JSON transcript export into the existing UI contract."""
+    entries, latest = [], after_id
+    for row in rows:
+        mid, timestamp = row.get('id'), row.get('timestamp')
+        if (type(mid) is not int or mid <= after_id or not isinstance(timestamp, (int, float))
+                or timestamp < started_at or ended_at is not None and timestamp >= ended_at
+                or row.get('active', 1) == 0):
+            continue
+        role, content = row.get('role'), row.get('content') or ''
+        tool_name = row.get('tool_name') or ''
+        if role != 'assistant' and not tool_name.endswith('group_send'):
+            continue
+        latest = max(latest, mid)
+        if content.lstrip().startswith('[CONTEXT COMPACTION'):
+            continue
+        raw = row.get('tool_calls')
+        calls = _parse_tool_calls(json.dumps(raw) if isinstance(raw, list) else raw)
+        thought = (row.get('reasoning') or row.get('reasoning_content') or '').strip()
+        reply = _sent_message_id(content) if role == 'tool' and tool_name.endswith('group_send') else None
+        finished = role == 'assistant' and not calls and bool(content)
+        if thought or calls or reply is not None or finished:
+            entries.append(dict(id=mid, role=role, reasoning=thought, tool_calls=calls, tool_name=tool_name,
+                                timestamp=timestamp, reply_message_id=reply, finished=finished))
+    return {'entries': sorted(entries, key=lambda entry: entry['id']), 'latest_id': latest}
+
+
 def read_reasoning(profile: str, session: str, after_id: int = 0, *, wake_started_at: float, wake_ended_at: float | None = None, hermes_session_id: str | None = None) -> dict:
     """读该 profile 该会话里 id > after_id 的思考条目（reasoning + tool_calls）。
 
     返回 {entries: [{id, role, reasoning, tool_calls, timestamp}], latest_id}。
     entries 按 id 升序（前端按顺序追加到气泡）。
     """
+    from . import hermes_gateway
+    if hermes_gateway.enabled():
+        client, _, _ = hermes_gateway.connection(profile)
+        with client:
+            sid = hermes_session_id
+            if not sid:
+                found = client.rpc('session.list', title=session)['sessions']
+                if not found:
+                    return {'entries': [], 'latest_id': after_id}
+                sid = found[0]['session_id']
+            exported = client.rpc('session.export', session_id=sid, format='json')
+            rows = json.loads(exported['content'])['messages']
+        return _gateway_entries(rows, after_id, wake_started_at, wake_ended_at)
     db_path = _profile_state_db(profile)
     if not db_path.exists():
         return {"entries": [], "latest_id": after_id}

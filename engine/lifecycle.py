@@ -54,6 +54,12 @@ class Shutdown:
         pids = set()
         launchers = {}
         for row in rows:
+            from . import hermes_gateway
+            cancelled = hermes_gateway.cancel(row['session'], reason='shutdown')
+            if cancelled is not None:
+                if not cancelled:
+                    raise RuntimeError(f"Hermes 执行终态尚未确认：{row['profile']}")
+                continue
             found = wake.find_bot_processes(row['profile'], session=row['session'])
             if found is None:
                 raise RuntimeError(f"无法核实 Bot 进程：{row['profile']}")
