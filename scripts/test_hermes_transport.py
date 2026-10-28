@@ -25,6 +25,9 @@ from engine import config, db, wake
 @unittest.skipUnless(sys.platform == 'win32', 'Windows command transport')
 class HermesTransportTests(unittest.TestCase):
     def setUp(self):
+        direct = patch('engine.hermes_gateway.enabled', return_value=False)
+        direct.start()
+        self.addCleanup(direct.stop)
         self.tmp = tempfile.TemporaryDirectory(prefix='hermes-transport-')
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)

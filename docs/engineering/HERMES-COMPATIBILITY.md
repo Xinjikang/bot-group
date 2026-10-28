@@ -18,6 +18,18 @@
 
 已绑定会话继续用真实 session_id；标题仅用于旧会话首次迁移。`/new`、generation、失效绑定检查及压缩续接保持既有行为。
 
+## MCP 注入
+
+固定 MCP 写在 `HERMES_HOME/config.yaml` 顶层 `mcp_servers`（`{name: {command, args, env}}`），网关启动时加载，会话快照 `info.mcp_servers` 列出已加载名称。该字段缺失或类型异常按「未知」处理，不能当作空列表。
+
+会话级 MCP 走 `session.mutate` 的 `editor_mcp` 操作，必填 `session_id`、`request_id`、`expected_revision`、`expected_generation`、`operation`、`payload={"mcp_servers":[spec…]}`。`spec` 为 ACP `McpServerStdio`，`env` 必须写成 `[{name, value}]` 列表。该操作只对 `policy.source == "acp"` 的会话开放；`session.create(source="tool"|"cli")` 的会话调用返回 `invalid_params`。
+
+编辑器 MCP 的明文列表只保留在网关进程内，落盘与回执只有 fingerprint，网关重启后不恢复，客户端需重新注入。工具清单在 admission 起始冻结：同一会话再次更新且工具 schema 未变时复用既有连接（进程内环境变量不刷新）；schema 变化后新会话首次执行才会加载新清单。需要「换地址或换凭据立即生效」时，重建会话或重启网关。
+
+网关 authority 端口按需挂载 dashboard：`GatewayDashboardMount.ensure()` 在首个非 ws 请求时导入 `hermes_cli.web_server.app` 并绑定监听状态（`gateway/run_api.py:38-83`），随后以 `_configure_auth_gate(bound_host, False, None, None)` 和 `withhold_session_token = True` 启用认证门。`/api/mcp/servers` 注册在 dashboard 的 `web_routers/mcp.py`，不带本地 ticket 的请求由 `auth_middleware` 在 `/api/*` 上返回 401（`hermes_cli/web_server.py:444-462`），其校验函数为 `_has_valid_session_token`（292-303）；`_require_token`（318-340）只被少数敏感路由显式调用，不是全局门。回环模式 `auth_required` 为假时这条 token 门生效。因此 401 表示缺少 dashboard 认证凭据，不是该端口没有配置路由。配置写入需带本地 ticket 走 dashboard，或离线修改 config 后重启网关。
+
+验证：`python -B scripts/gw_mcp_probe.py` 覆盖清洁基线、固定配置、两项反向隔离与会话级注入，详见 [测试索引](../../scripts/TEST_INDEX.md) 与 `reports/research/hermes-gateway/evidence-2026-10-28-task253/`。
+
 ## 故障处理
 
 - `HermesCompatibilityError`：检查日志中的缺失模块或接口，更新或修复 Hermes 后重启引擎。

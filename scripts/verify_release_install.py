@@ -1,7 +1,7 @@
 """#215：显式指定分配资源的真实安装/启停/管理/版本升级与恢复验收。
 
 调用方需要提供 Python >=3.11（安装），以及已安装 Playwright 的 Python（浏览器）。
-仅创建 test-root 子树，服务目标固定本工作区回环 18042；无模型调用。
+仅创建 test-root 子树，使用显式分配的回环服务与浏览器端口；无模型调用。
 """
 import argparse
 from contextlib import closing
@@ -21,6 +21,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from engine.maintenance import make_release
+from scripts.probe_config import port_number
 
 
 def main():
@@ -29,8 +30,12 @@ def main():
     p.add_argument('--browser-profile', type=Path, required=True)
     p.add_argument('--browser-python', required=True)
     p.add_argument('--install-python', required=True)
+    p.add_argument('--port', required=True, type=port_number, help='分配的隔离后端端口')
+    p.add_argument('--debug-port', required=True, type=port_number, help='分配的浏览器调试端口')
     p.add_argument('--browser-only', action='store_true', help='复用已验收的隔离安装，补验刷新与实际资源绑定')
     args = p.parse_args()
+    if args.port == args.debug_port:
+        p.error('服务端口与浏览器调试端口须不同')
     base = args.test_root.resolve()
     if base == ROOT or ROOT in base.parents or 'test-data' not in base.parts:
         p.error('test-root 须为分配 test-data 下的独立目录')
@@ -38,7 +43,7 @@ def main():
         p.error('test-root 已存在，请指定新的独立验收目录')
     if args.browser_only and not (base / '中文 安装目录' / 'VERSION').is_file():
         p.error('browser-only 需要本脚本已建立的独立安装')
-    for port in (18042, 18043):
+    for port in (args.port, args.debug_port):
         with socket.socket() as s:
             if s.connect_ex(('127.0.0.1', port)) == 0:
                 raise RuntimeError(f'分配端口 {port} 已占用，请管理员协调资源')
@@ -51,15 +56,15 @@ def main():
     temporary.mkdir(exist_ok=args.browser_only)
     # 清除宿主会话所有引擎/运行时覆盖，子进程只接收本次解析后的绝对路径。
     env = {k: v for k, v in os.environ.items() if not k.startswith(('GROUP_', 'XDG_GROUP_', 'HERMES_', 'CODEX_'))}
-    env.update(GROUP_ENGINE_HOST='127.0.0.1', GROUP_ENGINE_PORT='18042',
+    url = f'http://127.0.0.1:{args.port}'
+    env.update(GROUP_ENGINE_HOST='127.0.0.1', GROUP_ENGINE_PORT=str(args.port),
                GROUP_DATA_DIR=str(data), GROUP_DB=str(data / 'group.db'),
                GROUP_ATTACHMENTS_DIR=str(data / 'attachments'),
-               GROUP_ENGINE_URL='http://127.0.0.1:18042', XDG_GROUP_ENGINE_URL='http://127.0.0.1:18042',
+               GROUP_ENGINE_URL=url, XDG_GROUP_ENGINE_URL=url,
                GROUP_ADMIN_PASSWORD='', GROUP_SECRET='isolated-release215',
                HERMES_HOME=str(base / 'hermes'), CODEX_HOME=str(base / 'codex'),
                HERMES_BIN=str(base / 'missing-hermes.exe'),
                TEMP=str(temporary), TMP=str(temporary), PYTHONDONTWRITEBYTECODE='1', PYTHONUTF8='1')
-    url = 'http://127.0.0.1:18042'
     results = []
     running = False
     steps = 0
@@ -114,11 +119,11 @@ def main():
         try:
             start()
             run([args.browser_python, ROOT / 'scripts/verify_release_browser.py', '--url', url,
-                 '--profile', args.browser_profile, '--debug-port', '18043', '--report-dir', reports])
+                 '--profile', args.browser_profile, '--debug-port', str(args.debug_port), '--report-dir', reports])
         finally:
             if running:
                 stop()
-        for port in (18042, 18043):
+        for port in (args.port, args.debug_port):
             with socket.socket() as s:
                 assert s.connect_ex(('127.0.0.1', port)) != 0
         print('PASS browser refresh/reopen, CDP profile and actual loopback listeners; processes released')
@@ -149,7 +154,7 @@ def main():
             permissions['grants'][name] = ['release215-manager', 'release215-architect']
         api('/projects/release215/permissions', {'revision': permissions['revision'], 'grants': permissions['grants']}, 'PUT')
         run([args.browser_python, ROOT / 'scripts/verify_release_browser.py', '--url', url,
-             '--profile', args.browser_profile, '--debug-port', '18043', '--report-dir', reports])
+             '--profile', args.browser_profile, '--debug-port', str(args.debug_port), '--report-dir', reports])
         # 真实任务池入口，真实角色与授权；无模型调用、无替换 taskpool 函数。
         flow = '''from engine import db,taskpool
 import json
@@ -239,12 +244,12 @@ print(json.dumps({'task_id':tid,'requirement_id':rid}))
         if running:
             stop()
         evidence = {'results': results, 'program_root': str(program), 'data_dir': str(data),
-                    'host': '127.0.0.1', 'backend_port': 18042,
+                    'host': '127.0.0.1', 'backend_port': args.port,
                     'frontend': 'backend /app/ static mount; no separate frontend process',
-                    'browser_port': 18043, 'browser_profile': str(args.browser_profile),
+                    'browser_port': args.debug_port, 'browser_profile': str(args.browser_profile),
                     'models_called': False}
         (reports / 'result.json').write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding='utf-8')
-    for port in (18042, 18043):
+    for port in (args.port, args.debug_port):
         with socket.socket() as s:
             assert s.connect_ex(('127.0.0.1', port)) != 0, f'端口 {port} 未释放'
     print(json.dumps(evidence, ensure_ascii=False, indent=2))

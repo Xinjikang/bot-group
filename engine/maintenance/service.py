@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -32,11 +33,13 @@ def venv_python() -> Path:
 
 
 def _load_env() -> None:
-    """数据目录 .env 统一解析（config._parse_dotenv 剥引号/CR/LF/export 前缀），只把进程环境未定义的键导入。"""
-    env = config._parse_dotenv(config.data_dir() / ".env")
+    """Export the resolved instance directory and configuration to child processes."""
+    data_dir = config.data_dir()
+    env = config._dotenv()
     for key, value in env.items():
-        if key not in os.environ:
+        if key not in ('GROUP_DATA_DIR', 'DATA_DIR') and key not in os.environ:
             os.environ[key] = value
+    os.environ['GROUP_DATA_DIR'] = str(data_dir)
 
 
 def _run_install_check() -> int:
@@ -158,10 +161,23 @@ def do_start() -> int:
         return 1
     if _run_install_check() != 0:
         return 1
+    _load_env()
+    from engine.signing_keys import preflight
+    try:
+        preflight()
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        print(f'[start-engine] {exc}', file=sys.stderr)
+        return 1
     # 启动前请求旧引擎优雅退出，失败保留旧进程并中止启动
     if do_stop() != 0:
         return 1
     _load_env()
+    from engine.maintenance.database_layout import migrate
+    try:
+        migrate()
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        print(f"[start-engine] 数据库目录迁移失败：{exc}", file=sys.stderr)
+        return 1
     host = config.host()
     port = config.port()
     print(f"[start-engine] 启动引擎，监听 {host}:{port}")

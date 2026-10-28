@@ -12,6 +12,7 @@ import os
 import sqlite3
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 def db_path() -> str:
@@ -30,6 +31,10 @@ def now_iso(seconds_offset: int = 0) -> str:
 
 def get_connection() -> sqlite3.Connection:
     """打开 group.db 连接，统一 WAL + busy_timeout=30s + foreign_keys。"""
+    from .operation_transaction import current
+    transaction = current.get()
+    if transaction is not None:
+        return transaction.lease()
     path = db_path()
     parent = os.path.dirname(path)
     if parent:
@@ -42,8 +47,24 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+@contextmanager
+def keep_wal_open():
+    """Keep WAL sidecars stable between short requests without retaining a transaction."""
+    connection = get_connection()
+    try:
+        connection.execute('SELECT count(*) FROM sqlite_master').fetchone()
+        if connection.in_transaction:
+            raise RuntimeError('Idle database connection unexpectedly holds a transaction')
+        yield connection
+    finally:
+        connection.close()
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     """建表（schema.sql）。幂等。"""
+    from .operation_transaction import Lease
+    if isinstance(conn, Lease):
+        return  # The operation owner initializes schema before starting its transaction.
     schema_path = Path(__file__).resolve().parent / "schema.sql"
     # Rename before schema.sql creates the index referencing the new column.
     cols = {r['name'] for r in conn.execute('PRAGMA table_info(tasks)')}
@@ -51,6 +72,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
         conn.execute('ALTER TABLE tasks RENAME COLUMN next_role TO next_bot')
     had_project_roles = any(r['name'] == 'role' for r in conn.execute('PRAGMA table_info(project_members)'))
     conn.executescript(schema_path.read_text(encoding="utf-8"))
+    from . import hermes_gateway_ledger
+    hermes_gateway_ledger.initialize(conn)
+    _migrate_add_column(conn, 'hermes_executions', 'signing_generation', 'INTEGER')
+    _migrate_hermes_execution_cleanup(conn)
     # req#101: additive readiness contract; ALTER DEFAULT backfills existing rows.
     # Repeated initialization preserves states owned by future setup workflows.
     with conn:
@@ -252,6 +277,23 @@ def _migrate_add_column(conn: sqlite3.Connection, table: str, column: str, ddl: 
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
         return True
     return False
+
+
+def _migrate_hermes_execution_cleanup(conn: sqlite3.Connection) -> None:
+    """req#134 task#255：清理状态机字段 + 唯一索引收紧（cleanup_pending 不再占执行占用）。
+
+    老库 hermes_execution_active 是宽口径（state!='terminal' OR cleanup_pending=1），
+    需 DROP 重建为窄口径（state!='terminal'）；terminal 行不参与唯一约束，故可累积待清理。
+    """
+    _migrate_add_column(conn, "hermes_executions", "retry_count", "INTEGER NOT NULL DEFAULT 0")
+    _migrate_add_column(conn, "hermes_executions", "next_retry_at", "REAL")
+    _migrate_add_column(conn, "hermes_executions", "cleanup_deadline", "REAL")
+    # 旧宽口径唯一索引存在即保证「同一 session 至多一个非 terminal 行」，DROP 重建窄口径
+    # 必然成功；存量数据已违反窄口径的极端老库会在本层 CREATE 抛 OperationalError，
+    # 由上层启动流程 fail-fast 暴露，不静默吞掉（reviewer #255 次要①）。
+    conn.execute("DROP INDEX IF EXISTS hermes_execution_active")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS hermes_execution_active "
+                 "ON hermes_executions(session) WHERE state != 'terminal'")
 
 
 # messages 表完整列定义（req#61 重建迁移用）：与 schema.sql 保持一致。
@@ -1017,6 +1059,8 @@ def recover_on_startup(conn: sqlite3.Connection) -> int:
 
     startup = time.time()
     conn.execute("BEGIN IMMEDIATE")
+    conn.execute("UPDATE wake_jobs SET status='done',ended_at=? WHERE status='running' AND EXISTS "
+                 "(SELECT 1 FROM hermes_executions h WHERE h.job_id=wake_jobs.id)", (now_iso(),))
     cur = conn.execute(
         "UPDATE wake_jobs SET status='queued', started_at=NULL, ended_at=NULL "
         "WHERE status='running'"
@@ -1040,6 +1084,9 @@ def recover_on_startup(conn: sqlite3.Connection) -> int:
         if responded:
             continue
         session = wake.session_name(profile, "chat", thread["id"], thread["project"])
+        if conn.execute("SELECT 1 FROM hermes_executions WHERE session=? "
+                        "AND (state!='terminal' OR cleanup_pending=1)", (session,)).fetchone():
+            continue
         run = conn.execute(
             "SELECT started_at,ended_at,project FROM wake_runs WHERE session=? "
             "ORDER BY started_at DESC LIMIT 1", (session,),
@@ -1067,7 +1114,9 @@ def recover_on_startup(conn: sqlite3.Connection) -> int:
     # req#58 孤儿行收尸：只补「启动时刻之前、还没收尸」的行（启动后新写的行不动）
     conn.execute(
         "UPDATE wake_runs SET ended_at=?, exit_code=-1 "
-        "WHERE ended_at IS NULL AND started_at < ?",
+        "WHERE ended_at IS NULL AND started_at < ? AND NOT EXISTS "
+        "(SELECT 1 FROM hermes_executions h WHERE h.session=wake_runs.session "
+        "AND h.started_at=wake_runs.started_at AND (h.state!='terminal' OR h.cleanup_pending=1))",
         (startup, startup),
     )
     conn.commit()

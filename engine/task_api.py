@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, ValidationError, validate_call
 
-from . import db, task_access, taskpool
+from . import db, mcp_operations, task_access, taskpool
 
 
 # Public argument lists exclude actor identity and internal workflow parameters.
@@ -49,6 +49,7 @@ def create_router(identity_dependency):
     router = APIRouter(prefix="/task-tools", tags=["Task tools"])
 
     @router.post("/{operation}")
+    @mcp_operations.recorded
     def call(operation: str, body: ToolRequest, request: Request, identity=Depends(identity_dependency)):
         actor, kind = identity
         if kind != "bot" or not actor:

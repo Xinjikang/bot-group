@@ -87,6 +87,8 @@
   --accent-2:#d8bd87;--cyan:#91c5d4;
   text-shadow:0 1px 2px rgba(10,22,34,.8),0 0 3px rgba(10,22,34,.45);
 }
+/* 浅色主题的思考条叠在行星背景上，danger 需换成亮红才满足对比度。 */
+[data-theme="light"] .think-bubble.stalled{--danger:#ff9fa9}
 [data-theme="light"] .msg-meta .think-entry{color:#8b9eb0}
 [data-theme="light"] .msg-meta .think-entry:hover{color:#b4c3d3}
 [data-theme="light"] .msg-meta{

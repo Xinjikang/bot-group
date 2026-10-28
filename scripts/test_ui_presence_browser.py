@@ -1,4 +1,4 @@
-"""Real Chrome presence, BAT and Windows shortcut against an isolated server."""
+"""Real Chrome presence, launch CLI and Windows shortcut against an isolated server."""
 import json
 import os
 from pathlib import Path
@@ -59,7 +59,7 @@ def server():
 
 def main():
     from playwright.sync_api import sync_playwright
-    assert os.name == 'nt', 'Windows BAT and shortcut integration'
+    assert os.name == 'nt', 'Windows shortcut integration'
     with tempfile.TemporaryDirectory(prefix='ui-presence-') as tmp:
         folder = Path(tmp)
         desktop = folder / 'desktop'
@@ -86,8 +86,8 @@ def main():
             env.update(GROUP_ENGINE_PORT=url.rsplit(':', 1)[1], GROUP_ENGINE_URL=url, XDG_GROUP_ENGINE_URL=url)
 
             def launch(entry):
-                if entry == 'bat':
-                    command = [os.environ['COMSPEC'], '/d', '/c', str(ROOT / 'start.bat')]
+                if entry == 'cli':
+                    command = [str(PYTHON), str(ROOT / 'tools/service.py'), 'start']
                 else:
                     command = ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
                         '$p = Start-Process -FilePath $env:UI_TEST_SHORTCUT -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode']
@@ -121,7 +121,7 @@ def main():
                     return page
 
                 initial = context.request.get(url + '/health').json()
-                launch('bat')
+                launch('cli')
                 browser_calls(1)
                 launch('shortcut')
                 browser_calls(1)
@@ -129,13 +129,13 @@ def main():
                 wait_count(1)
                 background = context.new_page()
                 background.goto('about:blank')
-                launch('bat')
+                launch('cli')
                 launch('shortcut')
                 page.wait_for_function('window.__focusCalls === 2')
                 browser_calls(1)
                 page.reload()
                 wait_count(1)
-                launch('bat')
+                launch('cli')
                 page.wait_for_function('window.__focusCalls === 1')
                 second = page_open()
                 wait_count(2)
@@ -143,7 +143,7 @@ def main():
                 second.wait_for_function('window.__focusCalls === 1')
                 second.close()
                 wait_count(1)
-                launch('bat')
+                launch('cli')
                 page.wait_for_function('window.__focusCalls === 2')
                 browser_calls(1)
                 page.close()
@@ -154,12 +154,12 @@ def main():
                 wait_count(1)
                 page.close()
                 wait_count(0)
-                launch('bat')
+                launch('cli')
                 browser_calls(3)
                 assert context.request.get(url + '/health').json() == initial
                 assert not errors, errors
                 browser.close()
-            print(json.dumps({'result': 'PASS', 'entries': ['start.bat', 'Bot Group.lnk'],
+            print(json.dumps({'result': 'PASS', 'entries': ['tools/service.py start', 'Bot Group.lnk'],
                 'cases': ['initial open', 'rapid repeat', 'login page', 'background page',
                           'reload', 'multiple pages', 'close all then reopen'],
                 'browser_calls': 3, 'engine_instance_unchanged': True}))

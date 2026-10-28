@@ -43,7 +43,7 @@ from engine import config  # 仅标准库，干净环境可 import
 _ENV_TEMPLATE = """# bot-group 本地配置（默认免密、回环监听 127.0.0.1:8180）。
 # 端口/监听地址/凭据在此按需覆盖，优先级：命令行 > 进程环境 > 本文件 > 默认值。
 # 配置与运行数据默认保存在程序根目录；修改参数并保存后重启引擎。
-# 自定义数据目录需在运行安装、启停和升级命令前设置环境变量 GROUP_DATA_DIR。
+# 自定义数据目录可在程序根目录 .env 设置 GROUP_DATA_DIR，或通过进程环境覆盖。
 # GROUP_ENGINE_HOST=127.0.0.1
 # GROUP_ENGINE_PORT=8180
 # GROUP_ADMIN_PASSWORD=<设置后启用登录，留空则本机免密直通>
@@ -170,7 +170,7 @@ def first_config() -> Path:
 
 def selfcheck() -> None:
     """用 venv 内 python 校验关键依赖可 import（装错/半装立即暴露，含 MCP server 的 fastmcp）。"""
-    code = "import fastapi, uvicorn, httpx, yaml, PIL, tomlkit, ruamel.yaml, psutil, mcp.server.fastmcp"
+    code = "import fastapi, uvicorn, httpx, yaml, PIL, tomlkit, ruamel.yaml, psutil, mcp.server.fastmcp; from websockets.sync.client import connect"
     subprocess.run([str(venv_python()), "-c", code], check=True)
 
 

@@ -1,5 +1,6 @@
 """Verify the running loopback engine's actual picker; cancel without saving a path."""
 import concurrent.futures
+import argparse
 import ctypes
 from ctypes import wintypes
 import json
@@ -9,8 +10,9 @@ import subprocess
 import sys
 import time
 import urllib.request
+from probe_config import port_number
 
-def main(port=8180):
+def main(port):
     import psutil
     user = ctypes.WinDLL('user32', use_last_error=True)
     callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -119,4 +121,7 @@ if __name__ == '__main__':
             server.terminate()
             server.wait(timeout=10)
     else:
-        main()
+        parser = argparse.ArgumentParser(description=__doc__)
+        parser.add_argument('--port', type=port_number, required=True,
+                            help='授权验证的隔离服务端口；也可用 --isolated 自动创建临时服务')
+        main(parser.parse_args().port)

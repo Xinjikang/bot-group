@@ -49,10 +49,14 @@ def _handle_task_exit(profile, project, kind, session, started_at, ended_at, exi
     with _session_lock:
         intentional = session in _intentional_stops
         if kind == 'work' and not intentional and not _shutting_down.is_set():
-            reason = error or (f'process exited with code {exit_code}' if exit_code else
-                               'process exited without task completion or handoff')
             from .execution_errors import MESSAGES, classify
-            reason = MESSAGES[classify(reason)]
+            if error.startswith('execution timed out'):
+                reason = MESSAGES['timeout']
+            elif exit_code == 0:
+                # Task state and handoff events determine whether a completed run needs retry.
+                reason = MESSAGES['incomplete']
+            else:
+                reason = MESSAGES[classify(error or f'process exited with code {exit_code}')]
             return task_retry.finish(profile, project, task_id, f'{session}:{started_at}', reason, job_id, event_floor)
     return {"blocked": []}
 
@@ -107,6 +111,11 @@ def find_bot_processes(profile: str, session: str | None = None) -> "list[int] |
     native = _find_codex_processes(profile, session)
     if native is not False:
         return native
+    if session is not None:
+        from . import hermes_gateway
+        managed = hermes_gateway.process_state(session)
+        if managed is not False:
+            return managed
     physical_profile = profile
     if profile.startswith('bot-'):
         from . import bot_identity
@@ -577,7 +586,7 @@ def _codex_bin() -> str:
     raise FileNotFoundError('未找到 Codex CLI：请安装 Codex，或将 CODEX_BIN 指向原生可执行文件')
 
 
-def _mcp_server_config(profile: str, *, context=None, chat=False) -> dict:
+def _mcp_server_config(profile: str, *, context=None, chat=False, signing_generation=None) -> dict:
     """Connection and execution metadata shared by Codex and Hermes MCP clients."""
     import json as _json
     from .auth import bot_token, execution_token
@@ -588,7 +597,8 @@ def _mcp_server_config(profile: str, *, context=None, chat=False) -> dict:
             "TASK_QUEUE_ROLE": profile,
             "HERMES_PROFILE": profile,
             "GROUP_ENGINE_URL": _engine_url(),
-            "GROUP_ENGINE_TOKEN": execution_token(profile, context) if context is not None else bot_token(profile),
+            "GROUP_ENGINE_TOKEN": execution_token(profile, context, signing_generation=signing_generation)
+            if context is not None else bot_token(profile),
             "HERMES_CHAT_MODE": '1' if chat else '0',
         },
     }
@@ -896,6 +906,12 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                     codex_spawn_gen = row["generation"]
     finally:
         conn.close()
+    if runtime == 'hermes':
+        from . import hermes_gateway
+        if hermes_gateway.enabled():
+            return hermes_gateway.spawn(profile, kind, signal, thread_id, project,
+                bot=bot, workdir=workdir, model_args=model_args, bound_task=bound_task,
+                job_id=job_id, trigger_msg_id=trigger_msg_id)
     use_binding = runtime != "codex" and session_adapter.available()
     if use_binding:
         conn = db.get_connection()

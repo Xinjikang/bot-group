@@ -10,6 +10,7 @@ venv/
 node_modules/
 dist/
 .env
+secrets/
 frontend/index.html.bak
 logs/
 engine_start.log
@@ -19,9 +20,12 @@ group.db.bak_*
 # CodeGraph 本地索引（不入库）
 .codegraph/
 /runtime/
+/data/
 
 # Test/research reports and development/runtime artifacts
 /reports/
+# #250 网关探针隔离运行环境（独立 HERMES_HOME、工具包缓存、hermes-agent 检出）
+.probe-worktrees/
 .hermes-tmp.*
 /appearance/
 /cache/

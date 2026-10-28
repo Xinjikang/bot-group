@@ -1,5 +1,7 @@
 # 项目文档索引
 
+Hermes 网关版的官方接口、原生审批、临时 MCP、会话迁移与执行恢复见 [Hermes 网关执行适配](engineering/HERMES-GATEWAY.md)。
+
 Hermes 新旧会话接口、安装定位和兼容提示见 [Hermes 兼容性](engineering/HERMES-COMPATIBILITY.md) 与 [设计依据](design/2026-10-27-hermes-compatibility.md)。
 
 当前发布说明：[v0.1.6](releases/v0.1.6.md)。历史版本：[v0.1.5](releases/v0.1.5.md)、[v0.1.4](releases/v0.1.4.md)、[v0.1.3](releases/v0.1.3.md)、[v0.1.2](releases/v0.1.2.md)。
@@ -37,6 +39,7 @@ Profile 凭证继承与异常可见性见 [设计依据](design/2026-10-25-profi
 | [进程查询兼容性](design/2026-10-25-process-query.md) | Windows 进程探测、三态保护与依赖交付 |
 | [维护代码命名空间](design/2026-10-25-maintenance-namespace.md) | Hermes 包共存、命令入口与独立安装器 |
 | [常驻执行后端方案](design/SERVE-RESIDENT-SOLUTION-2026-10-08.md) | 方案与实施前验证条件 |
+| [网关取消与清理方案](design/2026-10-28-hermes-gateway-cancel-cleanup.md) | 执行终态与清理分离、取消有界、清理可恢复 |
 | [规则维护边界](design/bot-group-copy-edit-checklist.md) | 提示词、AGENTS、角色参考及成员查询职责 |
 | [维护经验](PITFALLS.md) | 调度、身份、前端与生命周期边界 |
 

@@ -113,7 +113,7 @@ class FreshInstallLocationTest(unittest.TestCase):
                     service._load_env()
                     self.assertEqual(install.config.port(), 18765)
                     self.assertEqual(os.environ["GROUP_ADMIN_PASSWORD"], "test-only")
-                    self.assertEqual(install.config.db_path(), str(root / "group.db"))
+                    self.assertEqual(install.config.db_path(), str(root / "data" / "group.db"))
                     self.assertEqual(list(appdata.iterdir()), [])
             finally:
                 install.config._dotenv_cache.clear()
@@ -434,7 +434,7 @@ class BatEntryTest(unittest.TestCase):
 
     def test_start_bat_calls_service(self):
         text = (install.PROGRAM_ROOT / "start.bat").read_text(encoding="utf-8")
-        self.assertIn("tools\\service.py start", text)
+        self.assertIn("tools\\service.py restart", text)
 
     def test_stop_bat_calls_service(self):
         text = (install.PROGRAM_ROOT / "stop.bat").read_text(encoding="utf-8")

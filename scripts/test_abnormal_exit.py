@@ -12,7 +12,11 @@ class AbnormalExitTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        host = patch.dict(os.environ, {'HERMES_HOME': self.tmp.name})
+        host = patch.dict(os.environ, {
+            'HERMES_HOME': self.tmp.name,
+            'GROUP_DATA_DIR': self.tmp.name,
+            'HERMES_MANAGED_DIR': os.path.join(self.tmp.name, 'managed'),
+        })
         host.start()
         self.addCleanup(host.stop)
         p = patch.object(db,'db_path',return_value=os.path.join(self.tmp.name,'group.db'))

@@ -1,4 +1,5 @@
 """Focused task retry binding and terminal-state contracts."""
+import json
 import unittest
 import subprocess
 from unittest.mock import patch, MagicMock
@@ -68,6 +69,50 @@ class TaskRetryTests(unittest.TestCase):
         taskpool._log_event(self.conn,'dev-1','node','p',task_id=1)
         self.conn.commit()
         self.assertEqual(task_retry.finish('dev-1','p',1,'new','exit=0',event_floor=floor), {'blocked': [], 'retry': []})
+
+    def test_completed_run_without_handoff_ignores_tool_errors(self):
+        from engine.execution_errors import MESSAGES
+        detail = '\n'.join([
+            'process exit=0; task not handed off/completed',
+            json.dumps({'type': 'item.completed', 'item': {
+                'type': 'command_execution', 'exit_code': 1,
+                'aggregated_output': 'UnauthorizedAccessException; missing config; HTTP 401; timed out'}}),
+            json.dumps({'type': 'turn.completed'}),
+        ])
+        for attempt in range(3):
+            result = wake._handle_task_exit('dev-1', 'p', 'work', 'dev-1-p-work',
+                                            self.start + attempt, self.start + attempt + 1, 0,
+                                            task_id=1, error=detail)
+            self.assertEqual(result['blocked'], [1] if attempt == 2 else [])
+        failures = self.conn.execute("SELECT detail FROM events WHERE event_type='execution.failed'").fetchall()
+        self.assertEqual(len(failures), 3)
+        self.assertTrue(all(json.loads(row[0])['error'] == MESSAGES['incomplete'] for row in failures))
+        report = self.conn.execute('SELECT content FROM messages').fetchone()[0]
+        self.assertEqual(report.count(MESSAGES['incomplete']), 3)
+
+    def test_completed_run_with_handoff_keeps_success(self):
+        floor = self.conn.execute('SELECT MAX(id) FROM events').fetchone()[0]
+        taskpool._log_event(self.conn, 'dev-1', 'node', 'p', task_id=1)
+        self.conn.commit()
+        result = wake._handle_task_exit('dev-1', 'p', 'work', 'dev-1-p-work',
+                                        self.start, self.start + 1, 0, floor, task_id=1,
+                                        error='process exit=0\nUnauthorizedAccessException')
+        self.assertEqual(result, {'blocked': [], 'retry': []})
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events WHERE event_type='execution.failed'").fetchone()[0], 0)
+
+    def test_exit_reason_preserves_runtime_failure_and_engine_timeout(self):
+        from engine.execution_errors import MESSAGES
+        cases = [
+            (1, json.dumps({'type': 'turn.failed', 'error': {'message': 'HTTP 401 Unauthorized'}}), 'authentication'),
+            (1, json.dumps({'type': 'turn.failed', 'error': {'message': 'Selected model is at capacity.'}}), 'capacity'),
+            (0, 'execution timed out after 3600 seconds\nUnauthorizedAccessException', 'timeout'),
+            (-9, 'execution timed out after 3600 seconds\nmissing config', 'timeout'),
+        ]
+        for exit_code, detail, expected in cases:
+            with self.subTest(expected=expected, exit_code=exit_code), patch.object(task_retry, 'finish') as finish:
+                wake._handle_task_exit('dev-1', 'p', 'work', 'dev-1-p-work',
+                                       self.start, self.start + 1, exit_code, task_id=1, error=detail)
+                self.assertEqual(finish.call_args.args[4], MESSAGES[expected])
 
     def test_fast_exit_does_not_lose_retry_to_queue_success(self):
         wake.enqueue(self.conn,'dev-1','work','scan:task',project='p')

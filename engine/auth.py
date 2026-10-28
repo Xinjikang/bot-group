@@ -30,27 +30,43 @@ LOGIN_LIMIT = 10
 MAX_LOGIN_CLIENTS = 4096
 
 
-def bot_token(profile: str) -> str:
-    """Issue a process-local credential bound to one member profile."""
-    key = os.environ.get("GROUP_ENGINE_KEY", "").strip().encode("utf-8") or _BOT_SECRET
+def signing_keys():
+    from . import signing_keys as store
+    loaded = store.current()
+    if loaded is not None:
+        return loaded
+    # Library-only callers retain the legacy process lifetime; main initializes
+    # the persistent store before any production admission or HTTP serving.
+    return 0, {0: os.environ.get('GROUP_ENGINE_KEY', '').strip().encode('utf-8') or _BOT_SECRET}
+
+
+def bot_token(profile: str, *, key=None) -> str:
+    """Issue a member credential using the current signing generation."""
+    if key is None:
+        generation, keys = signing_keys()
+        key = keys[generation]
     return hmac.new(key, profile.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def verify_bot(profile: str, token: str) -> bool:
+def verify_bot(profile: str, token: str, *, ring=None) -> bool:
+    generation, keys = ring if ring is not None else signing_keys()
     return bool(profile and token) and (secrets.compare_digest(
-        token.encode("utf-8"), bot_token(profile).encode("ascii"))
-        or execution_scope(profile, token) is not None)
+        token.encode("utf-8"), bot_token(profile, key=keys[generation]).encode("ascii"))
+        or execution_scope(profile, token, keys) is not None)
 
 
-def execution_token(profile: str, context: dict) -> str:
+def execution_token(profile: str, context: dict, *, signing_generation=None) -> str:
     """Issue a member credential restricted to one engine execution."""
     payload = base64.urlsafe_b64encode(json.dumps(
         {key: context[key] for key in EXECUTION_FIELDS},
         sort_keys=True, separators=(",", ":")).encode("utf-8")).decode("ascii")
-    signature = hmac.new(bot_token(profile).encode("ascii"),
+    generation, keys = signing_keys()
+    if signing_generation is not None:
+        generation = signing_generation
+    signature = hmac.new(bot_token(profile, key=keys[generation]).encode("ascii"),
                          ("execution:" + payload).encode("ascii"), hashlib.sha256).hexdigest()
     token = f"run.{payload}.{signature}"
-    if execution_scope(profile, token) is None:
+    if execution_scope(profile, token, keys) is None:
         raise ValueError("Invalid execution context")
     return token
 
@@ -58,15 +74,20 @@ def execution_token(profile: str, context: dict) -> str:
 EXECUTION_FIELDS = ("profile", "project", "thread_id", "session", "wake_started_at")
 
 
-def execution_scope(profile: str, token: str) -> dict | None:
+def execution_scope(profile: str, token: str, keys: dict[int, bytes]) -> dict | None:
     """Read scope only after verifying its signature and field types."""
     if not token.startswith("run.") or len(token) > 8192:
         return None
     try:
         prefix, payload, signature = token.split(".")
-        expected = hmac.new(bot_token(profile).encode("ascii"),
-                            ("execution:" + payload).encode("ascii"), hashlib.sha256).hexdigest()
-        if not secrets.compare_digest(signature.encode("utf-8"), expected.encode("ascii")):
+        matched = None
+        for generation, key in keys.items():
+            expected = hmac.new(bot_token(profile, key=key).encode("ascii"),
+                                ("execution:" + payload).encode("ascii"), hashlib.sha256).hexdigest()
+            if secrets.compare_digest(signature.encode("utf-8"), expected.encode("ascii")):
+                matched = generation
+                break
+        if matched is None:
             return None
         context = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")))
         if not isinstance(context, dict) or set(context) != set(EXECUTION_FIELDS):
@@ -81,7 +102,7 @@ def execution_scope(profile: str, token: str) -> dict | None:
             return None
         if type(start) not in (int, float) or not math.isfinite(start):
             return None
-        return context
+        return {**context, 'signing_generation': matched}
     except (ValueError, UnicodeError, TypeError):
         return None
 

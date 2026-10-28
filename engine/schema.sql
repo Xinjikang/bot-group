@@ -474,3 +474,17 @@ CREATE TABLE IF NOT EXISTS steer_operations (
 );
 CREATE INDEX IF NOT EXISTS idx_steer_ops_run ON steer_operations(project, profile, kind, thread_id, run_started_at);
 CREATE INDEX IF NOT EXISTS idx_steer_ops_status ON steer_operations(status, created_at);
+
+-- Unknown reservations survive a crash and prevent automatic external-effect replay.
+CREATE TABLE IF NOT EXISTS mcp_operations (
+    owner TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    project TEXT NOT NULL DEFAULT '',
+    thread_id INTEGER,
+    state TEXT NOT NULL CHECK(state IN ('unknown', 'completed')),
+    status_code INTEGER,
+    response TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(owner, operation_id)
+);

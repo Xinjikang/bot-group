@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import urllib.request
+from probe_config import port_number
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -16,13 +17,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--evidence', type=Path, required=True)
     parser.add_argument('--shell', choices=['powershell', 'cmd'], required=True)
-    parser.add_argument('--port', type=int, required=True)
+    parser.add_argument('--port', type=port_number, required=True)
     args = parser.parse_args()
     base = args.evidence.resolve()
     if base.exists():
         parser.error('Use a new evidence directory for each run')
-    if args.port == 8180:
-        parser.error('Choose an isolated port')
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', args.port))
     base.mkdir(parents=True)

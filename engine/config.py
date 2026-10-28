@@ -4,7 +4,7 @@
 优先级：命令行 > 进程环境 > 本地配置(.env) > 默认值。
 
 统一一份「端口 / 监听地址 / 数据目录」配置；路径从脚本位置推导；数据目录
-默认程序根目录，可通过启动参数或环境变量指定其他位置；Hermes/Codex 探测
+默认程序根目录，可通过启动参数、环境变量或根目录 .env 指定其他位置；Hermes/Codex 探测
 沿用各模块既有 _root 口径（HERMES_HOME / CODEX_HOME 优先、缺省回退 native）。
 默认回环监听 127.0.0.1、默认免密（未设管理员密码时本机放行，见 api._resolve_identity）。
 """
@@ -73,13 +73,22 @@ def _parse_dotenv(path: Path) -> dict[str, str]:
 def _dotenv() -> dict[str, str]:
     """惰性解析数据目录 .env，默认位于程序根目录。
 
-    缓存按 data_dir 分桶，data_dir 变化时读取对应目录下的 .env。
+    缓存按 data_dir 分桶。根目录 .env 选择数据目录时提供基础配置，
+    数据目录中的 .env 覆盖对应配置项；显式选择其他实例时只读该实例配置。
     """
     path = data_dir()
     key = str(path)
     cached = _dotenv_cache.get(key)
     if cached is None:
-        cached = _parse_dotenv(path / ".env")
+        cached = {}
+        if path != program_root() and path == _dotenv_data_dir():
+            cached.update(_parse_dotenv(program_root() / '.env'))
+        local = _parse_dotenv(path / '.env')
+        for names in (_ENV_HOST, _ENV_PORT, ('GROUP_ENGINE_URL', 'XDG_GROUP_ENGINE_URL')):
+            if any(name in local for name in names):
+                for name in names:
+                    cached.pop(name, None)
+        cached.update(local)
         _dotenv_cache[key] = cached
     return cached
 
@@ -118,11 +127,22 @@ def port(cli=None) -> int:
         return DEFAULT_PORT
 
 
+def _dotenv_data_dir() -> Path | None:
+    """Resolve the root configuration's directory selector relative to the installation."""
+    values = _parse_dotenv(program_root() / '.env')
+    for name in _ENV_DATA_DIR:
+        value = values.get(name, '').strip()
+        if value:
+            path = Path(value).expanduser()
+            return (program_root() / path).resolve()
+    return None
+
+
 def data_dir(cli=None) -> Path:
     """数据目录（group.db / attachments / backups / .env / 日志落这里）。
 
-    确定顺序：命令行 > 环境(GROUP_DATA_DIR/DATA_DIR) > 程序根目录。
-    不读 .env 的 DATA_DIR——.env 本身落数据目录，数据目录须由 CLI/环境决定，避免循环。
+    确定顺序：命令行 > 环境(GROUP_DATA_DIR/DATA_DIR) > 根目录 .env > 程序根目录。
+    根目录 .env 的相对目录以程序根为基准；选定实例中的 .env 只提供其他配置。
     """
     if cli is None:
         cli = _cli["data_dir"]
@@ -132,22 +152,35 @@ def data_dir(cli=None) -> Path:
         value = os.environ.get(name, "").strip()
         if value:
             return Path(value).expanduser().resolve()
-    return program_root()
+    return _dotenv_data_dir() or program_root()
 
 
 def db_path(cli=None) -> str:
     """group.db 路径。GROUP_DB 显式覆盖优先级最高（向后兼容既有测试/部署）。"""
-    env = os.environ.get("GROUP_DB", "").strip()
+    env = _pick(None, ("GROUP_DB",), "").strip()
     if env:
+        if Path(env).resolve() == (program_root() / "group.db").resolve():
+            from .maintenance.database_layout import relocated_path
+            return str(relocated_path(Path(env).resolve()))
         return env
-    return str(data_dir(cli) / "group.db")
+    root = data_dir(cli)
+    if root.resolve() != program_root().resolve():
+        return str(root / "group.db")
+    legacy = root / "group.db"
+    # Maintenance must identify a running legacy instance before relocating it.
+    if legacy.exists():
+        return str(legacy)
+    from .maintenance.database_layout import relocated_path
+    return str(relocated_path(root / "data" / "group.db"))
 
 
 def attachments_dir(cli=None) -> Path:
     """附件目录。GROUP_ATTACHMENTS_DIR 覆盖；默认随 db 目录（保持既有语义）。"""
-    env = os.environ.get("GROUP_ATTACHMENTS_DIR", "").strip()
+    env = _pick(None, ("GROUP_ATTACHMENTS_DIR",), "").strip()
     if env:
         return Path(env).expanduser().resolve()
+    if Path(db_path(cli)).resolve() == (program_root() / "data" / "group.db").resolve():
+        return program_root() / "attachments"
     return Path(db_path(cli)).resolve().parent / "attachments"
 
 

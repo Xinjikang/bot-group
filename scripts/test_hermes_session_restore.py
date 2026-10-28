@@ -13,18 +13,19 @@ session_id 恢复并读回历史。同时验证 steer() 的内存态在进程退
 与「能恢复」是两回事，必须持久化绑定 session_id。
 
 运行（需 Hermes 源码的 Python 3.11 venv）：
-    E:/home/admin/hermes/hermes-agent/venv/Scripts/python.exe \
-        E:/Code/bot-group/scripts/test_hermes_session_restore.py
+    python scripts/test_hermes_session_restore.py
 
-本脚本依赖 Hermes 源码路径（硬编码），不进 group-engine unittest discovery。
+通过 HERMES_TEST_SOURCE 指定已安装的 Hermes 源码绝对路径。
 """
 import json
 import os
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
-_HERMES_SRC = r"E:\home\admin\hermes\hermes-agent"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts.probe_config import hermes_source
 
 
 def _isolate_home() -> str:
@@ -66,7 +67,7 @@ finally:
 
 
 def _run_child(db_path: str, session_id: str, want_title: bool) -> dict:
-    code = CHILD_CODE.format(src=_HERMES_SRC)
+    code = CHILD_CODE.format(src=hermes_source())
     proc = subprocess.run(
         [sys.executable, "-c", code, db_path, session_id, "1" if want_title else "0"],
         capture_output=True, text=True, timeout=60,
@@ -82,8 +83,9 @@ def _run_child(db_path: str, session_id: str, want_title: bool) -> dict:
 
 
 def main() -> int:
+    source = hermes_source()
     iso = _isolate_home()
-    sys.path.insert(0, _HERMES_SRC)
+    sys.path.insert(0, source)
     from hermes_state_registry import acquire
     from hermes_state_ids import new_session_id
 

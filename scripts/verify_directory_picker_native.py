@@ -23,7 +23,7 @@ def main():
     user.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     env = os.environ.copy()
     env['GROUP_PICKER_INITIAL'] = str(Path(__file__).resolve().parents[1])
-    binary = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+    binary = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
     process = subprocess.Popen([str(binary), '-NoProfile', '-STA', '-Command', _SCRIPT],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8',
         creationflags=subprocess.CREATE_NO_WINDOW)

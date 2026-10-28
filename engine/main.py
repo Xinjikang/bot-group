@@ -57,13 +57,17 @@ def _setup_logging() -> None:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def _engine_lifespan(app: FastAPI):
     from . import wake
+    from .hermes_gateway_client import resume_connections
+    resume_connections()
     wake._shutting_down.clear()
     # 启动：建表 + 重启恢复
     conn = db.get_connection()
     try:
         db.init_schema(conn)
+        from . import signing_keys
+        signing_keys.initialize(conn)
         recovered = db.recover_on_startup(conn)
         if recovered:
             logger.info("重启恢复：%d 个投递或话题执行重新入队", recovered)
@@ -82,6 +86,8 @@ async def lifespan(app: FastAPI):
     # SSE 跨线程投递：后台线程（reaper/心跳线程/queue worker）发事件要 threadsafe 切回主 loop
     from . import events
     events.set_loop(asyncio.get_running_loop())
+    from . import hermes_gateway
+    hermes_gateway.recover()
 
     t_queue = threading.Thread(target=queue.run_forever, args=(stop_event,), daemon=True, name="queue-worker")
     t_scanner = threading.Thread(target=scanner.run_forever, args=(stop_event,), daemon=True, name="scanner")
@@ -93,6 +99,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         wake._shutting_down.set()
+        await asyncio.to_thread(hermes_gateway.close_connections, 5)
         stop_event.set()
         await asyncio.to_thread(t_queue.join, 5)
         await asyncio.to_thread(t_scanner.join, 5)
@@ -100,9 +107,18 @@ async def lifespan(app: FastAPI):
         # Uvicorn closes connections. Keep a fallback for embedded ASGI hosts.
         if not wake.active_runs():
             from . import browser_resources
-            result = await asyncio.to_thread(browser_resources.release)
+            result = await asyncio.to_thread(browser_resources.release, exclude_managed=True)
             if not result['ok']:
                 logger.error('Browser resources remain: %s', result['errors'])
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from .maintenance.database_layout import migrate
+    migrate()
+    with db.keep_wal_open():
+        async with _engine_lifespan(app):
+            yield
 
 
 app = FastAPI(title="group-engine", version="0.1.0", lifespan=lifespan)
@@ -185,6 +201,8 @@ def main(argv=None) -> None:
     # 命令行数据目录固定本次进程，db/attachments/日志均按此定位（日志目录随 --data-dir，不再 import 期固定）
     if args.data_dir:
         os.environ['GROUP_DATA_DIR'] = args.data_dir
+    from .maintenance.database_layout import migrate
+    migrate()
     _setup_logging()
     server = ManagedServer(uvicorn.Config(app, host=config.host(args.host),
         port=config.port(args.port), log_level='info',
