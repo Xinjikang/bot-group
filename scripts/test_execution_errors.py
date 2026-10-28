@@ -27,6 +27,7 @@ class ExecutionErrorTests(unittest.TestCase):
                  'authentication': 'HTTP 401 Unauthorized', 'permission': 'status_code=403 Forbidden',
                  'rate_limit': 'Error code: 429 Too Many Requests', 'timeout': 'httpx.ReadTimeout: timed out',
                  'network': 'ConnectionError: connection refused', 'upstream': 'HTTP 503 Service Unavailable',
+                 'capacity': 'Selected model is at capacity. Please try a different model.',
                  'unknown': 'unexpected process termination'}
         for expected, text in cases.items():
             with self.subTest(expected=expected):
@@ -34,6 +35,45 @@ class ExecutionErrorTests(unittest.TestCase):
         self.assertEqual(errors.classify('process pid 403 stopped at line 429'), 'unknown')
         self.assertEqual(errors.classify('主账户凭据已过期'), 'authentication')
         self.assertEqual(errors.classify('access token expired'), 'authentication')
+
+    def test_codex_failure_overrides_tool_output(self):
+        tool_output = json.dumps({'type': 'item.completed', 'item': {
+            'type': 'command_execution', 'exit_code': 0,
+            'aggregated_output': 'HermesConfigurationError: 缺少配置; HTTP 401; timeout'}})
+        for message, expected in [
+            ('Selected model is at capacity. Please try a different model.', 'capacity'),
+            ('HTTP 429 Too Many Requests', 'rate_limit'),
+            ('HTTP 401 Unauthorized', 'authentication'),
+            ('unexpected process termination', 'unknown'),
+        ]:
+            with self.subTest(expected=expected):
+                detail = '\n'.join(['process exit=1', tool_output,
+                                    json.dumps({'type': 'error', 'message': 'missing config'}),
+                                    json.dumps({'type': 'turn.failed', 'error': {'message': message}}),
+                                    tool_output])
+                self.assertEqual(errors.classify(detail), expected)
+                with self.assertLogs('engine.execution_errors'):
+                    mid = errors.report('default', 'p', None, 'codex-' + expected, detail)
+                row = self.conn.execute('SELECT category,diagnostic FROM execution_errors WHERE message_id=?',
+                                        (mid,)).fetchone()
+                self.assertEqual(row['category'], expected)
+                self.assertIn('aggregated_output', row['diagnostic'])
+                content = self.conn.execute('SELECT content FROM messages WHERE id=?', (mid,)).fetchone()[0]
+                self.assertTrue(content.endswith(errors.MESSAGES[expected]), content)
+
+    def test_codex_error_fallback_and_latest_terminal_failure(self):
+        capacity = 'Selected model is at capacity. Please try a different model.'
+        detail = '\n'.join(['process exit=1; missing config', '{invalid json', '[]', 'null',
+                            json.dumps({'type': 'error', 'message': 'HTTP 401'}),
+                            json.dumps({'type': 'error', 'message': capacity})])
+        self.assertEqual(errors.classify(detail), 'capacity')
+        for error in ({'message': 'HTTP 403'}, 'HTTP 403'):
+            with self.subTest(error=error):
+                terminal = '\n'.join([detail,
+                                      json.dumps({'type': 'turn.failed', 'error': {'message': capacity}}),
+                                      json.dumps({'type': 'turn.failed', 'error': error})])
+                self.assertEqual(errors.classify(terminal), 'permission')
+        self.assertEqual(errors.classify('disk is at capacity'), 'unknown')
 
     def test_hermes_compatibility_notifications_are_actionable(self):
         for exception, expected in [('HermesCompatibilityError', '更新或修复 Hermes'),

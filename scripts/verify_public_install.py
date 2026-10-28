@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import urllib.request
+from probe_config import port_number
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -16,13 +17,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--evidence', type=Path, required=True)
     parser.add_argument('--shell', choices=['powershell', 'cmd'], required=True)
-    parser.add_argument('--port', type=int, required=True)
+    parser.add_argument('--port', type=port_number, required=True)
     args = parser.parse_args()
     base = args.evidence.resolve()
     if base.exists():
         parser.error('Use a new evidence directory for each run')
-    if args.port == 8180:
-        parser.error('Choose an isolated port')
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', args.port))
     base.mkdir(parents=True)
@@ -84,11 +83,14 @@ def main():
         env['PATH'] = str(Path(os.environ['SystemRoot']) / 'System32')
         started = True
         run('03-start', bat('start.bat'), program)
-        assert (base / 'browser_calls.txt').read_text().splitlines() == [f'http://127.0.0.1:{args.port}/app/']
         health = json.loads(get('/health'))
         assert health['status'] == 'ok', health
         assert Path(health['program_root']).resolve() == program
         assert Path(health['db_path']).resolve() == program / 'group.db'
+        run('03-desktop-launch', [str(program / '.venv/Scripts/python.exe'),
+                                 'tools/service.py', 'start'], program)
+        assert json.loads(get('/health'))['instance_id'] == health['instance_id']
+        assert (base / 'browser_calls.txt').read_text().splitlines() == [f'http://127.0.0.1:{args.port}/app/']
         assert json.loads(get('/auth/status')) == {'configured': False}
         html = get('/app/')
         assert b'<html' in html.lower()

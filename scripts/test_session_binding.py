@@ -24,10 +24,11 @@ from unittest.mock import patch
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
-_REAL_HERMES_SRC = r"E:\home\admin\hermes\hermes-agent"
+from scripts.probe_config import hermes_source
 
 
 def main() -> int:
+    source = hermes_source()
     from engine import db, session_adapter
 
     iso = tempfile.mkdtemp(prefix="t143_")
@@ -43,7 +44,7 @@ def main() -> int:
     patchers = [
         patch.object(db, "db_path", return_value=group_db),
         patch.object(session_adapter, "_hermes_home", return_value=__import__("pathlib").Path(iso)),
-        patch.object(session_adapter, "_hermes_src", return_value=_REAL_HERMES_SRC),
+        patch.object(session_adapter, "_hermes_src", return_value=source),
     ]
     for p in patchers:
         p.start()

@@ -20,7 +20,7 @@ import sqlite3
 import tomllib
 from pathlib import Path
 
-from . import codex_sandbox_notice, db
+from . import codex_sandbox_notice, db, hermes_profile_names
 
 # profile 名合法性（与 profile_config._directory 同口径）：小写字母数字开头，
 # 允许 - 和 _，最长 64。
@@ -88,6 +88,8 @@ def candidate_available(bot) -> bool:
         if not root.is_dir():
             return False
         if bot['host_type'] == 'hermes':
+            if hermes_profile_names.reserved(profile):
+                return False
             home = root if profile == 'default' else root / 'profiles' / profile
             return any(_has_file(home / name) for name in ('config.yaml', 'state.db'))
         if bot['host_type'] == 'codex':
@@ -120,7 +122,8 @@ def _scan_hermes() -> list[dict]:
     profiles_dir = root / "profiles"
     if profiles_dir.is_dir():
         for entry in _entries(profiles_dir):
-            if not entry.is_dir() or not _PROFILE_RE.match(entry.name):
+            if (not entry.is_dir() or not _PROFILE_RE.match(entry.name)
+                    or hermes_profile_names.reserved(entry.name)):
                 continue
             # 命名 profile 必须是真实 home（有 state.db/config.yaml 之一），过滤
             # 备份/临时目录之类的空壳。
@@ -205,6 +208,8 @@ def register_bot(conn: sqlite3.Connection, host_type: str, profile: str,
         raise ValueError("host_type must be 'hermes' or 'codex'")
     if not profile or not _PROFILE_RE.match(profile) or db.is_builtin_user(profile):
         raise ValueError(f"invalid profile: {profile!r}")
+    if host_type == 'hermes':
+        hermes_profile_names.validate(profile)
     if not config_root:
         raise ValueError("config_root is required")
     row = conn.execute(

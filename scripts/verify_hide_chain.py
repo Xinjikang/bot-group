@@ -1,10 +1,25 @@
 # -*- coding: utf-8 -*-
 """端到端验证 v2：隐藏链路（展开后菜单点击用 JS 直调 toggleHideThread 避免菜单可见性问题）"""
 import sys
+import argparse
+import json
+import urllib.request
 from pathlib import Path
-from playwright.sync_api import sync_playwright
+from probe_config import loopback_url, absolute_path
 
-BASE = "http://127.0.0.1:8180/app/"
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--url', type=loopback_url, required=True, help='隔离服务 origin')
+parser.add_argument('--database', required=True, help='该隔离服务的数据库绝对路径')
+args = parser.parse_args()
+database = absolute_path(args.database, '--database')
+if not database.is_file():
+    parser.error('指定的隔离数据库必须已经存在')
+with urllib.request.urlopen(args.url + '/health', timeout=10) as response:
+    health = json.load(response)
+if Path(health['db_path']).resolve() != database:
+    parser.error('服务实际数据库与 --database 不一致')
+BASE = args.url + '/app/'
+from playwright.sync_api import sync_playwright
 results = []
 def check(name, ok, detail=""):
     results.append((name, ok, detail))
@@ -67,7 +82,7 @@ with sync_playwright() as p:
 # 清理测试话题
 if tid:
     import sqlite3
-    db = sqlite3.connect(Path(__file__).resolve().parents[1] / "group.db")
+    db = sqlite3.connect(database.as_uri() + '?mode=rw', uri=True)
     db.execute("DELETE FROM messages WHERE thread_id=?", (tid,))
     db.execute("DELETE FROM threads WHERE id=?", (tid,))
     db.commit(); db.close()

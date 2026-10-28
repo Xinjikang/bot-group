@@ -4,13 +4,15 @@ import logging
 import os
 import re
 
-from . import db, events
+from . import db, events, hermes_profile_names
 
 MESSAGES = {
     'configuration': '配置不完整或无效，请检查配置。',
     'authentication': '身份认证失败，请检查凭证。',
     'permission': '访问被拒绝，请检查权限。',
     'rate_limit': '请求受限，请稍后重试或检查配额。',
+    'capacity': '所选模型容量已满，请稍后重试或切换模型。',
+    'incomplete': '本轮执行已结束，任务尚未完成或交接，请检查任务记录。',
     'timeout': '请求超时，请稍后重试或检查超时设置。',
     'network': '连接失败，请检查网络设置。',
     'upstream': '服务暂时异常，请稍后重试。',
@@ -24,8 +26,36 @@ def _status(text, code):
                           r'''[\s"':=\[\]-]*''' + code + r'\b', text))
 
 
+def _failure_text(detail):
+    """Prefer terminal JSONL failures over source code and tool output in the tail."""
+    text = str(detail)
+    last_error = None
+    for line in reversed(text.splitlines()):
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        kind = event.get('type')
+        if kind == 'turn.failed':
+            error = event.get('error')
+            message = error.get('message') if isinstance(error, dict) else error
+            if isinstance(message, str) and message.strip():
+                return message
+        elif kind == 'error' and last_error is None:
+            message = event.get('message')
+            if isinstance(message, str) and message.strip():
+                last_error = message
+    return last_error if last_error is not None else text
+
+
 def classify(text):
-    text = str(text).lower()
+    text = _failure_text(text).lower()
+    if hermes_profile_names.failure_message(text) or '被 hermes 保留' in text:
+        return 'configuration'
+    if re.search(r'\bmodel\b[^\n.]{0,80}\bat capacity\b', text):
+        return 'capacity'
     if re.search(r'no usable credentials|missing.{0,40}(?:key|credential|config)|'
                  r'(?:key|credential).{0,40}(?:missing|not set|unset)|'
                  r'hermescompatibilityerror|configurationerror|config(?:uration)? (?:error|invalid)|'
@@ -125,9 +155,13 @@ def report(profile, project, thread_id, attempt, detail, *, exit_code=1, parent_
         if parent:
             round_no, depth = parent['round'], parent['depth'] + 1
         public_message = MESSAGES[category]
-        if 'HermesConfigurationError' in str(detail):
+        failure = _failure_text(detail)
+        reserved_message = hermes_profile_names.failure_message(failure)
+        if reserved_message:
+            public_message = reserved_message
+        elif 'HermesConfigurationError' in failure:
             public_message = 'Hermes 入口与源码配置异常，请检查 HERMES_BIN、HERMES_HOME，并在修正后重启引擎。'
-        elif 'HermesCompatibilityError' in str(detail):
+        elif 'HermesCompatibilityError' in failure:
             public_message = 'Hermes 会话接口不兼容，请更新或修复 Hermes 后重启引擎。'
         content = f'{label}：{public_message}'
         cur = conn.execute("INSERT INTO messages(project,ts,sender,sender_type,content,mentions,thread_id,parent_id,round,depth,need_reply) "

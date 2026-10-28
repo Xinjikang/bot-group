@@ -121,7 +121,8 @@ class RuntimeMcpTest(unittest.TestCase):
         context = json.loads(server["env"]["XDG_GROUP_ENGINE_EXECUTION"])
         self.assertEqual(context, {"profile": "one", "project": "alpha", "session": "test",
                                    "thread_id": 1, "wake_started_at": 100})
-        self.assertEqual(auth.execution_scope("one", server["env"]["GROUP_ENGINE_TOKEN"]), context)
+        self.assertEqual(auth.execution_scope("one", server["env"]["GROUP_ENGINE_TOKEN"], auth.signing_keys()[1]),
+                         {**context, 'signing_generation': auth.signing_keys()[0]})
 
 
 if __name__ == "__main__":

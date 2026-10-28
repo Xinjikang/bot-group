@@ -17,22 +17,24 @@ steer_user_row / turn_finalizer 的 leftover drain 语义）在隔离内存态�
   - marker 是唯一可信注入形状（CONTROL_FRAME_OPENERS 反注入防线）
 
 运行（需 Hermes 源码的 Python 3.11 venv）：
-    E:/home/admin/hermes/hermes-agent/venv/Scripts/python.exe \
-        E:/Code/bot-group/scripts/test_hermes_steer_delivery.py
+    python scripts/test_hermes_steer_delivery.py
 
-本脚本依赖 Hermes 源码路径（硬编码），不进 group-engine unittest discovery。
+通过 HERMES_TEST_SOURCE 指定已安装的 Hermes 源码绝对路径。
 """
 import os
 import sys
 import tempfile
+from pathlib import Path
 
-_HERMES_SRC = r"E:\home\admin\hermes\hermes-agent"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts.probe_config import hermes_source
 
 
 def main() -> int:
+    source = hermes_source()
     iso = tempfile.mkdtemp(prefix="hermes_spike_iso_")
     os.environ["HERMES_HOME"] = iso
-    sys.path.insert(0, _HERMES_SRC)
+    sys.path.insert(0, source)
 
     from agent.agent_init import _set_defaults, _CONTROL_STATE
     from agent.interrupt_control import InterruptControlMixin

@@ -23,7 +23,7 @@ from engine.maintenance import make_release
 ROOT = Path(__file__).resolve().parents[1]
 ENTRIES = ('start.bat', 'stop.bat', 'install.bat', 'bootstrap.bat')
 CASES = (
-    ('start.bat', '', ['tools\\service.py', 'start']),
+    ('start.bat', '', ['tools\\service.py', 'restart']),
     ('stop.bat', '', ['tools\\service.py', 'stop']),
     ('install.bat', '', ['tools\\install.py', 'install']),
     ('install.bat', 'install', ['tools\\install.py', 'install']),
@@ -219,7 +219,7 @@ sys.exit(int(os.environ['BAT_PROBE_EXIT']))
         startup.wShowWindow = subprocess.SW_HIDE
         # chcp needs a real console; keep its window hidden while capturing output.
         proc = subprocess.run(f'"{self.cmd}" /d /q /s /c ""{driver}""',
-                              cwd=self.root, env=env, capture_output=True, timeout=15,
+                              cwd=self.root, env=env, input=b'\r\n', capture_output=True, timeout=15,
                               creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=startup)
         received = json.loads(self.capture.read_text(encoding='utf-8')) if self.capture.exists() else None
         match = re.search(rb'(\d+)', cp_file.read_bytes())
@@ -247,7 +247,11 @@ sys.exit(int(os.environ['BAT_PROBE_EXIT']))
         proc, received = self.run_entry(name, args, codepage, exit_code, work)
         self.assertEqual(proc.returncode, exit_code, (proc.stdout, proc.stderr))
         self.assertEqual(proc.stderr, b'', (proc.stdout, proc.stderr))
-        self.assertEqual(proc.stdout, b'')
+        if name == 'start.bat' and exit_code:
+            self.assertIn(b'Startup failed.', proc.stdout)
+            self.assertIn(f'Exit code: {exit_code}'.encode(), proc.stdout)
+        else:
+            self.assertEqual(proc.stdout, b'')
         self.assertIsNotNone(received)
         self.assertEqual(received['argv'], (['-3'] if interpreter == 'py' else []) + expected)
         self.assertEqual(received['executable'], interpreter + '.exe')
@@ -285,6 +289,24 @@ sys.exit(int(os.environ['BAT_PROBE_EXIT']))
                 for case in CASES:
                     with self.subTest(interpreter=interpreter, codepage=cp, case=case):
                         self.assert_invocation(case, cp, interpreter, 37)
+
+    def test_start_failure_waits_for_acknowledgement(self):
+        self.interpreters('python')
+        env = dict(self.env, BAT_PROBE_EXIT='37')
+        command = f'"{self.cmd}" /d /q /s /c ""{self.work / "start.bat"}""'
+        with subprocess.Popen(command, cwd=self.work, env=env,
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              creationflags=subprocess.CREATE_NO_WINDOW) as proc:
+            try:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    proc.wait(timeout=0.5)
+                stdout, stderr = proc.communicate(b'\r\n', timeout=10)
+                self.assertEqual(proc.returncode, 37, (stdout, stderr))
+                self.assertIn(b'Startup failed.', stdout)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.communicate()
 
     def test_missing_interpreter_is_actionable_and_returns_one(self):
         self.interpreters()

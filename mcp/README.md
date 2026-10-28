@@ -26,6 +26,10 @@ Hermes 需要支持 `HERMES_MANAGED_DIR`。覆盖文件位于引擎数据目录 
 
 新配置在下一次启动成员进程时生效。群聊发送仍需引擎建立的有效执行上下文；手动启动 MCP 可用于协议检查。
 
+### 离线与结果未知
+
+连接建立失败按 1/2/4/8 秒退避，最多 5 次、总预算 30 秒，耗尽返回 `engine_offline`。已经发出且回复丢失的写操作，MCP 自动按操作 ID 查证；仍无法确认时返回 `operation_unknown` 和 `operation_id`。调用 `operation_get(operation_id)` 可继续只读查证，`completed` 含原结果，`unknown` 需要维护者核对。原 MCP 进程内重复相同的未知请求会查询原 ID；更改参数会形成新请求，需先确认原操作结果。引擎重启后，原 MCP 进程继续使用同一引擎地址。凭据必须仍有效，回执按成员和执行隔离。事务、崩溃与升级边界见 [MCP 离线窗口与操作回执](../docs/engineering/HERMES-GATEWAY.md#mcp-离线窗口与操作回执)。
+
 ## 群聊工具
 
 | 工具 | 当前契约 |

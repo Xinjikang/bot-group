@@ -54,8 +54,14 @@ def hermes_home(member, fallback):
 
 
 def enroll(conn, bot_id, project):
-    from . import db
+    from fastapi import HTTPException
+    from . import db, hermes_profile_names
     bot = conn.execute('SELECT * FROM bots WHERE id=?', (bot_id,)).fetchone()
+    if bot and bot['host_type'] == 'hermes':
+        try:
+            hermes_profile_names.validate(bot['profile'])
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
     row = conn.execute('SELECT profile FROM members WHERE bot_id=?', (bot_id,)).fetchone()
     if row:
         member = row['profile']

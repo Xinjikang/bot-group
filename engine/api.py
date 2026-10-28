@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.responses import JSONResponse, FileResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import appearance, attachments, auth, commands, db, discovery, events, profile_config, router, taskqueue_proxy, wake
+from . import appearance, attachments, auth, commands, db, discovery, events, mcp_operations, profile_config, router, taskqueue_proxy, wake
 from .delivery import effective_need_reply
 from .task_api import create_router as _task_router
 from .access import authorize, resolve_identity as _resolve_identity
@@ -36,6 +36,11 @@ def get_commands():
 
 
 router_api.include_router(_task_router(_resolve_identity))
+
+
+@router_api.get('/mcp-operations/{operation_id}')
+def get_mcp_operation(operation_id: str, request: Request):
+    return mcp_operations.receipt(request, operation_id)
 
 
 def _conn() -> sqlite3.Connection:
@@ -218,6 +223,7 @@ def read_attachment(attachment_id: str, identity: tuple = Depends(_resolve_ident
 
 
 @router_api.post("/msg")
+@mcp_operations.recorded
 def post_msg(
     body: dict[str, Any],
     x_group_profile: Optional[str] = Header(default=None),
@@ -359,6 +365,7 @@ def _settle_thread(conn: sqlite3.Connection, sender: str, text: str, thread_id: 
 
 
 @router_api.post("/thread")
+@mcp_operations.recorded
 def post_thread(
     body: dict[str, Any],
     x_group_profile: Optional[str] = Header(default=None),
@@ -496,6 +503,7 @@ def post_thread(
 
 
 @router_api.post("/thread/task-update")
+@mcp_operations.recorded
 def post_thread_task_update(
     body: dict[str, Any],
     x_group_profile: Optional[str] = Header(default=None),
@@ -538,6 +546,7 @@ def post_thread_task_update(
 
 
 @router_api.post("/inbox/seen")
+@mcp_operations.recorded
 def post_inbox_seen(
     body: dict[str, Any],
     x_group_profile: Optional[str] = Header(default=None),

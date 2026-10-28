@@ -30,7 +30,7 @@ def fixture_response(bot, context):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--data-dir', type=Path, required=True)
-    parser.add_argument('--port', type=int, default=8196)
+    parser.add_argument('--port', type=int, required=True)
     args = parser.parse_args()
     data = args.data_dir.resolve()
     data.mkdir(parents=True, exist_ok=True)

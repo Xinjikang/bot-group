@@ -21,6 +21,11 @@ from engine.maintenance import service  # noqa: E402
 
 class EnvLoadTest(unittest.TestCase):
     def setUp(self):
+        self._env = mock.patch.dict(os.environ)
+        self._env.start()
+        self.addCleanup(self._env.stop)
+        service.config._dotenv_cache.clear()
+        self.addCleanup(service.config._dotenv_cache.clear)
         self._tmp = tempfile.TemporaryDirectory()
         self._data_dir = Path(self._tmp.name)
         self._p = mock.patch.object(service.config, "data_dir", return_value=self._data_dir)
@@ -70,11 +75,23 @@ class ServiceFlowTest(unittest.TestCase):
         with mock.patch.object(service, "venv_python", return_value=Path("/nonexistent/python")):
             self.assertEqual(service.do_stop(), 1)
 
+    def test_failed_graceful_stop_blocks_new_engine(self):
+        with mock.patch.object(service, 'venv_python', return_value=Path(sys.executable)), \
+             mock.patch.object(service, '_run_install_check', return_value=0), \
+             mock.patch.object(service, 'do_stop', return_value=1), \
+             mock.patch.object(service.subprocess, 'run') as run, \
+             mock.patch.object(service, '_health_check') as health:
+            self.assertEqual(service.main(['restart']), 1)
+        run.assert_not_called()
+        health.assert_not_called()
+
     def test_start_full_chain(self):
         # 缺陷1：安装→启动→健康检查全链，仅调 Python 入口（不探测 Git Bash）。
         with mock.patch.object(service, "venv_python", return_value=Path(sys.executable)), \
                 mock.patch.object(service, "_run_install_check", return_value=0), \
                 mock.patch.object(service, "do_stop", return_value=0), \
+                mock.patch.object(service, '_load_env'), \
+                mock.patch('engine.maintenance.database_layout.migrate'), \
                 mock.patch.object(service.config, "host", return_value="127.0.0.1"), \
                 mock.patch.object(service.config, "port", return_value=18042), \
                 mock.patch.object(service.subprocess, "run", return_value=mock.Mock(returncode=0)), \

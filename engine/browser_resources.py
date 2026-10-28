@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import sqlite3
 import time
 
 from . import db
@@ -135,7 +136,7 @@ def _close_scope(resource_id):
 
 
 def release(*, project=None, task_id=None, profile=None, session=None, started_at=None,
-            pending_only=False):
+            pending_only=False, exclude_managed=False):
     """Return failures without undoing an already committed task transition.
 
     Marked rows stay until their execution ends: the owner may still be wrapping
@@ -153,7 +154,19 @@ def release(*, project=None, task_id=None, profile=None, session=None, started_a
             clauses.append('release_requested=1')
         where = ' AND '.join(clauses) or '1=1'
         rows = list(conn.execute(f'SELECT * FROM browser_resources WHERE {where}', args))
-        conn.execute(f'UPDATE browser_resources SET release_requested=1 WHERE {where}', args)
+        if exclude_managed:
+            # 引擎重启本地收尾：保留 gateway 托管未终态执行的浏览器资源（bot 继续运行，设计 4.4）。
+            try:
+                managed = {tuple(r) for r in conn.execute(
+                    "SELECT session, started_at FROM hermes_executions WHERE state != 'terminal'")}
+            except sqlite3.OperationalError as exc:
+                if 'no such table' not in str(exc):
+                    raise
+                managed = set()
+            rows = [row for row in rows if (row['session'], row['started_at']) not in managed]
+        # 只标记本次要释放的行（exclude_managed 时保留 gateway 未终态执行资源不被标记）。
+        for row in rows:
+            conn.execute('UPDATE browser_resources SET release_requested=1 WHERE id=?', (row['id'],))
         conn.commit()
         errors = []
         for row in rows:

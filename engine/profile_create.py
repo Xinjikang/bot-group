@@ -12,7 +12,7 @@ import uuid
 from fastapi import HTTPException
 import tomlkit
 
-from . import bot_identity, db, discovery, profile_config as files
+from . import bot_identity, db, discovery, hermes_profile_names, profile_config as files
 
 
 _MARKER = '.bot-group-profile.json'
@@ -145,6 +145,11 @@ def create(conn, body):
     if (not discovery._PROFILE_RE.fullmatch(name) or name in ('default', 'user', 'profiles')
             or _DEVICE.fullmatch(name)):
         raise HTTPException(400, 'Profile 标识须为 1–64 位小写字母、数字、短横线或下划线，并避开系统保留名')
+    if host == 'hermes':
+        try:
+            hermes_profile_names.validate(name)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
     root = discovery._codex_root().resolve() if host == 'codex' else Path(discovery._hermes_root()).resolve()
     container = root / 'profiles'
     target = container / name

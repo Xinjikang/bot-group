@@ -26,6 +26,8 @@ from scripts.unified_test_support import isolated_database
 
 class ShutdownTests(unittest.TestCase):
     def tearDown(self):
+        from engine.hermes_gateway_client import resume_connections
+        resume_connections()
         wake._shutting_down.clear()
 
     def test_waits_for_execution_and_closes_gate_before_releasing(self):
@@ -45,7 +47,7 @@ class ShutdownTests(unittest.TestCase):
                 busy.clear()
                 controller.worker.join(5)
                 self.assertFalse(controller.worker.is_alive())
-                release.assert_called_once_with()
+                release.assert_called_once_with(exclude_managed=True)
                 exited.assert_called_once_with()
                 self.assertEqual(controller.snapshot()['state'], 'stopping')
                 self.assertTrue(gate.is_set())
@@ -141,7 +143,7 @@ class ShutdownTests(unittest.TestCase):
         controller = Shutdown(threading.Event(), lambda: order.append('exit'), timeout=0)
         with patch.object(controller, '_busy', return_value=True), \
              patch.object(controller, '_terminate', side_effect=lambda: order.append('terminate')), \
-             patch.object(br, 'release', side_effect=lambda: order.append('release') or {'ok': True}):
+             patch.object(br, 'release', side_effect=lambda **kw: order.append('release') or {'ok': True}):
             controller.begin()
             controller.worker.join(3)
         self.assertEqual(order, ['terminate', 'release', 'exit'])
@@ -176,7 +178,8 @@ class ShutdownTests(unittest.TestCase):
     def test_unknown_execution_blocks_tree_kill(self):
         from engine import process_tree
         controller = Shutdown(threading.Event(), Mock(), timeout=0)
-        with patch.object(controller, '_runs', return_value=[{'profile': 'test', 'session': 'test'}]), \
+        with isolated_database(), \
+             patch.object(controller, '_runs', return_value=[{'profile': 'test', 'session': 'test', 'started_at': 0}]), \
              patch.object(wake, 'find_bot_processes', return_value=None), \
              patch.object(process_tree, 'terminate') as terminate:
             with self.assertRaisesRegex(RuntimeError, '无法核实'):

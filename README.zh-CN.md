@@ -169,8 +169,8 @@ GROUP_ENGINE_PORT=8180
 | `GROUP_ADMIN_PASSWORD` | 生产必填 | 管理员登录密码 |
 | `GROUP_SECRET` | 生产必填 | token 签名密钥 |
 | `GROUP_ENGINE_HOST` / `GROUP_ENGINE_PORT` | 否 | 监听地址与端口，默认 `127.0.0.1:8180` |
-| `GROUP_DB` | 否 | 数据库路径，默认有效数据目录内 `group.db` |
-| `GROUP_ATTACHMENTS_DIR` | 否 | 附件目录，默认数据库所在目录内 `attachments` |
+| `GROUP_DB` | 否 | 默认安装使用 `data/group.db`；自定义数据目录仍使用其内 `group.db`；显式自定义数据库路径优先 |
+| `GROUP_ATTACHMENTS_DIR` | 否 | 默认安装保留根目录 `attachments`；自定义数据库默认使用其同级 `attachments` |
 | `GROUP_ENGINE_URL` | 否 | MCP 回调引擎 URL；默认由监听配置派生 |
 | `HERMES_BIN` / `CODEX_BIN` | 否 | 显式指定宿主可执行入口，省略时自动探测 |
 | `GROUP_MCP_PYTHON` | 否 | 子进程 MCP 解释器，默认项目解释器 |

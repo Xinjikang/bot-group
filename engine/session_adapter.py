@@ -77,6 +77,12 @@ def create_session(profile: str, title: str) -> str:
     等价于 hermes_cli/main.py::_create_titled_session，但显式定位 per-profile state.db。
     返回真实 session_id（YYYYMMDD_HHMMSS_<6hex>）。
     """
+    from . import hermes_gateway
+    if hermes_gateway.enabled():
+        client, _, _ = hermes_gateway.connection(profile)
+        with client:
+            return hermes_gateway.sessions.new(client, title=title, workdir=str(Path.cwd()),
+                                               system_prompt='', model_args=[])['session_id']
     _ensure_src_on_path()
     _ensure_profile_dir(profile)
     from hermes_state_registry import acquire
@@ -97,6 +103,17 @@ def create_session(profile: str, title: str) -> str:
 
 def session_exists(profile: str, session_id: str) -> bool:
     """校验该 profile 下 session_id 是否仍有效（恢复前置，防失效绑定静默替换）。"""
+    from . import hermes_gateway
+    if hermes_gateway.enabled():
+        client, _, _ = hermes_gateway.connection(profile)
+        with client:
+            try:
+                hermes_gateway.sessions.attach(client, session_id)
+                return True
+            except hermes_gateway.GatewayRefusal as exc:
+                if exc.reason == 'not_found':
+                    return False
+                raise
     _ensure_src_on_path()
     _ensure_profile_dir(profile)
     from hermes_state_registry import acquire
@@ -131,6 +148,11 @@ def compression_tip(profile: str, session_id: str) -> str:
     绑定旧 id 若落回已压缩父会话，这里接住续集 id；同 generation 内解析，
     适配器回传实际 session_id，引擎只接受匹配当前 generation 的更新。
     """
+    from . import hermes_gateway
+    if hermes_gateway.enabled():
+        client, _, _ = hermes_gateway.connection(profile)
+        with client:
+            return hermes_gateway.sessions.attach(client, session_id)['session_id']
     _ensure_src_on_path()
     _ensure_profile_dir(profile)
     from hermes_state_registry import acquire
@@ -147,6 +169,12 @@ def compression_tip(profile: str, session_id: str) -> str:
 
 def resolve_session_by_title(profile: str, title: str) -> str | None:
     """按 title 反查 Hermes 现存会话 sid（第 0 代兼容：旧会话无绑定记录时回填）。"""
+    from . import hermes_gateway
+    if hermes_gateway.enabled():
+        client, _, _ = hermes_gateway.connection(profile)
+        with client:
+            rows = client.rpc('session.list', title=title)['sessions']
+            return rows[0]['session_id'] if rows else None
     _ensure_src_on_path()
     _ensure_profile_dir(profile)
     from hermes_state_registry import acquire
@@ -272,6 +300,9 @@ def existing_session_id(conn, project: str, profile: str, kind: str,
                            (project, bot_id, kind, _bind_key(kind, thread_id))).fetchone()
         if row:
             return row['session_id']
+    from . import hermes_gateway
+    if hermes_gateway.enabled():
+        return resolve_session_by_title(profile, title)
     path = profile_state_db(profile)
     if not path.is_file():
         return None

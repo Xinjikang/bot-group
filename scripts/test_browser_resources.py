@@ -210,6 +210,31 @@ class BrowserResourcesTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_release_excludes_managed_execution_resources(self):
+        from engine import hermes_gateway_ledger as ledger
+        _, session_local, _ = scope(profile='dev')
+        _, session_gw, started_gw = scope(profile='bot')
+        conn = db.get_connection()
+        try:
+            # gateway 托管未终态执行（hermes_executions 非 terminal）对应 bot 资源应保留。
+            ledger.prepare(conn, session=session_gw, project='alpha', profile='bot', kind='work',
+                           thread_id=None, task_id=None, job_id=None, event_floor=0, source='',
+                           python='["hermes"]', home='/isolated', workdir='/isolated/work',
+                           session_id='sid', profile_id='home', started_at=started_gw)
+        finally:
+            conn.close()
+        result = br.release(exclude_managed=True)
+        self.assertTrue(result['ok'])
+        conn = db.get_connection()
+        try:
+            rows = {r['session']: r for r in conn.execute('SELECT * FROM browser_resources')}
+        finally:
+            conn.close()
+        # 本地执行资源已释放（删除）；gateway 托管未终态执行资源保留且不标记释放（设计 4.4）。
+        self.assertNotIn(session_local, rows)
+        self.assertIn(session_gw, rows)
+        self.assertEqual(rows[session_gw]['release_requested'], 0)
+
 
 if __name__ == '__main__':
     if len(sys.argv) == 3 and sys.argv[1] == '--fake-harness':

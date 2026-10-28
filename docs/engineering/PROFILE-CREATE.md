@@ -6,6 +6,12 @@
 
 ## 使用
 
+Hermes profile 创建、宿主 profile 注册及按已有 Bot ID 入组会校验保留名称 `hermes`、`test`、`tmp`、`root`、`sudo`，返回 HTTP 400 并说明名称被 Hermes 保留。`default` 保持宿主默认 home 的合法入口，新建同名 profile 继续受已有创建约束限制。Codex 使用自己的名称规则。
+
+发现列表及已登记 Bot 候选过滤上述 Hermes 保留名称；已有成员、消息、任务历史和配置文件保留。旧成员运行时返回 `Profile name ... is reserved` 时归类为 configuration，并明确提示使用其他标识创建或选择成员。已有成员的重命名及数据迁移需独立流程处理。
+
+兼容规则集中在 `engine/hermes_profile_names.py`，与 Hermes `hermes_cli/profiles.py` 的 `_RESERVED_NAMES` 及 `default` 例外保持一致。校验使用本地规则，避免在创建与候选扫描时加载宿主运行时模块；升级适配时核对上游列表与验证函数。
+
 - 填写显示名称和 profile 标识；标识使用 1–64 位小写字母、数字、短横线、下划线。默认选择该宿主的 default 作为配置来源，否则选择第一个可用来源；也可选择“使用默认设置”。已加入当前项目的 profile 也可作为来源。
 - “更多设置”可填写模型和个人指令。空模型沿用来源或宿主默认设置；空个人指令生成基础工作约定。
 - Codex 自动复制引擎主账户目录（`CODEX_HOME`，默认 `~/.codex`）的 `auth.json`。配置来源用于继承模型与运行设置，创建界面省去认证选择。使用默认设置或选择其他 profile 作为配置来源时，文件认证仍来自主账户。

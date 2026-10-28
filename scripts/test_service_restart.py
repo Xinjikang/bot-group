@@ -187,13 +187,24 @@ class RestartIntegration(unittest.TestCase):
                     try:
                         health = wait_for(lambda: request('/health'))
                         self.assertEqual(Path(health['db_path']), data / 'group.db')
-                        wait_for(lambda: browser_calls.exists())
                         self.assertEqual(initial.wait(timeout=10), 0)
+                        self.assertFalse(browser_calls.exists())
+                        for _ in range(2):
+                            launch = subprocess.run([str(venv / 'Scripts' / 'python.exe'),
+                                                     str(root / 'tools' / 'service.py'), 'start'],
+                                                    cwd=root, env=env, capture_output=True, timeout=15,
+                                                    creationflags=subprocess.CREATE_NO_WINDOW)
+                            self.assertEqual(launch.returncode, 0, (launch.stdout, launch.stderr))
+                            self.assertEqual(request('/health')['instance_id'], health['instance_id'])
+                        self.assertEqual(browser_calls.read_text().splitlines(), [url + '/app/'])
+                        old_id, old_pid = health['instance_id'], health['pid']
                         second = subprocess.run([os.environ['COMSPEC'], '/d', '/c', str(root / 'start.bat')],
-                                                cwd=root, env=env, capture_output=True, timeout=15,
+                                                cwd=root, env=env, input=b'\r\n', capture_output=True, timeout=45,
                                                 creationflags=subprocess.CREATE_NO_WINDOW)
                         self.assertEqual(second.returncode, 0, (second.stdout, second.stderr))
-                        self.assertEqual(request('/health')['instance_id'], health['instance_id'])
+                        health = request('/health')
+                        self.assertNotEqual(health['instance_id'], old_id)
+                        self.assertFalse(restart._pid_alive(old_pid))
                         self.assertEqual(browser_calls.read_text().splitlines(), [url + '/app/'])
                         import sqlite3
                         with closing(sqlite3.connect(data / 'group.db')) as conn, conn:
@@ -210,7 +221,7 @@ class RestartIntegration(unittest.TestCase):
                         receipt = wait_for(check_failed)
                         wait_for(lambda: not restart._pid_alive(receipt['helper_pid']))
                         self.assertEqual(request('/health')['instance_id'], health['instance_id'])
-                        log_text = (data / 'logs' / 'service-restart.log').read_text(encoding='utf-8')
+                        log_text = (data / 'logs' / 'service-restart.log').read_text(encoding='utf-8', errors='replace')
                         self.assertIn('install-check-stdout', log_text)
                         self.assertIn('dependency-readiness-failed', log_text)
                         (root / 'tools' / 'install.py').write_text('import sys\nsys.exit(0)\n', encoding='utf-8')

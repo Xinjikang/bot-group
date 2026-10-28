@@ -8,7 +8,7 @@ from playwright.sync_api import sync_playwright
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--url',default='http://127.0.0.1:8196')
+    parser.add_argument('--url',required=True)
     parser.add_argument('--evidence',type=Path,required=True)
     args=parser.parse_args()
     args.evidence.mkdir(parents=True,exist_ok=True)

@@ -32,11 +32,19 @@ class AppUpgradeIntegration(unittest.TestCase):
     def test_previous_tools_package_upgrades_and_rolls_back_through_original_helper(self):
         self.run_upgrade('1ac85a2d4fccc751343c940c3312f660314bd67d')
 
-    def run_upgrade(self, previous_revision=None):
+    def test_root_database_migrates_during_gui_upgrade_and_survives_rollback(self):
+        self.run_upgrade(root_layout=True)
+
+    def test_legacy_gui_root_database_reaches_new_layout_after_helper_transition(self):
+        self.run_upgrade('v0.1.4', root_layout=True)
+
+    def run_upgrade(self, previous_revision=None, root_layout=False):
         with tempfile.TemporaryDirectory(prefix='ui upgrade ') as tmp:
             workspace = Path(tmp)
             source, root, data = (workspace / name for name in ('source', 'installed', 'data'))
             root.mkdir(); data.mkdir()
+            if root_layout:
+                data = root
             for name in ('engine', 'tools'):
                 shutil.copytree(ROOT / name, source / name,
                     ignore=shutil.ignore_patterns('__pycache__', '.hermes-tmp*'))
@@ -62,6 +70,7 @@ class AppUpgradeIntegration(unittest.TestCase):
                 return out / f'bot-group-{version}.zip'
             with zipfile.ZipFile(build('v1.0.0', previous=bool(previous_revision))) as archive:
                 archive.extractall(root)
+            previous_tools_package = (root / 'tools/__init__.py').exists()
             venv = root / '.venv'
             (venv / 'Scripts').mkdir(parents=True)
             for name in ('python.exe', 'pythonw.exe'):
@@ -113,7 +122,7 @@ class AppUpgradeIntegration(unittest.TestCase):
                 helper_pid = None
                 try:
                     health = wait_for(lambda: request('/health'))
-                    with closing(sqlite3.connect(data / 'group.db')) as conn, conn:
+                    with closing(sqlite3.connect(health['db_path'])) as conn, conn:
                         conn.execute('CREATE TABLE upgrade_probe(value TEXT)')
                         conn.execute("INSERT INTO upgrade_probe VALUES('preserved')")
                     (data / 'attachments').mkdir(exist_ok=True)
@@ -121,6 +130,8 @@ class AppUpgradeIntegration(unittest.TestCase):
                     attempts = [('v1.1.0', ''), ('v1.2.0', 'ready'), ('v1.3.0', 'start')]
                     if previous_revision:
                         attempts.insert(0, ('v1.0.1', 'ready'))
+                        if root_layout:
+                            attempts.insert(2, ('v1.1.1', ''))
                     current_version = 'v1.0.0'
                     for target, fail in attempts:
                         (source / 'tools/install.py').write_text('import sys\nsys.exit(0)\n')
@@ -144,16 +155,18 @@ class AppUpgradeIntegration(unittest.TestCase):
                         if fail:
                             self.assertIn('已恢复原版本并启动', receipt['error'])
                         health = request('/health')
+                        if root_layout and not fail and (not previous_revision or target == 'v1.1.1'):
+                            self.assertEqual(Path(health['db_path']), root / 'data/group.db')
                         self.assertNotEqual(health['instance_id'], old_id)
                         self.assertFalse(restart._pid_alive(old_pid))
                         if not fail:
                             current_version = target
                         self.assertEqual(request('/system/version')['current_version'], current_version)
                         self.assertEqual((root / 'tools/__init__.py').exists(),
-                                         bool(previous_revision and current_version == 'v1.0.0'))
+                                         bool(previous_tools_package and current_version == 'v1.0.0'))
                         wait_for(lambda: not restart._pid_alive(helper_pid))
                         self.assertFalse(browser_calls.exists(), 'Maintenance opened a browser')
-                    with closing(sqlite3.connect(data / 'group.db')) as conn:
+                    with closing(sqlite3.connect(health['db_path'])) as conn:
                         self.assertEqual(conn.execute('SELECT value FROM upgrade_probe').fetchone()[0], 'preserved')
                     self.assertEqual((data / 'attachments/probe.txt').read_text(), 'preserved')
                 finally:
