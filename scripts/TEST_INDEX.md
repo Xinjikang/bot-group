@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+执行异常分类：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_execution_errors scripts.test_task_retry -q`。使用隔离 SQLite 与合成 JSONL，覆盖模型容量已满提示、终态失败优先于工具输出、最后一条有效失败事件、普通 error 回退、未知错误、Hermes 专用提示与完整脱敏诊断保留。
+
 脚本可移植性：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_probe_config scripts.test_gw_probe_gates -q`。覆盖仓库迁移到含空格/中文的目录、显式测试数据根、源码配置缺失提前失败、回环地址与端口校验。`probe_config.py` 提供公共配置校验；纯模拟夹具的地址只用于解析与断言。
 
 真实探针运行配置：运行 `gw_probe.py`、`gw_stop_probe.py`、`gw_recovery_probe.py`、`gw_mcp_probe.py`、`gw_ownership_probe.py` 和 `verify_hermes_gateway_adapter.py` 前，必须设置 `GW_PROBE_DATA` 为当前工作区分配的测试数据根绝对路径。`GW_PROBE_ROOT` 可指定隔离源码父目录（默认仓库内 `.probe-worktrees`），`GW_EVIDENCE_DIR` 可指定证据目录。ownership 探针使用当前 Python 解释器，scratch 位于本次运行的测试数据子目录；可选 `GW_OBSERVER_URL=http://127.0.0.1:<授权观察端口>` 仅用于显式授权的心跳观察，未配置时报告 skipped。网关自身的日志心跳隔离门禁保持启用。
