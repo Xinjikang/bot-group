@@ -176,7 +176,8 @@ bot 通过引擎注入的 `editor_mcp`（task_queue）访问引擎 API；引擎�
 | --- | --- |
 | 引擎代码 | 引擎重启生效 |
 | 模型/推理参数、工作目录、会话 MCP、system prompt（引擎注入） | 每轮唤醒 refresh 调用刷新（删除参数后是否恢复默认待验证） |
-| AGENTS.md、工具提示词 | 下次空闲唤醒刷新（保留会话历史，验证模型实际收到新版） |
+| 工具提示词（工具描述） | 下次空闲唤醒刷新（保留会话历史，验证模型实际收到新版或移除旧描述） |
+| AGENTS.md | 用户主动 `/new` 刷新；同 sid 的 resume 复用已有 system prompt |
 | config 派生字段（toolsets / MCP / terminal / max_turns / checkpoints / reasoning default） | 空闲会话 resume 时 refreshed_policy 官方刷新，保留历史、不新建 session（见 7.3） |
 | SOUL.md、MEMORY/USER | 用户主动 `/new` 刷新（原话题换 Hermes 会话） |
 | skill 正文（skill_view） | 每次调用现读文件，再次调用即读新版 |
@@ -194,9 +195,9 @@ bot 通过引擎注入的 `editor_mcp`（task_queue）访问引擎 API；引擎�
 
 项目成员 UI 的 `reasoning_effort` 为显式覆盖，`project_models.arguments()` 将其转换为 `--reasoning`；Hermes profile 的配置默认值由原生 resume 刷新。引擎按项目、profile 身份和 session ID 持久记录已成功应用的 reasoning 覆盖。UI 覆盖被删除且记录存在时，调用官方 `session.mutate(operation="reasoning", payload={"effort": null})` 解除 pin 并读取 profile 当前默认值；成功后清除记录，失败保留以便下次重试。无引擎覆盖记录的会话保持原生选择。此过程只修改对应会话策略，profile 的共享 config.yaml 保持原有内容。
 
-### 7.4 SOUL / 记忆（用户主动 /new）
+### 7.4 AGENTS / SOUL / 记忆（用户主动 /new）
 
-- SOUL.md + MEMORY/USER 经 system prompt 注入，会话生命周期 byte-stable，复用 stored_prompt 不刷新。
+- AGENTS.md、SOUL.md 和 MEMORY/USER 经 system prompt 注入，会话生命周期 byte-stable；同 sid 复用 stored_prompt，文件修改和删除通过 `/new` 后的新 sid 验证。
 - 用户主动 `/new` 在原话题切换 Hermes 会话（同 thread 换 session_id，generation 递增，已实现），SOUL/memory 生效。
 - 「自动保留上下文刷新」不在本方案范围；新会话上下文连续性（历史续接）单独评估，不阻塞本方案。
 
@@ -246,5 +247,5 @@ bot 通过引擎注入的 `editor_mcp`（task_queue）访问引擎 API；引擎�
 2. 连续重启并发：同 bot 多话题跨连续两次引擎重启，凭据沿用有效、各话题执行不串、不重复派发。
 3. 迟到清理：A terminal 后清理 worker 迟到触发收尾，不误删后继 B 的登记与资源。
 4. 凭据终态失效：同代 A 结束被拒（401）、B 继续可用；跨重启结果一致；/msg 以外的工具同样拒绝已结束执行。
-5. 规则 / 工具描述实际刷新：AGENTS.md 与工具描述修改/删除后，模型下一轮实际收到新版。
+5. 规则 / 工具描述实际刷新：工具描述修改/删除后，模型下一次空闲唤醒收到新版或移除旧描述；AGENTS.md 修改/删除通过 `/new` 后新 sid 分别验证命中新规则及移除旧规则，同 sid 保留原规则为预期行为。
 6. 配置参数删除恢复默认：模型/推理参数删除后，下一轮唤醒恢复默认值（7.2 表待验证项）。

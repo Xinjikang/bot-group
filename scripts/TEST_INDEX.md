@@ -6,7 +6,7 @@
 
 Hermes 保留名称：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_profile_names scripts.test_profile_create scripts.test_discovery scripts.test_member_identity scripts.test_execution_errors -q`。使用临时宿主与 SQLite，验证创建前拒绝、注册及旧 Bot ID 入组校验、扫描与已登记外部候选过滤、历史文件和登记保留、default 别名及 Codex 同名隔离、运行失败的配置分类与明确提示。保留名规则集中在 `engine/hermes_profile_names.py`，升级 Hermes 时核对 `hermes_cli/profiles.py` 的 `_RESERVED_NAMES` 与 default 例外。
 
-Hermes 刷新出站载荷：设置 `GW_PROBE_DATA` 为分配测试数据根，运行 `.venv\Scripts\python.exe -X utf8 -B scripts/verify_gateway_refresh_payload.py --url <分配后端 origin> --evidence <主目录报告下的新绝对路径>`。复用隔离安装记录选择 Hermes 解释器，在全新 home/workspace 中经官方 gateway ensure 和 RPC 执行七轮会话；本地推理夹具保存实际 HTTP messages/tools，并请求原生 tool_search 获取 MCP 描述。核对 AGENTS 修改/删除、工具描述修改与工具删除、reasoning 默认刷新/删除、引擎覆盖持久化与删除 reset、reset 后原生选择保留、SOUL/记忆续会话稳定和新会话刷新。该证据验证真实网关出站载荷，真实模型生成和引擎 `/new` 绑定切换另行验收。使用合成凭据，结束停止本次网关和 HTTP 夹具；原始载荷与结果写报告目录。v0.22.5 的 AGENTS 修改/删除仍有已知失败，用例保持红灯。
+Hermes 刷新出站载荷：设置 `GW_PROBE_DATA` 为分配测试数据根，运行 `.venv\Scripts\python.exe -X utf8 -B scripts/verify_gateway_refresh_payload.py --url <分配后端 origin> --evidence <主目录报告下的新绝对路径>`。复用隔离安装记录选择 Hermes 解释器，在全新 home/workspace 中经官方 gateway ensure 和 RPC 执行八轮会话；本地推理夹具保存实际 HTTP messages/tools，并请求原生 tool_search 获取 MCP 描述。AGENTS 修改/删除后同 sid 保留缓存，通过真实引擎 `session_adapter.switch_session` 在同话题更新绑定与 generation，再分别验证新 sid 命中新规则及移除旧规则；同时检查工具描述修改与删除、reasoning 默认刷新/删除、引擎覆盖持久化与删除 reset、reset 后原生选择保留、SOUL/记忆续会话稳定和新会话刷新。该证据验证真实网关出站载荷与引擎绑定，真实模型生成另行验收。使用合成凭据，结束停止本次网关和 HTTP 夹具；原始载荷与结果写报告目录。
 
 Hermes 引擎 reasoning 归属：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway -q`。覆盖每次 admission 的 MCP 更新、显式推理覆盖、数据库连接重开后删除覆盖的单次 reset、其他会话/项目隔离、原生选择保留、失败 pin 不登记及 reset 失败保留重试记录，以及网关取消、清理和执行归属回归。
 

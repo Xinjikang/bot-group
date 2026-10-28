@@ -36,7 +36,7 @@ queued 执行通过 `prompt.cancel` 取消；started 执行通过携带 generati
 
 记录自启用该跟踪机制后建立。升级前已有的 pin 缺少引擎归属记录时，维护者需明确设置一次项目 reasoning 后再清空，或在 Hermes 使用原生 reasoning reset；引擎保持未知归属的原生会话选择。
 
-AGENTS.md 的续会话刷新仍需上游接口或设计补充：v0.22.5 会复用已保存的 system prompt，修改/删除项目规则的出站载荷验证尚未通过。新会话读取新版 SOUL/记忆，旧会话保留原内容。出站载荷夹具、真实模型生成和引擎 `/new` 绑定切换分别记录证据。
+AGENTS.md、SOUL 和记忆通过用户主动 `/new` 刷新。v0.22.5 在同 sid 的 resume 中复用已保存的 system prompt；文件修改或删除后，新 sid 读取当前内容。引擎在原话题更新会话绑定并递增 generation，原会话历史保留。出站载荷夹具、真实模型生成和引擎 `/new` 绑定切换分别记录证据。
 
 ## 签名密钥与逐执行撤销
 

@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import uuid
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
@@ -86,7 +87,7 @@ class ModelCapture(BaseHTTPRequestHandler):
 
 def main():
     from engine.hermes_gateway_client import GatewayClient, ensure
-    from engine import hermes_gateway_sessions as sessions
+    from engine import db, session_adapter, hermes_gateway as gateway, hermes_gateway_sessions as sessions
     from scripts.probe_config import absolute_path, loopback_url
     import gw_probe as probe
     parser = argparse.ArgumentParser(description=__doc__)
@@ -110,7 +111,12 @@ def main():
     (home / 'memories').mkdir()
     ledger = run / 'override-fixture.db'
     with sqlite3.connect(ledger) as conn:
-        conn.execute('CREATE TABLE settings(key TEXT,project TEXT,value TEXT,updated_at TEXT,PRIMARY KEY(key,project))')
+        conn.row_factory = sqlite3.Row
+        db.init_schema(conn)
+        conn.execute("INSERT INTO members(profile,display_name,role) VALUES('default','fixture','dev')")
+        conn.execute("INSERT INTO projects(name,root,created_at) VALUES('isolated',?,?)", (str(work), db.now_iso()))
+        bot_id = db._ensure_hermes_bot(conn, 'default')
+        conn.commit()
     markers = {key: key.upper() + '_' + uuid.uuid4().hex for key in
                ('rule_a', 'rule_b', 'tool_a', 'tool_b', 'soul_a', 'soul_b', 'memory_a', 'memory_b')}
     config = {'model': {'default': 'gpt-4.1-mini', 'provider': 'custom', 'base_url': url + '/v1',
@@ -144,6 +150,25 @@ def main():
                                   cwd=str(work), editor={'mcp_servers': []})
             sid = snapshot['session_id']
             result['session_id'] = sid
+            with sqlite3.connect(ledger) as conn:
+                conn.execute("INSERT INTO session_bindings(project,bot_id,profile,kind,thread_id,session_id,runtime,generation,title,updated_at) "
+                             "VALUES('isolated',?,'default','chat',7,?,'hermes',0,'refresh-fixture',?)",
+                             (bot_id, sid, db.now_iso()))
+
+            def engine_new():
+                nonlocal snapshot
+                with sqlite3.connect(ledger) as conn:
+                    conn.row_factory = sqlite3.Row
+                    with patch.object(gateway, 'enabled', return_value=True), \
+                         patch.object(gateway, 'connection', side_effect=lambda *a, **k: (GatewayClient(endpoint), home, command)), \
+                         patch.object(session_adapter.Path, 'cwd', return_value=work):
+                        switched = session_adapter.switch_session(conn, 'isolated', 'default', 'chat', 7, 'refresh-fixture')
+                    assert switched['ok'], switched
+                    binding = dict(conn.execute("SELECT * FROM session_bindings WHERE project='isolated' AND bot_id=? AND kind='chat' AND thread_id=7", (bot_id,)).fetchone())
+                    assert binding['session_id'] == switched['session_id']
+                    assert binding['thread_id'] == 7 and binding['generation'] == switched['generation']
+                    result.setdefault('engine_switches', []).append(switched)
+                snapshot = sessions.attach(client, switched['session_id'])
 
             def turn(index, description, extra=False, model_args=()):
                 nonlocal snapshot
@@ -192,7 +217,7 @@ def main():
             config['agent']['reasoning_effort'] = 'high'
             write_config()
             second, system, tools = turn(2, markers['tool_b'])
-            result['checks']['rule_modified'] = markers['rule_b'] in system and markers['rule_a'] not in system
+            result['checks']['rule_modified_same_sid_cached'] = markers['rule_a'] in system and markers['rule_b'] not in system
             result['checks']['tool_modified_removed'] = markers['tool_b'] in tools and markers['tool_a'] not in tools and 'removed_probe' not in tools
             result['checks']['identity_stable'] = markers['soul_a'] in system and markers['soul_b'] not in system
             result['checks']['memory_stable'] = markers['memory_a'] in system and markers['memory_b'] not in system
@@ -201,22 +226,30 @@ def main():
             config['agent'].pop('reasoning_effort')
             write_config()
             third, system, tools = turn(3, markers['tool_b'])
-            result['checks']['rule_deleted'] = markers['rule_a'] not in system and markers['rule_b'] not in system
+            result['checks']['rule_deleted_same_sid_cached'] = markers['rule_a'] in system and markers['rule_b'] not in system
             result['checks']['reasoning_deleted'] = third.get('reasoning_effort') != 'high'
             result['checks']['history_kept'] = 'Refresh fixture turn 1' in json.dumps(third.get('messages', []))
-            snapshot = client.rpc('session.create', request_id=uuid.uuid4().hex, source='acp',
-                                  cwd=str(work), editor={'mcp_servers': []})
+            (work / 'AGENTS.md').write_text('Project rule marker: ' + markers['rule_b'], encoding='utf-8')
+            engine_new()
             fourth, system, tools = turn(4, markers['tool_b'])
+            result['checks']['new_modified_rule'] = markers['rule_b'] in system and markers['rule_a'] not in system
             result['checks']['new_identity'] = markers['soul_b'] in system and markers['soul_a'] not in system
             result['checks']['new_memory'] = markers['memory_b'] in system and markers['memory_a'] not in system
             result['checks']['new_session'] = snapshot['session_id'] != sid
-            fifth, _, _ = turn(5, markers['tool_b'], model_args=['--reasoning', 'high'])
+            modified_sid = snapshot['session_id']
+            (work / 'AGENTS.md').unlink()
+            engine_new()
+            _, system, _ = turn(5, markers['tool_b'])
+            result['checks']['new_deleted_rule'] = markers['rule_a'] not in system and markers['rule_b'] not in system
+            result['checks']['new_deleted_sid'] = snapshot['session_id'] != modified_sid
+            result['checks']['engine_same_thread_generations'] = [s['generation'] for s in result['engine_switches']] == [1, 2]
+            fifth, _, _ = turn(6, markers['tool_b'], model_args=['--reasoning', 'high'])
             result['checks']['engine_pin'] = fifth.get('reasoning_effort') == 'high'
-            sixth, _, _ = turn(6, markers['tool_b'])
+            sixth, _, _ = turn(7, markers['tool_b'])
             result['checks']['engine_clear_after_reopen'] = sixth.get('reasoning_effort') == 'medium'
             snapshot = sessions.attach(client, snapshot['session_id'])
             sessions.mutate(client, snapshot, 'reasoning', {'effort': 'low'})
-            seventh, _, _ = turn(7, markers['tool_b'])
+            seventh, _, _ = turn(8, markers['tool_b'])
             result['checks']['native_choice_after_reset_preserved'] = seventh.get('reasoning_effort') == 'low'
     finally:
         if endpoint:
