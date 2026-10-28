@@ -147,7 +147,8 @@ def detect_runtime() -> dict:
     # Codex 可执行文件：CODEX_HOME/codex > PATH（codex 通常由 npm 全局装在 PATH）
     codex_candidates = []
     if codex_home:
-        codex_candidates.append(str(Path(codex_home) / exe.replace("hermes", "codex")))
+        for name in (('codex.exe', 'codex.cmd', 'codex.bat') if sys.platform == 'win32' else ('codex',)):
+            codex_candidates.append(str(Path(codex_home) / name))
     codex_candidates.append(_find_executable("codex"))
     codex_found = next((p for p in codex_candidates if p and Path(p).exists()), "")
 

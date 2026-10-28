@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -199,6 +199,112 @@ class InstallFlowTest(unittest.TestCase):
             runtime = install.detect_runtime()
         self.assertEqual(runtime["hermes"]["bin"], "")
         self.assertEqual(runtime["codex"]["bin"], "")
+
+
+class DetectRuntimeCodexHomeTest(unittest.TestCase):
+    """CODEX_HOME 探测回归（req#133 #254）。
+
+    e48560e 之前 detect_runtime 在 CODEX_HOME 非空时引用未定义变量 `exe`（原本想从
+    hermes 的可执行名派生），直接抛 NameError：install 与启动检查都失败、引擎起不来。
+    既有用例只覆盖 CODEX_HOME 为空的分支，所以这个缺陷漏检。本组按实际实现覆盖
+    CODEX_HOME 设置/未设置、候选存在/缺失、PATH 回退、Windows 后缀与其他平台分支。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._home = Path(self._tmp.name)
+        # hermes 侧不参与本组断言：诊断固定返回空结构，避免读真实 HERMES_HOME
+        self._p_hermes = mock.patch(
+            "engine.hermes_runtime.diagnostic",
+            return_value={"bin": "", "home": "", "source": "missing"})
+        self._p_hermes.start()
+
+    def tearDown(self):
+        self._p_hermes.stop()
+        self._tmp.cleanup()
+
+    def _touch(self, name: str) -> str:
+        p = self._home / name
+        p.write_text("", encoding="utf-8")
+        return str(p)
+
+    def _detect(self, *, codex_home, platform="win32", path_bin=""):
+        env = {"CODEX_HOME": codex_home}
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(install.sys, "platform", platform), \
+                mock.patch.object(install, "_find_executable", return_value=path_bin):
+            return install.detect_runtime()
+
+    def test_codex_home_exe_found_without_name_error(self):
+        # 缺陷复现点：CODEX_HOME 非空 + Windows 候选存在
+        exe = self._touch("codex.exe")
+        runtime = self._detect(codex_home=str(self._home))
+        self.assertEqual(runtime["codex"]["bin"], exe)
+        self.assertEqual(runtime["codex"]["home"], str(self._home))
+
+    def test_windows_suffix_candidates_cmd_and_bat(self):
+        for name in ("codex.cmd", "codex.bat"):
+            with self.subTest(name=name):
+                for old in self._home.iterdir():
+                    old.unlink()
+                target = self._touch(name)
+                runtime = self._detect(codex_home=str(self._home))
+                self.assertEqual(runtime["codex"]["bin"], target)
+
+    def test_windows_plain_name_without_suffix_not_matched(self):
+        # Windows 只枚举 codex.exe/.cmd/.bat；裸 codex 不是有效候选（与实现一致）
+        self._touch("codex")
+        self.assertEqual(self._detect(codex_home=str(self._home))["codex"]["bin"], "")
+
+    def test_codex_home_missing_falls_back_to_path(self):
+        path_bin = self._touch("path-codex.exe")
+        runtime = self._detect(codex_home=str(self._home), path_bin=path_bin)
+        self.assertEqual(runtime["codex"]["bin"], path_bin)
+
+    def test_missing_everywhere_reports_empty(self):
+        runtime = self._detect(codex_home=str(self._home), path_bin="")
+        self.assertEqual(runtime["codex"]["bin"], "")
+        self.assertEqual(runtime["codex"]["home"], str(self._home))
+
+    def test_codex_home_unset_uses_path_only(self):
+        path_bin = self._touch("path-codex.exe")
+        runtime = self._detect(codex_home="", path_bin=path_bin)
+        self.assertEqual(runtime["codex"]["bin"], path_bin)
+        self.assertEqual(runtime["codex"]["home"], "")
+
+    def test_non_windows_uses_plain_codex(self):
+        target = self._touch("codex")
+        runtime = self._detect(codex_home=str(self._home), platform="linux")
+        self.assertEqual(runtime["codex"]["bin"], target)
+
+    def test_non_windows_ignores_windows_suffixes(self):
+        # 其他平台分支只认裸 codex，codex.exe 不应被当成候选
+        self._touch("codex.exe")
+        self.assertEqual(self._detect(codex_home=str(self._home), platform="linux")["codex"]["bin"],
+                         "")
+
+    def test_do_check_with_codex_home_set_returns_0(self):
+        """启动检查（do_check）在 CODEX_HOME 非空时走 detect_runtime，不得抛 NameError。
+
+        e48560e 之前该路径直接抛异常，启动脚本退出码 1、引擎起不来；本用例覆盖
+        「安装/启动检查调用探测函数」的路径，而不只是函数本身。
+        """
+        data_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: None)
+        lock = data_dir / "requirements.lock"
+        lock.write_text("fastapi==0.110.0\n", encoding="utf-8")
+        out = io.StringIO()
+        with mock.patch.object(install.config, "data_dir", return_value=data_dir), \
+                mock.patch.object(install, "venv_python", return_value=Path(sys.executable)), \
+                mock.patch.object(install, "LOCKFILE", lock), \
+                mock.patch.dict(os.environ, {"CODEX_HOME": str(self._home)}), \
+                mock.patch.object(install.sys, "platform", "win32"), \
+                mock.patch.object(install, "_find_executable", return_value=""), \
+                redirect_stdout(out), redirect_stderr(io.StringIO()):
+            install.write_state()
+            rc = install.do_check()
+        self.assertEqual(rc, 0)
+        self.assertIn("Hermes/Codex", out.getvalue())
 
 
 class InstallVenvVersionTest(unittest.TestCase):
