@@ -252,6 +252,10 @@ def _watch(execution_id):
                     logger.error('Hermes execution %s entered manual; automatic reconciliation stopped', execution_id)
                     return
             except Exception as exc:
+                from . import wake
+                if wake._shutting_down.is_set():
+                    # 引擎正在退出：本地收尾关闭连接导致的断线是预期，不误记 uncertain、不重连。
+                    return
                 detail = exc.reason if isinstance(exc, GatewayRefusal) else type(exc).__name__
                 if row['state'] == 'terminal':
                     # 清理最终期限（cleanup_deadline）到期：预算耗尽，不再重试（reviewer #255 次要②）。
@@ -310,6 +314,21 @@ def recover():
                 _start_worker(row['execution_id'])
     finally:
         conn.close()
+
+
+def active_sessions() -> set[str]:
+    """未终态 gateway 托管执行的 session 集合，供引擎重启收尾识别托管执行（不取消、不阻塞退出）。"""
+    conn = db.get_connection()
+    try:
+        return {row['session'] for row in ledger.active(conn)}
+    finally:
+        conn.close()
+
+
+def close_connections(timeout: float = 5.0) -> None:
+    """引擎重启本地收尾：集中、有界地关闭所有 viewer 连接（不取消远端执行、不终止 bot）。"""
+    from .hermes_gateway_client import close_all
+    close_all(timeout)
 
 
 def cancel(session, *, reason='user', timeout=30):

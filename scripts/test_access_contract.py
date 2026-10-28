@@ -166,6 +166,21 @@ class AccessContractTests(unittest.TestCase):
         self.assertNotIn("db_path", self.client.get("/health").json())
         self.assertIn("db_path", self.client.get("/health", headers=self.admin).json())
 
+    def test_shutdown_rejects_write_tools_with_not_accepted(self):
+        wake._shutting_down.set()
+        self.addCleanup(wake._shutting_down.clear)
+        # 停派发期间写操作明确未受理：503 + X-Group-Not-Accepted:1（设计 4.4 停派发门禁）。
+        for method, path in (("POST", "/msg"), ("POST", "/thread"), ("POST", "/thread/task-update"),
+                             ("POST", "/inbox/seen"), ("POST", "/task-tools/task_list"),
+                             ("POST", "/message/1/retract")):
+            with self.subTest(method=method, path=path):
+                response = self.client.request(method, path, json={}, headers=self.bot)
+                self.assertEqual(response.status_code, 503, response.text)
+                self.assertEqual(response.headers.get("X-Group-Not-Accepted"), "1")
+        # 管理查询（GET）与心跳（非 Hermes 生命周期）保留。
+        self.assertEqual(self.client.get("/commands", headers=self.bot).status_code, 200)
+        self.assertEqual(self.client.post("/heartbeat", json={"pid": 1}, headers=self.bot).status_code, 200)
+
 
 if __name__ == "__main__":
     unittest.main()

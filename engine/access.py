@@ -18,6 +18,14 @@ BOT_ROUTES = {
     ("POST", "/message/{message_id}/retract"),
 }
 
+# 停派发期间明确未受理的写操作（副作用路由），须回 503 + X-Group-Not-Accepted:1；
+# 管理查询（GET）与心跳（非 Hermes 生命周期）保留。
+WRITE_ROUTES = {
+    ("POST", "/msg"), ("POST", "/thread"), ("POST", "/thread/task-update"),
+    ("POST", "/inbox/seen"), ("POST", "/task-tools/{operation}"),
+    ("POST", "/message/{message_id}/retract"),
+}
+
 
 def resolve_identity(
     x_group_profile: Optional[str] = Header(default=None),
@@ -100,6 +108,11 @@ async def authorize(request: Request, identity=Depends(resolve_identity)):
         return
     if route not in BOT_ROUTES:
         raise HTTPException(403, "Administrator access required")
+    from . import wake
+    if wake._shutting_down.is_set() and route in WRITE_ROUTES:
+        # 停派发：新的写工具请求明确未受理（客户端按 X-Group-Not-Accepted 不重放，设计 4.4/7.2）。
+        raise HTTPException(503, "Engine is shutting down; request not accepted",
+                            headers={"X-Group-Not-Accepted": "1"})
     conn = db.get_connection()
     try:
         if not conn.execute("SELECT 1 FROM members WHERE profile=?", (profile,)).fetchone():

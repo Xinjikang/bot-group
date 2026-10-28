@@ -92,7 +92,7 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(ledger.read(self.conn, self.eid)['state'], 'manual')
         remote.rpc.assert_not_called()
 
-    def test_shutdown_waits_for_remote_terminal_and_mcp_cleanup(self):
+    def test_shutdown_skips_gateway_execution_and_releases_locally(self):
         from engine import browser_resources, process_tree
         from engine.lifecycle import Shutdown
         self.addCleanup(wake._shutting_down.clear)
@@ -100,75 +100,64 @@ class GatewayTests(unittest.TestCase):
         controller = Shutdown(threading.Event(), exited, timeout=5)
         with patch.object(wake, 'active_runs', return_value=[]), \
              patch.object(browser_resources, 'release', return_value={'ok': True}) as release, \
+             patch.object(gateway, 'close_connections') as close_conns, \
              patch.object(gateway, 'cancel') as cancel, \
              patch.object(process_tree, 'terminate') as kill:
             controller.begin()
             try:
                 self.assertTrue(wake._shutting_down.wait(2))
-                self.assertTrue(controller._busy())
-                self.terminal()
-                self.assertTrue(controller._busy())
-                release.assert_not_called()
-                exited.assert_not_called()
-                ledger.finish_cleanup(self.conn, self.eid)
+                # gateway 托管未终态执行不阻塞引擎退出（设计 4.4：不等 bot 终态）。
+                self.assertFalse(controller._busy())
             finally:
                 controller.worker.join(7)
             self.assertFalse(controller.worker.is_alive())
             self.assertEqual(controller.snapshot()['state'], 'stopping')
-            release.assert_called_once_with()
+            close_conns.assert_called_once_with(timeout=5)
+            release.assert_called_once_with(exclude_managed=True)
             exited.assert_called_once_with()
             cancel.assert_not_called()
             kill.assert_not_called()
+            # bot 继续运行：执行仍 active，未被取消。
+            self.assertTrue(gateway.active(self.session))
 
-    def test_shutdown_timeout_settles_gateway_before_releasing_resources(self):
+    def test_shutdown_preserves_gateway_execution_through_local_release(self):
         from engine import browser_resources, process_tree
         from engine.lifecycle import Shutdown
         self.addCleanup(wake._shutting_down.clear)
         exited = Mock()
         controller = Shutdown(threading.Event(), exited, timeout=0)
-
-        def settle(execution_id):
-            self.assertEqual(ledger.read(self.conn, execution_id)['cancel_reason'], 'shutdown')
-            exited.assert_not_called()
-            gateway._finish(self.conn, self.terminal(), Mock())
-
         with patch.object(wake, 'active_runs', return_value=[]), \
-             patch.object(gateway, '_start_worker', side_effect=settle), \
-             patch.object(gateway.sessions, 'clear_mcp') as clear, \
-             patch.object(gateway.sessions, 'mutate') as rewind, \
+             patch.object(gateway, 'close_connections') as close_conns, \
              patch.object(browser_resources, 'release', return_value={'ok': True}) as release, \
              patch.object(process_tree, 'terminate') as kill:
             controller._run()
         self.assertEqual(controller.snapshot()['state'], 'stopping')
-        self.assertFalse(gateway.active(self.session))
-        clear.assert_called_once()
-        rewind.assert_not_called()
+        # bot 继续运行：执行仍 active，未被取消、未被本地收尾清除。
+        self.assertTrue(gateway.active(self.session))
+        close_conns.assert_called_once_with(timeout=5)
         kill.assert_not_called()
-        self.assertEqual(release.call_args_list, [
-            call(session=self.session, started_at=self.start, pending_only=True), call()])
+        release.assert_called_once_with(exclude_managed=True)
         exited.assert_called_once_with()
 
-    def test_unconfirmed_gateway_cancel_keeps_engine_available(self):
+    def test_shutdown_does_not_cancel_gateway_execution(self):
         from engine import browser_resources, process_tree
         from engine.lifecycle import Shutdown
         self.addCleanup(wake._shutting_down.clear)
         exited = Mock()
         controller = Shutdown(threading.Event(), exited, timeout=0)
-        native_cancel = gateway.cancel
         with patch.object(wake, 'active_runs', return_value=[]), \
-             patch.object(gateway, '_start_worker'), \
-             patch.object(gateway, 'cancel', side_effect=lambda session, reason:
-                          native_cancel(session, reason=reason, timeout=0)), \
-             patch.object(browser_resources, 'release') as release, \
+             patch.object(gateway, 'close_connections'), \
+             patch.object(gateway, 'cancel') as cancel, \
+             patch.object(browser_resources, 'release', return_value={'ok': True}) as release, \
              patch.object(process_tree, 'terminate') as kill:
             controller._run()
-        self.assertEqual(controller.snapshot()['state'], 'failed')
+        self.assertEqual(controller.snapshot()['state'], 'stopping')
+        # bot 继续运行：执行仍 active，未取消。
         self.assertTrue(gateway.active(self.session))
-        self.assertEqual(ledger.read(self.conn, self.eid)['cancel_reason'], 'shutdown')
-        self.assertFalse(wake._shutting_down.is_set())
-        self.assertFalse(controller.stop_event.is_set())
-        release.assert_not_called()
-        exited.assert_not_called()
+        self.assertIsNone(ledger.read(self.conn, self.eid)['cancel_reason'])
+        cancel.assert_not_called()
+        release.assert_called_once_with(exclude_managed=True)
+        exited.assert_called_once_with()
         kill.assert_not_called()
 
     def test_newer_direct_execution_uses_its_own_process_lifecycle(self):
@@ -383,6 +372,43 @@ class GatewayTests(unittest.TestCase):
         rewind.assert_not_called()
         self.assertFalse(gateway.active(self.session))
         self.assertEqual(ledger.read(self.conn, self.eid)['cancel_reason'], 'shutdown')
+
+    def test_close_all_bounds_and_closes_every_viewer(self):
+        from engine.hermes_gateway_client import close_all, _register, _unregister
+
+        class FakeClient:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        a, b = FakeClient(), FakeClient()
+        _register(a)
+        _register(b)
+        try:
+            close_all(timeout=5)
+        finally:
+            _unregister(a)
+            _unregister(b)
+        self.assertTrue(a.closed)
+        self.assertTrue(b.closed)
+
+    def test_close_all_respects_total_budget_when_close_hangs(self):
+        from engine.hermes_gateway_client import close_all, _register, _unregister
+
+        class HangingClient:
+            def close(self):
+                time.sleep(30)
+
+        client = HangingClient()
+        _register(client)
+        start = time.monotonic()
+        try:
+            close_all(timeout=0.5)
+        finally:
+            _unregister(client)
+        self.assertLess(time.monotonic() - start, 2)
 
 
 if __name__ == '__main__':

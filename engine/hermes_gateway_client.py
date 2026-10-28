@@ -163,6 +163,44 @@ def ensure(command: list[str], home: Path, *, env=None, timeout=60):
     return endpoint
 
 
+# 活跃 viewer 连接 registry：引擎重启本地收尾需要集中、有界地关闭所有连接（设计 6.1 本地连接关闭硬超时 5s）。
+_ACTIVE: set['GatewayClient'] = set()
+_ACTIVE_LOCK = threading.Lock()
+
+
+def _register(client: 'GatewayClient') -> None:
+    with _ACTIVE_LOCK:
+        _ACTIVE.add(client)
+
+
+def _unregister(client: 'GatewayClient') -> None:
+    with _ACTIVE_LOCK:
+        _ACTIVE.discard(client)
+
+
+def _close_one(client: 'GatewayClient') -> None:
+    try:
+        client.close()
+    except Exception:
+        pass
+
+
+def close_all(timeout: float = 5.0) -> None:
+    """并发关闭所有 viewer 连接，总预算 timeout 秒；覆盖挂住 RPC 与并发建立中的连接。"""
+    with _ACTIVE_LOCK:
+        clients = list(_ACTIVE)
+    if not clients:
+        return
+    deadline = time.monotonic() + timeout
+    workers = []
+    for client in clients:
+        worker = threading.Thread(target=_close_one, args=(client,), daemon=True)
+        worker.start()
+        workers.append(worker)
+    for worker in workers:
+        worker.join(max(0.0, deadline - time.monotonic()))
+
+
 class GatewayClient:
     """One viewer connection; the receiver drains events independently of RPCs."""
     def __init__(self, endpoint, *, on_event=None):
@@ -181,6 +219,7 @@ class GatewayClient:
         self._closed = False
         self._on_event = on_event
         threading.Thread(target=self._read, name='hermes-gateway-reader', daemon=True).start()
+        _register(self)
 
     def _read(self):
         try:
@@ -196,6 +235,7 @@ class GatewayClient:
         except Exception:
             pass
         finally:
+            _unregister(self)
             with self._condition:
                 self._closed = True
                 self._condition.notify_all()
@@ -224,6 +264,7 @@ class GatewayClient:
                 self._pending.pop(rid, None)
 
     def close(self):
+        _unregister(self)
         self._socket.close()
 
     def __enter__(self):

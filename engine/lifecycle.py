@@ -43,23 +43,29 @@ class Shutdown:
         return rows
 
     def _busy(self):
-        if wake.active_runs():
-            return True
+        from . import hermes_gateway
+        # gateway 托管未终态执行不阻塞引擎退出（设计 4.4：重启不等 bot 终态）。
+        managed = hermes_gateway.active_sessions()
+        for run in wake.active_runs():
+            if run.get('session') not in managed:
+                return True
         rows = self._runs()
-        return any(wake.find_bot_processes(r['profile'], session=r['session']) != [] for r in rows)
+        return any(
+            r['session'] not in managed
+            and wake.find_bot_processes(r['profile'], session=r['session']) != []
+            for r in rows
+        )
 
     def _terminate(self):
-        from . import process_tree, heartbeat
+        from . import process_tree, heartbeat, hermes_gateway
         rows = self._runs()
+        managed = hermes_gateway.active_sessions()
+        # gateway 托管未终态执行不取消、不终止（bot 继续运行，设计 4.4）；
+        # 本地 viewer 连接关闭在 _run 的 release 前统一执行。
+        local_rows = [r for r in rows if r['session'] not in managed]
         pids = set()
         launchers = {}
-        for row in rows:
-            from . import hermes_gateway
-            cancelled = hermes_gateway.cancel(row['session'], reason='shutdown')
-            if cancelled is not None:
-                if not cancelled:
-                    raise RuntimeError(f"Hermes 执行终态尚未确认：{row['profile']}")
-                continue
+        for row in local_rows:
             found = wake.find_bot_processes(row['profile'], session=row['session'])
             if found is None:
                 raise RuntimeError(f"无法核实 Bot 进程：{row['profile']}")
@@ -77,14 +83,14 @@ class Shutdown:
             time.sleep(0.1)
         conn = db.get_connection()
         try:
-            for row in rows:
+            for row in local_rows:
                 conn.execute('UPDATE wake_runs SET ended_at=?,exit_code=1 '
                              'WHERE session=? AND started_at=? AND (ended_at IS NULL OR exit_code=-1)',
                              (time.time(), row['session'], row['started_at']))
             conn.commit()
         finally:
             conn.close()
-        for row in rows:
+        for row in local_rows:
             if row['pid']:
                 heartbeat.on_exit(row['profile'], pid=row['pid'], thread_id=row['thread_id'])
 
@@ -105,7 +111,10 @@ class Shutdown:
                 time.sleep(0.1)
             with self.lock:
                 self.state = 'releasing'
-            result = browser_resources.release()
+            # 本地收尾：有界关闭 gateway viewer 连接（硬超时 5s），不阻塞引擎退出（设计 4.4/6.1）。
+            from . import hermes_gateway
+            hermes_gateway.close_connections(timeout=5)
+            result = browser_resources.release(exclude_managed=True)
             if not result['ok']:
                 raise RuntimeError('浏览器资源释放失败，请重试退出；详情见引擎日志')
             with self.lock:
