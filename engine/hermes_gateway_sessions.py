@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import uuid
 
 from .hermes_gateway_client import GatewayRefusal
@@ -26,7 +27,8 @@ def new(client, *, title, workdir, system_prompt, model_args, request_id=None):
         client_env={'HERMES_EPHEMERAL_SYSTEM_PROMPT': system_prompt}, **params)
 
 
-def configure(client, snapshot, *, workdir, model_args, server):
+def configure(client, snapshot, *, workdir, model_args, server,
+              reset_reasoning=False, reasoning_applied=None):
     """Refresh the session-local MCP transport before each admission."""
     sid = snapshot['session_id']
     if snapshot['info']['source'] != 'acp':
@@ -45,6 +47,13 @@ def configure(client, snapshot, *, workdir, model_args, server):
         snapshot = attach(client, sid)
     if '--reasoning' in options:
         mutate(client, snapshot, 'reasoning', {'effort': options['--reasoning']})
+        if reasoning_applied:
+            reasoning_applied(options['--reasoning'])
+        snapshot = attach(client, sid)
+    elif reset_reasoning:
+        mutate(client, snapshot, 'reasoning', {'effort': None})
+        if reasoning_applied:
+            reasoning_applied(None)
         snapshot = attach(client, sid)
     # Native ordinary-edit policy and native dangerous-command smart review are
     # independent. No client-side reviewer or blanket approval responder is used.
@@ -61,6 +70,26 @@ def configure(client, snapshot, *, workdir, model_args, server):
     snapshot = attach(client, sid)
     # Session-local tools are discovered lazily; session.info lists profile MCPs.
     return snapshot
+
+
+def configure_tracked(conn, project, client, snapshot, *, workdir, model_args, server):
+    """Reset removed engine overrides while preserving native session choices."""
+    from . import db
+    identity = json.dumps([client.endpoint['profile_id'], snapshot['session_id']])
+    key = 'hermes_reasoning:' + hashlib.sha256(identity.encode()).hexdigest()
+    previous = conn.execute('SELECT value FROM settings WHERE project=? AND key=?', (project, key)).fetchone()
+
+    def applied(effort):
+        if effort is None:
+            conn.execute('DELETE FROM settings WHERE project=? AND key=?', (project, key))
+        else:
+            conn.execute('INSERT INTO settings(project,key,value,updated_at) VALUES(?,?,?,?) '
+                         'ON CONFLICT(key,project) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',
+                         (project, key, effort, db.now_iso()))
+        conn.commit()
+
+    return configure(client, snapshot, workdir=workdir, model_args=model_args, server=server,
+                     reset_reasoning=previous is not None, reasoning_applied=applied)
 
 
 def clear_mcp(client, session_id):

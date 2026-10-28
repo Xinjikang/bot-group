@@ -153,7 +153,8 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
                              ('BH_RUNTIME_DIR', 'BH_RUNTIME_DIR_SHARED', 'BH_TMP_DIR', 'BH_TMP_DIR_SHARED', 'BU_NAME')})
         server['env']['GROUP_GATEWAY_EXECUTION'] = '1'
         conn.commit()
-        sessions.configure(client, snapshot, workdir=workdir, model_args=model_args, server=server)
+        sessions.configure_tracked(conn, project, client, snapshot,
+                                   workdir=workdir, model_args=model_args, server=server)
         attempted = True
         receipt = client.rpc('prompt.submit', session_id=row['session_id'], submission_id=row['submission_id'], text=signal)
         ledger.apply_receipt(conn, row['execution_id'], receipt)

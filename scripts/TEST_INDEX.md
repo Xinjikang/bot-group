@@ -1,5 +1,9 @@
 # 测试脚本索引
 
+Hermes 刷新出站载荷：设置 `GW_PROBE_DATA` 为分配测试数据根，运行 `.venv\Scripts\python.exe -X utf8 -B scripts/verify_gateway_refresh_payload.py --url <分配后端 origin> --evidence <主目录报告下的新绝对路径>`。复用隔离安装记录选择 Hermes 解释器，在全新 home/workspace 中经官方 gateway ensure 和 RPC 执行七轮会话；本地推理夹具保存实际 HTTP messages/tools，并请求原生 tool_search 获取 MCP 描述。核对 AGENTS 修改/删除、工具描述修改与工具删除、reasoning 默认刷新/删除、引擎覆盖持久化与删除 reset、reset 后原生选择保留、SOUL/记忆续会话稳定和新会话刷新。该证据验证真实网关出站载荷，真实模型生成和引擎 `/new` 绑定切换另行验收。使用合成凭据，结束停止本次网关和 HTTP 夹具；原始载荷与结果写报告目录。v0.22.5 的 AGENTS 修改/删除仍有已知失败，用例保持红灯。
+
+Hermes 引擎 reasoning 归属：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway -q`。覆盖每次 admission 的 MCP 更新、显式推理覆盖、数据库连接重开后删除覆盖的单次 reset、其他会话/项目隔离、原生选择保留、失败 pin 不登记及 reset 失败保留重试记录，以及网关取消、清理和执行归属回归。
+
 执行异常分类：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_execution_errors scripts.test_task_retry scripts.test_abnormal_exit -q`。使用隔离 SQLite 与合成 JSONL，覆盖模型容量已满提示、终态失败优先于工具输出、最后一条有效失败事件、普通 error 回退、未知错误、Hermes 专用提示与完整脱敏诊断保留；正常退出未交接时使用独立原因及三次失败汇总、已交接保持成功、引擎超时优先与真实运行时错误分类。
 
 MCP 离线重试与回执：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_mcp_operations scripts.test_task_api scripts.test_access_contract scripts.test_message_execution scripts.test_inbox_seen_gate scripts.test_task_brief scripts.test_requirement_lifecycle -q`。覆盖连接失败 1/2/4/8 秒退避、最多 5 次与 30 秒总预算、读超时/5xx 只查证、原操作 ID 复用、并发去重、业务与回执同事务、提交前异常回滚、外部副作用结果未知、成员撤权和后继执行隔离。

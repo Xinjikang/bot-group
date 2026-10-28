@@ -30,6 +30,14 @@ queued 执行通过 `prompt.cancel` 取消；started 执行通过携带 generati
 
 提交回执缺失时，当前公开接口缺少按 submission ID 只读找回 admission 的入口。适配器保留 `unknown`，到固定截止时间转 `manual` 并保留占用。管理员需核对原执行，自动重提保持关闭。已有 admission 的执行在断线后重新取一次性 ticket，并查询原回执。
 
+## 空闲唤醒的 reasoning 覆盖
+
+`configure_tracked()` 将引擎已成功设置的 reasoning 保存到业务库 settings，键由 profile 身份和 session ID 派生，并受 project 隔离。每次唤醒按 UI 显式参数设置 reasoning；显式参数删除后，存在记录的会话通过官方 `reasoning/effort:null` 重置一次，成功即删除记录。RPC 失败保留记录，下次唤醒继续处理。没有引擎覆盖记录的会话保留原生 reasoning 选择；清除完成后的原生选择也保持有效。默认配置在新 viewer 的空闲 resume 路径刷新，持续附着的同一 viewer 重复 resume 会跳过该刷新。
+
+记录自启用该跟踪机制后建立。升级前已有的 pin 缺少引擎归属记录时，维护者需明确设置一次项目 reasoning 后再清空，或在 Hermes 使用原生 reasoning reset；引擎保持未知归属的原生会话选择。
+
+AGENTS.md 的续会话刷新仍需上游接口或设计补充：v0.22.5 会复用已保存的 system prompt，修改/删除项目规则的出站载荷验证尚未通过。新会话读取新版 SOUL/记忆，旧会话保留原内容。出站载荷夹具、真实模型生成和引擎 `/new` 绑定切换分别记录证据。
+
 ## MCP 离线窗口与操作回执
 
 `engine/mcp_http.py` 为 MCP HTTP 调用提供 30 秒总预算。连接建立失败或明确的 `503 + X-Group-Not-Accepted: 1` 按 1/2/4/8 秒退避，最多发送 5 次。耗尽返回 `engine_offline`。读取超时、写出后断线、一般 5xx 和重定向进入结果查证；写操作按原 `operation_id` 查询 `/mcp-operations/{operation_id}`，查证也受同一总预算约束。查询仍无法确认时返回 `operation_unknown`，携带操作 ID。FastMCP 同步工具运行于已有事件循环时，传输在独立线程的事件循环中执行，预算内的请求与等待可取消。

@@ -192,6 +192,8 @@ bot 通过引擎注入的 `editor_mcp`（task_queue）访问引擎 API；引擎�
 - 限制：busy（turn running/queued）保持该 turn 准入时的 policy；显式创建参数与已选设置覆盖配置；refresh 失败不 fail resume。
 - 精确表述：config 派生字段「下次空闲唤醒生效」，busy 时保持旧 policy 等下次空闲。
 
+项目成员 UI 的 `reasoning_effort` 为显式覆盖，`project_models.arguments()` 将其转换为 `--reasoning`；Hermes profile 的配置默认值由原生 resume 刷新。引擎按项目、profile 身份和 session ID 持久记录已成功应用的 reasoning 覆盖。UI 覆盖被删除且记录存在时，调用官方 `session.mutate(operation="reasoning", payload={"effort": null})` 解除 pin 并读取 profile 当前默认值；成功后清除记录，失败保留以便下次重试。无引擎覆盖记录的会话保持原生选择。此过程只修改对应会话策略，profile 的共享 config.yaml 保持原有内容。
+
 ### 7.4 SOUL / 记忆（用户主动 /new）
 
 - SOUL.md + MEMORY/USER 经 system prompt 注入，会话生命周期 byte-stable，复用 stored_prompt 不刷新。
