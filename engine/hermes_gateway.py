@@ -225,14 +225,23 @@ def _finish(conn, row, client):
 
 
 def _watch(execution_id):
+    from . import wake
     client = None
     conn = db.get_connection()
     try:
         while True:
+            if wake._shutting_down.is_set():
+                if client:
+                    client.close()
+                    client = None
+                time.sleep(0.1)
+                continue
             row = ledger.read(conn, execution_id)
             try:
                 if client is None:
                     client, _, _ = connection(row['profile'], home=row['home'], command=json.loads(row['python']))
+                    if wake._shutting_down.is_set():
+                        continue
                     sessions.attach(client, row['session_id'])
                 if row['state'] == 'terminal':
                     if _finish(conn, row, client):
@@ -254,11 +263,14 @@ def _watch(execution_id):
             except Exception as exc:
                 from . import wake
                 if wake._shutting_down.is_set():
-                    # 引擎正在退出：本地收尾关闭连接导致的断线是预期，不误记 uncertain、不重连。
-                    return
+                    # Keep the durable state and pause until shutdown completes or reopens.
+                    if client:
+                        client.close()
+                        client = None
+                    continue
                 detail = exc.reason if isinstance(exc, GatewayRefusal) else type(exc).__name__
                 if row['state'] == 'terminal':
-                    # 清理最终期限（cleanup_deadline）到期：预算耗尽，不再重试（reviewer #255 次要②）。
+                    # Persisted cleanup deadlines bound retries across engine restarts.
                     if row['cleanup_deadline'] and time.time() >= row['cleanup_deadline']:
                         ledger.mark_cleanup_failed(conn, execution_id, detail + '; cleanup deadline exceeded')
                         logger.error('Hermes cleanup deadline exceeded for execution %s; '
@@ -306,7 +318,7 @@ def recover():
         # terminal 后未清理的行重启清理 worker（不 _publish：已终态不再发 spawned）。
         # 已耗尽（cleanup_failed）的行不自动重试，只续剩余额度（设计 6.3 / D2）。
         for row in ledger.cleanup_pending(conn):
-            # 清理最终期限已过：不重启 worker，直接转 cleanup_failed（reviewer #255 次要②）。
+            # Expired cleanup work remains failed until an explicit retry.
             if row['cleanup_deadline'] and time.time() >= row['cleanup_deadline']:
                 ledger.mark_cleanup_failed(conn, row['execution_id'], 'cleanup deadline exceeded')
                 continue
@@ -316,11 +328,12 @@ def recover():
         conn.close()
 
 
-def active_sessions() -> set[str]:
-    """未终态 gateway 托管执行的 session 集合，供引擎重启收尾识别托管执行（不取消、不阻塞退出）。"""
+def managed_runs() -> set[tuple[str, float]]:
+    """Exact execution identities, including durable terminal cleanup work."""
     conn = db.get_connection()
     try:
-        return {row['session'] for row in ledger.active(conn)}
+        return {(row['session'], row['started_at']) for row in conn.execute(
+            'SELECT session,started_at FROM hermes_executions')}
     finally:
         conn.close()
 

@@ -4,7 +4,7 @@
   const key = 'ge_service_restart';
   let monitoring = false;
   const stages = {
-    running: '正在重启…', draining: '等待 Bot 结束…', terminating: '正在停止 Bot…',
+    running: '正在重启…', draining: '正在收尾本地执行…', terminating: '正在停止本地执行…',
     releasing: '正在回收资源…', stopping: '等待服务启动…',
   };
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -94,7 +94,7 @@
     if (button.disabled || !S.isUserIdentity) return;
     button.disabled = true;
     try {
-      if (!await showConfirm('重启服务？将暂停新任务派发，等待运行中的执行收尾（最多 120 秒）；超时后停止尚未结束的 Bot 执行并回收浏览器资源，再启动新实例。服务恢复后自动刷新界面；重启失败会保留回执，可刷新页面继续核对。')) return;
+      if (!await showConfirm('重启服务？Hermes 网关中的执行会继续运行，服务启动后接回原执行。Codex 等本地执行最多等待 120 秒收尾，超时后停止。重启期间暂停新任务派发和工具写入，服务恢复后自动刷新界面；失败原因保留在回执中。')) return;
       let operation;
       try { operation = await request('/admin/restart', 'POST'); }
       catch (error) {

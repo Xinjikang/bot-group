@@ -159,7 +159,9 @@ def release(*, project=None, task_id=None, profile=None, session=None, started_a
             try:
                 managed = {tuple(r) for r in conn.execute(
                     "SELECT session, started_at FROM hermes_executions WHERE state != 'terminal'")}
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as exc:
+                if 'no such table' not in str(exc):
+                    raise
                 managed = set()
             rows = [row for row in rows if (row['session'], row['started_at']) not in managed]
         # 只标记本次要释放的行（exclude_managed 时保留 gateway 未终态执行资源不被标记）。

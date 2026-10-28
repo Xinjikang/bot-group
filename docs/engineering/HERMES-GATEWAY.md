@@ -24,11 +24,13 @@ queued 执行通过 `prompt.cancel` 取消；started 执行通过携带 generati
 
 引擎优雅停止/重启先关闭新任务入口：停派发期间新的写工具请求（`/msg`、`/thread`、`/thread/task-update`、`/inbox/seen`、`/task-tools/{operation}`、撤回）明确未受理，返回 503 且带 `X-Group-Not-Accepted:1`；管理查询（GET）与心跳保留。本地执行（Codex/旧 CLI）等待自然结束，默认 120 秒，超时终止；Hermes gateway 托管执行不取消、不等 bot 终态——本地收尾有界关闭全部 viewer 连接（硬超时 5 秒，覆盖挂住 RPC 与并发建立中的连接），保留未终态执行与浏览器资源，停机期间 worker 断线不误记 uncertain。引擎退出后重启，`recover()` 接回原任务：对账 bot 状态（`prompt.receipt` 查询原 admission），已结束收尾、没结束继续跟踪，不重新 `prompt.submit`（防重复派发），原 admission/submission 保留。远端接管异步进行，不阻塞引擎就绪。`start.bat` / `start.sh` 只有确认旧引擎进程退出和端口释放后才启动新引擎；快捷方式复用健康实例不经过停机。停机取消使用 `shutdown` 原因、保留会话历史，仅作用于本地执行；gateway 托管执行跨重启继续运行。
 
-终态立即撤销执行凭据；清理临时 MCP、浏览器资源和引擎记录后释放占用。MCP 心跳使用自身 PID，避免多个会话共享网关 PID；凭据校验约束项目、话题和 inbox 类型。引擎停机对本地执行按执行发送取消、对 gateway 托管执行只本地收尾（关闭 viewer 连接），保持 HTTP/MCP 可用直到本地执行收尾完成。
+终态立即撤销执行凭据；清理临时 MCP、浏览器资源和引擎记录后解除会话清理禁用。MCP 心跳使用自身 PID，凭据校验约束项目、话题和 inbox 类型。停机按 `session + started_at` 精确区分网关托管执行与本地执行，包含已终态但尚待清理的网关记录；同 session 的后继本地执行继续遵循本地收尾流程。停止失败时重新开放 viewer 连接和执行跟踪。
 
 执行终态与清理完成是两个独立状态机。终态回执落库即撤销执行凭据并释放执行占用：`active()` 只看 `state != 'terminal'`，`cleanup_pending` 不算占用（不进入 busy 判定）；同一逻辑会话仍受「清理禁用」约束，清理恢复后才可复用，其他独立会话可运行。清理待办（`cleanup_pending=1`）按退避序列重试（1/2/4/8 秒）最多 5 次；`retry_count`、`next_retry_at` 与 `cleanup_deadline` 持久化，清理最终期限（`cleanup_deadline`）到期即转 `cleanup_failed` 停止重试。耗尽（重试 5 次或期限到期）转 `cleanup_failed`（`detail` 标记）并停止自动循环，保留 `cleanup_pending=1` 与会话禁用，仅人工明确重试才开启新预算。引擎启动恢复只续剩余额度，已耗尽或期限已过不自动重试；恢复沿用原 admission 与取消原因。取消有界：`cancel_deadline`=首次 cancel+30s、`reconcile_deadline`=首次 cancel+150s，超时转 `manual` 停止自动循环；单次 RPC 超时=min(默认 30s, 剩余预算)（仅取消/对账时生效，正常轮询保持默认 30s，不因 reconcile_deadline 过期而打断长时间运行执行）。清理走引擎自身 GatewayClient（ensure+ticket），非 run.token 执行凭据，撤销凭据不影响清理重试。清理登记按 execution_id/started_at 精确匹配，不按 session 删除，避免迟到清理误删后继执行。
 
 提交回执缺失时，当前公开接口缺少按 submission ID 只读找回 admission 的入口。适配器保留 `unknown`，到固定截止时间转 `manual` 并保留占用。管理员需核对原执行，自动重提保持关闭。已有 admission 的执行在断线后重新取一次性 ticket，并查询原回执。
+
+已有 admission 且未取消的执行发生断线或收到 unknown 回执时，使用原 `execution_deadline` 作为查询预算；提交阶段的 `started_at + 150s` 限制仅用于尚未取得 admission 的执行。首次取消后使用原 `reconcile_deadline`。重启保持这些绝对时间与 admission/submission 身份，长执行跨过提交阶段预算后仍可接回终态。
 
 ## 空闲唤醒的 reasoning 覆盖
 

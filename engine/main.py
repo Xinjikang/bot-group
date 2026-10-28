@@ -59,6 +59,8 @@ def _setup_logging() -> None:
 @asynccontextmanager
 async def _engine_lifespan(app: FastAPI):
     from . import wake
+    from .hermes_gateway_client import resume_connections
+    resume_connections()
     wake._shutting_down.clear()
     # 启动：建表 + 重启恢复
     conn = db.get_connection()
@@ -97,6 +99,7 @@ async def _engine_lifespan(app: FastAPI):
         yield
     finally:
         wake._shutting_down.set()
+        await asyncio.to_thread(hermes_gateway.close_connections, 5)
         stop_event.set()
         await asyncio.to_thread(t_queue.join, 5)
         await asyncio.to_thread(t_scanner.join, 5)
@@ -104,7 +107,7 @@ async def _engine_lifespan(app: FastAPI):
         # Uvicorn closes connections. Keep a fallback for embedded ASGI hosts.
         if not wake.active_runs():
             from . import browser_resources
-            result = await asyncio.to_thread(browser_resources.release)
+            result = await asyncio.to_thread(browser_resources.release, exclude_managed=True)
             if not result['ok']:
                 logger.error('Browser resources remain: %s', result['errors'])
 

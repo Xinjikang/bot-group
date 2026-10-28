@@ -87,9 +87,30 @@ class LedgerTests(unittest.TestCase):
 
     def test_manual_hold_survives_nonterminal_receipt(self):
         self.accept()
-        ledger.uncertain(self.conn, self.eid, 'lost', now=251)
+        ledger.cancel(self.conn, self.eid, now=115)
+        ledger.uncertain(self.conn, self.eid, 'lost', now=266)
         self.assertEqual(self.accept()['state'], 'manual')
         self.assertEqual(self.accept('terminal')['state'], 'terminal')
+
+    def test_long_execution_disconnect_recovers_original_admission(self):
+        self.accept()
+        before = dict(ledger.read(self.conn, self.eid))
+        ledger.uncertain(self.conn, self.eid, 'offline', now=300)
+        self.assertEqual(ledger.read(self.conn, self.eid)['state'], 'unknown')
+        row = ledger.apply_receipt(self.conn, self.eid, self.receipt('unknown'), now=301)
+        self.assertEqual(row['state'], 'unknown')
+        remote = Mock()
+        remote.rpc.return_value = self.receipt('terminal')
+        row = ledger.reconcile(remote, self.conn, self.eid, now=302)
+        self.assertEqual(row['state'], 'terminal')
+        for key in ('admission_id', 'submission_id', 'reconcile_deadline', 'execution_deadline'):
+            self.assertEqual(row[key], before[key])
+        remote.rpc.assert_called_once_with('prompt.receipt', session_id='sid', admission_id='a', timeout=30.0)
+
+    def test_unreachable_execution_still_has_original_execution_budget(self):
+        self.accept()
+        ledger.uncertain(self.conn, self.eid, 'offline', now=3700)
+        self.assertEqual(ledger.read(self.conn, self.eid)['state'], 'manual')
 
     def test_transport_loss_preserves_admission(self):
         self.accept()

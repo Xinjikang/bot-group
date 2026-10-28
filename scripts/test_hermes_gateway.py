@@ -14,6 +14,9 @@ from scripts.unified_test_support import isolated_database
 
 class GatewayTests(unittest.TestCase):
     def setUp(self):
+        from engine.hermes_gateway_client import resume_connections
+        resume_connections()
+        self.addCleanup(resume_connections)
         fixture = isolated_database()
         fixture.__enter__()
         self.addCleanup(fixture.__exit__, None, None, None)
@@ -61,6 +64,41 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(self.client.get('/commands', headers=self.headers).status_code, 401)
         ledger.finish_cleanup(self.conn, self.eid)
         self.assertEqual(gateway.process_state(self.session), [])
+
+    def test_engine_ready_while_gateway_connection_is_blocked(self):
+        import asyncio
+        from engine import main
+        entered, release = threading.Event(), threading.Event()
+        remote = Mock()
+        def connect(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError('isolated gateway unavailable')
+            return remote, '/isolated', ['hermes']
+        async def check():
+            started = time.monotonic()
+            async with main._engine_lifespan(FastAPI()):
+                self.assertLess(time.monotonic() - started, 2)
+                self.assertTrue(entered.wait(1))
+                self.assertFalse(release.is_set())
+                self.terminal()
+                release.set()
+                deadline = time.monotonic() + 2
+                while self.eid in gateway._workers and time.monotonic() < deadline:
+                    await asyncio.sleep(.01)
+                self.assertNotIn(self.eid, gateway._workers)
+        with patch.object(gateway, 'connection', side_effect=connect), \
+             patch.object(gateway, '_publish'), patch.object(gateway, '_finish', return_value=True), \
+             patch.object(gateway.sessions, 'attach'), \
+             patch('engine.signing_keys.initialize'), patch('engine.events.set_loop'), \
+             patch.object(main.queue, 'run_forever', side_effect=lambda stop: stop.wait(5)), \
+             patch.object(main.scanner, 'run_forever', side_effect=lambda stop: stop.wait(5)), \
+             patch.object(wake, 'active_runs', return_value=[]):
+            try:
+                asyncio.run(check())
+            finally:
+                release.set()
+                wake._shutting_down.clear()
 
     def test_inbox_scope_rejects_other_project_and_wrong_kind(self):
         for params in ({'project': 'beta', 'kind': 'work'}, {'project': 'alpha', 'kind': 'chat'},
@@ -393,6 +431,58 @@ class GatewayTests(unittest.TestCase):
             _unregister(b)
         self.assertTrue(a.closed)
         self.assertTrue(b.closed)
+
+    def test_terminal_cleanup_does_not_block_engine_exit(self):
+        from engine.lifecycle import Shutdown
+        self.terminal()
+        with patch.object(wake, 'active_runs', return_value=[]):
+            self.assertFalse(Shutdown(threading.Event(), Mock())._busy())
+
+    def test_managed_identity_does_not_hide_newer_local_run(self):
+        from engine.lifecycle import Shutdown
+        controller = Shutdown(threading.Event(), Mock())
+        with patch.object(wake, 'active_runs', return_value=[{
+                'session': self.session, 'wake_started_at': self.start + 1}]):
+            self.assertTrue(controller._busy())
+
+    def test_viewer_connecting_during_shutdown_is_rejected(self):
+        from engine.hermes_gateway_client import GatewayClient, GatewayTransportError, close_all
+        socket = Mock(subprotocol='hermes-gateway-v1')
+        def connect(*args, **kwargs):
+            close_all(timeout=.1)
+            return socket
+        with patch('engine.hermes_gateway_client.ticket', return_value='fixture'), \
+             patch('websockets.sync.client.connect', side_effect=connect):
+            with self.assertRaises(GatewayTransportError):
+                GatewayClient({'api_origin': 'http://127.0.0.1:1'})
+        socket.close.assert_called_once()
+
+    def test_shutdown_disconnect_preserves_state_and_failed_shutdown_resumes(self):
+        original = dict(ledger.read(self.conn, self.eid))
+        entered = threading.Event()
+        remote = Mock()
+        def first_connect(*args, **kwargs):
+            wake._shutting_down.set()
+            entered.set()
+            raise ConnectionError('viewer closing')
+        with patch.object(gateway, 'connection', side_effect=[None]) as connect, \
+             patch.object(gateway.sessions, 'attach'), \
+             patch.object(gateway, '_finish', return_value=True):
+            connect.side_effect = first_connect
+            worker = threading.Thread(target=gateway._watch, args=(self.eid,), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                self.assertEqual(dict(ledger.read(self.conn, self.eid)), original)
+                self.terminal()
+                connect.side_effect = None
+                connect.return_value = (remote, '/isolated', ['hermes'])
+                wake._shutting_down.clear()
+                worker.join(2)
+                self.assertFalse(worker.is_alive())
+            finally:
+                wake._shutting_down.clear()
+                worker.join(2)
 
     def test_close_all_respects_total_budget_when_close_hangs(self):
         from engine.hermes_gateway_client import close_all, _register, _unregister

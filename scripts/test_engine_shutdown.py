@@ -26,6 +26,8 @@ from scripts.unified_test_support import isolated_database
 
 class ShutdownTests(unittest.TestCase):
     def tearDown(self):
+        from engine.hermes_gateway_client import resume_connections
+        resume_connections()
         wake._shutting_down.clear()
 
     def test_waits_for_execution_and_closes_gate_before_releasing(self):
@@ -176,7 +178,7 @@ class ShutdownTests(unittest.TestCase):
     def test_unknown_execution_blocks_tree_kill(self):
         from engine import process_tree
         controller = Shutdown(threading.Event(), Mock(), timeout=0)
-        with patch.object(controller, '_runs', return_value=[{'profile': 'test', 'session': 'test'}]), \
+        with patch.object(controller, '_runs', return_value=[{'profile': 'test', 'session': 'test', 'started_at': 0}]), \
              patch.object(wake, 'find_bot_processes', return_value=None), \
              patch.object(process_tree, 'terminate') as terminate:
             with self.assertRaisesRegex(RuntimeError, '无法核实'):

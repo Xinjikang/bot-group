@@ -123,7 +123,9 @@ def cancel(conn, execution_id, reason='user', *, now=None):
 def uncertain(conn, execution_id, detail, *, now=None):
     now = time.time() if now is None else now
     conn.execute("UPDATE hermes_executions SET state=CASE "
-                 "WHEN reconcile_deadline<=? OR state='manual' THEN 'manual' ELSE 'unknown' END,detail=? "
+                 "WHEN (CASE WHEN cancel_reason IS NOT NULL OR admission_id IS NULL "
+                 "THEN reconcile_deadline ELSE execution_deadline END)<=? "
+                 "OR state='manual' THEN 'manual' ELSE 'unknown' END,detail=? "
                  "WHERE execution_id=? AND state!='terminal'", (now, detail, execution_id))
     conn.commit()
 
@@ -160,7 +162,9 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
                          (aid, gen, epoch, receipt['outcome'], now, now + CLEANUP_BUDGET_SECONDS, execution_id))
         else:
             state = 'running' if status == 'started' else 'submitting' if status == 'queued' else 'unknown'
-            if row['state'] == 'manual' or status == 'unknown' and now >= row['reconcile_deadline']:
+            deadline = (row['reconcile_deadline'] if row['cancel_reason'] or row['admission_id'] is None
+                        else row['execution_deadline'])
+            if row['state'] == 'manual' or status == 'unknown' and deadline and now >= deadline:
                 state = 'manual'
             elif row['cancel_reason']:
                 state = 'cancelling'
@@ -223,10 +227,8 @@ def not_submitted(conn, execution_id, detail):
 def reconcile(client, conn, execution_id, *, now=None):
     """Query before cancelling; transport loss never triggers prompt resubmission.
 
-    有界超时只作用于取消/对账循环（cancel_reason 已设）：单次 RPC 超时 =
-    min(默认 30s, 剩余 reconcile 预算)（设计 6.1 / D3）。正常轮询（未取消）
-    保持默认 30s，不得因 reconcile_deadline（prepare 固定 started_at+150）
-    过期而把长时间运行执行打成 manual（reviewer #255 高危回归）。
+    Cancellation RPCs use the smaller of 30 seconds and the remaining cancellation
+    budget. Normal receipt polling uses 30 seconds within the execution lifecycle.
     """
     now = time.time() if now is None else now
     row = read(conn, execution_id)

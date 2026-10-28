@@ -166,11 +166,20 @@ def ensure(command: list[str], home: Path, *, env=None, timeout=60):
 # 活跃 viewer 连接 registry：引擎重启本地收尾需要集中、有界地关闭所有连接（设计 6.1 本地连接关闭硬超时 5s）。
 _ACTIVE: set['GatewayClient'] = set()
 _ACTIVE_LOCK = threading.Lock()
+_CLOSING = threading.Event()
 
 
-def _register(client: 'GatewayClient') -> None:
+def _register(client: 'GatewayClient') -> bool:
     with _ACTIVE_LOCK:
+        if _CLOSING.is_set():
+            return False
         _ACTIVE.add(client)
+        return True
+
+
+def resume_connections() -> None:
+    with _ACTIVE_LOCK:
+        _CLOSING.clear()
 
 
 def _unregister(client: 'GatewayClient') -> None:
@@ -186,8 +195,9 @@ def _close_one(client: 'GatewayClient') -> None:
 
 
 def close_all(timeout: float = 5.0) -> None:
-    """并发关闭所有 viewer 连接，总预算 timeout 秒；覆盖挂住 RPC 与并发建立中的连接。"""
+    """Close viewers within one total budget and reject late connections."""
     with _ACTIVE_LOCK:
+        _CLOSING.set()
         clients = list(_ACTIVE)
     if not clients:
         return
@@ -205,6 +215,8 @@ class GatewayClient:
     """One viewer connection; the receiver drains events independently of RPCs."""
     def __init__(self, endpoint, *, on_event=None):
         from websockets.sync.client import connect
+        if _CLOSING.is_set():
+            raise GatewayTransportError('Hermes viewers are closing')
         origin = endpoint['api_origin'].rstrip('/')
         url = origin.replace('https:', 'wss:', 1).replace('http:', 'ws:', 1) + '/api/ws'
         self.endpoint = endpoint
@@ -218,8 +230,10 @@ class GatewayClient:
         self._sequence = 0
         self._closed = False
         self._on_event = on_event
+        if not _register(self):
+            self.close()
+            raise GatewayTransportError('Hermes viewers are closing')
         threading.Thread(target=self._read, name='hermes-gateway-reader', daemon=True).start()
-        _register(self)
 
     def _read(self):
         try:
@@ -242,7 +256,7 @@ class GatewayClient:
 
     def rpc(self, method, *, timeout=30, **params):
         with self._condition:
-            if self._closed:
+            if self._closed or _CLOSING.is_set():
                 raise GatewayTransportError('Hermes viewer disconnected')
             self._sequence += 1
             rid = self._sequence
@@ -265,6 +279,9 @@ class GatewayClient:
 
     def close(self):
         _unregister(self)
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
         self._socket.close()
 
     def __enter__(self):

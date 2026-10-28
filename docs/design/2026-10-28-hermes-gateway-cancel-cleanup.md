@@ -73,6 +73,8 @@
 
 ### 4.4 引擎重启与接管（本地收尾，bot 继续运行）
 
+已取得 admission 且尚未取消的执行，断线和 unknown 回执按原 `execution_deadline` 保持有界查询。提交阶段的 `started_at + 150s` 仅用于尚未取得 admission 的不确定提交；首次取消后按 `cancel + 150s` 限制取消对账。重启沿用各阶段原有绝对截止时间。长任务断线后继续查询原 admission，直到取得权威终态或耗尽对应预算。
+
 - 停服标记：停止派发新任务、新工具请求。
 - 本地收尾（写前日志）：保存执行编号（execution_id / admission_id）+ 已接收操作状态 + 截止时间落盘。
 - 有界关闭本地连接：本地 GatewayClient 连接关闭，硬超时 5s，不阻塞引擎退出。

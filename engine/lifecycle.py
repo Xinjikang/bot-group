@@ -45,13 +45,13 @@ class Shutdown:
     def _busy(self):
         from . import hermes_gateway
         # gateway 托管未终态执行不阻塞引擎退出（设计 4.4：重启不等 bot 终态）。
-        managed = hermes_gateway.active_sessions()
+        managed = hermes_gateway.managed_runs()
         for run in wake.active_runs():
-            if run.get('session') not in managed:
+            if (run.get('session'), run.get('wake_started_at')) not in managed:
                 return True
         rows = self._runs()
         return any(
-            r['session'] not in managed
+            (r['session'], r['started_at']) not in managed
             and wake.find_bot_processes(r['profile'], session=r['session']) != []
             for r in rows
         )
@@ -59,10 +59,10 @@ class Shutdown:
     def _terminate(self):
         from . import process_tree, heartbeat, hermes_gateway
         rows = self._runs()
-        managed = hermes_gateway.active_sessions()
+        managed = hermes_gateway.managed_runs()
         # gateway 托管未终态执行不取消、不终止（bot 继续运行，设计 4.4）；
         # 本地 viewer 连接关闭在 _run 的 release 前统一执行。
-        local_rows = [r for r in rows if r['session'] not in managed]
+        local_rows = [r for r in rows if (r['session'], r['started_at']) not in managed]
         pids = set()
         launchers = {}
         for row in local_rows:
@@ -127,5 +127,7 @@ class Shutdown:
             # the application itself has not started its final teardown.
             with LOCK, _SWITCH_LOCK, self.lock:
                 if not self.stop_event.is_set():
+                    from .hermes_gateway_client import resume_connections
+                    resume_connections()
                     wake._shutting_down.clear()
                 self.state, self.error = 'failed', str(exc)

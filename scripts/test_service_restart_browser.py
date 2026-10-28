@@ -62,14 +62,15 @@ def run(evidence):
         page.locator('#btn-settings').click()
         button.click()
         assert '120 秒' in page.locator('#app-alert-message').inner_text()
-        assert '运行中的执行收尾' in page.locator('#app-alert-message').inner_text()
-        assert '再启动新实例' in page.locator('#app-alert-message').inner_text()
+        assert 'Hermes 网关中的执行会继续运行' in page.locator('#app-alert-message').inner_text()
+        assert 'Codex 等本地执行' in page.locator('#app-alert-message').inner_text()
+        assert '服务启动后接回原执行' in page.locator('#app-alert-message').inner_text()
         page.get_by_role('button', name='确定', exact=True).click()
         page.wait_for_function('S.restarting && document.querySelector("#btn-restart").disabled')
-        page.wait_for_function('document.querySelector("#conn-text").textContent.includes("等待 Bot")')
+        page.wait_for_function('document.querySelector("#conn-text").textContent.includes("收尾本地执行")')
         assert state['posts'] == 1
         state['phase'] = 'terminating'
-        page.wait_for_function('document.querySelector("#conn-text").textContent.includes("正在停止 Bot")')
+        page.wait_for_function('document.querySelector("#conn-text").textContent.includes("正在停止本地执行")')
         page.reload()
         page.wait_for_function('S.restarting && document.querySelector("#btn-restart").disabled')
         assert state['posts'] == 1  # Reload only resumes GET polling.
