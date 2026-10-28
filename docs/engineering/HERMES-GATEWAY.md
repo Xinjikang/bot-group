@@ -14,6 +14,8 @@
 
 旧 CLI 会话通过官方 `session.export` 和 `session.mutate import` 建立确定 ID 的 ACP 副本，原会话完整保留，映射记录在 `hermes_session_migrations`。活动会话先等待终态。`/new` 使用 `session.create`，绑定 generation 按现有流程递增。恢复、标题查找和思考记录分别使用 `session.resume`、`session.list`、`session.export`。压缩后的逻辑会话由 Hermes 解析。
 
+已有绑定按持久化 session ID 恢复。首次绑定时调用官方 `session.list title=...`；v0.22.5 的原生标题解析返回零个或一个结果。适配器对多候选响应返回 `ambiguous_session_title`，保留原会话及绑定状态；管理员核对标题归属后重试。空结果按原有流程创建会话，唯一结果写入 ID 绑定。
+
 ## 执行与恢复
 
 `hermes_executions` 在 `prompt.submit` 前提交执行身份、submission ID、会话/profile 身份及固定截止时间；回执到达后保存 admission ID、generation 和 authority epoch。引擎重启恢复原记录，并继续查询 `prompt.receipt`。已登记远端执行的投递作业保持已投递状态。
@@ -23,6 +25,8 @@ queued 执行通过 `prompt.cancel` 取消；started 执行通过携带 generati
 引擎优雅停止先关闭新任务入口，并等待正在执行的任务自然结束，默认等待 120 秒。超时后通过上述官方取消接口停止 Hermes 执行，等待 terminal 与临时 MCP 清理完成，再释放浏览器资源并退出引擎；共享网关进程保留。终态或清理尚未确认时，本次停机失败并恢复服务入口。`start.bat` / `start.sh` 只有确认旧引擎进程退出和端口释放后才启动新引擎。停机取消使用 `shutdown` 原因，保留会话历史。
 
 终态立即撤销执行凭据；清理临时 MCP、浏览器资源和引擎记录后释放占用。MCP 心跳使用自身 PID，避免多个会话共享网关 PID；凭据校验约束项目、话题和 inbox 类型。引擎停机按执行发送取消，保持 HTTP/MCP 可用直到收尾完成。
+
+终态后的清理每轮最多尝试 3 次，失败间隔 3 秒；网关连接失败同样计入次数。连续失败达到上限后退出该重试线程，在 `hermes_executions.detail` 记录 `cleanup_paused` 及失败类型，并记录错误日志。terminal 状态、已撤销的执行凭据、`cleanup_pending=1` 和会话占用均保留。网关恢复后，管理员再次执行该 Bot 的停止操作会发起新一轮有限清理；引擎启动恢复也会读取原记录并重试。恢复沿用原 admission 和取消原因，成功后清除待清理标记及错误详情并释放占用。
 
 提交回执缺失时，当前公开接口缺少按 submission ID 只读找回 admission 的入口。适配器保留 `unknown`，到固定截止时间转 `manual` 并保留占用。管理员需核对原执行，自动重提保持关闭。已有 admission 的执行在断线后重新取一次性 ticket，并查询原回执。
 

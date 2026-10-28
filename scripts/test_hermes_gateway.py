@@ -201,6 +201,110 @@ class GatewayTests(unittest.TestCase):
         clear.assert_called_once_with(remote, 'sid')
         self.assertFalse(gateway.active(self.session))
 
+    def test_ambiguous_title_does_not_attach_create_or_bind(self):
+        remote = Mock()
+        remote.rpc.return_value = {'sessions': [{'session_id': 'one'}, {'session_id': 'two'}]}
+        with patch.object(gateway.sessions, 'attach') as attach, \
+             patch.object(gateway.sessions, 'new') as new:
+            with self.assertRaisesRegex(gateway.GatewayRefusal, 'ambiguous_session_title'):
+                gateway._binding(self.conn, remote, {'id': 123}, 'alpha', 'default',
+                                 'work', None, self.session, '/isolated/work', [])
+        attach.assert_not_called()
+        new.assert_not_called()
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM session_bindings').fetchone()[0], 0)
+
+    def test_unique_title_becomes_persisted_id_binding(self):
+        remote = Mock()
+        remote.rpc.return_value = {'sessions': [{'session_id': 'one'}]}
+        snapshot = {'session_id': 'one', 'info': {'source': 'acp'}}
+        with patch.object(gateway.sessions, 'attach', return_value=snapshot) as attach, \
+             patch.object(gateway.sessions, 'new') as new:
+            for _ in range(2):
+                self.assertEqual(gateway._binding(self.conn, remote, {'id': 123}, 'alpha', 'default',
+                                 'work', None, self.session, '/isolated/work', []), snapshot)
+        remote.rpc.assert_called_once_with('session.list', title=self.session)
+        self.assertEqual(attach.call_args_list, [call(remote, 'one'), call(remote, 'one')])
+        new.assert_not_called()
+        self.assertEqual(self.conn.execute('SELECT session_id FROM session_bindings').fetchone()[0], 'one')
+
+    def test_missing_title_creates_and_binds_native_session(self):
+        remote = Mock()
+        remote.rpc.return_value = {'sessions': []}
+        snapshot = {'session_id': 'new', 'info': {'source': 'acp'}}
+        with patch.object(gateway.sessions, 'attach') as attach, \
+             patch.object(gateway.sessions, 'new', return_value=snapshot) as new, \
+             patch.object(wake, 'wake_system_prompt', return_value='test prompt'):
+            self.assertEqual(gateway._binding(self.conn, remote, {'id': 123}, 'alpha', 'default',
+                             'work', None, self.session, '/isolated/work', []), snapshot)
+        attach.assert_not_called()
+        new.assert_called_once()
+        self.assertEqual(self.conn.execute('SELECT session_id FROM session_bindings').fetchone()[0], 'new')
+
+    def test_terminal_cleanup_pauses_and_recovers_without_resubmission(self):
+        self.terminal()
+        remote = Mock()
+        with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
+             patch.object(gateway.sessions, 'attach'), \
+             patch.object(gateway.sessions, 'clear_mcp', side_effect=ConnectionError('offline')) as clear, \
+             patch.object(gateway.time, 'sleep') as sleep, \
+             patch.object(wake, '_handle_task_exit'):
+            gateway._watch(self.eid)
+            row = ledger.read(self.conn, self.eid)
+            self.assertEqual(clear.call_count, 3)
+            self.assertEqual(sleep.call_args_list, [call(3), call(3)])
+            self.assertEqual(row['state'], 'terminal')
+            self.assertEqual(row['cleanup_pending'], 1)
+            self.assertIn('cleanup_paused after 3 attempts', row['detail'])
+            self.assertIsNone(gateway.process_state(self.session))
+            self.assertNotIn(self.eid, gateway._workers)
+            self.assertEqual(self.client.get('/commands', headers=self.headers).status_code, 401)
+            clear.side_effect = None
+            with patch.object(gateway, '_publish'), \
+                 patch.object(gateway, '_start_worker', side_effect=gateway._watch) as worker:
+                gateway.recover()
+            worker.assert_called_once_with(self.eid)
+        self.assertFalse(gateway.active(self.session))
+        self.assertEqual(ledger.read(self.conn, self.eid)['detail'], '')
+        remote.rpc.assert_not_called()
+
+    def test_gateway_unavailable_during_terminal_cleanup_has_bounded_attempts(self):
+        self.terminal()
+        with patch.object(gateway, 'connection', side_effect=ConnectionError('offline')) as connect, \
+             patch.object(gateway.time, 'sleep') as sleep:
+            gateway._watch(self.eid)
+        self.assertEqual(connect.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertTrue(gateway.active(self.session))
+        self.assertIn('cleanup_paused', ledger.read(self.conn, self.eid)['detail'])
+
+    def test_transient_cleanup_failure_finishes_within_retry_limit(self):
+        self.terminal()
+        remote = Mock()
+        with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
+             patch.object(gateway.sessions, 'attach'), \
+             patch.object(gateway.sessions, 'clear_mcp', side_effect=[ConnectionError('offline'), None]) as clear, \
+             patch.object(gateway.time, 'sleep'), patch.object(wake, '_handle_task_exit'):
+            gateway._watch(self.eid)
+        self.assertEqual(clear.call_count, 2)
+        self.assertFalse(gateway.active(self.session))
+        self.assertEqual(ledger.read(self.conn, self.eid)['detail'], '')
+
+    def test_stop_retries_paused_cleanup_and_preserves_original_cancel_reason(self):
+        ledger.cancel(self.conn, self.eid, 'shutdown')
+        self.terminal()
+        self.conn.execute("UPDATE hermes_executions SET detail='cleanup_paused' WHERE execution_id=?", (self.eid,))
+        self.conn.commit()
+        remote = Mock()
+        with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
+             patch.object(gateway.sessions, 'attach'), patch.object(gateway.sessions, 'clear_mcp') as clear, \
+             patch.object(gateway.sessions, 'mutate') as rewind, \
+             patch.object(gateway, '_start_worker', side_effect=gateway._watch):
+            self.assertTrue(gateway.cancel(self.session))
+        clear.assert_called_once_with(remote, 'sid')
+        rewind.assert_not_called()
+        self.assertFalse(gateway.active(self.session))
+        self.assertEqual(ledger.read(self.conn, self.eid)['cancel_reason'], 'shutdown')
+
 
 if __name__ == '__main__':
     unittest.main()

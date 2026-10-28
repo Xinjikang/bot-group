@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+Hermes 会话绑定与清理重试：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_stop_scope scripts.test_engine_shutdown -q`。覆盖首次绑定的零/单/多候选、已有 ID 绑定复用、终态清理失败和网关连接失败的三次尝试上限、短暂失败恢复、暂停清理后凭据撤销及占用保留、引擎恢复与再次停止触发有限重试、恢复成功清除错误详情，以及原有取消和优雅停止边界。使用隔离数据库与模拟网关回执。
+
 启动脚本与桌面入口边界：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_windows_bat scripts.test_service scripts.test_service_restart scripts.test_desktop scripts.test_engine_shutdown scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger -q`。真实 CMD 验证 `start.bat` 调用完整优雅重启；隔离服务验证再次执行脚本更换实例并释放旧 PID、桌面启动命令复用实例、停止失败阻断新服务启动。Hermes WS 用例覆盖等待 terminal 及 MCP 清理、超时调用官方取消链路、终态未确认时保留引擎与执行占用。
 
 启动依赖与错误保留：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_install scripts.test_mcp_lock scripts.test_windows_bat scripts.test_service -q`。核验所有直接依赖均有兼容锁定版本、网关 WebSocket 客户端可导入，以及真实 CMD 启动失败等待确认后保留原退出码。依赖声明更新后先用 `tools/install.py repair` 校验本机依赖并刷新安装记录，再运行 `tools/install.py check`。

@@ -149,7 +149,7 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
 
 
 def finish_cleanup(conn, execution_id):
-    conn.execute("UPDATE hermes_executions SET cleanup_pending=0 WHERE execution_id=? AND state='terminal'",
+    conn.execute("UPDATE hermes_executions SET cleanup_pending=0,detail='' WHERE execution_id=? AND state='terminal'",
                  (execution_id,))
     conn.commit()
 

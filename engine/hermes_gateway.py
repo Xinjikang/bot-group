@@ -18,6 +18,7 @@ from .hermes_gateway_client import GatewayClient, GatewayRefusal, GatewayTranspo
 logger = logging.getLogger(__name__)
 _workers = set()
 _lock = threading.Lock()
+_CLEANUP_ATTEMPTS = 3
 
 
 def enabled():
@@ -45,6 +46,8 @@ def _binding(conn, client, bot, project, profile, kind, thread_id, title, workdi
         snapshot = sessions.attach(client, row['session_id'])
     else:
         found = client.rpc('session.list', title=title)['sessions']
+        if len(found) > 1:
+            raise GatewayRefusal('ambiguous_session_title')
         snapshot = sessions.attach(client, found[0]['session_id']) if found else sessions.new(
             client, title=title, workdir=workdir, system_prompt=wake.wake_system_prompt(kind, project, workdir),
             model_args=model_args, request_id=uuid.uuid5(uuid.NAMESPACE_URL, repr(key)).hex)
@@ -220,6 +223,7 @@ def _finish(conn, row, client):
 
 def _watch(execution_id):
     client = None
+    cleanup_failures = 0
     conn = db.get_connection()
     try:
         while True:
@@ -248,11 +252,19 @@ def _watch(execution_id):
                 detail = exc.reason if isinstance(exc, GatewayRefusal) else type(exc).__name__
                 ledger.uncertain(conn, execution_id, detail)
                 if row['state'] == 'terminal':
+                    cleanup_failures += 1
+                    paused = cleanup_failures >= _CLEANUP_ATTEMPTS
+                    detail = (f'cleanup_paused after {cleanup_failures} attempts: {detail}' if paused
+                              else f'cleanup_retry {cleanup_failures}/{_CLEANUP_ATTEMPTS}: {detail}')
                     conn.execute('UPDATE hermes_executions SET detail=? WHERE execution_id=?', (detail, execution_id))
                     conn.commit()
                 if client:
                     client.close()
                     client = None
+                if row['state'] == 'terminal' and cleanup_failures >= _CLEANUP_ATTEMPTS:
+                    logger.error('Hermes cleanup paused for execution %s; occupancy retained; '
+                                 'retry stop or recover after restoring the gateway: %s', execution_id, detail)
+                    return
             time.sleep(3)
     finally:
         if client:
