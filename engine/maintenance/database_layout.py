@@ -142,6 +142,9 @@ def migrate(*, upgrade_backup=None):
     configured = Path(explicit).resolve() if explicit else (source if source.exists() else target)
     if configured not in (source, target):
         return None
+    # An explicit target selects the current layout even without a migration receipt.
+    if explicit and configured == target and not receipt.exists():
+        return None
     if target.parent.exists() and target.parent.resolve() != target.parent:
         raise RuntimeError('data 目录指向其他位置，请使用显式 GROUP_DB 配置')
     if not source.exists() and not receipt.exists():
@@ -155,7 +158,7 @@ def migrate(*, upgrade_backup=None):
             _restore_pending(state, receipt)
             state = _read_state(receipt)
         if state and state['state'] == 'complete':
-            if not target.is_file() or source.exists():
+            if not target.is_file() or (configured == source and source.exists()):
                 raise RuntimeError('已迁移数据库与根目录旧库发生冲突')
             if configured == source:
                 os.environ['GROUP_DB'] = str(target)
@@ -173,7 +176,7 @@ def migrate(*, upgrade_backup=None):
                  'target': str(target), 'backup': str(backup),
                  'upgrade_backup': str(Path(upgrade_backup).resolve()) if upgrade_backup else None}
         try:
-            with closing(sqlite3.connect(source, timeout=2)) as src:
+            with closing(sqlite3.connect(source.as_uri() + '?mode=rw', uri=True, timeout=2)) as src:
                 checkpoint = src.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
                 if checkpoint[0] != 0:
                     raise RuntimeError('数据库仍被占用，迁移已中止')

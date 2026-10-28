@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -72,6 +73,99 @@ class DatabaseLayoutTest(unittest.TestCase):
             self.assertIsNone(layout.migrate())
             self.assertEqual(Path(config.db_path()), self.root / 'custom/group.db')
         self.assertTrue(self.source.exists())
+
+    def test_explicit_target_skips_legacy_files_without_receipt(self):
+        self.seed(self.target)
+        (self.root / '.env').write_text('GROUP_DB=' + self.target.as_posix() + '\n')
+        original = self.target.read_bytes()
+        for legacy in ('absent', 'empty', 'populated'):
+            with self.subTest(legacy=legacy):
+                if legacy == 'empty':
+                    self.source.touch()
+                elif legacy == 'populated':
+                    self.seed()
+                before = self.source.read_bytes() if self.source.exists() else None
+                with patch.object(layout, '_lock') as lock, \
+                     patch.object(layout.sqlite3, 'connect') as connect:
+                    self.assertIsNone(layout.migrate())
+                    self.assertIsNone(layout.migrate())
+                lock.assert_not_called()
+                connect.assert_not_called()
+                self.assertEqual(Path(config.db_path()), self.target)
+                self.assertEqual(self.target.read_bytes(), original)
+                self.assertEqual(self.source.read_bytes() if self.source.exists() else None, before)
+                self.assertFalse(layout._paths()[2].exists())
+
+    def test_dotenv_custom_directory_skips_default_layout_migration(self):
+        self.seed()
+        self.seed(self.target)
+        custom = self.root / 'custom data'
+        self.seed(custom / 'group.db')
+        for name in ('GROUP_DATA_DIR', 'DATA_DIR'):
+            with self.subTest(name=name):
+                config._dotenv_cache.clear()
+                (self.root / '.env').write_text(f'{name}="custom data"\n')
+                with patch.object(layout, '_lock') as lock, \
+                     patch.object(layout.sqlite3, 'connect') as connect:
+                    self.assertIsNone(layout.migrate())
+                lock.assert_not_called()
+                connect.assert_not_called()
+                self.assertEqual(Path(config.db_path()), custom / 'group.db')
+                for path in (self.source, self.target, custom / 'group.db'):
+                    self.assert_data(path)
+                self.assertFalse(layout._paths()[2].exists())
+
+    def test_explicit_target_with_complete_receipt_preserves_root_file(self):
+        self.seed()
+        state = layout.migrate()
+        self.source.touch()
+        with patch.dict(os.environ, {'GROUP_DB': str(self.target)}):
+            self.assertEqual(layout.migrate()['id'], state['id'])
+            self.assertEqual(Path(config.db_path()), self.target)
+        self.assertEqual(self.source.read_bytes(), b'')
+        self.assert_data(self.target)
+
+    def test_explicit_target_still_recovers_pending_migration(self):
+        self.seed()
+        state = layout.migrate()
+        state['state'] = 'prepared'
+        layout._write(layout._paths()[2], state)
+        with patch.dict(os.environ, {'GROUP_DB': str(self.target)}):
+            self.assertEqual(layout.migrate()['state'], 'complete')
+        self.assert_data(self.target)
+
+    def test_start_with_explicit_target_preserves_database_and_legacy_state(self):
+        from engine.maintenance import service
+        self.seed(self.target)
+        (self.root / '.env').write_text('GROUP_DB=' + self.target.as_posix() + '\n')
+        original = self.target.read_bytes()
+        for empty_root in (False, True):
+            with self.subTest(empty_root=empty_root):
+                if empty_root:
+                    self.source.touch()
+                with patch.object(service, 'venv_python', return_value=Path(sys.executable)), \
+                     patch.object(service, '_run_install_check', return_value=0), \
+                     patch.object(service, 'do_stop', return_value=0), \
+                     patch.object(service.subprocess, 'run') as run, \
+                     patch.object(service, '_health_check', return_value=0):
+                    run.return_value.returncode = 0
+                    self.assertEqual(service.do_start(), 0)
+                    self.assertEqual(service.do_start(), 0)
+                    self.assertEqual(run.call_count, 2)
+                self.assertEqual(self.source.exists(), empty_root)
+                if empty_root:
+                    self.assertEqual(self.source.read_bytes(), b'')
+                self.assertEqual(self.target.read_bytes(), original)
+                self.assertFalse(layout._paths()[2].exists())
+
+    def test_missing_source_during_migration_is_not_recreated(self):
+        self.seed()
+        with patch.object(layout, '_assert_stopped', side_effect=self.source.unlink):
+            with self.assertRaises(sqlite3.OperationalError):
+                layout.migrate()
+        self.assertFalse(self.source.exists())
+        self.assertFalse(self.target.exists())
+        self.assertFalse(layout._paths()[2].exists())
 
     def test_explicit_root_override_resolves_after_migration_in_new_process_environment(self):
         self.seed()

@@ -103,6 +103,51 @@ class ConfigDefaultsTest(unittest.TestCase):
                 config.apply_cli(data_dir=root / 'cli-data')
                 self.assertEqual(config.data_dir(), root / 'cli-data')
 
+    def test_root_dotenv_directory_aliases_and_priority(self):
+        root = Path(self._tmp.name)
+        for name in ('GROUP_DATA_DIR', 'DATA_DIR'):
+            with self.subTest(name=name):
+                config._dotenv_cache.clear()
+                (root / '.env').write_text(f'{name}="custom data"\nPORT=18765\n')
+                custom = root / 'custom data'
+                self.assertEqual(config.data_dir(), custom)
+                self.assertEqual(Path(config.db_path()), custom / 'group.db')
+                self.assertEqual(config.port(), 18765)
+                with patch.dict(os.environ, {'DATA_DIR': str(root / 'env-data')}):
+                    self.assertEqual(config.data_dir(), root / 'env-data')
+                    self.assertEqual(config.data_dir(root / 'cli-data'), root / 'cli-data')
+                    self.assertEqual(config.port(), 8180)
+
+    def test_selected_instance_dotenv_does_not_redirect_directory(self):
+        from engine.maintenance import service
+        root = Path(self._tmp.name)
+        custom = root / 'custom'
+        custom.mkdir()
+        (root / '.env').write_text('GROUP_DATA_DIR=custom\nGROUP_ENGINE_PORT=18765\nGROUP_ENGINE_HOST=localhost\n')
+        (custom / '.env').write_text('GROUP_DATA_DIR=unrelated\nPORT=18766\n')
+        with patch.dict(os.environ):
+            self.assertEqual(config.data_dir(), custom)
+            self.assertEqual(config.port(), 18766)
+            self.assertEqual(config.host(), 'localhost')
+            service._load_env()
+            self.assertEqual(config.data_dir(), custom)
+            self.assertEqual(os.environ['GROUP_DATA_DIR'], str(custom))
+            self.assertEqual(Path(config.db_path()), custom / 'group.db')
+
+    def test_root_dotenv_directory_survives_service_environment_export(self):
+        from engine.maintenance import service
+        root = Path(self._tmp.name)
+        (root / '.env').write_text('DATA_DIR=custom\nPORT=18765\n')
+        with patch.dict(os.environ):
+            service._load_env()
+            self.assertEqual(config.data_dir(), root / 'custom')
+            self.assertEqual(os.environ['GROUP_DATA_DIR'], str(root / 'custom'))
+            self.assertEqual(config.port(), 18765)
+            config._dotenv_cache.clear()
+            service._load_env()
+            self.assertEqual(config.data_dir(), root / 'custom')
+            self.assertEqual(config.port(), 18765)
+
     def test_existing_database_keeps_program_root_default(self):
         # 程序根已有 group.db 时继续使用根目录。
         with tempfile.TemporaryDirectory() as d:

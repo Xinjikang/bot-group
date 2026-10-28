@@ -10,6 +10,8 @@ Hermes 旧接口专项：设置 `HERMES_TEST_SOURCE` 为已安装 Hermes 源码�
 
 数据库目录布局与 WAL 生命周期：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_database_layout scripts.test_config scripts.test_install scripts.test_service scripts.test_upgrade scripts.test_app_upgrade scripts.test_legacy_release_upgrade scripts.test_release_upgrade -q`。覆盖默认 `data/group.db`、旧根目录库一次迁移、附件与自定义路径保留、源库损坏、目标冲突、活动引擎/事务阻断、中断恢复、升级绑定回滚、旧界面升级器兼容，以及空闲连接保留 WAL 文件时的写入与检查点行为。所有迁移用例使用临时目录和隔离数据库。
 
+迁移必要性与 `.env` 数据目录：上述 `test_database_layout`、`test_config`、`test_service` 还覆盖显式新库配合根目录缺失/空文件/有效旧库的跳过与保留、完成记录与中断恢复、迁移源消失后禁止创建空库、重复启动、根目录 `.env` 的两种数据目录键及相对路径、命令行/环境优先级、数据目录配置覆盖和子进程目录绑定。启动过程的外部进程以 mock 隔离；配置和 SQLite 均使用临时目录。
+
 Hermes 会话绑定与清理重试：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway_migration scripts.test_stop_scope scripts.test_engine_shutdown -q`。覆盖首次绑定的零/单/多候选、已有 ID 绑定复用、执行终态与清理分离（`active()` 只看 `state!='terminal'`、terminal 即释放占用并撤销凭据、`cleanup_pending` 归会话禁用）、清理退避重试五次上限（1/2/4/8 秒）与 `retry_count`/`next_retry_at`/`cleanup_deadline` 持久化、清理最终期限 `cleanup_deadline` 到期转 `cleanup_failed`、耗尽转 `cleanup_failed` 停止自动循环、恢复只续剩余额度、短暂失败恢复、迟到清理按 `started_at` 精确匹配不误删后继执行、manual 态停止自动 reconcile、取消 RPC 超时 min(默认,剩余预算)（仅取消/对账时生效，非取消运行保持默认 30s 轮询）、老库清理字段补齐与唯一索引收紧迁移（宽口径→窄口径、数据保留），以及原有取消和优雅停止边界。使用隔离数据库与模拟网关回执。
 
 启动脚本与桌面入口边界：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_windows_bat scripts.test_service scripts.test_service_restart scripts.test_desktop scripts.test_engine_shutdown scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger -q`。真实 CMD 验证 `start.bat` 调用完整优雅重启；隔离服务验证再次执行脚本更换实例并释放旧 PID、桌面启动命令复用实例、停止失败阻断新服务启动。Hermes WS 用例覆盖等待 terminal 及 MCP 清理、超时调用官方取消链路、终态未确认时保留引擎与执行占用。

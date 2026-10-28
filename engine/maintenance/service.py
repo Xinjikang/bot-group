@@ -33,11 +33,13 @@ def venv_python() -> Path:
 
 
 def _load_env() -> None:
-    """数据目录 .env 统一解析（config._parse_dotenv 剥引号/CR/LF/export 前缀），只把进程环境未定义的键导入。"""
-    env = config._parse_dotenv(config.data_dir() / ".env")
+    """Export the resolved instance directory and configuration to child processes."""
+    data_dir = config.data_dir()
+    env = config._dotenv()
     for key, value in env.items():
-        if key not in os.environ:
+        if key not in ('GROUP_DATA_DIR', 'DATA_DIR') and key not in os.environ:
             os.environ[key] = value
+    os.environ['GROUP_DATA_DIR'] = str(data_dir)
 
 
 def _run_install_check() -> int:
