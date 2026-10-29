@@ -603,9 +603,9 @@ dialog input:focus,dialog textarea:focus{border-color:var(--accent)}
 dialog button:focus-visible{outline:2px solid var(--accent-2);outline-offset:2px}
 /* req#87 #151：radio/checkbox 是原生小控件，不吃 dialog input 的 36px 高+100% 宽+描边
    规则（被拉伸成大白球、label 撑满整行），拉回正常尺寸并保持主题选中态（accent-color）。 */
-dialog input[type="radio"],dialog input[type="checkbox"]{width:15px;height:15px;min-height:0;
+dialog input[type="radio"],dialog input[type="checkbox"],#hud-settings input[type="checkbox"]{width:15px;height:15px;min-height:0;
   padding:0;margin:0;accent-color:var(--accent);flex-shrink:0;cursor:pointer}
-dialog label:has(> input[type="radio"]),dialog label:has(> input[type="checkbox"]){
+dialog label:has(> input[type="radio"]),dialog label:has(> input[type="checkbox"]),#hud-settings label:has(> input[type="checkbox"]){
   display:flex;gap:8px;align-items:center;width:auto;cursor:pointer;color:var(--fg)}
 dialog textarea{height:auto;min-height:72px;resize:vertical;font:inherit}
 dialog .dlg-btns{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}
@@ -857,7 +857,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 #dlg-workspace .workspace-danger{color:var(--danger);border-color:var(--danger);background:transparent}
 @media(max-width:420px){.project-member-card{padding:12px}}
 </style>
-<link rel="stylesheet" href="/app/dialogs.css?v=20261026-resource-spacing">
+<link rel="stylesheet" href="/app/dialogs.css?v=20261029-agents-height">
 <link rel="stylesheet" href="/app/appearance.css?v=20261017-background-storage">
 </head>
 <body>
@@ -1085,7 +1085,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
           <span id="pj-members-status" class="profile-help" role="status"></span>
           <button type="button" id="pj-members-add" class="primary" style="margin-left:auto;">添加成员</button>
         </div>
-        <div id="pj-member-list" aria-live="polite" style="max-height:45vh;overflow:auto"></div>
+        <div id="pj-member-list" aria-live="polite" style="flex:1;min-height:0;overflow:auto"></div>
       </section>
       <section id="pj-panel-roles" role="tabpanel" aria-labelledby="pj-tab-roles" hidden>
         <!-- req#96 #165：角色实体化前端——项目级角色 CRUD（GET/POST/PATCH/DELETE /projects/{name}/roles） -->
@@ -1095,14 +1095,14 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
                  style="flex:1;min-width:0;border:1px solid var(--border);border-radius:10px;padding:0 11px;height:36px;font-size:13px;outline:none;background:var(--bg);color:var(--fg);">
           <button type="button" id="pj-role-create" class="primary">创建角色</button>
         </div>
-        <div id="pj-role-list" aria-live="polite" style="max-height:45vh;overflow:auto;margin-top:10px;"></div>
+        <div id="pj-role-list" aria-live="polite" style="flex:1;min-height:0;overflow:auto;margin-top:10px;"></div>
         <p id="pj-role-status" class="profile-help" role="status" style="min-height:18px;margin:6px 0;"></p>
       </section>
       <section id="pj-panel-permissions" role="tabpanel" aria-labelledby="pj-tab-permissions" hidden>
         <p class="profile-help">每项权限可选择当前项目已启用的成员。负责人同样需要授权；停用或移出会清除授权，再次加入后需重新授权。</p>
-        <form id="pj-permissions-form">
-          <div id="pj-permissions-list" style="max-height:45vh;overflow:auto"></div>
-          <p id="pj-permissions-status" class="profile-help" role="status"></p>
+        <form id="pj-permissions-form" style="display:flex;flex-direction:column;flex:1;min-height:0;">
+          <div id="pj-permissions-list" style="flex:1;min-height:0;overflow:auto"></div>
+          <p id="pj-permissions-status" class="profile-help" role="status" style="margin-bottom:0;"></p>
           <div class="dlg-btns"><button type="button" id="pj-permissions-reload">放弃修改</button><button type="submit" id="pj-permissions-save" class="primary" disabled>保存权限</button></div>
         </form>
       </section>
@@ -1505,6 +1505,8 @@ function setConn(state, connectingText = "连接中…") {
 }
 
 function handleEvent(evt) {
+  if(evt.type==='hud.changed')window.ProjectHUD?.changed();
+  if(evt.type==='project.updated')loadProjects();
   switch (evt.type) {
     case "user.display_name.changed": refreshUserDisplayName(); break;
     case "message.new":
@@ -1928,7 +1930,10 @@ function openProjectDetail(name, triggerEl) {
   selectProjectTab("basic");
   // 参照「全部项目」下拉窗：弹在触发按钮正下方（getBoundingClientRect 实时定位）
   const dlg = $("#dlg-project-detail");
-  openDialogAnchored(dlg, triggerEl || $("#chip-all"));
+  const projectChip = [...document.querySelectorAll('#project-bar .project-chip[data-project]')]
+    .find(chip => name && chip.dataset.project === name);
+  openDialogAnchored(dlg, projectChip || triggerEl || $("#chip-all"));
+  window.ProjectHUD?.changed();
   if (!isNew) $("#pj-d-name").focus();
 }
 // 从「全部项目」下拉窗进入的新建/详情窗口，关闭后返回下拉窗。
@@ -3171,6 +3176,7 @@ function openDialogAnchored(dlg, triggerEl) {
     // req#96 #165：showConfirm/showAlert 的 app-alert modal 弹层点击不算「点外面」，
     // 否则在锚定弹窗里触发确认框时，点确认会顺带把宿主弹窗关掉
     if (e.target.closest('#app-alert')) return;
+    if (e.target.closest('#project-hud')) return;
     if (e.target.closest('#dlg-member-add, #dlg-member-picker, #dlg-member-remove')) return;
     // req#110 #189：子弹层 dialog（网页内目录选择器等 body 直属独立弹窗）点击同样豁免——
     // 选择器是从宿主弹窗触发的，点它属于宿主交互链，不能当「点外面」关掉宿主
@@ -3212,6 +3218,7 @@ function openDialogCentered(dlg) {
   dlg.__centeredRO.observe(dlg);
   dlg.__outsideCloser = (e) => {
     if (e.target.closest('#app-alert')) return;               // req#96 #165：app-alert 豁免
+    if (e.target.closest('#project-hud')) return;
     if (e.target.closest('dialog[dir-picker-layer]')) return; // req#110 #189：子弹层豁免
     // 外部点击关闭弹窗，底部另提供「取消」按钮。
     if (!dlg.contains(e.target)) dlg.close();
@@ -3344,7 +3351,7 @@ function updateProfileModelScope() {
 }
 $('#profile-apply-global').addEventListener('change', updateProfileModelScope);
 async function openProfileEditor(member, project = null) {
-  const editor = { profile: member.profile, project, templateProject: project || S.currentProject || '', revision: null, saving: false };
+  const editor = { profile: member.profile, project, templateProject: project || '', revision: null, saving: false };
   profileEditor = editor;
   $('#profile-soul-templates').replaceChildren();
   $("#profile-title").textContent = `编辑成员 · ${memberLabel(member)}`;
@@ -3388,7 +3395,7 @@ async function openProfileEditor(member, project = null) {
     mountProjectSoulTemplates($('#profile-soul-templates'), {
       project: editor.templateProject, maxLength: $('#profile-soul').maxLength,
       isActive: () => profileEditor === editor && !editor.saving && !!editor.revision
-        && (editor.project || S.currentProject || '') === editor.templateProject,
+        && (editor.project || '') === editor.templateProject,
       getValue: () => $('#profile-soul').value,
       setValue: value => { $('#profile-soul').value = value; },
     });
@@ -4760,8 +4767,10 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/member_picker.js?v=20261023-unjoined"></script>
 <script src="/app/project_removal.js?v=20261014-hidden-removed"></script>
 <script src="/app/project_template_references.js?v=20261016-latest-soul"></script>
-<script src="/app/profile_soul_templates.js?v=20261023-shared-profiles"></script>
+<script src="/app/profile_soul_templates.js?v=20261029-project-context"></script>
 <script src="/app/project_settings.js?v=20261026-role-permission-notices"></script>
+<link rel="stylesheet" href="/app/project_hud.css?v=20261029-settings-spacing">
+<script src="/app/project_hud.js?v=20261029-settings-spacing"></script>
 <script src="/app/requirement_details.js?v=20261012-controls"></script>
 </body>
 </html>

@@ -126,6 +126,30 @@
   let agentsDraft = null;
   let creationMode = 'import', commitFiles = null, reviewedFiles = [];
   let resourceDrafts = [], resourceReaders = [];
+  let hudReady = false, hudRestored = null, hudTimer = null, hudAgents = '';
+  const hudStages = ['purpose', 'collaboration', 'roles', 'rules', 'members', 'resources', 'review'];
+  function hudSnapshot() {
+    captureResources();
+    return {display_name:el('name').value, description:el('description').value, root:el('root').value,
+      template:el('template').value, directory_mode:el('mode').value, worktree_root:el('worktree').value,
+      wizard:{creationMode,roles,members:[...members.values()],resourceDrafts,agents:el('agents-content').value}};
+  }
+  function saveHud() {
+    if(hudReady && dialog.open) return window.ProjectHUD?.saveDraft(hudSnapshot(),hudStages[step]);
+  }
+  function applyHud(draft) {
+    if(!draft || !dialog.open) return;
+    for(const [field,id] of Object.entries({display_name:'name',description:'description',root:'root',template:'template',directory_mode:'mode',worktree_root:'worktree'})) {
+      if(typeof draft[field]==='string') el(id).value=draft[field];
+    }
+    nameEdited=!!el('name').value;templateExplicit=true;updateModeHelp();
+    if(preview) { preview=null;payload=null;showStep(0);status('HUD 已更新草稿，请重新检查目录和配置。'); }
+  }
+  dialog.addEventListener('input',e=>{
+    if(e.target.closest('#project-hud'))return;
+    clearTimeout(hudTimer);hudTimer=setTimeout(saveHud,700);
+  });
+  dialog.addEventListener('change',e=>{if(!e.target.closest('#project-hud')){clearTimeout(hudTimer);hudTimer=setTimeout(saveHud,150);}});
   const captureResources = () => { if (resourceReaders.length) resourceDrafts = resourceReaders.map(r => ({key: r.key, config: r.read()})); };
   function renderResourceDrafts() {
     resourceReaders = []; el('resources').replaceChildren();
@@ -159,7 +183,7 @@
     const node = document.createElement('button'); node.type = 'button'; node.textContent = label;
     node.addEventListener('click', handler); return node;
   };
-  function close() { version++; closeDialogAnchored(dialog); }
+  function close() { saveHud();hudReady=false;version++;closeDialogAnchored(dialog);window.ProjectHUD?.end(); }
   function showStep(value) {
     step = value;
     el('step').textContent = `第 ${value + 1} 步 / 共 7 步`;
@@ -183,11 +207,12 @@
     el('progress').hidden = value !== 6 || !payload?.request_id || submittedRequest !== payload.request_id;
     dialog.querySelector('.import-body').scrollTop = 0;
     if (dialog.open) dialog.querySelector('.import-body > div:not([hidden]) h4')?.focus();
+    saveHud();
   }
   function lock(value) {
     busy = value;
     dialog.setAttribute('aria-busy', String(value));
-    for (const node of dialog.querySelectorAll('button,input,select,textarea')) node.disabled = value;
+    for (const node of dialog.querySelectorAll('button,input,select,textarea')) if(!node.closest('#project-hud')) node.disabled = value;
     if (!value) {
       el('supplement').disabled = creationMode === 'new';
       el('git-init').disabled = el('mode').value === 'worktree';
@@ -293,6 +318,7 @@
   }
   window.openProjectInitialization = () => window.openProjectImport({mode: 'new'});
   window.openProjectImport = (options = {}) => {
+    hudReady=false;hudRestored=null;hudAgents='';clearTimeout(hudTimer);
     creationMode = options.mode === 'new' ? 'new' : 'import';
     resourceDrafts = []; resourceReaders = [];
     commitFiles = null; reviewedFiles = [];
@@ -323,9 +349,15 @@
     el('commit-files').replaceChildren(); el('baseline-settings').hidden = true;
     try { localStorage.removeItem('project-initialization:last'); localStorage.removeItem('project-setup:last'); } catch { /* Obsolete drafts are never loaded. */ }
     updateModeHelp(); status(''); lock(false); showStep(0); openDialogAnchored(dialog, null); el('root').focus();
+    window.ProjectHUD?.begin(dialog,applyHud,options.hudDraftId,saveHud).then(session=>{
+      if(!dialog.open||!session)return;
+      hudReady=true;
+      if(options.hudDraftId){hudRestored=session.state.draft?.wizard;applyHud(session.state.draft);}
+      saveHud();
+    });
   };
   dialog.addEventListener('close', () => { version++; });
-  dialog.addEventListener('cancel', event => { if (busy) event.preventDefault(); });
+  dialog.addEventListener('cancel', event => { event.preventDefault(); if(!busy)close(); });
   el('close').addEventListener('click', close);
   el('preview').addEventListener('click', async () => {
     if (busy) return;
@@ -395,6 +427,13 @@
         for (const member of members.values()) if (!names.has(member.role)) member.role = '';
       }
       const availableIds = new Set(result.bots.map(bot => bot.bot_id));
+      if(hudRestored){
+        roles=hudRestored.roles?.length?hudRestored.roles:roles;
+        members=new Map((hudRestored.members||[]).map(m=>[m.bot_id,m]));
+        resourceDrafts=hudRestored.resourceDrafts||[];
+        hudAgents=hudRestored.agents||'';
+        hudRestored=null;
+      }
       for (const botId of members.keys()) if (!availableIds.has(botId)) members.delete(botId);
       el('canonical').textContent = result.root;
       el('warnings').textContent = [result.historical_config ? '已载入完整的已移除项目配置，可在后续步骤调整。' : '', ...result.warnings].join(' ');
@@ -484,7 +523,8 @@
           const checked = await api('/projects/import/preview', {method: 'POST', body: JSON.stringify(buildPayload(false))});
           if (current !== version || !dialog.open) return;
           agentsDraft = checked.file_plan.agents_draft;
-          el('agents-content').value = agentsDraft.content;
+          el('agents-content').value = hudAgents || agentsDraft.content;
+          hudAgents='';
         }
         el('agents-roles').textContent = '当前角色：' + roles.map(r => `${r.name}（${r.permissions.join('、') || '无管理权限'}）`).join('；') + '。请根据当前角色分工调整协作流程，明确派工、审查、验收等职责的承担者，并同步更新正文中的角色引用及职责。';
         showStep(3); status('角色或权限变化后，请同步调整协作流程与正文；已有编辑会保留。');
@@ -639,6 +679,7 @@
     try {
       const created = await api('/projects/import', {method: 'POST', body: JSON.stringify(payload)});
       if (current !== version || !dialog.open) return;
+      if(hudReady){const bound=await window.ProjectHUD?.bind(payload.request_id);if(!bound)throw new Error('项目已创建，维护记录绑定待重试。请点击查询操作结果');hudReady=false;}
       // Keep the committed ID available if refreshing the project list fails.
       el('submit').hidden = true; el('back').hidden = true;
       existingProjects([{name: created.project, display_name: payload.display_name}]);
@@ -661,6 +702,7 @@
       const progress = await api('/projects/setup-progress/' + payload.request_id);
       if (current !== version || !dialog.open) return;
       if (progress.status === 'ready') {
+        if(hudReady){const bound=await window.ProjectHUD?.bind(payload.request_id);if(!bound)throw new Error('维护记录绑定失败，请重试');hudReady=false;}
         el('submit').hidden = true; el('back').hidden = true;
         existingProjects([{name: progress.result.project, display_name: payload.display_name}]);
         await openProject(progress.result.project);

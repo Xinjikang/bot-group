@@ -1,4 +1,5 @@
 """Hermes installation identity and legacy session-ID compatibility."""
+import base64
 import os
 from pathlib import Path
 import sys
@@ -68,6 +69,80 @@ class HermesCompatibilityTests(unittest.TestCase):
         entry.touch()
         with patch.dict(os.environ, {'HERMES_BIN': ''}), patch.object(runtime.shutil, 'which', return_value='other.exe'):
             self.assertEqual(Path(runtime.executable()), entry)
+
+    def write_launcher(self, script='raise RuntimeError("static check executed launcher")'):
+        wrapper = self.home / 'bin/hermes.cmd'
+        wrapper.parent.mkdir(exist_ok=True)
+        payload = base64.b64encode(script.encode('utf-8')).decode('ascii')
+        code = f"import base64; exec(base64.b64decode('{payload}'))"
+        wrapper.write_text(f'@echo off\r\n"{sys.executable}" -I -c "{code}" %*\r\n',
+                           encoding='utf-8-sig', newline='')
+        return wrapper, code
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows base64 launcher')
+    def test_base64_launcher_auto_detection_preserves_argv_and_source(self):
+        wrapper, code = self.write_launcher()
+        with patch.dict(os.environ, {'HERMES_BIN': ''}), \
+             patch('subprocess.run', side_effect=AssertionError('static check launched process')):
+            self.assertEqual(runtime.native_entry(str(wrapper)), str(wrapper))
+            self.assertEqual(runtime.command(), [sys.executable, '-I', '-c', code])
+            self.assertEqual(session_adapter._hermes_src(), self.source)
+            result = install.detect_runtime()['hermes']
+        self.assertEqual(result['status'], 'compatible')
+        self.assertEqual(result['bin'], str(wrapper))
+        self.assertEqual(result['source'], str(self.source))
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows base64 launcher')
+    def test_gateway_ensure_receives_complete_launcher_command(self):
+        from engine import hermes_gateway as gateway
+        wrapper, code = self.write_launcher()
+        with patch.dict(os.environ, {'HERMES_BIN': str(wrapper)}), \
+             patch.object(gateway, 'ensure', return_value={'fixture': True}) as ensure, \
+             patch.object(gateway, 'GatewayClient') as client:
+            _, home, argv = gateway.connection('default')
+        self.assertEqual(argv, [sys.executable, '-I', '-c', code])
+        self.assertEqual(home, self.home)
+        ensure.assert_called_once_with(argv, self.home)
+        client.assert_called_once_with({'fixture': True})
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows launcher grammar')
+    def test_launcher_rejects_extra_commands_arguments_and_invalid_payload(self):
+        wrapper, code = self.write_launcher()
+        valid = f'"{sys.executable}" -I -c "{code}" %*'
+        invalid = [valid + ' & echo extra', valid + ' | more', 'call ' + valid,
+                   'set X=1\n' + valid, 'if exist x ' + valid, 'goto x\n' + valid,
+                   valid.replace('-I', '-i'), valid.replace('-I', '-I --extra'),
+                   valid.replace(str(sys.executable), '%UNRESOLVED%/python.exe'),
+                   valid.replace(str(sys.executable), '../python.exe'),
+                   valid.replace(str(sys.executable), str(self.native)),
+                   valid.replace(code, "import base64; exec(base64.b64decode('abc'))"),
+                   valid.replace(code, 'print(123)'), valid.replace(' %*', ' %* > output')]
+        for script in invalid:
+            with self.subTest(script=script):
+                wrapper.write_text('@echo off\n' + script + '\n', encoding='utf-8')
+                with self.assertRaises(runtime.HermesConfigurationError):
+                    runtime.command(str(wrapper))
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows installation layout')
+    def test_configured_home_venv_precedes_path(self):
+        with patch.dict(os.environ, {'HERMES_BIN': ''}), \
+             patch.object(runtime.shutil, 'which', return_value='other.exe'):
+            self.assertEqual(runtime.executable(), str(self.native))
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows installation layout')
+    def test_localappdata_launcher_and_native_fallback(self):
+        local = self.root / 'local'
+        installed = local / 'hermes/hermes-agent/venv/Scripts/hermes.exe'
+        installed.parent.mkdir(parents=True)
+        installed.touch()
+        wrapper = local / 'hermes/bin/hermes.cmd'
+        wrapper.parent.mkdir()
+        wrapper.write_text(f'@echo off\n"{installed}" %*\n', encoding='utf-8')
+        with patch.dict(os.environ, {'HERMES_BIN': '', 'HERMES_HOME': '', 'LOCALAPPDATA': str(local)}), \
+             patch.object(runtime.shutil, 'which', return_value=None):
+            self.assertEqual(runtime.command(), [str(installed)])
+            wrapper.unlink()
+            self.assertEqual(runtime.command(), [str(installed)])
 
     def test_conflicting_home_and_entry_fail(self):
         other = self.root / 'other'

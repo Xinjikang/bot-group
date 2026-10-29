@@ -137,6 +137,51 @@ def ticket(endpoint, *, purpose='interactive'):
     return result['ticket']
 
 
+def discover(home: Path, *, timeout=2):
+    """Read an existing owner's control identity, including a serving multiplexer."""
+    exchange = _pipe_exchange if os.name == 'nt' else _socket_exchange
+    homes = [home]
+    if home.parent.name == 'profiles':
+        homes.append(home.parent.parent)
+    for control_home in homes:
+        try:
+            raw = exchange(control_home, b'{"protocol":1,"verb":"identify","id":1}\n', timeout)
+        except (FileNotFoundError, ConnectionRefusedError):
+            continue
+        try:
+            response = json.loads(raw)
+            payload = response['result']
+            if (response.get('ok') is not True or response.get('protocol') != 1
+                    or response.get('id') != 1 or payload.get('state') != 'ready'):
+                raise GatewayTransportError('Hermes gateway is unavailable for reading')
+            matches = [p for p in payload['served_profiles']
+                       if Path(p['home']).resolve() == home.resolve()]
+            if len(matches) != 1 or Path(matches[0]['profile_id']).resolve() != home.resolve():
+                raise GatewayTransportError('Hermes gateway profile mismatch')
+            endpoint = {key: payload[key] for key in
+                        ('instance_id', 'authority_epoch', 'runtime_protocol', 'api_origin')}
+            endpoint.update(profile_id=matches[0]['profile_id'], control_home=str(control_home))
+            if (not isinstance(endpoint['instance_id'], str) or not endpoint['instance_id']
+                    or type(endpoint['authority_epoch']) is not int or endpoint['authority_epoch'] <= 0
+                    or 'session-authority-v1' not in payload['capabilities']):
+                raise GatewayTransportError('Hermes gateway identity is invalid')
+            return _validate_endpoint(endpoint, home)
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise GatewayTransportError('Hermes gateway discovery returned invalid data') from exc
+    raise GatewayTransportError('Hermes gateway is not running')
+
+
+def _validate_endpoint(endpoint, home):
+    if Path(endpoint['profile_id']).resolve() != Path(home).resolve() or endpoint['runtime_protocol'] != 1:
+        raise GatewayTransportError('Hermes gateway profile or protocol mismatch')
+    origin = urlsplit(endpoint['api_origin'])
+    if (origin.scheme not in ('http', 'https') or origin.username or origin.password
+            or origin.query or origin.fragment or origin.path not in ('', '/')
+            or not ipaddress.ip_address(origin.hostname).is_loopback):
+        raise GatewayTransportError('Hermes gateway must publish a loopback origin')
+    return endpoint
+
+
 def ensure(command: list[str], home: Path, *, env=None, timeout=60):
     child_env = dict(os.environ if env is None else env)
     child_env['HERMES_HOME'] = str(home)
@@ -151,16 +196,9 @@ def ensure(command: list[str], home: Path, *, env=None, timeout=60):
         reason = status.get('reason_code')
         raise GatewayTransportError('Hermes gateway unavailable: ' + (reason if isinstance(reason, str) else 'unknown'))
     endpoint = status['endpoint']
-    if Path(endpoint['profile_id']).resolve() != Path(home).resolve() or endpoint['runtime_protocol'] != 1:
-        raise GatewayTransportError('Hermes gateway profile or protocol mismatch')
     if status.get('client_code_sha') and endpoint.get('code_sha') != status['client_code_sha']:
         raise GatewayTransportError('Hermes gateway needs restart after installation update')
-    origin = urlsplit(endpoint['api_origin'])
-    if (origin.scheme not in ('http', 'https') or origin.username or origin.password
-            or origin.query or origin.fragment or origin.path not in ('', '/')
-            or not ipaddress.ip_address(origin.hostname).is_loopback):
-        raise GatewayTransportError('Hermes gateway must publish a loopback origin')
-    return endpoint
+    return _validate_endpoint(endpoint, home)
 
 
 # 活跃 viewer 连接 registry：引擎重启本地收尾需要集中、有界地关闭所有连接（设计 6.1 本地连接关闭硬超时 5s）。

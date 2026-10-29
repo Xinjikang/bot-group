@@ -1,5 +1,28 @@
 # 测试脚本索引
 
+SOUL 模板入口范围：仅项目创建向导传入模板、项目详情传入项目时显示。HUD 新建 profile、全局 profile 编辑隐藏整个模板工具栏；全局编辑即使已选中项目也不继承模板上下文。浏览器检查入口可见性，不创建或保存 profile；无上下文回归断言见 test_profile_soul_templates_browser.py。
+
+HUD 设置与标题：在隔离预览打开设置，检查字段组间距、选择器下的“新建 profile”和“刷新可选 Bot”、与弹窗一致的 15px 主题色复选框；修改空闲时间后取消，再次打开应恢复已保存值。取消与保存并排，设置页隐藏顶部返回入口。验证新建入口可打开及取消、刷新后设置仍可操作，默认“项目助手”名称与状态分别采用 13px/600、12px/400 及次级文字色。正式页面使用独立标签页只读核对，不保存配置或启动模型。
+
+Windows Hermes 0.22.x 启动器：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_compatibility scripts.test_hermes_transport scripts.test_execution_errors scripts.test_install scripts.test_session_readonly scripts.test_hermes_gateway -q`，配套执行 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_runtime_fork -k spawn -k xdg -k ephemeral -k runtime_session_id -q`。临时 home、源码声明、SQLite 和本机 Python 构造纯转发/base64 启动器；覆盖自动探测、固定 argv、源码归属、静态诊断、LOCALAPPDATA/配置 home 兜底、gateway ensure 前缀及拒绝控制流/额外参数/未解析变量/相对路径/损坏载荷。真实 Python 子进程验证多行、中文、引号与 shell 字符完整传递，网关及网络行为用替身隔离；`HERMES_TRANSPORT_EVIDENCE_DIR` 可注入报告目录保存合成接收记录。
+
+项目详情列表高度：分别打开成员与目录、角色、项目权限，核对列表使用剩余高度及底部操作可见；对比顶栏、窗口、标签栏和顶部操作区坐标保持一致。使用独立浏览器标签页只读检查，保留原页面输入。
+
+AGENTS.md 编辑框高度：浏览器打开项目详情的 AGENTS.md 标签，核对编辑框使用剩余高度、保存按钮可见；对比修改前后顶栏、窗口和标签栏的坐标及尺寸保持一致。验证只读界面，不提交项目文档。
+
+只读会话与旧 subprocess 隔离：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_session_readonly scripts.test_execution_errors scripts.test_task_retry scripts.test_abnormal_exit scripts.test_member_identity scripts.test_member_session_reset scripts.test_hermes_gateway scripts.test_hermes_gateway_sessions -q`。使用临时 SQLite/home 与模拟 control/RPC，覆盖已有绑定直接读取、网关缺失和存活标题查询、multiplexer 发现、异常降级及工作区 GET 200/null、查询期间 Bot/绑定/目录保持、旧版只读数据库和创建路径保留 ensure。旧 subprocess 用例显式关闭 gateway；任务重试继承异常退出夹具的开关。网关发现夹具只模拟回环地址，外部进程启动由断言阻断。
+
+HUD 与网关整合回归：运行 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud scripts.test_hermes_compatibility scripts.test_hermes_gateway scripts.test_engine_shutdown scripts.test_project_setup_history -q`。未知执行停机用例使用隔离数据库，覆盖没有现场账本的干净工作区。HUD 预览必须指定 `--data-dir` 和 `--port`，浏览器回归必须指定 `--url` 与 `--evidence`。
+
+HUD 场景布局：`test_project_hud_browser.py` 验证五个详情标签等高且坐标稳定、对话/选择/确认/使用说明切换、正文及用户回答可见、选项点击即发送并消失、刷新恢复消息、更多入口、历史说明与自由追问。使用说明另覆盖 390px 深浅主题。`scripts.test_project_hud` 验证 guide 持久化、后续上下文、步骤格式边界及问题优先级。截图包含 `hud-conversation.png`、`hud-confirmation.png`、`hud-guide.png`、`hud-guide-mobile-*.png` 和 `hud-with-project-detail.png`。
+
+HUD 与项目详情协作：`test_project_hud_browser.py` 覆盖详情打开后切换标签、填写未保存字段、展开 HUD、选择和输入、返回详情、窄屏发送及 Escape、无顶栏活动项目时的 HUD 上下文和关闭后恢复。几何断言检查详情位置尺寸不变、HUD 右侧贴靠同高、详情高度变化后同步以及收起回到原位，并验证右侧空间不足时的回退。截图 `hud-with-project-detail.png` 保留两者同时打开的状态。
+
+HUD 开放式提问回归：`scripts.test_project_hud` 验证模型省略选项时的归一化及回答入库；`test_project_hud_browser.py` 额外覆盖已有无选项记录的渲染、文字输入和发送可用性，截图保存为 `hud-free-text.png`。
+
+HUD 真实模型验证：明确授权后运行 `scripts/verify_project_hud_live.py --live --hermes-home <已授权宿主目录> --expected-provider <服务商> --expected-host <服务域名> --expected-model <模型> --evidence <新的报告文件.json>`。执行前精确核对配置的服务商、域名和模型；五轮仅使用合成调研/软件/空项目及模板，验证可选问题、自定义目录用途提案、确认后超时接续、资源阶段提问和空项目引导。结束核对原宿主配置摘要、群会话表为空及临时目录清理。网络或模型行为失败保留已完成轮次证据。
+
+项目维护 HUD：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud -q` 使用隔离 SQLite、临时宿主与模型替身，覆盖身份边界、逐项目启用、模板上下文、问题/自由回答、超时换代、修订冲突、提案确认、阶段切换、成功回执绑定、共享事实及临时运行配置清理。以 `scripts/preview_project_hud.py --data-dir <独立空目录> --port <独立端口>` 启动固定响应预览；使用带 Playwright 的 Python 运行 `scripts/test_project_hud_browser.py --url http://127.0.0.1:<端口> --evidence <主目录报告路径>`，覆盖桌面、390px 深浅主题、选择加补充、刷新恢复、向导草稿恢复及 Escape 焦点。预览有专用测试重置接口，仅用于该隔离实例。真实模型联调须明确模型服务和发送资料范围，独立记录宿主兼容性与实际提问质量。
 公开安装三入口：`verify_public_install.py` 在 `start.bat` 重启后核验健康与资源归属，再调用桌面对应的 `tools/service.py start`，确认复用相同实例并打开页面；随后验证默认升级查询及 `stop.bat` 释放端口。使用分配的隔离端口和 test-data 目录。
 
 Hermes 重启接管：设置 `GW_PROBE_DATA` 为分配测试数据根，运行 `.venv\Scripts\python.exe -X utf8 -B scripts/verify_gateway_restart_live.py --backend <分配后端 origin> --evidence <主目录报告下的新绝对路径>`。程序安装须通过 `tools/install.py check`；复用隔离安装及已配置测试模型，两话题各通过真实 task_queue MCP 读消息、专用 MCP 等待并发送一次消息。真实引擎分别执行 UI 重启、运行超过 150 秒后的脚本重启与快捷方式健康复用；核验原 admission/submission/截止时间、原 MCP 凭据、PID、消息单次落库和终态撤销。home、密钥及数据库位于分配 test-data，报告保存脱敏回执/历史；退出停止本次引擎和网关。调用真实模型，需已有隔离模型配置。单元回归使用 gateway、gateway_ledger、engine_shutdown、access_contract、browser_resources 模块，覆盖关闭期间并发连接、总预算、终态清理、同 session 后继身份、网关连接阻塞时引擎就绪，以及长任务断线后继续查询原 admission。

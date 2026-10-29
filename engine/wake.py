@@ -371,6 +371,7 @@ def wake_system_prompt(kind: str, project: str, workdir: str) -> str:
     try:
         row = get_project(conn, project)
         owner = project_owner(conn, project)
+        maintenance = conn.execute("SELECT value FROM settings WHERE project=? AND key='maintenance_facts'", (project,)).fetchone()
         with LOCK:
             resources = workspace_resources.prompt_config(conn, project, workdir)
     finally:
@@ -384,6 +385,7 @@ def wake_system_prompt(kind: str, project: str, workdir: str) -> str:
         '目录模式': '共用项目主目录' if Path(workdir).resolve() == Path(row['root']).resolve() else '独立 worktree',
         '当前工作目录': workdir,
         '工作区配置': resources,
+        '用户确认的项目维护资料': json.loads(maintenance['value']) if maintenance else [],
     }
     return (system_prompt_for(kind) + '\n\n' + workspace_resources.RULE + '\n\n## 当前项目\n'
             + json.dumps(context, ensure_ascii=False, indent=2)
@@ -959,8 +961,9 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         # 首建 thread_id 执行后才可知，由 #153 的 thread.started 回填写入。
         sid_for_run = None if not codex_thread_id else codex_thread_id
     else:
-        cmd_without_q = [
-            _hermes_bin(), "-p", bot['profile'] if bot else profile, "chat",
+        from . import hermes_runtime
+        cmd_without_q = hermes_runtime.command(_hermes_bin()) + [
+            "-p", bot['profile'] if bot else profile, "chat",
             "--in", workdir, "-c", sid, "-Q",
         ] + model_args
         if not use_binding:

@@ -93,6 +93,9 @@ async def _engine_lifespan(app: FastAPI):
     t_scanner = threading.Thread(target=scanner.run_forever, args=(stop_event,), daemon=True, name="scanner")
     t_queue.start()
     t_scanner.start()
+    from . import project_hud
+    t_hud = threading.Thread(target=project_hud.run_forever, args=(stop_event,), daemon=True, name='project-hud')
+    t_hud.start()
     logger.info("后台线程已启动：queue-worker + scanner")
 
     try:
@@ -101,8 +104,11 @@ async def _engine_lifespan(app: FastAPI):
         wake._shutting_down.set()
         await asyncio.to_thread(hermes_gateway.close_connections, 5)
         stop_event.set()
+        from . import hud_runtime
+        await asyncio.to_thread(hud_runtime.cancel_active)
         await asyncio.to_thread(t_queue.join, 5)
         await asyncio.to_thread(t_scanner.join, 5)
+        await asyncio.to_thread(t_hud.join, 5)
         # The managed server drains while HTTP/MCP is still available, before
         # Uvicorn closes connections. Keep a fallback for embedded ASGI hosts.
         if not wake.active_runs():

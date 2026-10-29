@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import subprocess
 import threading
 import uuid
 from pathlib import Path
@@ -167,14 +168,24 @@ def compression_tip(profile: str, session_id: str) -> str:
         db.close()
 
 
-def resolve_session_by_title(profile: str, title: str) -> str | None:
+def resolve_session_by_title(profile: str, title: str, *, read_only=False) -> str | None:
     """按 title 反查 Hermes 现存会话 sid（第 0 代兼容：旧会话无绑定记录时回填）。"""
     from . import hermes_gateway
-    if hermes_gateway.enabled():
-        client, _, _ = hermes_gateway.connection(profile)
-        with client:
-            rows = client.rpc('session.list', title=title)['sessions']
-            return rows[0]['session_id'] if rows else None
+    from websockets.exceptions import WebSocketException
+    try:
+        if hermes_gateway.enabled():
+            client, _, _ = hermes_gateway.connection(profile, read_only=read_only)
+            with client:
+                rows = client.rpc('session.list', title=title)['sessions']
+                return rows[0]['session_id'] if rows else None
+    except (hermes_gateway.GatewayTransportError, hermes_gateway.GatewayRefusal,
+            hermes_runtime.HermesConfigurationError, subprocess.TimeoutExpired,
+            OSError, WebSocketException):
+        if read_only:
+            return None
+        raise
+    if read_only:
+        return _read_legacy_session_by_title(profile, title)
     _ensure_src_on_path()
     _ensure_profile_dir(profile)
     from hermes_state_registry import acquire
@@ -300,9 +311,11 @@ def existing_session_id(conn, project: str, profile: str, kind: str,
                            (project, bot_id, kind, _bind_key(kind, thread_id))).fetchone()
         if row:
             return row['session_id']
-    from . import hermes_gateway
-    if hermes_gateway.enabled():
-        return resolve_session_by_title(profile, title)
+    return resolve_session_by_title(profile, title, read_only=True)
+
+
+def _read_legacy_session_by_title(profile: str, title: str) -> str | None:
+    """Read a legacy title through SQLite's read-only connection mode."""
     path = profile_state_db(profile)
     if not path.is_file():
         return None

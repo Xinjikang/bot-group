@@ -1,0 +1,104 @@
+#project-hud{position:fixed;z-index:1200;top:12px;left:50%;transform:translateX(-50%);width:340px;max-width:calc(100vw - 24px);color:var(--fg);font:13px/1.6 "Segoe UI","Microsoft YaHei",sans-serif}
+#project-hud *{box-sizing:border-box}
+#project-hud [hidden]{display:none!important}
+#project-hud .hud-shell{background:linear-gradient(135deg,color-mix(in srgb,var(--card) 80%,transparent),color-mix(in srgb,var(--bg) 74%,transparent));backdrop-filter:blur(26px) saturate(125%);border:1px solid color-mix(in srgb,var(--cyan) 22%,var(--border-soft));border-radius:22px;overflow:hidden;box-shadow:inset 0 1px 0 #ffffff24,0 18px 54px #0003;transition:border-radius .18s ease}
+#project-hud.expanded{width:510px}
+#project-hud.expanded .hud-shell{border-radius:18px}
+#project-hud button,#project-hud select,#project-hud textarea{font:inherit;color:inherit}
+#project-hud button{cursor:pointer}
+#project-hud button:disabled{opacity:.5;cursor:wait}
+#project-hud button:focus-visible,#project-hud textarea:focus-visible,#project-hud select:focus-visible{outline:2px solid var(--accent-2);outline-offset:2px}
+.hud-toggle{width:100%;display:flex;align-items:center;gap:10px;padding:9px 15px;background:transparent;border:0;text-align:left;min-height:42px}
+.hud-light{width:9px;height:9px;flex-shrink:0;border-radius:50%;background:var(--ok);box-shadow:0 0 10px color-mix(in srgb,var(--ok) 30%,transparent)}
+.hud-attention .hud-light{background:var(--accent-2)}
+.hud-running .hud-light{background:var(--cyan);animation:hud-breathe 1.8s ease-in-out infinite}
+.hud-error .hud-light{background:var(--danger)}
+.hud-caption{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hud-name{font-size:13px;font-weight:600}
+.hud-status{font-size:12px;font-weight:400;color:var(--fg-2)}
+.hud-chevron{color:var(--fg-3);font-size:12px}
+.hud-panel{display:flex;flex-direction:column;height:min(650px,calc(100dvh - 82px));max-height: min(690px,calc(100dvh - 82px));border-top:1px solid var(--border-soft)}
+.hud-context{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 18px;color:var(--fg-2);font-size:12px}
+.hud-context span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hud-link{background:transparent;border:0;padding:4px 6px;color:var(--accent-2)!important;white-space:nowrap}
+.hud-scroll{flex:1;overflow:auto;padding:16px 20px;min-height:0;overscroll-behavior:contain}
+.hud-question h3{font-size:14px;line-height:1.6;margin:12px 0 8px;color:var(--fg)}
+.hud-reason{color:var(--fg-3);font-size:11px;margin:0 0 12px}
+.hud-reason summary{cursor:pointer}
+.hud-reason p{margin-top:6px}
+.hud-options{display:grid;gap:8px}
+.hud-option{display:block;width:100%;text-align:left;padding:9px 12px;border:1px solid var(--border-soft);background:var(--card);border-radius:8px;line-height:1.5;overflow-wrap:anywhere}
+.hud-option:hover{border-color:var(--accent);background:var(--hover)}
+.hud-text{white-space:pre-wrap;overflow-wrap:anywhere;margin:9px 0}
+.hud-muted{color:var(--fg-2)}
+.hud-proposal{margin-top:12px;padding:13px;background:var(--card-2);border:1px solid var(--border-soft);border-radius:12px}
+.hud-proposal dl{margin:8px 0}
+.hud-proposal dt{font-size:12px;color:var(--fg-2)}
+.hud-proposal dd{margin:2px 0 10px;white-space:pre-wrap;overflow-wrap:anywhere}
+.hud-primary{background:var(--accent)!important;color:var(--bg)!important;border:1px solid var(--accent);border-radius:9px;padding:7px 15px;font-weight:600!important}
+.hud-compose{flex-shrink:0;padding:12px 18px 14px;border-top:1px solid var(--border-soft);background:color-mix(in srgb,var(--card) 28%,transparent)}
+.hud-compose .hud-input-label{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+#hud-input{width:100%;min-height:56px;max-height:150px;resize:vertical;border:1px solid var(--border-soft);border-radius:10px;background:color-mix(in srgb,var(--bg) 40%,transparent);padding:10px;line-height:1.5}
+.hud-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}
+.hud-hint{color:var(--fg-3);font-size:11px}
+.hud-error-text{color:var(--danger);white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0}
+.hud-history{padding:4px 0}
+.hud-history article{padding:9px 0;border-bottom:1px solid var(--border-soft)}
+.hud-history small{color:var(--fg-3)}
+.hud-settings{display:flex;flex-direction:column;gap:22px;padding:10px 0}
+.hud-settings p{margin:0;line-height:1.7}
+.hud-settings label{display:grid;gap:8px;margin:0}
+.hud-settings-bot{display:grid;gap:10px}
+.hud-settings-tools{display:flex;flex-wrap:wrap;gap:8px 18px}
+.hud-settings-tools .hud-link{padding:4px 0}
+.hud-settings-save{display:flex;flex-direction:column;align-items:flex-start;gap:16px}
+.hud-settings-buttons{display:flex;align-items:center;gap:12px}
+.hud-cancel{background:transparent;border:1px solid var(--border-soft);border-radius:9px;padding:7px 15px}
+.hud-settings select{width:100%;padding:8px;background:var(--card-2);border:1px solid var(--border-soft);border-radius:8px}
+.hud-notices{display:flex;flex-wrap:wrap;gap:5px;margin:8px 0}
+.hud-context nav{display:flex;gap:2px;flex-shrink:0}
+.hud-context .hud-link{font-size:11px;color:var(--fg-2)!important}
+.hud-context .hud-link[aria-pressed=true]{color:var(--accent-2)!important}
+.hud-back{text-align:left;align-self:flex-start;margin:0 14px 4px}
+.hud-more{font-size:20px!important;line-height:1;letter-spacing:2px}
+.hud-tools{display:flex;gap:8px;justify-content:flex-end;padding:0 14px 10px;border-bottom:1px solid var(--border-soft)}
+.hud-tools .hud-link{font-size:12px}
+.hud-message{margin:0 0 20px;max-width:100%;overflow-wrap:anywhere}
+.hud-speaker{display:block;color:var(--fg-3);font-size:11px;margin-bottom:6px}
+.hud-message-text{margin:0;white-space:pre-wrap;font-size:14px;line-height:1.75}
+.hud-message-user{margin-left:36px;padding:11px 14px;background:var(--card-2);border:1px solid var(--border-soft);border-radius:12px 12px 3px 12px}
+.hud-message-user .hud-speaker{color:var(--accent-2)}
+.hud-message-assistant{padding-right:6px}
+.hud-system-note,.hud-replying{color:var(--fg-3);font-size:12px;margin:12px 0}
+.hud-past-question{font-size:13px;color:var(--fg-2);margin:6px 0;white-space:pre-wrap}
+.hud-past-guide{margin-top:10px;color:var(--fg-2)}
+.hud-past-guide summary{cursor:pointer}
+#project-hud[data-scene=choice] .hud-speaker,#project-hud[data-scene=guide] .hud-speaker,#project-hud[data-scene=confirm] .hud-speaker{display:none}
+#project-hud[data-scene=choice] .hud-scroll,#project-hud[data-scene=guide] .hud-scroll,#project-hud[data-scene=confirm] .hud-scroll{padding:28px 24px}
+#project-hud[data-scene=choice] .hud-message-text,#project-hud[data-scene=guide] .hud-message-text{font-size:13px;color:var(--fg-2)}
+#project-hud[data-scene=choice] .hud-question h3,.hud-guide>h3{font-size:21px;font-weight:500;line-height:1.5;margin:16px 0 14px;letter-spacing:.2px}
+#project-hud[data-scene=choice] .hud-options{margin-top:22px;gap:0}
+#project-hud[data-scene=choice] .hud-option{position:relative;padding:15px 28px 15px 0;border:0;border-bottom:1px solid var(--border-soft);border-radius:0;background:transparent}
+#project-hud[data-scene=choice] .hud-option::after{content:'↗';position:absolute;right:3px;color:var(--cyan)}
+#project-hud[data-scene=choice] .hud-option:hover{color:var(--cyan);background:color-mix(in srgb,var(--cyan) 5%,transparent)}
+.hud-guide ol{list-style:none;counter-reset:guide;padding:0;margin:24px 0}
+.hud-guide li{counter-increment:guide;position:relative;padding:0 0 24px 34px;white-space:pre-wrap;overflow-wrap:anywhere}
+.hud-guide li::before{content:counter(guide,decimal-leading-zero);position:absolute;left:0;top:1px;font-size:11px;color:var(--cyan)}
+.hud-guide h4{font-size:14px;font-weight:500;margin:0 0 5px}
+.hud-guide p{font-size:13px;line-height:1.7;color:var(--fg-2);margin:0}
+#hud-latest{align-self:center;font-size:12px;margin-bottom:6px}
+@keyframes hud-breathe{50%{opacity:.35}}
+@media(prefers-reduced-motion:reduce){.hud-running .hud-light{animation:none}.hud-shell{transition:none!important}}
+@media(max-width:1100px){#topbar{padding-bottom:58px!important}#project-hud{top:58px}#topbar .project-bar{max-width:none}}
+@media(max-width:600px){#project-hud,#project-hud.expanded{top:64px;width:calc(100vw - 24px)}.hud-panel{max-height:calc(100dvh - 138px)}.hud-scroll{padding:0 13px 12px}.hud-context,.hud-compose{padding-left:13px;padding-right:13px}.hud-question h3{font-size:16px}}
+#project-hud.hud-docked{left:var(--hud-left);top:var(--hud-top);width:var(--hud-width);height:var(--hud-height);transform:none}
+#project-hud.hud-docked .hud-shell{height:100%;display:flex;flex-direction:column}
+#project-hud.hud-docked .hud-toggle,#project-hud.hud-docked .hud-context{flex-shrink:0}
+#project-hud.hud-docked .hud-panel{flex:1;min-height:0;max-height:none}
+#project-hud.hud-docked .hud-scroll{flex:1}
+#project-hud.hud-compact .hud-context{padding:6px 12px}
+#project-hud.hud-compact .hud-compose{padding:6px 12px}
+#project-hud.hud-compact .hud-compose label{margin-bottom:3px}
+#project-hud.hud-compact #hud-input{height:36px;min-height:36px;max-height:60px;padding:5px 8px}
+#project-hud.hud-compact .hud-actions{margin-top:3px}
+#project-hud.hud-compact .hud-primary{padding:3px 12px}

@@ -90,12 +90,15 @@
 
   window.mountProjectSoulTemplates = (container, options) => {
     container.replaceChildren();
+    container.hidden = !(options.project || options.template);
+    container.classList.toggle('profile-soul-template-toolbar', !container.hidden);
+    if (container.hidden) return;
     const button = document.createElement('button'), status = document.createElement('span');
     button.type = 'button'; button.className = 'profile-soul-template-open';
-    button.textContent = '查看 / 引用 SOUL 模板'; button.disabled = !(options.project || options.template) || !!options.disabled;
+    button.textContent = '查看 / 引用 SOUL 模板'; button.disabled = !!options.disabled;
     status.className = 'profile-help'; status.setAttribute('role', 'status');
-    status.textContent = options.project || options.template ? '仅显示当前项目的模板。' : '请从当前项目打开成员配置后引用模板。';
-    container.classList.add('profile-soul-template-toolbar'); container.append(button, status);
+    status.textContent = '仅显示当前项目的模板。';
+    container.append(button, status);
     button.addEventListener('click', () => {
       if (!(options.project || options.template) || !options.isActive()) return;
       const owner = container.closest('dialog');

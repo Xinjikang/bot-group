@@ -140,7 +140,8 @@ def main():
         assert '没有可用' in page.locator('#profile-soul-template-status').inner_text()
         page.locator('#profile-soul-template-close').click(); close_editor()
         edit('')
-        assert page.locator('#profile-soul-templates button').is_disabled()
+        assert page.locator('#profile-soul-templates').is_hidden()
+        assert page.locator('#profile-soul-templates button').count() == 0
         close_editor()
         edit()
         state['fail'] = True; picker()

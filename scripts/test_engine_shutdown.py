@@ -178,7 +178,8 @@ class ShutdownTests(unittest.TestCase):
     def test_unknown_execution_blocks_tree_kill(self):
         from engine import process_tree
         controller = Shutdown(threading.Event(), Mock(), timeout=0)
-        with patch.object(controller, '_runs', return_value=[{'profile': 'test', 'session': 'test', 'started_at': 0}]), \
+        with isolated_database(), \
+             patch.object(controller, '_runs', return_value=[{'profile': 'test', 'session': 'test', 'started_at': 0}]), \
              patch.object(wake, 'find_bot_processes', return_value=None), \
              patch.object(process_tree, 'terminate') as terminate:
             with self.assertRaisesRegex(RuntimeError, '无法核实'):

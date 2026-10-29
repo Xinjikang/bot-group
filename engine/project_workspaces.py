@@ -177,12 +177,14 @@ def view(name, profile=None):
             m.update(memberships[m['profile']])
             if profile is not None and m['profile'] != profile:
                 continue
-            from . import session_adapter, wake
+            from . import hermes_gateway, hermes_runtime, session_adapter, wake
             try:
                 m['work_session_exists'] = bool(session_adapter.existing_session_id(
                     conn, name, m['profile'], 'work', None,
                     wake.session_name(m['profile'], 'work', None, name)))
-            except (sqlite3.Error, OSError):
+            except (sqlite3.Error, OSError, hermes_gateway.GatewayTransportError,
+                    hermes_gateway.GatewayRefusal, hermes_runtime.HermesConfigurationError,
+                    subprocess.TimeoutExpired):
                 m['work_session_exists'] = None
             m['workspace_assigned'] = m['profile'] in assigned
             m['directory_mode'] = member_mode(conn, p, m['profile'])
