@@ -13,7 +13,11 @@ from scripts import test_project_roles
 
 
 class HudTests(unittest.TestCase):
-    setUp = test_project_roles.ProjectRoleTests.setUp
+    def setUp(self):
+        test_project_roles.ProjectRoleTests.setUp(self)
+        probes = patch('engine.hud_inspection.run', return_value=(None, 'fixture unavailable'))
+        probes.start()
+        self.addCleanup(probes.stop)
     join = test_project_roles.ProjectRoleTests.join
 
     def session(self, project=None):
@@ -124,6 +128,21 @@ class HudTests(unittest.TestCase):
             'proposal_id':result['state']['proposal']['id']})
         self.assertEqual(response.status_code,409)
 
+    def test_proposal_current_values_are_server_owned_and_duplicates_removed(self):
+        item = self.session('p')
+        self.conn.execute("UPDATE projects SET description='当前简介' WHERE name='p'")
+        self.conn.commit()
+        result = self.infer(item, {'text': '建议简化介绍', 'proposal': {
+            'reason': '方便新成员了解项目', 'changes': {'description': '建议简介'}, 'facts': []}})
+        self.assertEqual(result['state']['proposal']['before']['description'], '当前简介')
+        self.assertEqual(self.conn.execute("SELECT description FROM projects WHERE name='p'").fetchone()[0], '当前简介')
+        item = hud.answer(item['id'], {'revision': result['revision'], 'question_id': None, 'text': '保持现状'})
+        result = self.infer(item, {'text': '重复建议', 'proposal': {'changes': {'description': '当前简介'}, 'facts': []}})
+        self.assertEqual(result['status'], 'idle')
+        self.assertNotIn('proposal', result['state'])
+        with self.assertRaises(ValueError):
+            hud.validate_response({'text': '伪造当前值', 'proposal': {'changes': {}, 'before': {'description': '假值'}}})
+
     def test_document_boundary_and_malformed_response(self):
         (self.root/'README.md').write_text('项目说明',encoding='utf-8')
         (self.root/'password.txt').write_text('secret',encoding='utf-8')
@@ -221,6 +240,20 @@ class HudTests(unittest.TestCase):
         with hud.connection() as conn:
             self.assertFalse(conn.execute("SELECT 1 FROM hud_sessions WHERE project='p'").fetchone())
 
+    def test_background_probe_preserves_input_arriving_during_check(self):
+        item = self.infer(self.session('p'), {'text': '检查完成'})
+        with hud.connection() as conn:
+            conn.execute('UPDATE hud_sessions SET checked=0 WHERE id=?', (item['id'],))
+        def concurrent_input(*_):
+            hud.answer(item['id'], {'revision': item['revision'], 'question_id': None, 'text': '先回答这个新问题'})
+            return {'checks': [{'key': 'fixture', 'status': 'changed'}]}
+        with patch('engine.hud_inspection.inspect', side_effect=concurrent_input):
+            hud.scan()
+        saved = hud.view(item['id'])
+        self.assertEqual(saved['checked'], 0)
+        self.assertEqual(saved['entries'][-1]['content']['text'], '先回答这个新问题')
+        self.assertEqual(saved['status'], 'queued')
+
     def test_paused_draft_stays_paused_after_creation(self):
         item=hud.create()
         with hud.connection() as conn:
@@ -240,6 +273,8 @@ class HudTests(unittest.TestCase):
             settings=tomlkit.parse((Path(cwd)/'config.toml').read_text(encoding='utf-8'))
             self.assertNotIn('mcp_servers',settings)
             self.assertFalse(settings['features']['shell_tool'])
+            self.assertEqual(settings['developer_instructions'], hud_runtime.SYSTEM)
+            self.assertNotIn(hud_runtime.SYSTEM, prompt)
             self.assertEqual(env['CODEX_HOME'],cwd)
             self.assertNotIn('GROUP_DB',env)
             Path(command[command.index('--output-last-message')+1]).write_text('{"text":"ready"}',encoding='utf-8')
@@ -335,6 +370,8 @@ class HudTests(unittest.TestCase):
             captured.append(cwd)
             self.assertEqual(command,['hermes-fixture','chat','-Q','--ignore-rules','--query-file','-'])
             self.assertEqual(env['HERMES_HOME'],cwd)
+            self.assertEqual(env['HERMES_EPHEMERAL_SYSTEM_PROMPT'],hud_runtime.SYSTEM)
+            self.assertNotIn(hud_runtime.SYSTEM,prompt)
             config=yaml.safe_load((Path(cwd)/'config.yaml').read_text(encoding='utf-8'))
             self.assertEqual(config['platform_toolsets']['cli'],[])
             self.assertEqual(config['mcp_servers'],{})
@@ -354,6 +391,8 @@ class HudTests(unittest.TestCase):
              patch('engine.hud_gateway.respond',return_value='{"text":"gateway"}') as call, \
              patch('engine.hud_runtime._run') as legacy:
             self.assertEqual(hud_runtime.respond(bot,{}),{'text':'gateway'})
+            self.assertEqual(call.call_args.kwargs['system_prompt'],hud_runtime.SYSTEM)
+            self.assertNotIn(hud_runtime.SYSTEM,call.call_args.args[1])
             call.side_effect=GatewayTransportError('offline')
             with self.assertRaises(GatewayTransportError):
                 hud_runtime.respond(bot,{})

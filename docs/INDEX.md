@@ -2,6 +2,8 @@
 
 项目维护 HUD 的独立会话、提问与创建向导联动见 [设计](design/2026-10-27-project-maintenance-hud.md) 和 [工程契约](engineering/PROJECT-HUD.md)。
 
+项目助手的实际配置检查、文档依据与修改前后确认见 [引导设计](design/2026-10-29-project-assistant-guidance.md)。
+
 Hermes 网关版的官方接口、原生审批、临时 MCP、会话迁移与执行恢复见 [Hermes 网关执行适配](engineering/HERMES-GATEWAY.md)。
 
 Hermes 新旧会话接口、安装定位和兼容提示见 [Hermes 兼容性](engineering/HERMES-COMPATIBILITY.md) 与 [设计依据](design/2026-10-27-hermes-compatibility.md)。

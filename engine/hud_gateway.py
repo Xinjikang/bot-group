@@ -39,10 +39,10 @@ def _save(value):
         conn.execute('UPDATE hud_sessions SET state=? WHERE id=?', (hud.encode(item['state']), item['id']))
 
 
-def respond(bot, prompt, workdir, progress):
+def respond(bot, prompt, workdir, progress, *, system_prompt=''):
     root = Path(bot['config_root'])
     home = root if bot['profile'] == 'default' else root / 'profiles' / bot['profile']
-    digest = hashlib.sha256(prompt.encode('utf-8')).hexdigest()
+    digest = hashlib.sha256((system_prompt + '\0' + prompt).encode('utf-8')).hexdigest()
     record = _saved()
     text = ''
 
@@ -84,7 +84,7 @@ def respond(bot, prompt, workdir, progress):
                       'home': str(home), 'digest': digest, 'deadline': time.time()+180, 'workdir': workdir}
             _save(record)
         snapshot = sessions.new(client, title='项目助手 · ' + record['request_id'][:12],
-                                workdir=record['workdir'], system_prompt='', model_args=[],
+                                workdir=record['workdir'], system_prompt=system_prompt, model_args=[],
                                 request_id=record['request_id'], launch_options={
                                     'toolsets': ['no_mcp'], 'ignore_rules': True, 'max_turns': 2,
                                     'checkpoints': False, 'accept_hooks': False})

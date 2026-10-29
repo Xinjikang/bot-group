@@ -6,7 +6,7 @@
     <button class="hud-toggle" id="hud-toggle" aria-expanded="false" aria-controls="hud-panel"><span class="hud-light" aria-hidden="true"></span><span class="hud-caption"><span class="hud-name">项目助手</span><span class="hud-status"> · 准备就绪</span></span><span class="hud-chevron">展开</span></button>
     <div class="hud-panel" id="hud-panel" hidden>
       <div class="hud-context"><span id="hud-context"></span><nav aria-label="维护工具"><button class="hud-link" id="hud-scene-toggle" hidden>对话记录</button><button class="hud-link hud-more" id="hud-more" aria-label="更多维护工具" aria-expanded="false">···</button></nav></div>
-      <nav class="hud-tools" id="hud-tools" aria-label="更多维护工具" hidden><button class="hud-link" id="hud-history-toggle">已确认资料</button><button class="hud-link" id="hud-settings-toggle">设置</button></nav>
+      <nav class="hud-tools" id="hud-tools" aria-label="更多维护工具" hidden><button class="hud-link" id="hud-history-toggle">项目备注</button><button class="hud-link" id="hud-settings-toggle">设置</button></nav>
       <button class="hud-link hud-back" id="hud-back" hidden>← 返回对话</button>
       <div class="hud-progress" id="hud-progress" role="status" hidden><span id="hud-progress-text"></span><time id="hud-progress-time"></time></div>
       <div class="hud-scroll">
@@ -110,7 +110,7 @@
     el('scene-toggle').hidden=!activeKey;
     el('scene-toggle').textContent=conversationOnly?(q?'当前问题':proposal?'待确认建议':'使用说明'):'对话记录';
     el('input').placeholder=scene==='choice'?'也可以输入自己的回答…':scene==='guide'?'继续问，或描述你卡在哪一步…':'输入你的想法…';
-    const label=!item?.bot?'选择 AI 开始维护':state==='paused'?'点击开始维护':state==='running'||state==='queued'?'正在检查项目':state==='error'?'检查未完成':q?'有 1 项需要你确认':proposal?'有配置建议待确认':'随时为你维护项目';
+    const label=!item?.bot?'选择 AI 开始维护':state==='paused'?'点击开始维护':state==='running'||state==='queued'?'正在检查项目':state==='error'?'检查未完成':q?'有 1 项需要你确认':proposal?'有建议等你决定':'随时为你维护项目';
     host.querySelector('.hud-name').textContent=item?.bot?.display_name||'项目助手';
     host.querySelector('.hud-status').textContent=' · '+label;
     host.classList.toggle('hud-attention',!!q||!!proposal);host.classList.toggle('hud-running',state==='running'||state==='queued');host.classList.toggle('hud-error',state==='error');
@@ -161,13 +161,35 @@
       if(state!=='queued'&&state!=='running'&&!item.entries.length)content.append(node('p','告诉我你想完善什么，我们一起把项目准备好。','hud-muted'));
     }
     if(proposal&&scene==='confirm'){
-      const box=node('div',null,'hud-proposal');box.append(node('strong','待确认的配置建议'));const dl=node('dl');
-      for(const [key,value] of Object.entries(proposal.changes))dl.append(node('dt',fieldNames[key]||key),node('dd',value));
-      for(const fact of proposal.facts)dl.append(node('dt',fact.label),node('dd',fact.value));
-      box.append(dl,action(Object.keys(proposal.changes).length?(item.project?'确认更新项目':'确认写入向导'):'确认保存维护资料',async()=>{
+      const changes=Object.entries(proposal.changes),facts=proposal.facts;
+      const box=node('div',null,'hud-proposal');box.append(node('strong','以下建议尚未保存'));
+      if(proposal.reason)box.append(node('p',proposal.reason,'hud-text'));
+      const display=(key,value)=>key==='directory_mode'?({shared:'共用项目目录',worktree:'每位成员使用独立工作区'}[value]||value):value;
+      const compare=(title,before,after,empty)=>{
+        const group=node('section',null,'hud-change');group.append(node('h4',title));
+        const dl=node('dl');
+        dl.append(node('dt','当前内容'),node('dd',before===undefined?'旧建议未记录当前值，请重新检查':before||empty),
+          node('dt','建议改为'),node('dd',after));group.append(dl);return group;
+      };
+      if(changes.length){
+        box.append(node('p',item.project?'修改位置：项目设置。确认后更新以下字段。':'修改位置：创建向导。确认后更新草稿，提交向导时创建项目。','hud-muted'));
+        for(const [key,value] of changes){
+          const before=proposal.before?.[key]??proposal.base_project?.[key]??item.state.draft?.[key];
+          box.append(compare(fieldNames[key]||key,display(key,before),display(key,value),'尚未填写'));
+        }
+      }
+      if(facts.length){
+        box.append(node('p','保存位置：项目备注。本项目助手和成员 Bot 后续会参考这些约定，项目文件保持原样。','hud-muted'));
+        for(const fact of facts){
+          const before=proposal.before_facts?.[fact.label]??item.state.facts?.find(f=>f.label===fact.label)?.value??'';
+          box.append(compare(fact.label,before,fact.value,'尚未保存这条备注'));
+        }
+      }
+      const count=changes.length+facts.length;
+      box.append(action(changes.length&&facts.length?`确认保存以上 ${count} 项`:changes.length?(item.project?'确认修改项目设置':'确认更新向导草稿'):'确认保存项目备注',async()=>{
         if(draftMode)await beforeConfirm?.();
         const data=await mutate('/accept',{proposal_id:proposal.id});if(data&&draftMode&&Object.keys(proposal.changes).length)onApply?.(data.state.draft);
-      },'hud-primary'));(reply||content).append(box);
+      },'hud-primary'),action('暂不处理',()=>mutate('/answer',{text:'这项建议暂不处理，请继续当前问题。',question_id:null})));(reply||content).append(box);
     }
     if(guide&&scene==='guide'){
       (reply||content).append(guideContent(guide));
@@ -177,9 +199,9 @@
     el('hint').textContent=busy?'正在发送…':state==='running'?'正在回复，输入会为你保留':'Ctrl + Enter 发送';
     el('input').disabled=!item?.bot;
     const history=el('history');history.replaceChildren();
-    history.append(node('h3','已确认资料'));
+    history.append(node('h3','项目备注'),node('p','已保存的约定供本项目助手和成员 Bot 参考。','hud-muted'));
     for(const fact of item?.state.facts||[]){const p=node('article');p.append(node('strong',fact.label),node('p',fact.value,'hud-text'));history.append(p);}
-    if(!item?.state.facts?.length)history.append(node('p','确认后的资料约定会保存在这里。','hud-muted'));
+    if(!item?.state.facts?.length)history.append(node('p','目前还没有保存项目备注。','hud-muted'));
     updateSend();
     if((q&&!silenced.has(q.id))||proposal&&!silenced.has(proposal.id))toggle(true);
     renderedKey=key;

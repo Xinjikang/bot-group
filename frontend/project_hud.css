@@ -35,6 +35,9 @@
 .hud-proposal dl{margin:8px 0}
 .hud-proposal dt{font-size:12px;color:var(--fg-2)}
 .hud-proposal dd{margin:2px 0 10px;white-space:pre-wrap;overflow-wrap:anywhere}
+.hud-change{margin:12px 0;padding-top:10px;border-top:1px solid var(--border-soft)}
+.hud-change h4{margin:0 0 8px;font-size:14px}
+.hud-proposal>.hud-link{margin-left:10px}
 .hud-primary{background:var(--accent)!important;color:var(--bg)!important;border:1px solid var(--accent);border-radius:9px;padding:7px 15px;font-weight:600!important}
 .hud-compose{flex-shrink:0;padding:12px 18px 14px;border-top:1px solid var(--border-soft);background:color-mix(in srgb,var(--card) 28%,transparent)}
 .hud-compose .hud-input-label{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}

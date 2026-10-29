@@ -9,6 +9,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 def fixture_response(bot, context):
     latest=(context.get('history') or [{}])[-1].get('text','')
+    if latest=='把简介改成用于测试的简介':
+        return {'text':'建议更新简介，确认后保存。','proposal':{
+            'reason':'按本次输入调整项目说明。','changes':{'description':'用于测试的简介'},'facts':[]}}
     if '怎么更换维护助手' in latest:
         return {'text':'可以直接在 HUD 里更换，当前项目的维护记录会保留。','guide':{
             'title':'更换维护助手','steps':[
@@ -17,7 +20,8 @@ def fixture_response(bot, context):
                 {'title':'保存并开始维护','body':'确认选择后点击“保存并开始维护”，由新的助手继续维护当前项目。'}]}}
     decisions = context.get('decisions', [])
     if decisions and not context.get('facts'):
-        return {'text': '我把你的回答整理成了资料登记建议，请确认。', 'proposal': {
+        return {'text': '建议记住你刚说明的资料位置，方便项目成员后续查找。', 'proposal': {
+            'reason': '记录本次确定的需求和原型位置。',
             'changes': {}, 'facts': [{'label': '需求资料来源', 'value': decisions[-1]['answer']}]}}
     if context.get('facts'):
         return {'text': '资料约定已经保存。接下来想完善哪一部分？'}

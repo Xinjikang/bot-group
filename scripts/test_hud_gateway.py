@@ -67,7 +67,7 @@ class HudGatewayTests(unittest.TestCase):
         p=patch.object(bridge.time,'sleep');p.start();self.addCleanup(p.stop)
 
     def run_prompt(self):
-        return bridge.respond(self.bot,'synthetic prompt',str(self.root),lambda *args:self.updates.append(args))
+        return bridge.respond(self.bot,'synthetic prompt',str(self.root),lambda *args:self.updates.append(args),system_prompt='Dedicated guidance')
 
     def test_public_session_and_stream(self):
         self.assertEqual(json.loads(self.run_prompt()),{'text':'ready'})
@@ -77,6 +77,9 @@ class HudGatewayTests(unittest.TestCase):
         self.assertEqual(create['editor'],{'mcp_servers':[]})
         self.assertTrue(create['ignore_rules'])
         self.assertFalse(create['accept_hooks'])
+        self.assertEqual(create['client_env']['HERMES_EPHEMERAL_SYSTEM_PROMPT'],'Dedicated guidance')
+        submitted=next(p for m,p in self.client.calls if m=='prompt.submit')
+        self.assertEqual(submitted['text'],'synthetic prompt')
         self.assertIn(('reasoning','核对项目目标'),self.updates)
         self.assertNotIn(('reasoning','unrelated'),self.updates)
         self.assertTrue(self.saved['terminal'])

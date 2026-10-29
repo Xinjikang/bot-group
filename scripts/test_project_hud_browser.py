@@ -89,7 +89,7 @@ def main():
         page.locator('#hud-scene-toggle').click()
         assert '已有完整文档' in page.locator('.hud-message-user').last.inner_text()
         assert 'specs-v2' in page.locator('.hud-message-user').last.inner_text()
-        assert '资料登记建议' in page.locator('.hud-message-assistant').last.inner_text()
+        assert '刚说明的资料位置' in page.locator('.hud-message-assistant').last.inner_text()
         assert page.locator('#hud-input').input_value()==''
         for selector in ('.hud-message-user .hud-message-text','.hud-message-assistant .hud-message-text'):
             assert page.locator(selector).last.evaluate("e=>{const a=e.getBoundingClientRect(),b=document.querySelector('.hud-scroll').getBoundingClientRect();return a.top>=b.top&&a.bottom<=b.bottom}")
@@ -97,7 +97,11 @@ def main():
         page.reload()
         page.wait_for_selector('.hud-proposal')
         assert page.locator('.hud-option').count()==0
-        page.get_by_role('button',name='确认保存维护资料',exact=True).click()
+        assert '以下建议尚未保存' in page.locator('.hud-proposal').inner_text()
+        assert '当前内容' in page.locator('.hud-proposal').inner_text()
+        assert '建议改为' in page.locator('.hud-proposal').inner_text()
+        assert '保存位置：项目备注' in page.locator('.hud-proposal').inner_text()
+        page.get_by_role('button',name='确认保存项目备注',exact=True).click()
         page.wait_for_function("!document.querySelector('.hud-proposal')",timeout=20000)
         page.locator('#hud-more').click()
         page.locator('#hud-history-toggle').click()
@@ -105,6 +109,25 @@ def main():
         page.locator('#hud-back').click()
         page.wait_for_function("document.querySelector('#project-hud').dataset.scene==='chat'")
         assert 'specs-v2' in page.locator('.hud-message-user').last.inner_text()
+        page.locator('#hud-input').fill('把简介改成用于测试的简介')
+        page.locator('#hud-send').click()
+        page.wait_for_selector('.hud-proposal',timeout=20000)
+        proposal_text=page.locator('.hud-proposal').inner_text()
+        assert '修改位置：项目设置' in proposal_text
+        assert '本地验证数据；此预览使用固定响应' in proposal_text
+        assert '用于测试的简介' in proposal_text
+        page.screenshot(path=str(args.evidence/'hud-change-comparison.png'))
+        page.set_viewport_size({'width':390,'height':844})
+        for theme in ('dark','light'):
+            page.evaluate('theme=>document.documentElement.dataset.theme=theme',theme)
+            box=page.locator('.hud-proposal').bounding_box()
+            assert box['x']>=0 and box['x']+box['width']<=390.5
+            page.screenshot(path=str(args.evidence/f'hud-change-mobile-{theme}.png'))
+        page.get_by_role('button',name='暂不处理',exact=True).click()
+        page.wait_for_function("!document.querySelector('.hud-proposal')",timeout=20000)
+        page.wait_for_function("!document.querySelector('#hud-send').disabled || document.querySelector('#project-hud').dataset.scene==='chat'")
+        page.set_viewport_size({'width':1440,'height':1000})
+        page.evaluate("document.documentElement.dataset.theme='dark'")
         page.locator('#hud-input').fill('怎么更换维护助手？')
         page.locator('#hud-send').click()
         page.wait_for_selector('#project-hud[data-scene="guide"] .hud-guide')
@@ -248,8 +271,7 @@ def main():
         line=page.locator('#hud-progress-text')
         assert line.evaluate('(e)=>e.scrollLeft>0 && e.scrollHeight<=e.clientHeight+1')
         first_elapsed=page.locator('#hud-progress-time').inner_text()
-        page.wait_for_timeout(1200)
-        assert page.locator('#hud-progress-time').inner_text()!=first_elapsed
+        page.wait_for_function("value=>document.querySelector('#hud-progress-time').textContent!==value",arg=first_elapsed,timeout=5000)
         for theme in ('dark','light'):
             page.evaluate('theme=>document.documentElement.dataset.theme=theme',theme)
             page.screenshot(path=str(args.evidence/f'hud-progress-mobile-{theme}.png'))

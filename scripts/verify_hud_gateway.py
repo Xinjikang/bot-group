@@ -18,6 +18,7 @@ def main():
     parser.add_argument('--expected-provider',required=True)
     parser.add_argument('--expected-host',required=True)
     parser.add_argument('--evidence',type=Path,required=True)
+    parser.add_argument('--scenario',choices=['receipt','explain','conflict','change'],default='receipt')
     mode=parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--live',action='store_true')
     mode.add_argument('--inspect-only',action='store_true')
@@ -38,7 +39,7 @@ def main():
     from engine import hud_runtime, hud_gateway, hermes_gateway, hermes_gateway_sessions
     if not hermes_gateway.enabled():
         raise RuntimeError('Selected Hermes installation does not use the group gateway path')
-    result={'passed':False,'mode':'inspect-only' if args.inspect_only else 'live','model':args.expected_model,'provider':args.expected_provider,
+    result={'passed':False,'scenario':args.scenario,'mode':'inspect-only' if args.inspect_only else 'live','model':args.expected_model,'provider':args.expected_provider,
             'host':args.expected_host,'reasoning_events':0,'stages':[],'calls':[]}
     original=hermes_gateway.connection
     def connect(*values,**options):
@@ -48,7 +49,9 @@ def main():
             result['calls'].append(method)
             response=rpc(method,**params)
             if method=='tools.show':result['tools_total']=response.get('total')
-            if method=='session.create':result['session_id']=response['session_id']
+            if method=='session.create':
+                result['session_id']=response['session_id']
+                result['dedicated_instructions']=params.get('client_env',{}).get('HERMES_EPHEMERAL_SYSTEM_PROMPT')==hud_runtime.SYSTEM
             return response
         client.rpc=observed
         return client,root,command
@@ -66,7 +69,7 @@ def main():
                 assert result['durable_admission'], 'Gateway lacks durable admissions'
                 snapshot=hermes_gateway_sessions.new(client,title='HUD 接口验证 · '+uuid.uuid4().hex,
                     workdir=str(args.evidence.parent),
-                    system_prompt='',model_args=[],launch_options={'toolsets':['no_mcp'], 'ignore_rules':True,
+                    system_prompt=hud_runtime.SYSTEM,model_args=[],launch_options={'toolsets':['no_mcp'], 'ignore_rules':True,
                         'max_turns':2,'checkpoints':False,'accept_hooks':False})
                 view=client.rpc('tools.show',session_id=snapshot['session_id'])
                 result['reasoning_display']=client.rpc('config.set',session_id=snapshot['session_id'],key='show_reasoning',value='1')
@@ -77,17 +80,39 @@ def main():
                 return
             finally:
                 client.close()
+        payload={'stage':'maintenance','project_created':True,
+                 'project':{'display_name':'合成验证项目','description':'帮助团队记录和跟踪软件缺陷'},'template':{},
+                 'materials':{'documents':{},'structure':['README.md','docs/ENGINEERING.md','src/main.py']},
+                 'inspection':{'checks':[]},'history':[{'text':'用一句话确认已收到合成测试资料。'}],
+                 'facts':[],'allowed_changes':['description']}
+        if args.scenario=='explain':
+            payload['history']=[{'text':'项目备注是什么？为什么需要我保存？我只是想问文档放在哪里。'}]
+            payload['materials']['documents']={'README.md':{'text':'需求放在 docs/requirements/，设计放在 docs/design/。'}}
+        elif args.scenario=='conflict':
+            payload['history']=[{'text':'现在可以让成员开始开发了吗？请说清楚还缺什么。'}]
+            payload['materials']['documents']={'README.md':{'text':'远程代码仓库已经配置。CodeGraph 已建立索引。'},
+                'docs/ENGINEERING.md':{'text':'项目约定：允许先在本地编写和测试代码；提交到远程前配置远程仓库地址；启用 CodeGraph，交付前建立并更新索引。'}}
+            payload['inspection']['checks']=[{'key':'git_remote','status':'missing','summary':'尚未配置代码远程仓库','evidence':{'remotes':[]}},
+                {'key':'codegraph','status':'missing','summary':'CodeGraph 可用，此项目尚未建立代码索引','evidence':{}}]
+        elif args.scenario=='change':
+            payload['history']=[{'text':'请把项目简介改成“帮助团队管理测试任务”。'}]
         with patch.object(hermes_gateway,'connection',side_effect=connect), \
              patch.object(hud_gateway,'_save',side_effect=saved), \
              patch.object(hud_runtime,'_run',side_effect=AssertionError('Unexpected legacy subprocess')), \
              hud_runtime.progress_sink(progress):
             result['response']=hud_runtime.respond(
                 {'runtime':'hermes','config_root':str(args.home),'profile':args.profile},
-                {'stage':'purpose','project_created':False,'project':{'display_name':'合成网关验证项目',
-                 'description':'只验证维护助手响应，无需读取文件或调用工具。'},'template':{},
-                 'materials':{},'history':[{'text':'用一句话确认已收到合成测试资料。'}],
-                 'facts':[],'allowed_changes':[]})
+                payload)
+        from engine.project_hud import validate_response
+        validate_response(result['response'])
+        if args.scenario in ('explain','conflict'):
+            assert not result['response'].get('proposal'), 'Explanations must not create configuration changes or notes'
+        if args.scenario=='conflict':
+            assert not any(word in result['response']['text'] for word in ('不能开始开发','无法开始开发','不能开始：')), 'Delivery checks must not become an invented development blocker'
+        if args.scenario=='change':
+            assert result['response']['proposal']['changes']=={'description':'帮助团队管理测试任务'}
         assert result.get('tools_total')==0,result
+        assert result.get('dedicated_instructions'),result
         assert result['calls'].count('prompt.submit')==1,result
         assert result['execution'].get('terminal'),result
         result['passed']=True

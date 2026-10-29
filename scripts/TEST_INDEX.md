@@ -1,8 +1,12 @@
 # 测试脚本索引
 
+项目助手引导与实测依据：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_inspection scripts.test_project_hud scripts.test_hud_gateway -q`。隔离目录覆盖关键文档优先读取、扫描限额、失效链接、仓库范围、Git 远程缺失与凭据隐藏、CodeGraph 未初始化/过期/失败、系统指令分离、当前值来源与重复提案消除。浏览器复用 `test_project_hud_browser.py --url <隔离地址> --evidence <报告目录>` 检查保存位置、当前内容与建议内容对照、备注确认及窄屏可读性。
+
+真实引导回复：在下述 `verify_hud_gateway.py --live` 命令追加 `--scenario explain|conflict|change`，分别验证解释资料位置时直接回答、文档声明与 Git/CodeGraph 检测冲突时保留缺口、用户明确修改简介时返回待确认提案。每次使用新的 evidence 文件，只发送合成项目资料；同时校验会话专用系统指令、零工具、单次提交及结果格式，实际措辞另行审阅。
+
 HUD 普通回复兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud scripts.test_hud_gateway -q`。隔离数据库验证普通中文回复保存为对话且保持项目配置与共享资料原值；同时覆盖 JSON/围栏提案解析、空输出、损坏结构、越权字段和超长正文校验，复用提案确认回归。
 
-HUD 更多菜单仅保留“已确认资料”和“设置”。复用 `test_project_hud_browser.py` 的隔离浏览器回归，向导草稿检查保留输入与模板状态，移除通过项目切换入口恢复草稿的步骤。
+HUD 更多菜单仅保留“项目备注”和“设置”。复用 `test_project_hud_browser.py` 的隔离浏览器回归，向导草稿检查保留输入与模板状态，移除通过项目切换入口恢复草稿的步骤。
 
 HUD 网关分流：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud scripts.test_hud_gateway scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway -q`。覆盖群聊共用运行时判定、新版网关错误保持网关路径、旧版公开 CLI、空工具会话、推理事件过滤、断线复用 admission、提交回执未知时停止重复提交、超时按 generation 中断及终态核对。使用隔离数据库和模拟公开 RPC。
 

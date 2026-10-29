@@ -3,15 +3,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-from pathlib import Path
 import threading
 import time
 import uuid
 from contextlib import contextmanager
 
 from fastapi import HTTPException
-from . import db, events, project_templates
+from . import db, events, project_templates, hud_inspection
 
 _LOCK = threading.RLock()
 DRAFT_FIELDS = {'display_name', 'description', 'root', 'template', 'directory_mode', 'worktree_root'}
@@ -242,7 +240,10 @@ def accept(sid, body):
             facts[:] = [f for f in facts if f['label'] != fact['label']]
             facts.append({**fact, 'confirmed_at': db.now_iso()})
         share_facts(conn, item)
-        add_entry(conn, item, 'system', {'text': '已确认并保存配置', 'proposal': proposal})
+        saved_text = ('已更新项目设置' if item['project'] else '已更新向导草稿') if changes else ''
+        if proposal['facts']:
+            saved_text += ('，并保存项目备注' if saved_text else '已保存项目备注')
+        add_entry(conn, item, 'system', {'text': saved_text, 'proposal': proposal})
         item['state'].pop('proposal')
         result = store(conn, item, queue=True)
         events.bus.publish('project.updated', {'project': item['project']})
@@ -264,40 +265,7 @@ def project_snapshot(conn, project):
 
 def document_context(root, *, include_contents=True):
     """Only bounded ordinary project documentation is offered to the model."""
-    result = {'files': [], 'documents': {}, 'signatures': {}}
-    if not root or not Path(root).is_dir():
-        return result
-    base = Path(root).resolve()
-    total = 0
-    for folder, dirs, names in os.walk(base, followlinks=False):
-        dirs[:] = sorted(d for d in dirs if not d.startswith('.') and d not in
-                         {'node_modules', 'reports', 'targets', 'dist', 'build', '__pycache__', 'venv'}
-                         and not (Path(folder) / d).is_symlink()
-                         and not getattr((Path(folder) / d).lstat(), 'st_file_attributes', 0) & 1024)
-        if len(Path(folder).relative_to(base).parts) > 4:
-            dirs[:] = []
-            continue
-        for name in sorted(names):
-            path = Path(folder) / name
-            if name.startswith('.') or path.suffix.lower() not in ('.md', '.txt') or any(s in name.lower() for s in ('secret', 'credential', 'password', 'token')):
-                continue
-            if path.is_symlink() or getattr(path.lstat(), 'st_file_attributes', 0) & 1024 or not path.resolve().is_relative_to(base):
-                continue
-            relative = path.relative_to(base).as_posix()
-            result['files'].append(relative)
-            result['signatures'][relative] = [path.stat().st_size, path.stat().st_mtime_ns]
-            if include_contents and total < 45000 and path.stat().st_size < 150000:
-                try:
-                    raw = path.read_bytes()
-                    full = raw.decode('utf-8-sig')
-                    content = full[:min(10000, 45000 - total)]
-                    result['documents'][relative] = {'text': content, 'sha256': hashlib.sha256(raw).hexdigest(), 'truncated': len(content)<len(full)}
-                    total += len(content)
-                except (OSError, UnicodeError):
-                    pass
-            if len(result['files']) >= 160:
-                return result
-    return result
+    return hud_inspection.documents(root, include_contents=include_contents)
 
 
 def context(conn, item):
@@ -311,8 +279,9 @@ def context(conn, item):
     template = project_templates.load(selected) if selected != 'blank' else {'id': 'blank', 'description': '空项目：从目标、输入和产出建立约定'}
     history = [json.loads(r[0]) for r in conn.execute('SELECT content FROM hud_entries WHERE session=? '
                'AND generation=? ORDER BY id DESC LIMIT 16', (item['id'], item['generation']))][::-1]
+    materials = document_context(config.get('root'))
     return {'stage': item['stage'], 'project_created': bool(item['project']), 'project': config, 'template': template,
-            'materials': document_context(config.get('root')), 'facts': state.get('facts', []),
+            'materials': materials, 'inspection': hud_inspection.inspect(config, materials), 'facts': state.get('facts', []),
             'deferred_questions': state.get('deferred_questions', [])[-12:],
             'decisions': state.get('decisions', [])[-60:], 'history': history,
             'allowed_changes': sorted({'display_name', 'description'} if item['project'] else DRAFT_FIELDS)}
@@ -350,8 +319,10 @@ def validate_response(value):
         question['id'] = uuid.uuid4().hex
     proposal = value.get('proposal')
     if proposal:
-        if not isinstance(proposal, dict) or set(proposal) - {'changes', 'facts'}:
+        if not isinstance(proposal, dict) or set(proposal) - {'changes', 'facts', 'reason'}:
             raise ValueError('AI 配置提案格式无效')
+        if 'reason' in proposal and (not isinstance(proposal['reason'], str) or len(proposal['reason']) > 1200):
+            raise ValueError('AI 修改说明格式无效')
         changes, facts = proposal.get('changes', {}), proposal.get('facts', [])
         if not isinstance(changes, dict) or set(changes) - DRAFT_FIELDS or any(not isinstance(v, str) or len(v) > 6000 for v in changes.values()):
             raise ValueError('AI 配置字段无效')
@@ -418,7 +389,7 @@ def run_one(sid):
             bot = valid_bot(conn, item['bot_id'])
             payload = context(conn, item)
             if item['project']:
-                snapshot = {**payload['project'], 'documents': payload['materials']['signatures']}
+                snapshot = {**payload['project'], 'documents': payload['materials']['signatures'], 'inspection': payload['inspection']}
                 conn.execute('UPDATE hud_sessions SET digest=? WHERE id=? AND revision=?',
                              (hashlib.sha256(encode(snapshot).encode()).hexdigest(), sid, revision))
         with progress_sink(progress), owner(sid):
@@ -428,6 +399,16 @@ def run_one(sid):
         proposal = response.get('proposal')
         if proposal and set(proposal['changes']) - set(payload['allowed_changes']):
             raise ValueError('此配置需要通过项目设置修改')
+        if proposal:
+            before = {key: payload['project'].get(key) or '' for key in proposal['changes']}
+            proposal['changes'] = {key: value for key, value in proposal['changes'].items() if value != before[key]}
+            previous_facts = {fact['label']: fact['value'] for fact in payload['facts']}
+            proposal['facts'] = [fact for fact in proposal['facts'] if previous_facts.get(fact['label']) != fact['value']]
+            proposal['before'] = before
+            proposal['before_facts'] = previous_facts
+            if not proposal['changes'] and not proposal['facts']:
+                response['proposal'] = proposal = None
+                response['text'] = '这些内容与当前配置和项目备注一致，已核对完成。'
         if proposal and item['project']:
             proposal['base_project'] = {k: payload['project'][k] for k in ('display_name', 'description')}
         error = ''
@@ -453,21 +434,32 @@ def run_one(sid):
 
 
 def scan():
-    with _LOCK, connection() as conn:
-        # Only sessions explicitly activated by the user receive automatic checks.
-        for record in conn.execute("SELECT id FROM hud_sessions WHERE project IS NOT NULL AND status='idle'").fetchall():
-            item = row(conn, record[0])
+    with connection() as conn:
+        ids = [r[0] for r in conn.execute("SELECT id FROM hud_sessions WHERE project IS NOT NULL AND status='idle' ORDER BY checked")]
+    # Filesystem and tool probes run outside the HUD lock and database transaction.
+    for sid in ids:
+        with _LOCK, connection() as conn:
+            item = row(conn, sid)
+            if item['status'] != 'idle':
+                continue
             if not item['bot_id'] or time.time() - item['checked'] < 60:
                 continue
             if not conn.execute('SELECT 1 FROM projects WHERE name=? AND removed=0 AND archived=0', (item['project'],)).fetchone():
                 continue
-            snapshot = project_snapshot(conn, item['project'])
-            snapshot['documents'] = document_context(snapshot['root'], include_contents=False)['signatures']
-            digest = hashlib.sha256(encode(snapshot).encode()).hexdigest()
+            project = project_snapshot(conn, item['project'])
+        materials = document_context(project['root'])
+        snapshot = {**project, 'documents': materials['signatures'], 'inspection': hud_inspection.inspect(project, materials)}
+        digest = hashlib.sha256(encode(snapshot).encode()).hexdigest()
+        with _LOCK, connection() as conn:
+            current = row(conn, sid)
+            if current['revision'] != item['revision'] or current['status'] != 'idle':
+                continue
+            if project_snapshot(conn, item['project']) != project:
+                continue
             conn.execute('UPDATE hud_sessions SET checked=? WHERE id=?', (time.time(), item['id']))
             if digest != item['digest']:
                 conn.execute("UPDATE hud_sessions SET digest=?,status='queued' WHERE id=?", (digest, item['id']))
-        conn.commit()
+    with connection() as conn:
         return [r[0] for r in conn.execute("SELECT id FROM hud_sessions WHERE status='queued' AND updated<? ORDER BY updated LIMIT 10", (time.time()-2,))]
 
 
