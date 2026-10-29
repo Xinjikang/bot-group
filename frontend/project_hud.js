@@ -44,11 +44,12 @@
     el('toggle').setAttribute('aria-expanded',String(value)); host.querySelector('.hud-chevron').textContent=value?'收起':'展开';
     if (!value && current?.state.question) silenced.add(current.state.question.id);
     if (!value && current?.state.proposal) silenced.add(current.state.proposal.id);
-    placeBesideDetail();
+    placeBesideDialog();
   }
-  function placeBesideDetail() {
-    const detail=document.querySelector('#dlg-project-detail');
-    const rect=detail?.open&&host.parentElement===document.body?detail.getBoundingClientRect():null;
+  function placeBesideDialog() {
+    const dialog=host.parentElement===document.body
+      ?document.querySelector('#dlg-project-detail'):host.closest('dialog');
+    const rect=dialog?.open?dialog.getBoundingClientRect():null;
     const available=rect?innerWidth-rect.right-16:0;
     const docked=!!(expanded&&rect&&available>=300);
     host.classList.toggle('hud-docked',docked);
@@ -290,22 +291,21 @@
     finally{refreshing=false;}
   }
   window.ProjectHUD={
-    async begin(dialog,apply,id,flush){draftMode=true;onApply=apply;beforeConfirm=flush;dialog.append(host);const data=await attach(null,id||null);toggle(true);return data;},
+    async begin(dialog,apply,id,flush){draftMode=true;onApply=apply;beforeConfirm=flush;dialog.append(host);placeBesideDialog();const data=await attach(null,id||null);toggle(true);return data;},
     saveDraft(draft,stage){
       const id=draftId;
       chain=chain.catch(()=>{}).then(async()=>{if(!draftMode||current?.id!==id)return;while(busy)await new Promise(r=>setTimeout(r,100));await mutate('',{draft,stage},'PATCH');});return chain;
     },
     async bind(requestId){await chain;return await mutate('/bind',{request_id:requestId});},
-    end(){chain.finally(()=>{draftMode=false;onApply=null;beforeConfirm=null;document.body.append(host);attach(S.currentProject);});},
+    end(){chain.finally(()=>{draftMode=false;onApply=null;beforeConfirm=null;document.body.append(host);placeBesideDialog();attach(S.currentProject);});},
     changed(){refresh();},
   };
   setInterval(refresh,3000);
-  const detailDialog=document.querySelector('#dlg-project-detail');
-  if(detailDialog){
-    new ResizeObserver(placeBesideDetail).observe(detailDialog);
-    new MutationObserver(placeBesideDetail).observe(detailDialog,{attributes:true,attributeFilter:['open','style']});
+  for(const dialog of document.querySelectorAll('#dlg-project-detail,#dlg-project-import')){
+    new ResizeObserver(placeBesideDialog).observe(dialog);
+    new MutationObserver(placeBesideDialog).observe(dialog,{attributes:true,attributeFilter:['open','style']});
   }
-  window.addEventListener('resize',placeBesideDetail);
+  window.addEventListener('resize',placeBesideDialog);
   document.querySelector('#dlg-project-detail')?.addEventListener('close',()=>refresh());
   const authChanged=()=>{
     host.hidden=!document.querySelector('#login')?.hidden;

@@ -55,7 +55,7 @@ def main():
             detail_box=page.locator('#dlg-project-detail').bounding_box()
             hud_box=page.locator('#project-hud').bounding_box()
             assert detail_box['x']>=0 and hud_box['x']+hud_box['width']<=width
-            if width==1120:
+            if width-detail_box['x']-detail_box['width']-16>=300:
                 assert detail_box['x']+detail_box['width']<hud_box['x']
                 assert abs(detail_box['height']-hud_box['height'])<1
             else:
@@ -130,8 +130,43 @@ def main():
         page.wait_for_function("document.querySelector('#project-hud').dataset.scene==='chat'&&document.querySelector('#hud-input').value===''")
         page.evaluate("openProjectImport({mode:'new'})")
         page.wait_for_selector('#dlg-project-import[open] #project-hud')
-        # Collapse exposes the wizard while keeping its persistent HUD entry.
-        if page.locator('#hud-toggle').get_attribute('aria-expanded')=='true':page.locator('#hud-toggle').click()
+        page.wait_for_function("document.querySelector('#hud-toggle').getAttribute('aria-expanded')==='true'")
+        for width in (1440,1400,1390,853,390):
+            page.set_viewport_size({'width':width,'height':844})
+            page.locator('#hud-toggle').click()
+            original_wizard=page.locator('#dlg-project-import').bounding_box()
+            page.locator('#import-name').fill('可恢复的项目草稿')
+            page.locator('#hud-toggle').click()
+            page.wait_for_timeout(100)
+            for theme in ('dark','light'):
+                page.evaluate("theme => document.documentElement.dataset.theme=theme",theme)
+                wizard=page.locator('#dlg-project-import').bounding_box()
+                body=page.locator('.import-body').bounding_box()
+                footer=page.locator('.import-footer').bounding_box()
+                hud=page.locator('#project-hud').bounding_box()
+                assert wizard==original_wizard,(wizard,original_wizard)
+                assert body['height']>=80,body
+                assert footer['y']+footer['height']<=844,footer
+                assert hud['x']>=0 and hud['x']+hud['width']<=width,hud
+                if width-wizard['x']-wizard['width']-16>=300:
+                    assert abs(wizard['x']+wizard['width']+8-hud['x'])<1,(wizard,hud)
+                    assert abs(hud['y']-wizard['y'])<1
+                    assert abs(hud['height']-wizard['height'])<1
+                    assert page.locator('#project-hud').evaluate('(e)=>e.classList.contains("hud-docked")')
+                else:
+                    assert not page.locator('#project-hud').evaluate('(e)=>e.classList.contains("hud-docked")')
+                send=page.locator('#hud-send').bounding_box()
+                assert send['y']+send['height']<=844,send
+                assert page.locator('.hud-scroll').bounding_box()['height']>=50
+                page.screenshot(path=str(args.evidence/f'hud-wizard-{width}-{theme}.png'))
+            page.locator('#hud-input').focus()
+            page.keyboard.press('Escape')
+            assert page.locator('#dlg-project-import').evaluate('(e)=>e.open')
+            assert page.locator('#hud-panel').is_hidden()
+            assert page.locator('#import-name').input_value()=='可恢复的项目草稿'
+            page.locator('#hud-toggle').click()
+        page.set_viewport_size({'width':1440,'height':1000})
+        page.evaluate("document.documentElement.dataset.theme='dark'")
         page.locator('#import-name').fill('可恢复的项目草稿')
         page.locator('#import-description').fill('创建算法评测项目，资料放在自定义目录。')
         page.locator('#import-template').select_option('algorithm')
@@ -201,7 +236,7 @@ def main():
         assert not errors,errors
         (args.evidence/'browser.json').write_text(json.dumps({'passed':True,'errors':errors,'checks':[
             'automatic question expansion','all detail tabs retain identical window geometry','assistant and sent user text visible in conversation','options send as user message and disappear','choice / confirmation / conversation / guide scene transitions','guide history and free-text follow-up','detail position unchanged; HUD docks at equal height and returns on collapse','project details stay open with unsaved fields and active tab','options and custom text','refresh preserves input','confirmed facts',
-            'wizard draft restore','390px dark/light','Escape and focus','detail project context and mobile reply','free-text question without options']},ensure_ascii=False,indent=2),encoding='utf-8')
+            'wizard uses detail docking rule and floating fallback; geometry and draft preserved','wizard draft restore','390px dark/light','Escape and focus','detail project context and mobile reply','free-text question without options']},ensure_ascii=False,indent=2),encoding='utf-8')
         browser.close()
 
 
