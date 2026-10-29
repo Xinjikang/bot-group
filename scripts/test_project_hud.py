@@ -332,7 +332,7 @@ class HudTests(unittest.TestCase):
         self.assertIn(('reasoning', '确认资料来源', False), updates)
         self.assertIn('item.completed', result)
         script = 'import sys; sys.exit(1)'
-        with self.assertRaisesRegex(RuntimeError, '维护调用失败'):
+        with self.assertRaisesRegex(RuntimeError, '子进程退出码 1'):
             hud_runtime._run([sys.executable, '-c', script], '', env, str(self.root))
 
     def test_gateway_execution_record_survives_failed_hud_run(self):
@@ -370,6 +370,7 @@ class HudTests(unittest.TestCase):
             captured.append(cwd)
             self.assertEqual(command,['hermes-fixture','chat','-Q','--ignore-rules','--query-file','-'])
             self.assertEqual(env['HERMES_HOME'],cwd)
+            self.assertEqual(env['HERMES_DISABLE_LAZY_INSTALLS'],'1')
             self.assertEqual(env['HERMES_EPHEMERAL_SYSTEM_PROMPT'],hud_runtime.SYSTEM)
             self.assertNotIn(hud_runtime.SYSTEM,prompt)
             config=yaml.safe_load((Path(cwd)/'config.yaml').read_text(encoding='utf-8'))

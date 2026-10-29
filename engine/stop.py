@@ -48,7 +48,27 @@ def _profile_state_db(profile: str) -> Path:
 
 
 def _kill_process_tree(pid: int) -> bool:
-    """Windows 硬杀进程树（/T 连子进程 MCP 一起，/F 强制）。"""
+    """Terminate the selected process and its descendants on each platform."""
+    if os.name != 'nt':
+        import psutil
+        try:
+            owner = psutil.Process()
+            if pid <= 1 or pid in {owner.pid, *(p.pid for p in owner.parents())}:
+                return False
+            root = psutil.Process(pid)
+            children = root.children(recursive=True)
+            targets = list(reversed(children)) + [root]
+            for process in targets:
+                try:
+                    process.kill()
+                except psutil.NoSuchProcess:
+                    pass
+            _, alive = psutil.wait_procs(targets, timeout=15)
+            return not any(p.is_running() and p.status() != psutil.STATUS_ZOMBIE for p in alive)
+        except psutil.NoSuchProcess:
+            return True
+        except (psutil.Error, OSError):
+            return False
     try:
         r = subprocess.run(
             ["taskkill", "/T", "/F", "/PID", str(pid)],

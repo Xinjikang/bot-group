@@ -121,6 +121,7 @@ def _run(command, prompt, env, cwd):
     with _PROCESS_LOCK:
         _PROCESSES.add(proc)
     output = []
+    errors = []
     progress = _PROGRESS.get()
 
     def read_output():
@@ -138,8 +139,8 @@ def _run(command, prompt, env, cwd):
                 logging.getLogger(__name__).warning('HUD progress update failed: %s', type(exc).__name__)
 
     def drain_errors():
-        while proc.stderr.read(8192):
-            pass
+        while chunk := proc.stderr.read(8192):
+            errors[:] = [(''.join(errors) + chunk)[-16384:]]
 
     def send_prompt():
         try:
@@ -166,7 +167,10 @@ def _run(command, prompt, env, cwd):
             _PROCESSES.discard(proc)
     stdout = ''.join(output)
     if proc.returncode:
-        raise RuntimeError('AI 维护调用失败，请检查所选 Bot 的模型配置与登录状态后重试')
+        diagnostic = stdout + ''.join(errors)
+        if 'ModuleNotFoundError' in diagnostic or 'ImportError' in diagnostic:
+            raise RuntimeError('项目助手启动失败：运行环境缺少依赖或依赖无法导入，请修复所选 Bot 的运行环境后重试')
+        raise RuntimeError(f'项目助手运行失败（子进程退出码 {proc.returncode}），输入已保存；请检查所选 Bot 的运行日志')
     return stdout
 
 
@@ -222,6 +226,8 @@ def respond(bot, payload):
                 if (home / name).is_file():
                     shutil.copyfile(home / name, scratch / name)
             env['HERMES_HOME'] = str(scratch)
+            # Keep the selected CLI runtime when using a disposable data home.
+            env['HERMES_DISABLE_LAZY_INSTALLS'] = '1'
             env['HERMES_EPHEMERAL_SYSTEM_PROMPT'] = SYSTEM
             report_progress('stage', '正在通过旧版 Hermes CLI 检查项目')
             raw = _run(command() + ['chat', '-Q', '--ignore-rules', '--query-file', '-'],

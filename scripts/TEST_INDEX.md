@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+跨平台兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_posix_compatibility scripts.test_install scripts.test_mcp_lock scripts.test_directory_picker scripts.test_process_query scripts.test_process_tree scripts.test_project_hud scripts.test_release_upgrade scripts.test_bootstrap -q`。隔离目录/模拟进程覆盖目标解释器 marker 求值、安装版本漂移、POSIX Python/Hermes 名称及 profile 范围、进程树保护、macOS/Linux 目录窗口命令与取消/失败、HUD 依赖错误、ZIP shell 权限和 LF。设置 `BASH_TEST_BIN` 为 Bash 可执行路径可验证升级脚本的含空格路径、参数及退出码；未配置时仅跳过该项。真实 Windows 子进程用例需要进程查询和终止权限，macOS 原生窗口与整机安装仍需对应平台验证。
+
 升级反馈：`python -X utf8 -B scripts/test_app_upgrade_browser.py --evidence <主目录报告目录>/upgrade-browser`，需要 Playwright 与 Chrome。合成 HTTP 隔离升级操作，覆盖两个入口的慢响应、提交中即时提示、500 通用错误、503 具体原因、关闭弹窗后保留错误与允许重试、轮询错误及恢复、响应丢失续查和成功刷新；检查桌面、390px 及深浅主题。
 
 项目助手引导与实测依据：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_inspection scripts.test_project_hud scripts.test_hud_gateway -q`。隔离目录覆盖关键文档优先读取、扫描限额、失效链接、仓库范围、Git 远程缺失与凭据隐藏、CodeGraph 未初始化/过期/失败、系统指令分离、当前值来源与重复提案消除。浏览器复用 `test_project_hud_browser.py --url <隔离地址> --evidence <报告目录>` 检查保存位置、当前内容与建议内容对照、备注确认及窄屏可读性。

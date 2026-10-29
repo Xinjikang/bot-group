@@ -51,7 +51,7 @@ bot-group 希望让多个 AI 成员像一支持续运作的团队，带着项目
 
 ## 目录结构
 
-程序文件、配置和运行数据默认都放在项目根目录。`.env` 由安装程序创建，数据库、附件、日志和备份随运行生成。
+默认数据根目录是安装目录。数据库位于 `data/group.db`；`.env`、`attachments/`、`logs/` 和 `backups/` 直接位于安装目录下。`data/` 子目录用于数据库，日志仍在 `logs/engine.log` 和 `logs/engine-startup.log`。显式设置数据目录或数据库路径时，以对应配置为准。
 
 ```
 bot-group/
@@ -64,7 +64,7 @@ bot-group/
 ├── README.md             # 英文首页
 ├── README.zh-CN.md       # 中文说明
 ├── .env                  # 本机配置：端口、登录密码等，按需编辑
-├── group.db              # 数据库：项目、成员、聊天记录、需求和任务
+├── data/group.db         # 数据库：项目、成员、聊天记录、需求和任务
 ├── attachments/          # 聊天中上传的图片和文件
 ├── logs/                 # 启动与运行日志
 ├── backups/              # 升级前的数据和程序备份

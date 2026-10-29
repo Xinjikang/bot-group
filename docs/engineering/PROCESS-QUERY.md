@@ -2,6 +2,8 @@
 
 ## 接口与调用方
 
+进程名匹配统一去除 `.exe` 后缀，并识别 `python`、`python3`、`python3.11` 等版本化 Python 名称与 Hermes 入口；候选仍须通过精确 profile/session 参数检查。POSIX 进程树通过 psutil 读取父子关系，清理限定已识别的 Bot 树并保护引擎及其宿主祖先进程；已退出的僵尸进程视为停止，权限失败保持错误状态。
+
 `engine/process_query.py` 使用 psutil，运行期间直接访问进程信息。Windows 枚举先调用 `process_tree.snapshot()` 获取当前进程名称，仅为匹配候选创建新的 psutil 进程对象并复核名称。`command_line(pid, scope=...)` 返回参数列表，进程退出返回 `[]`，查询失败返回 `None`。`list_processes(names, scope=...)` 返回 `(pid, argv)` 列表，枚举或相关候选读取失败返回 `None`。
 
 调用方必须保留 `None` 与 `[]` 的区别。`session_busy` 将未知状态视为暂缓启动，进程停止和生命周期检查沿用同一保护边界。活进程返回空命令行时，查询结果为未知。读取命令行后再次校验进程存活与身份，处理枚举期间退出及 PID 复用竞争。

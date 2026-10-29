@@ -175,23 +175,26 @@ def selfcheck() -> None:
 
 
 def verify_lock_versions() -> bool:
-    """核验 venv 已装依赖版本与 requirements.lock 锁定版本逐项一致（lock 漂移不得盖就绪章）。
-
-    只对 `name==version` 精确锁定行做版本核对（本仓库 lock 均为精确 == 行）；缺包或版本不符返回 False。
-    修复 node 1071 P1：selfcheck 仅 import 少数包，fastapi==999.999.999 锁漂移会被误盖就绪章。
-    """
+    """在目标 venv 中求值环境标记并校验精确版本；缺包或锁定漂移保持未就绪。"""
     if not LOCKFILE.exists():
         return False
     code = (
         "import importlib.metadata as md, sys\n"
+        "from pip._vendor.packaging.requirements import Requirement\n"
+        "from pathlib import Path\n"
         "bad = []\n"
-        "for raw in open(sys.argv[1], encoding='utf-8'):\n"
+        "for raw in Path(sys.argv[1]).read_text(encoding='utf-8').splitlines():\n"
         "    line = raw.split('#', 1)[0].strip()\n"
-        "    if '==' not in line:\n"
+        "    if not line:\n"
         "        continue\n"
-        "    name, want = line.split('==', 1)\n"
-        "    name = name.strip()\n"
-        "    want = want.split(';', 1)[0].strip()\n"
+        "    req = Requirement(line)\n"
+        "    if req.marker and not req.marker.evaluate():\n"
+        "        continue\n"
+        "    specs = list(req.specifier)\n"
+        "    if len(specs) != 1 or specs[0].operator != '==' or '*' in specs[0].version:\n"
+        "        bad.append(f'{req.name}: exact version required')\n"
+        "        continue\n"
+        "    name, want = req.name, specs[0].version\n"
         "    try:\n"
         "        got = md.version(name)\n"
         "    except md.PackageNotFoundError:\n"
@@ -245,7 +248,14 @@ def do_install(rebuild: bool = False, base_python: str | None = None) -> int:
         env = first_config()
         print(f"[install] 首次配置：{env}")
         selfcheck()
+        if not verify_lock_versions():
+            raise RuntimeError('依赖版本与当前平台锁定清单不一致，请重新安装')
         print("[install] 自检通过")
+        if os.name != 'nt':
+            for name in ('bootstrap.sh', 'install.sh', 'start.sh', 'stop.sh', 'upgrade.sh'):
+                script = PROGRAM_ROOT / name
+                if script.is_file():
+                    script.chmod(script.stat().st_mode | 0o111)
         write_state()
         print(f"[install] 就绪状态：{state_path()}（venv Python {venv_python_version()}）")
         from engine.maintenance.desktop import ensure_shortcut

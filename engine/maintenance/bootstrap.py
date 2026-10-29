@@ -51,6 +51,13 @@ def _extract(archive: Path, dest: Path, archive_type: str) -> None:
     if archive_type == "zip":
         with zipfile.ZipFile(archive) as z:
             z.extractall(dest)
+            if os.name != 'nt':
+                for member in z.infolist():
+                    target = (dest / member.filename).resolve()
+                    if not target.is_relative_to(dest.resolve()):
+                        raise RuntimeError('归档路径超出解压目录')
+                    if not member.is_dir() and (member.external_attr >> 16) & 0o111:
+                        target.chmod(0o755)
     else:  # tar.gz
         with tarfile.open(archive) as t:
             t.extractall(dest)

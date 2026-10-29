@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 
@@ -55,11 +56,18 @@ def command_line(pid: int, *, scope: str) -> list[str] | None:
     return argv
 
 
+def matches_name(name: str, names: set[str]) -> bool:
+    """Match executable basenames, including versioned POSIX Python launchers."""
+    base = name.lower().removesuffix('.exe')
+    normalized = {value.lower().removesuffix('.exe') for value in names}
+    return base in normalized or ('python' in normalized and re.fullmatch(r'pythonw?(?:\d+(?:\.\d+)*)?', base) is not None)
+
+
 def _candidate_pids(names: set[str]) -> list[int]:
     if os.name == 'nt':
         from .process_tree import snapshot
         # Toolhelp names are current and avoid opening every system process.
-        return [pid for pid, (_, name) in snapshot().items() if name in names]
+        return [pid for pid, (_, name) in snapshot().items() if matches_name(name, names)]
     return psutil.pids()
 
 
@@ -71,7 +79,7 @@ def list_processes(names: set[str], *, scope: str) -> list[tuple[int, list[str]]
             try:
                 # Fresh instances avoid process_iter's cached Windows names after PID reuse.
                 process = psutil.Process(pid)
-                if process.name().lower() not in names:
+                if not matches_name(process.name(), names):
                     continue
                 found.append((process.pid, _command(process)))
             except psutil.NoSuchProcess:

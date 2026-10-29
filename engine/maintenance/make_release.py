@@ -35,7 +35,7 @@ _MANAGED_TOP = (
     "engine", "tools", "frontend", "doc", "docs", "mcp", "templates",
     "requirements.txt", "requirements.lock", "install.py", "install.sh",
     "install.bat", "bootstrap.py", "bootstrap.sh", "bootstrap.bat",
-    "start.bat", "start.sh", "stop.bat", "stop.sh", "upgrade.py",
+    "start.bat", "start.sh", "stop.bat", "stop.sh", "upgrade.sh", "upgrade.py",
     "AGENTS.md", "README.md", "README.zh-CN.md", "LICENSE", "install.ps1", "upgrade.bat",
 )
 
@@ -118,6 +118,12 @@ def make_release(root: Path, out_dir: Path, name: str, version: str, base_url: s
         for rel in files:
             if rel in bridges:
                 z.writestr(rel, bridges[rel])
+            elif rel.endswith('.sh'):
+                entry = zipfile.ZipInfo(rel)
+                entry.create_system = 3
+                entry.external_attr = 0o100755 << 16
+                entry.compress_type = zipfile.ZIP_DEFLATED
+                z.writestr(entry, (root / rel).read_bytes().replace(b'\r\n', b'\n'))
             elif rel != "VERSION":
                 z.write(root / rel, rel)
     sha = hashlib.sha256(archive.read_bytes()).hexdigest()

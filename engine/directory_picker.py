@@ -1,6 +1,7 @@
-"""Native Windows folder selection for the local administrator UI."""
+"""Platform folder selection for the local administrator UI."""
 import os
 import subprocess
+import sys
 import threading
 
 from fastapi import HTTPException
@@ -115,27 +116,60 @@ try {
 """
 
 
+_MAC_SCRIPT = '''
+try
+    set initialPath to system attribute "GROUP_PICKER_INITIAL"
+    if initialPath is "" then
+        set chosen to choose folder with prompt "Select project folder"
+    else
+        set chosen to choose folder with prompt "Select project folder" default location (POSIX file initialPath)
+    end if
+    return POSIX path of chosen
+on error number -128
+    return ""
+end try
+'''
+_TK_SCRIPT = '''
+import os
+import tkinter as tk
+from tkinter.filedialog import askdirectory
+root = tk.Tk()
+root.withdraw()
+try:
+    print(askdirectory(parent=root, title="Select project folder",
+                       initialdir=os.environ.get("GROUP_PICKER_INITIAL") or None, mustexist=True))
+finally:
+    root.destroy()
+'''
+
+
 def choose_directory(initial: str) -> str | None:
-    if os.name != 'nt':
-        raise HTTPException(400, '目录选择器需要 Windows，请直接输入路径')
     if not _lock.acquire(blocking=False):
         raise HTTPException(409, '目录选择器已打开，请先完成当前选择')
     try:
         env = os.environ.copy()
         env['GROUP_PICKER_INITIAL'] = initial
-        powershell = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'),
-                                  'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+        flags = 0
+        if sys.platform == 'win32':
+            powershell = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'),
+                                      'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+            command = [powershell, '-NoProfile', '-STA', '-Command', _SCRIPT]
+            flags = subprocess.CREATE_NO_WINDOW
+        elif sys.platform == 'darwin':
+            command = ['/usr/bin/osascript', '-e', _MAC_SCRIPT]
+        else:
+            command = [sys.executable, '-X', 'utf8', '-c', _TK_SCRIPT]
         result = subprocess.run(
-            [powershell, '-NoProfile', '-STA', '-Command', _SCRIPT],
+            command,
             env=env, capture_output=True, encoding='utf-8', timeout=180,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=flags,
         )
         if result.returncode:
-            raise HTTPException(503, '无法打开 Windows 目录选择器，请直接输入路径')
+            raise HTTPException(503, '无法打开目录选择器，请确认本机图形桌面可用（Linux 还需安装 tkinter），或直接输入路径')
         return result.stdout.strip() or None
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(408, '目录选择已超时，请重试或直接输入路径') from exc
     except OSError as exc:
-        raise HTTPException(503, '无法打开 Windows 目录选择器，请直接输入路径') from exc
+        raise HTTPException(503, '无法打开目录选择器，请直接输入路径') from exc
     finally:
         _lock.release()

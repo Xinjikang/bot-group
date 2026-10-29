@@ -51,7 +51,7 @@ Requirements, designs, engineering references, and user guides live in [`docs/`]
 
 ## Directory Structure
 
-Program files, configuration, and runtime data default to the project root. The installer creates `.env`; the database, attachments, logs, and backups are created during operation.
+The installation directory is the default data root. The database is stored at `data/group.db`; `.env`, `attachments/`, `logs/`, and `backups/` sit directly under the installation directory. The `data/` subfolder contains the database; logs remain at `logs/engine.log` and `logs/engine-startup.log`. Explicit data-directory and database settings override these defaults.
 
 ```text
 bot-group/
@@ -64,12 +64,13 @@ bot-group/
 ├── README.md             # English overview
 ├── README.zh-CN.md       # Chinese overview
 ├── .env                  # Local settings: port, login password, etc.
-├── group.db              # Projects, members, chat history, requirements, and tasks
+├── data/group.db         # Projects, members, chat history, requirements, and tasks
 ├── attachments/          # Images and files uploaded in chat
 ├── logs/                 # Startup and runtime logs
 ├── backups/              # Data and program backups created before upgrades
 ├── requirements.txt      # Engine dependencies (fastapi/uvicorn/httpx/pyyaml/ruamel.yaml)
 ├── start.sh              # Python standard-library startup entry point (shell wrapper)
+├── upgrade.sh            # macOS/Linux upgrade entry point
 ├── start.bat             # Native Windows Python startup entry point
 ├── .gitignore
 ├── engine/               # Resident engine service, port 8180
@@ -172,7 +173,7 @@ Common settings:
 | `GROUP_ADMIN_PASSWORD` | In production | Administrator login password |
 | `GROUP_SECRET` | In production | Token signing key |
 | `GROUP_ENGINE_HOST` / `GROUP_ENGINE_PORT` | No | Bind address and port; default `127.0.0.1:8180` |
-| `GROUP_DB` | No | Database path; defaults to `group.db` in the effective data directory |
+| `GROUP_DB` | No | Defaults to `data/group.db` in the installation directory, or `group.db` in a custom data directory; an explicit database path takes precedence |
 | `GROUP_ATTACHMENTS_DIR` | No | Attachment directory; defaults to `attachments` beside the database |
 | `GROUP_ENGINE_URL` | No | Engine callback URL for MCP; derived from the bind configuration by default |
 | `HERMES_BIN` / `CODEX_BIN` | No | Explicit host executable entry point; automatically detected when omitted |

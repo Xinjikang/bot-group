@@ -126,7 +126,7 @@ def find_bot_processes(profile: str, session: str | None = None) -> "list[int] |
                 physical_profile = bot['profile']
         finally:
             conn.close()
-    processes = process_query.list_processes({'python.exe', 'pythonw.exe'}, scope=profile)
+    processes = process_query.list_processes({'python.exe', 'pythonw.exe', 'hermes'}, scope=profile)
     if processes is None:
         return None
     pids = []

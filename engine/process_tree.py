@@ -1,4 +1,4 @@
-"""Terminate execution trees, including the launcher parents used on Windows."""
+"""Terminate execution trees while protecting the engine and its host ancestors."""
 from __future__ import annotations
 
 import ctypes
@@ -14,7 +14,15 @@ _WRAPPERS = {'python.exe', 'pythonw.exe', 'nohup.exe', 'hermes.exe', 'codex.exe'
 def snapshot():
     """Read native PID/parent/name metadata without parsing localized shell output."""
     if os.name != 'nt':
-        raise RuntimeError('Process-tree shutdown currently requires Windows')
+        import psutil
+        result = {}
+        for pid in psutil.pids():
+            try:
+                process = psutil.Process(pid)
+                result[pid] = (process.ppid(), process.name().lower())
+            except psutil.NoSuchProcess:
+                continue
+        return result
     class Entry(ctypes.Structure):
         _fields_ = [('dwSize', wintypes.DWORD), ('cntUsage', wintypes.DWORD),
                     ('pid', wintypes.DWORD), ('heap', ctypes.c_size_t),
@@ -48,6 +56,7 @@ def snapshot():
 
 def plan(pids, processes, owner, launchers=None):
     """Mirror the old start.sh parent walk, stopping before the engine/its ancestors."""
+    from .process_query import matches_name
     protected, cursor = {0, 1, owner}, owner
     while cursor in processes:
         cursor = processes[cursor][0]
@@ -68,7 +77,7 @@ def plan(pids, processes, owner, launchers=None):
             parent = processes[root][0]
             if parent in protected or parent in seen or parent not in processes:
                 break
-            if processes[parent][1] not in _WRAPPERS:
+            if not matches_name(processes[parent][1], _WRAPPERS):
                 break
             seen.add(parent)
             root = parent
@@ -97,6 +106,16 @@ def terminate(pids, timeout=15, *, launchers=None):
     deadline = time.monotonic() + timeout
     while True:
         alive = [pid for pid in descendants if _pid_alive(pid)]
+        if os.name != 'nt':
+            import psutil
+            live = []
+            for pid in alive:
+                try:
+                    if psutil.Process(pid).status() != psutil.STATUS_ZOMBIE:
+                        live.append(pid)
+                except psutil.NoSuchProcess:
+                    pass
+            alive = live
         if not alive:
             return
         if time.monotonic() >= deadline:

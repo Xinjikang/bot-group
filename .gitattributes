@@ -1,3 +1,4 @@
 # Keep BAT CRLF bytes in Git blobs, working trees, and release archives.
 # eol=crlf alone normalizes blobs to LF, which git archive would export.
 *.bat -text whitespace=cr-at-eol
+*.sh text eol=lf
