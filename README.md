@@ -219,6 +219,20 @@ Set the engine's port in the installation directory's `.env`. Configure developm
 
 For example: “Check the workspace resources and adapt the startup commands. List the test environments and permissions I still need to provide. Configure CodeGraph according to my choice and record the results in the engineering document.” See [software project roles](docs/guides/SOFTWARE-ROLES-2026-10-14.md) for documentation responsibilities.
 
+## Recommended Collaboration Workflow
+
+Software development, testing, and other projects can use the following workflow to connect requirements discussions, plan approval, task execution, and delivery reviews. Users focus on goals and constraints, plan approval, and key decisions. Bots organize execution according to project roles, permissions, and collaboration rules.
+
+1. **Discuss requirements and document an actionable plan.** Create a topic and invite two or three bots with different responsibilities. Explain the background, goals, scope, constraints, and expected deliverables. Ask the participants to discuss the technical approach or test plan, resolve disagreements, and document the agreed approach in sufficient detail for execution. Members organize the discussion according to their roles; users can contribute information, adjust direction, or correct misunderstandings throughout.
+
+2. **Review the plan before creating a requirement.** Review the proposed plan for requirement coverage, implementation steps, resource availability, and acceptance criteria. Return it for revision and another review when changes are needed. Once approved, ask the responsible bot with the appropriate permissions to create a development or testing requirement and arrange task decomposition and execution through the project workflow.
+
+3. **Execute through tasks and coordinate issues by responsibility.** Bots carry out the approved plan using task descriptions and acceptance criteria, recording handoffs, reviews, and acceptance in task nodes. Relevant members coordinate routine issues, while users can follow progress and acceptance results in the task panel. When members encounter a blocker they cannot resolve, or a decision involving scope or resource authorization, the responsible member summarizes the issue and requests user involvement.
+
+4. **Continue submitting requirements while the queue schedules execution.** While existing tasks are running, users can create topics for additional requirements and follow the same plan review and requirement creation process. Once tasks enter the queue, the engine schedules them according to prerequisites, task state, and member availability. Members continue the work through the agreed handoffs.
+
+5. **Conduct a comprehensive review after a related set of requirements is complete.** Create a dedicated topic and ask members to review the work against the original goals, approved plans, deliverables, and test evidence. Record omissions, integration issues, and remaining improvements. After the user confirms the findings and scope, the responsible bot creates follow-up requirements to organize fixes and verification.
+
 ## Customization
 
 Adapt project rules, responsibilities, member settings, and deliverable documents to your team's workflow. Start with the closest project template, then customize the current project.
