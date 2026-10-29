@@ -6,7 +6,7 @@
     <button class="hud-toggle" id="hud-toggle" aria-expanded="false" aria-controls="hud-panel"><span class="hud-light" aria-hidden="true"></span><span class="hud-caption"><span class="hud-name">项目助手</span><span class="hud-status"> · 准备就绪</span></span><span class="hud-chevron">展开</span></button>
     <div class="hud-panel" id="hud-panel" hidden>
       <div class="hud-context"><span id="hud-context"></span><nav aria-label="维护工具"><button class="hud-link" id="hud-scene-toggle" hidden>对话记录</button><button class="hud-link hud-more" id="hud-more" aria-label="更多维护工具" aria-expanded="false">···</button></nav></div>
-      <nav class="hud-tools" id="hud-tools" aria-label="更多维护工具" hidden><button class="hud-link" id="hud-projects-toggle">切换项目</button><button class="hud-link" id="hud-history-toggle">已确认资料</button><button class="hud-link" id="hud-settings-toggle">设置</button></nav>
+      <nav class="hud-tools" id="hud-tools" aria-label="更多维护工具" hidden><button class="hud-link" id="hud-history-toggle">已确认资料</button><button class="hud-link" id="hud-settings-toggle">设置</button></nav>
       <button class="hud-link hud-back" id="hud-back" hidden>← 返回对话</button>
       <div class="hud-progress" id="hud-progress" role="status" hidden><span id="hud-progress-text"></span><time id="hud-progress-time"></time></div>
       <div class="hud-scroll">
@@ -210,7 +210,7 @@
     auxiliary=name;settings=name==='settings';
     for(const panel of ['settings','history','notices'])el(panel).hidden=panel!==name;
     el('content').hidden=!!name;el('compose').hidden=!!name;el('back').hidden=!name||settings;el('latest').hidden=true;
-    for(const [id,panel] of [['settings','settings'],['history','history'],['projects','notices']])el(id+'-toggle').setAttribute('aria-pressed',String(panel===name));
+    for(const [id,panel] of [['settings','settings'],['history','history']])el(id+'-toggle').setAttribute('aria-pressed',String(panel===name));
     host.querySelector('.hud-scroll').scrollTop=0;
     if(!name)requestAnimationFrame(showLatest);
   }
@@ -219,7 +219,6 @@
   el('scene-toggle').onclick=()=>{showAuxiliary('');conversationOnly=!conversationOnly;render();};
   el('latest').onclick=showLatest;
   el('history-toggle').onclick=()=>showAuxiliary(auxiliary==='history'?'':'history');
-  el('projects-toggle').onclick=()=>showAuxiliary(auxiliary==='notices'?'':'notices');
   async function mutate(path,body={},method='POST') {
     if(!current||busy)return null;
     const sid=current.id,stamp=version;busy=true;errorText='';updateSend();

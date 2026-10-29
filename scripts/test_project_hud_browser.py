@@ -172,13 +172,6 @@ def main():
         page.locator('#import-description').fill('创建算法评测项目，资料放在自定义目录。')
         page.locator('#import-template').select_option('algorithm')
         page.wait_for_timeout(1400)
-        page.locator('#import-close').click()
-        page.get_by_role('button',name='继续：可恢复的项目草稿',exact=True,include_hidden=True).wait_for(state='attached')
-        if page.locator('#hud-toggle').get_attribute('aria-expanded')!='true':page.locator('#hud-toggle').click()
-        page.locator('#hud-more').click()
-        page.locator('#hud-projects-toggle').click()
-        page.get_by_role('button',name='继续：可恢复的项目草稿',exact=True).click()
-        page.wait_for_function("document.querySelector('#import-name').value==='可恢复的项目草稿'")
         assert page.locator('#import-template').input_value()=='algorithm'
         page.screenshot(path=str(args.evidence/'hud-wizard.png'))
         page.locator('#hud-toggle').click()
@@ -274,7 +267,7 @@ def main():
         assert not errors,errors
         (args.evidence/'browser.json').write_text(json.dumps({'passed':True,'errors':errors,'checks':[
             'automatic question expansion','all detail tabs retain identical window geometry','assistant and sent user text visible in conversation','options send as user message and disappear','choice / confirmation / conversation / guide scene transitions','guide history and free-text follow-up','detail position unchanged; HUD docks at equal height and returns on collapse','project details stay open with unsaved fields and active tab','options and custom text','refresh preserves input','confirmed facts',
-            'wizard uses detail docking rule and floating fallback; geometry and draft preserved','wizard draft restore','390px dark/light','Escape and focus','detail project context and mobile reply','free-text question without options','same-revision live reasoning summary; single latest line; elapsed time; reload; failure stops progress']},ensure_ascii=False,indent=2),encoding='utf-8')
+            'wizard uses detail docking rule and floating fallback; geometry and draft preserved','wizard draft input and template selection','390px dark/light','Escape and focus','detail project context and mobile reply','free-text question without options','same-revision live reasoning summary; single latest line; elapsed time; reload; failure stops progress']},ensure_ascii=False,indent=2),encoding='utf-8')
         browser.close()
 
 
