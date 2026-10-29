@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+HUD 设置与标题：在隔离预览打开设置，检查字段组间距、选择器下的“新建 profile”和“刷新可选 Bot”、与弹窗一致的 15px 主题色复选框；修改空闲时间后取消，再次打开应恢复已保存值。取消与保存并排，设置页隐藏顶部返回入口。验证新建入口可打开及取消、刷新后设置仍可操作，默认“项目助手”名称与状态分别采用 13px/600、12px/400 及次级文字色。正式页面使用独立标签页只读核对，不保存配置或启动模型。
+
 Windows Hermes 0.22.x 启动器：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_compatibility scripts.test_hermes_transport scripts.test_execution_errors scripts.test_install scripts.test_session_readonly scripts.test_hermes_gateway -q`，配套执行 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_runtime_fork -k spawn -k xdg -k ephemeral -k runtime_session_id -q`。临时 home、源码声明、SQLite 和本机 Python 构造纯转发/base64 启动器；覆盖自动探测、固定 argv、源码归属、静态诊断、LOCALAPPDATA/配置 home 兜底、gateway ensure 前缀及拒绝控制流/额外参数/未解析变量/相对路径/损坏载荷。真实 Python 子进程验证多行、中文、引号与 shell 字符完整传递，网关及网络行为用替身隔离；`HERMES_TRANSPORT_EVIDENCE_DIR` 可注入报告目录保存合成接收记录。
 
 项目详情列表高度：分别打开成员与目录、角色、项目权限，核对列表使用剩余高度及底部操作可见；对比顶栏、窗口、标签栏和顶部操作区坐标保持一致。使用独立浏览器标签页只读检查，保留原页面输入。

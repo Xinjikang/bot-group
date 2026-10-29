@@ -1,9 +1,9 @@
 // Project-scoped maintenance UI. Group messages and task conversations stay independent.
 (() => {
   const host = document.createElement('section');
-  host.id = 'project-hud'; host.setAttribute('aria-label', '项目维护助手');
+  host.id = 'project-hud'; host.setAttribute('aria-label', '项目助手');
   host.innerHTML = `<div class="hud-shell">
-    <button class="hud-toggle" id="hud-toggle" aria-expanded="false" aria-controls="hud-panel"><span class="hud-light" aria-hidden="true"></span><span class="hud-caption">项目维护助手 · 准备就绪</span><span class="hud-chevron">展开</span></button>
+    <button class="hud-toggle" id="hud-toggle" aria-expanded="false" aria-controls="hud-panel"><span class="hud-light" aria-hidden="true"></span><span class="hud-caption"><span class="hud-name">项目助手</span><span class="hud-status"> · 准备就绪</span></span><span class="hud-chevron">展开</span></button>
     <div class="hud-panel" id="hud-panel" hidden>
       <div class="hud-context"><span id="hud-context"></span><nav aria-label="维护工具"><button class="hud-link" id="hud-scene-toggle" hidden>对话记录</button><button class="hud-link hud-more" id="hud-more" aria-label="更多维护工具" aria-expanded="false">···</button></nav></div>
       <nav class="hud-tools" id="hud-tools" aria-label="更多维护工具" hidden><button class="hud-link" id="hud-projects-toggle">切换项目</button><button class="hud-link" id="hud-history-toggle">已确认资料</button><button class="hud-link" id="hud-settings-toggle">设置</button></nav>
@@ -92,7 +92,8 @@
     el('scene-toggle').textContent=conversationOnly?(q?'当前问题':proposal?'待确认建议':'使用说明'):'对话记录';
     el('input').placeholder=scene==='choice'?'也可以输入自己的回答…':scene==='guide'?'继续问，或描述你卡在哪一步…':'输入你的想法…';
     const label=!item?.bot?'选择 AI 开始维护':state==='paused'?'点击开始维护':state==='running'||state==='queued'?'正在检查项目':state==='error'?'检查未完成':q?'有 1 项需要你确认':proposal?'有配置建议待确认':'随时为你维护项目';
-    host.querySelector('.hud-caption').textContent=(item?.bot?.display_name||'项目维护助手')+' · '+label;
+    host.querySelector('.hud-name').textContent=item?.bot?.display_name||'项目助手';
+    host.querySelector('.hud-status').textContent=' · '+label;
     host.classList.toggle('hud-attention',!!q||!!proposal);host.classList.toggle('hud-running',state==='running'||state==='queued');host.classList.toggle('hud-error',state==='error');
     const project=typeof S!=='undefined'?S.projects?.find(p=>p.name===item?.project):null;
     el('context').textContent=(project?.display_name||item?.state.draft?.display_name|| (item?.project?'当前项目':'创建项目'))+' · '+(stages[item?.stage]||'项目维护');
@@ -189,7 +190,7 @@
     el('tools').hidden=true;el('more').setAttribute('aria-expanded','false');
     auxiliary=name;settings=name==='settings';
     for(const panel of ['settings','history','notices'])el(panel).hidden=panel!==name;
-    el('content').hidden=!!name;el('compose').hidden=!!name;el('back').hidden=!name;el('latest').hidden=true;
+    el('content').hidden=!!name;el('compose').hidden=!!name;el('back').hidden=!name||settings;el('latest').hidden=true;
     for(const [id,panel] of [['settings','settings'],['history','history'],['projects','notices']])el(id+'-toggle').setAttribute('aria-pressed',String(panel===name));
     host.querySelector('.hud-scroll').scrollTop=0;
     if(!name)requestAnimationFrame(showLatest);
@@ -230,17 +231,24 @@
       box.replaceChildren(node('p','HUD 独立选择 Bot；允许与项目负责人使用同一个。','hud-muted'));
       const label=node('label','维护 AI'),select=node('select');select.setAttribute('aria-label','维护 AI');select.append(new Option('请选择',''));
       bots.forEach((bot,i)=>{select.add(new Option(`${bot.display_name||bot.profile} · ${bot.host_type}`,String(i)));if(bot.bot_id===current?.bot_id)select.value=String(i);});label.append(select);
-      const checkLabel=node('label'),check=node('input');check.type='checkbox';check.checked=!current?.bot_id;checkLabel.append(check,document.createTextNode(' 下次预选这个 AI（各项目分别启用维护）'));
+      const botTools=node('div',null,'hud-settings-tools');
+      botTools.append(action('新建 profile',()=>openProfileCreate({onCreated:()=>showSettings(true)})),action('刷新可选 Bot',()=>showSettings(true)));
+      const botField=node('div',null,'hud-settings-bot');botField.append(label,botTools);
+      const checkLabel=node('label'),check=node('input');check.type='checkbox';check.checked=!current?.bot_id;checkLabel.append(check,node('span','下次预选这个 AI（各项目分别启用维护）'));
       const timeLabel=node('label','空闲多久后重置模型上下文'),timeSelect=node('select');timeSelect.setAttribute('aria-label','空闲重置时间');
       [[300,'5 分钟'],[1800,'30 分钟'],[3600,'1 小时'],[86400,'24 小时']].forEach(([v,t])=>timeSelect.add(new Option(t,String(v))));timeSelect.value=String(current?.idle_seconds||1800);timeLabel.append(timeSelect);
-      box.append(label,checkLabel,timeLabel,node('p','保存后启用当前项目维护，将项目配置、模板和项目内文档提供给所选 AI。','hud-muted'),action('保存并开始维护',async()=>{
+      const saveArea=node('div',null,'hud-settings-save');
+      const saveButtons=node('div',null,'hud-settings-buttons');
+      saveButtons.append(action('取消',()=>showAuxiliary(''),'hud-cancel'),action('保存并开始维护',async()=>{
         if(!select.value)return;let bot=bots[Number(select.value)];
         try{
           if(!bot.bot_id){const registered=await api('/bots/register',{method:'POST',body:JSON.stringify({host_type:bot.host_type,profile:bot.profile,config_root:bot.config_root})});bot={...bot,bot_id:registered.bot_id};}
           const result=await mutate('',{bot_id:bot.bot_id,make_default:check.checked,idle_seconds:Number(timeSelect.value)},'PATCH');
           if(result)showAuxiliary('');
         }catch(e){errorText=e.message;render();}
-      },'hud-primary'),action('创建 AI 配置',()=>openProfileCreate({onCreated:()=>showSettings(true)})),action('刷新列表',()=>showSettings(true)));
+      },'hud-primary'));
+      saveArea.append(node('p','保存后启用当前项目维护，将项目配置、模板和项目内文档提供给所选 AI。','hud-muted'),saveButtons);
+      box.append(botField,checkLabel,timeLabel,saveArea);
     }catch(e){box.replaceChildren(node('p',e.message,'hud-error-text'),action('重试',()=>showSettings(true)));}
   }
   async function attach(project, id=null){
@@ -267,8 +275,8 @@
       const notices=el('notices');notices.replaceChildren();
       const others=index.sessions.filter(x=>x.id!==sid&&(x.question||!x.project&&x.title!=='创建项目草稿'));
       const pending=others.filter(x=>x.question);
-      host.querySelector('.hud-caption').textContent=host.querySelector('.hud-caption').textContent.replace(/ · 另有 \d+ 项待确认$/,'');
-      if(pending.length)host.querySelector('.hud-caption').textContent+=` · 另有 ${pending.length} 项待确认`;
+      host.querySelector('.hud-status').textContent=host.querySelector('.hud-status').textContent.replace(/ · 另有 \d+ 项待确认$/,'');
+      if(pending.length)host.querySelector('.hud-status').textContent+=` · 另有 ${pending.length} 项待确认`;
       for(const other of others.slice(0,5)){
         const project=S.projects?.find(p=>p.name===other.project);
         notices.append(action(other.project?`${project?.display_name||other.project} · 待确认`:`继续：${other.title}`,()=>{

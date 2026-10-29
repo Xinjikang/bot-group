@@ -603,9 +603,9 @@ dialog input:focus,dialog textarea:focus{border-color:var(--accent)}
 dialog button:focus-visible{outline:2px solid var(--accent-2);outline-offset:2px}
 /* req#87 #151：radio/checkbox 是原生小控件，不吃 dialog input 的 36px 高+100% 宽+描边
    规则（被拉伸成大白球、label 撑满整行），拉回正常尺寸并保持主题选中态（accent-color）。 */
-dialog input[type="radio"],dialog input[type="checkbox"]{width:15px;height:15px;min-height:0;
+dialog input[type="radio"],dialog input[type="checkbox"],#hud-settings input[type="checkbox"]{width:15px;height:15px;min-height:0;
   padding:0;margin:0;accent-color:var(--accent);flex-shrink:0;cursor:pointer}
-dialog label:has(> input[type="radio"]),dialog label:has(> input[type="checkbox"]){
+dialog label:has(> input[type="radio"]),dialog label:has(> input[type="checkbox"]),#hud-settings label:has(> input[type="checkbox"]){
   display:flex;gap:8px;align-items:center;width:auto;cursor:pointer;color:var(--fg)}
 dialog textarea{height:auto;min-height:72px;resize:vertical;font:inherit}
 dialog .dlg-btns{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}
@@ -4769,8 +4769,8 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/project_template_references.js?v=20261016-latest-soul"></script>
 <script src="/app/profile_soul_templates.js?v=20261023-shared-profiles"></script>
 <script src="/app/project_settings.js?v=20261026-role-permission-notices"></script>
-<link rel="stylesheet" href="/app/project_hud.css?v=20261029-original-topbar">
-<script src="/app/project_hud.js?v=20261028-dialogue"></script>
+<link rel="stylesheet" href="/app/project_hud.css?v=20261029-settings-spacing">
+<script src="/app/project_hud.js?v=20261029-settings-spacing"></script>
 <script src="/app/requirement_details.js?v=20261012-controls"></script>
 </body>
 </html>
