@@ -123,7 +123,7 @@
     }
     if(!item?.bot){
       content.append(node('h3','为 HUD 选择一个 AI'),node('p','可以使用项目负责人，也可以选择其他 Bot。它会在这里帮你完善项目资料和配置。','hud-muted'));
-      content.append(action('选择或连接 AI',()=>showSettings(true),'hud-primary'));
+      content.append(action('选择 AI',()=>showSettings(true),'hud-primary'));
       if(!item)content.append(action('重试连接',()=>attach(scope||null,draftMode?draftId:null)));
     }else if(state==='paused'){
       content.append(node('h3','开始维护这个项目'),node('p','启用后，所选 AI 将使用项目配置、模板和项目内文档帮助你完善配置，并在发生变化时主动检查。','hud-muted'),action('开始维护',()=>mutate('/retry'),'hud-primary'));
