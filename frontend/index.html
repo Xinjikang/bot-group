@@ -1085,7 +1085,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
           <span id="pj-members-status" class="profile-help" role="status"></span>
           <button type="button" id="pj-members-add" class="primary" style="margin-left:auto;">添加成员</button>
         </div>
-        <div id="pj-member-list" aria-live="polite" style="max-height:45vh;overflow:auto"></div>
+        <div id="pj-member-list" aria-live="polite" style="flex:1;min-height:0;overflow:auto"></div>
       </section>
       <section id="pj-panel-roles" role="tabpanel" aria-labelledby="pj-tab-roles" hidden>
         <!-- req#96 #165：角色实体化前端——项目级角色 CRUD（GET/POST/PATCH/DELETE /projects/{name}/roles） -->
@@ -1095,14 +1095,14 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
                  style="flex:1;min-width:0;border:1px solid var(--border);border-radius:10px;padding:0 11px;height:36px;font-size:13px;outline:none;background:var(--bg);color:var(--fg);">
           <button type="button" id="pj-role-create" class="primary">创建角色</button>
         </div>
-        <div id="pj-role-list" aria-live="polite" style="max-height:45vh;overflow:auto;margin-top:10px;"></div>
+        <div id="pj-role-list" aria-live="polite" style="flex:1;min-height:0;overflow:auto;margin-top:10px;"></div>
         <p id="pj-role-status" class="profile-help" role="status" style="min-height:18px;margin:6px 0;"></p>
       </section>
       <section id="pj-panel-permissions" role="tabpanel" aria-labelledby="pj-tab-permissions" hidden>
         <p class="profile-help">每项权限可选择当前项目已启用的成员。负责人同样需要授权；停用或移出会清除授权，再次加入后需重新授权。</p>
-        <form id="pj-permissions-form">
-          <div id="pj-permissions-list" style="max-height:45vh;overflow:auto"></div>
-          <p id="pj-permissions-status" class="profile-help" role="status"></p>
+        <form id="pj-permissions-form" style="display:flex;flex-direction:column;flex:1;min-height:0;">
+          <div id="pj-permissions-list" style="flex:1;min-height:0;overflow:auto"></div>
+          <p id="pj-permissions-status" class="profile-help" role="status" style="margin-bottom:0;"></p>
           <div class="dlg-btns"><button type="button" id="pj-permissions-reload">放弃修改</button><button type="submit" id="pj-permissions-save" class="primary" disabled>保存权限</button></div>
         </form>
       </section>

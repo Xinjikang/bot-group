@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+项目详情列表高度：分别打开成员与目录、角色、项目权限，核对列表使用剩余高度及底部操作可见；对比顶栏、窗口、标签栏和顶部操作区坐标保持一致。使用独立浏览器标签页只读检查，保留原页面输入。
+
 AGENTS.md 编辑框高度：浏览器打开项目详情的 AGENTS.md 标签，核对编辑框使用剩余高度、保存按钮可见；对比修改前后顶栏、窗口和标签栏的坐标及尺寸保持一致。验证只读界面，不提交项目文档。
 
 只读会话与旧 subprocess 隔离：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_session_readonly scripts.test_execution_errors scripts.test_task_retry scripts.test_abnormal_exit scripts.test_member_identity scripts.test_member_session_reset scripts.test_hermes_gateway scripts.test_hermes_gateway_sessions -q`。使用临时 SQLite/home 与模拟 control/RPC，覆盖已有绑定直接读取、网关缺失和存活标题查询、multiplexer 发现、异常降级及工作区 GET 200/null、查询期间 Bot/绑定/目录保持、旧版只读数据库和创建路径保留 ensure。旧 subprocess 用例显式关闭 gateway；任务重试继承异常退出夹具的开关。网关发现夹具只模拟回环地址，外部进程启动由断言阻断。
