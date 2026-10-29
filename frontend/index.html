@@ -1930,7 +1930,9 @@ function openProjectDetail(name, triggerEl) {
   selectProjectTab("basic");
   // 参照「全部项目」下拉窗：弹在触发按钮正下方（getBoundingClientRect 实时定位）
   const dlg = $("#dlg-project-detail");
-  openDialogAnchored(dlg, triggerEl || $("#chip-all"));
+  const projectChip = [...document.querySelectorAll('#project-bar .project-chip[data-project]')]
+    .find(chip => name && chip.dataset.project === name);
+  openDialogAnchored(dlg, projectChip || triggerEl || $("#chip-all"));
   window.ProjectHUD?.changed();
   if (!isNew) $("#pj-d-name").focus();
 }
@@ -4767,7 +4769,7 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/project_template_references.js?v=20261016-latest-soul"></script>
 <script src="/app/profile_soul_templates.js?v=20261023-shared-profiles"></script>
 <script src="/app/project_settings.js?v=20261026-role-permission-notices"></script>
-<link rel="stylesheet" href="/app/project_hud.css?v=20261028-dialogue">
+<link rel="stylesheet" href="/app/project_hud.css?v=20261029-original-topbar">
 <script src="/app/project_hud.js?v=20261028-dialogue"></script>
 <script src="/app/requirement_details.js?v=20261012-controls"></script>
 </body>

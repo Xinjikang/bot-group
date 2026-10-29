@@ -2,8 +2,6 @@
 #project-hud *{box-sizing:border-box}
 #project-hud [hidden]{display:none!important}
 #project-hud .hud-shell{background:linear-gradient(135deg,color-mix(in srgb,var(--card) 80%,transparent),color-mix(in srgb,var(--bg) 74%,transparent));backdrop-filter:blur(26px) saturate(125%);border:1px solid color-mix(in srgb,var(--cyan) 22%,var(--border-soft));border-radius:22px;overflow:hidden;box-shadow:inset 0 1px 0 #ffffff24,0 18px 54px #0003;transition:border-radius .18s ease}
-#topbar .logo .sub{display:none}
-#topbar .project-bar{max-width:calc(50vw - 485px);overflow-x:auto;flex-wrap:nowrap;flex-shrink:1}
 #project-hud.expanded{width:510px}
 #project-hud.expanded .hud-shell{border-radius:18px}
 #project-hud button,#project-hud select,#project-hud textarea{font:inherit;color:inherit}
