@@ -3351,7 +3351,7 @@ function updateProfileModelScope() {
 }
 $('#profile-apply-global').addEventListener('change', updateProfileModelScope);
 async function openProfileEditor(member, project = null) {
-  const editor = { profile: member.profile, project, templateProject: project || S.currentProject || '', revision: null, saving: false };
+  const editor = { profile: member.profile, project, templateProject: project || '', revision: null, saving: false };
   profileEditor = editor;
   $('#profile-soul-templates').replaceChildren();
   $("#profile-title").textContent = `编辑成员 · ${memberLabel(member)}`;
@@ -3395,7 +3395,7 @@ async function openProfileEditor(member, project = null) {
     mountProjectSoulTemplates($('#profile-soul-templates'), {
       project: editor.templateProject, maxLength: $('#profile-soul').maxLength,
       isActive: () => profileEditor === editor && !editor.saving && !!editor.revision
-        && (editor.project || S.currentProject || '') === editor.templateProject,
+        && (editor.project || '') === editor.templateProject,
       getValue: () => $('#profile-soul').value,
       setValue: value => { $('#profile-soul').value = value; },
     });
@@ -4767,7 +4767,7 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/member_picker.js?v=20261023-unjoined"></script>
 <script src="/app/project_removal.js?v=20261014-hidden-removed"></script>
 <script src="/app/project_template_references.js?v=20261016-latest-soul"></script>
-<script src="/app/profile_soul_templates.js?v=20261023-shared-profiles"></script>
+<script src="/app/profile_soul_templates.js?v=20261029-project-context"></script>
 <script src="/app/project_settings.js?v=20261026-role-permission-notices"></script>
 <link rel="stylesheet" href="/app/project_hud.css?v=20261029-settings-spacing">
 <script src="/app/project_hud.js?v=20261029-settings-spacing"></script>
