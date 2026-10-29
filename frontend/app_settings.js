@@ -35,6 +35,16 @@
     backing_up: '备份程序与数据…', installing: '更新程序文件…', dependencies: '安装依赖…',
     migrating: '验证数据库迁移…', checking: '检查运行环境…', rolling_back: '恢复原版本…',
     rolled_back: '原版本已恢复…', rollback_failed: '恢复失败，请查看日志', restarting: '启动服务并验证…'};
+  function showProgress(message, failed = false) {
+    progressText.textContent = message;
+    progressText.dataset.error = String(failed);
+  }
+  function requestError(error) {
+    const message = String(error.message || '').trim();
+    const reason = !message || /^(Internal Server Error|Service Unavailable|Bad Gateway|Gateway Timeout)$/i.test(message)
+      ? '服务端处理请求失败，请稍后重试。' : message;
+    return `${error.status ? `HTTP ${error.status}：` : ''}${reason}`;
+  }
   function close(focus = false) {
     menu.hidden = true;
     toggle.setAttribute('aria-expanded', 'false');
@@ -104,20 +114,31 @@
     try {
       if (!await showConfirm(`升级到 ${targetVersion}？\n系统将校验下载内容、暂停服务并备份程序与数据，然后更新并自动启动服务、刷新界面。Bot 收尾最多等待 120 秒；升级失败时自动恢复原版本。`)) return;
       if (!allowed() || generation !== epoch) return;
+      if (!dialog.open) dialog.showModal();
+      refreshButton.hidden = true;
+      showProgress('正在提交升级请求，请稍候…');
       const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
       let operation = {id, target_version: targetVersion, created_at: Date.now() / 1000};
+      let initialMessage = '准备升级…';
       save(operation);
       try {
         operation = await api('/system/upgrade', {method: 'POST', body: JSON.stringify({request_id: id, version: targetVersion}), signal: AbortSignal.timeout(35000)});
       } catch (error) {
         if (error.status) { clear(); throw error; }
         // A lost response may already have launched the helper; reconcile by receipt ID.
+        initialMessage = '尚未收到升级请求的响应，正在查询升级状态，请勿重复提交…';
       }
-      await monitor(operation);
-    } catch (error) { await showAlert(error.message); }
+      await monitor(operation, initialMessage);
+    } catch (error) {
+      if (allowed() && generation === epoch) {
+        const message = `提交升级请求失败（POST /system/upgrade）。\n${requestError(error)}`;
+        showProgress(message, true);
+        await showAlert(message);
+      }
+    }
     finally { submitting = false; render(); }
   }
-  async function monitor(operation) {
+  async function monitor(operation, initialMessage = '准备升级…') {
     if (monitoring || !allowed()) return;
     monitoring = true; save(operation);
     S.upgrading = true; S.restarting = true; S.es?.close();
@@ -128,18 +149,20 @@
     const generation = epoch, deadline = Date.now() + 30 * 60 * 1000;
     let reloading = false;
     const progress = (message, failed = false) => {
-      progressText.textContent = message; progressText.dataset.error = String(failed);
+      showProgress(message, failed);
       S.restartMessage = message;
       setConn('connecting', message);
     };
-    progress('准备升级…');
+    progress(initialMessage);
     try {
       while (allowed() && generation === epoch && Date.now() < deadline) {
+        let requestPath = '/system/upgrade';
         try {
           const receipt = await api('/system/upgrade', {cache: 'no-store', signal: AbortSignal.timeout(5000)});
           if (receipt.id === operation.id) {
             if (receipt.state === 'failed') { clear(); progress(receipt.error || '升级失败，请查看 logs/app-upgrade.log。', true); return; }
             if (receipt.state === 'succeeded') {
+              requestPath = '/health';
               const health = await api('/health', {cache: 'no-store', signal: AbortSignal.timeout(5000)});
               if (health.status === 'ok' && health.instance_id === receipt.new_instance_id && health.program_root === receipt.program_root && health.db_path === receipt.db_path) {
                 clear(); notice.hidden = true;
@@ -155,7 +178,8 @@
           } else if (receipt.id) { clear(); progress('升级请求已变化，请重新打开“关于”查看状态。', true); return; }
         } catch (error) {
           if (error.status === 401 || error.status === 403) return;
-          progress('升级服务暂时断开，正在等待恢复…');
+          if (error.status) progress(`查询升级状态失败（GET ${requestPath}）。\n${requestError(error)}\n正在自动重试，请勿重复提交升级。`, true);
+          else progress('升级服务暂时断开，正在等待恢复…');
         }
         await new Promise(resolve => setTimeout(resolve, 1500));
       }

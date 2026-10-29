@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+升级反馈：`python -X utf8 -B scripts/test_app_upgrade_browser.py --evidence <主目录报告目录>/upgrade-browser`，需要 Playwright 与 Chrome。合成 HTTP 隔离升级操作，覆盖两个入口的慢响应、提交中即时提示、500 通用错误、503 具体原因、关闭弹窗后保留错误与允许重试、轮询错误及恢复、响应丢失续查和成功刷新；检查桌面、390px 及深浅主题。
+
 项目助手引导与实测依据：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_inspection scripts.test_project_hud scripts.test_hud_gateway -q`。隔离目录覆盖关键文档优先读取、扫描限额、失效链接、仓库范围、Git 远程缺失与凭据隐藏、CodeGraph 未初始化/过期/失败、系统指令分离、当前值来源与重复提案消除。浏览器复用 `test_project_hud_browser.py --url <隔离地址> --evidence <报告目录>` 检查保存位置、当前内容与建议内容对照、备注确认及窄屏可读性。
 
 真实引导回复：在下述 `verify_hud_gateway.py --live` 命令追加 `--scenario explain|conflict|change`，分别验证解释资料位置时直接回答、文档声明与 Git/CodeGraph 检测冲突时保留缺口、用户明确修改简介时返回待确认提案。每次使用新的 evidence 文件，只发送合成项目资料；同时校验会话专用系统指令、零工具、单次提交及结果格式，实际措辞另行审阅。
