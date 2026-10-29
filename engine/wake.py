@@ -961,8 +961,9 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         # 首建 thread_id 执行后才可知，由 #153 的 thread.started 回填写入。
         sid_for_run = None if not codex_thread_id else codex_thread_id
     else:
-        cmd_without_q = [
-            _hermes_bin(), "-p", bot['profile'] if bot else profile, "chat",
+        from . import hermes_runtime
+        cmd_without_q = hermes_runtime.command(_hermes_bin()) + [
+            "-p", bot['profile'] if bot else profile, "chat",
             "--in", workdir, "-c", sid, "-Q",
         ] + model_args
         if not use_binding:

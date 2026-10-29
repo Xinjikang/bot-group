@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 import importlib
 import logging
 import os
@@ -36,14 +37,29 @@ def gateway_source(source: Path) -> bool:
 
 
 def native_entry(entry: str) -> str:
-    """Resolve pure Windows forwarding wrappers without invoking a command shell."""
+    """Return an entry locator; fixed-argument launchers retain their wrapper path."""
     if sys.platform != 'win32':
         return entry
     path = Path(entry)
     if path.suffix.lower() not in ('.cmd', '.bat'):
         if path.suffix.lower() != '.exe':
-            raise HermesConfigurationError('Hermes Windows 入口须为原生 .exe 或可解析的纯转发 .cmd/.bat')
+            raise HermesConfigurationError('Hermes Windows 入口须为原生 .exe 或支持的 .cmd/.bat 启动器')
         return entry
+    argv = _wrapper_command(path)
+    return argv[0] if len(argv) == 1 else str(path.resolve())
+
+
+def command(entry: str | None = None) -> list[str]:
+    """Build a shell-free argv prefix, preserving the launcher's fixed arguments."""
+    entry = entry or executable()
+    path = Path(entry)
+    if sys.platform == 'win32' and path.suffix.lower() in ('.cmd', '.bat'):
+        return _wrapper_command(path)
+    return [entry]
+
+
+def _wrapper_command(path: Path) -> list[str]:
+    """Parse pure forwarding and the Hermes isolated base64 Python launcher."""
     raw = path.read_bytes()
     try:
         script = raw.decode('utf-8-sig')
@@ -52,21 +68,33 @@ def native_entry(entry: str) -> str:
     commands = [line.strip() for line in script.splitlines()
                 if line.strip() and line.strip().lower() not in ('@echo off', 'echo off')
                 and not line.lstrip().lower().startswith(('rem ', '::'))]
-    match = re.fullmatch(r'@?(?:"([^"\r\n]+\.exe)"|([^\s"]+\.exe))\s+%\*',
-                         commands[0], re.IGNORECASE) if len(commands) == 1 else None
+    match = re.fullmatch(r'@?(?:"([^"\r\n]+(?i:\.exe))"|([^\s"]+(?i:\.exe)))'
+                         r"""(?:\s+-I\s+-c\s+"(import base64; exec\(base64\.b64decode\('([A-Za-z0-9+/=]+)'\)\))")?\s+%\*""",
+                         commands[0]) if len(commands) == 1 else None
     if match is None:
         raise HermesConfigurationError(f'Hermes 包装入口无法安全解析：{path}；请将 HERMES_BIN 指向真实 hermes.exe')
     target = match.group(1) or match.group(2)
     target = re.sub(r'%~dp0', lambda _: str(path.resolve().parent) + os.sep, target, flags=re.IGNORECASE)
     if '%' in target:
         raise HermesConfigurationError(f'Hermes 包装入口含未解析变量：{path}；请设置原生 HERMES_BIN')
+    if any(c in target for c in '&|<>^\x00\r\n'):
+        raise HermesConfigurationError(f'Hermes 包装目标含命令控制字符：{path}；请设置原生 HERMES_BIN')
     native = Path(target)
     if not native.is_absolute():
         raise HermesConfigurationError(f'Hermes 包装目标须为绝对路径或 %~dp0 路径：{path}')
     if not native.is_file():
         raise FileNotFoundError(f'Hermes 包装目标不存在：{native}')
+    argv = [str(native.resolve())]
+    if match.group(3):
+        if native.name.lower() not in ('python.exe', 'python3.exe', 'pythonw.exe'):
+            raise HermesConfigurationError(f'Hermes base64 启动器须使用 Python 解释器：{path}')
+        try:
+            base64.b64decode(match.group(4), validate=True).decode('utf-8')
+        except (ValueError, UnicodeError) as exc:
+            raise HermesConfigurationError(f'Hermes 启动器载荷损坏：{path}；请修复 Hermes 安装') from exc
+        argv += ['-I', '-c', match.group(3)]
     logging.getLogger(__name__).info('Hermes native entry resolved from wrapper: %s -> %s', path, native)
-    return str(native.resolve())
+    return argv
 
 
 def executable() -> str:
@@ -80,6 +108,9 @@ def executable() -> str:
             candidate = Path(home) / 'bin' / name
             if candidate.is_file():
                 return native_entry(str(candidate))
+        candidate = Path(home) / 'hermes-agent/venv' / ('Scripts/hermes.exe' if sys.platform == 'win32' else 'bin/hermes')
+        if candidate.is_file():
+            return native_entry(str(candidate))
     if sys.platform == 'win32':
         native = shutil.which('hermes.exe')
         if native:
@@ -87,10 +118,16 @@ def executable() -> str:
     found = shutil.which('hermes')
     if found:
         return native_entry(found)
-    for candidate in (
+    fallback = [
         Path.home() / 'hermes/hermes-agent/venv/Scripts/hermes.exe',
         Path.home() / 'hermes/hermes-agent/venv/Scripts/hermes',
-    ):
+    ]
+    local_app_data = os.environ.get('LOCALAPPDATA', '').strip()
+    if sys.platform == 'win32' and local_app_data:
+        root = Path(local_app_data) / 'hermes'
+        fallback = [root / 'bin' / name for name in ('hermes.exe', 'hermes.cmd', 'hermes.bat')] + [
+            root / 'hermes-agent/venv/Scripts/hermes.exe'] + fallback
+    for candidate in fallback:
         if candidate.is_file():
             return native_entry(str(candidate))
     raise FileNotFoundError('未找到原生 Hermes 入口；请设置 HERMES_BIN')
@@ -98,7 +135,7 @@ def executable() -> str:
 
 def source_directory(home: Path, entry: str | None = None) -> Path:
     """Resolve supported layouts near the actual executable and reject ambiguity."""
-    entry_path = Path(entry or executable()).resolve()
+    entry_path = Path(native_entry(entry or executable())).resolve()
     if not entry_path.is_file():
         raise HermesConfigurationError(f'Hermes 入口不存在：{entry_path}；请修正 HERMES_BIN')
     found = None

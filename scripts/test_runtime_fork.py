@@ -40,6 +40,9 @@ class RuntimeForkTests(unittest.TestCase):
     """_bot_runtime 定位链 + spawn 分叉命令 + XDG 注入 + wake_runs 回填语义。"""
 
     def setUp(self):
+        gateway = patch('engine.hermes_gateway.enabled', return_value=False)
+        gateway.start()
+        self.addCleanup(gateway.stop)
         self.tmp = tempfile.mkdtemp(prefix="t152_")
         environment = patch.dict(os.environ, {'GROUP_DATA_DIR': self.tmp,
             'HERMES_MANAGED_DIR': os.path.join(self.tmp, 'managed'),

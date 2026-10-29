@@ -160,7 +160,9 @@ def report(profile, project, thread_id, attempt, detail, *, exit_code=1, parent_
         if reserved_message:
             public_message = reserved_message
         elif 'HermesConfigurationError' in failure:
-            public_message = 'Hermes 入口与源码配置异常，请检查 HERMES_BIN、HERMES_HOME，并在修正后重启引擎。'
+            public_message = ('Hermes 入口与源码配置异常，请检查 HERMES_BIN、HERMES_HOME，并在修正后重启引擎。'
+                              'Windows 原生入口通常位于 <Hermes安装根>/hermes-agent/venv/Scripts/hermes.exe；'
+                              '具体原因可查看安装检查输出或引擎日志。')
         elif 'HermesCompatibilityError' in failure:
             public_message = 'Hermes 会话接口不兼容，请更新或修复 Hermes 后重启引擎。'
         content = f'{label}：{public_message}'

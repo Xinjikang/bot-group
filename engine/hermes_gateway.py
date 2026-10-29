@@ -31,7 +31,7 @@ def connection(profile, *, home=None, command=None, read_only=False):
     home = Path(home) if home else bot_identity.hermes_home(profile, _hermes_home())
     if read_only:
         return GatewayClient(discover(home)), home, command
-    command = command or [hermes_runtime.executable()]
+    command = command or hermes_runtime.command()
     return GatewayClient(ensure(command, home)), home, command
 
 

@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+Windows Hermes 0.22.x 启动器：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_compatibility scripts.test_hermes_transport scripts.test_execution_errors scripts.test_install scripts.test_session_readonly scripts.test_hermes_gateway -q`，配套执行 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_runtime_fork -k spawn -k xdg -k ephemeral -k runtime_session_id -q`。临时 home、源码声明、SQLite 和本机 Python 构造纯转发/base64 启动器；覆盖自动探测、固定 argv、源码归属、静态诊断、LOCALAPPDATA/配置 home 兜底、gateway ensure 前缀及拒绝控制流/额外参数/未解析变量/相对路径/损坏载荷。真实 Python 子进程验证多行、中文、引号与 shell 字符完整传递，网关及网络行为用替身隔离；`HERMES_TRANSPORT_EVIDENCE_DIR` 可注入报告目录保存合成接收记录。
+
 项目详情列表高度：分别打开成员与目录、角色、项目权限，核对列表使用剩余高度及底部操作可见；对比顶栏、窗口、标签栏和顶部操作区坐标保持一致。使用独立浏览器标签页只读检查，保留原页面输入。
 
 AGENTS.md 编辑框高度：浏览器打开项目详情的 AGENTS.md 标签，核对编辑框使用剩余高度、保存按钮可见；对比修改前后顶栏、窗口和标签栏的坐标及尺寸保持一致。验证只读界面，不提交项目文档。

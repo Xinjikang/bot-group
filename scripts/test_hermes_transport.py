@@ -2,6 +2,7 @@
 
 使用 pip 自带的 distlib PE launcher + 标准库 argv 记录脚本；零模型、零服务、零网络。
 """
+import base64
 import io
 import json
 import os
@@ -19,7 +20,7 @@ import zipfile
 from contextlib import closing
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from engine import config, db, wake
+from engine import config, db, hermes_runtime, wake
 
 
 @unittest.skipUnless(sys.platform == 'win32', 'Windows command transport')
@@ -97,13 +98,36 @@ Path(os.environ['TRANSPORT_PROBE_REPORT']).write_text(json.dumps({'argv':args,'q
     def _run(self, entry, signal, sid='续会话-217'):
         if self.capture.exists():
             self.capture.unlink()
-        result = subprocess.run([str(entry), '-p', 'fixture', 'chat', '--in', str(self.work),
+        prefix = entry if isinstance(entry, list) else [str(entry)]
+        result = subprocess.run(prefix + ['-p', 'fixture', 'chat', '--in', str(self.work),
                                  '-c', sid, '-Q', '-q', signal], cwd=self.work,
                                 capture_output=True, timeout=15, creationflags=wake._NO_WINDOW)
         self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
         received = json.loads(self.capture.read_text(encoding='utf-8'))
         self._record(received, entry=str(entry), expected_query=signal, exit_code=result.returncode)
         return received
+
+    def _base64_launcher(self):
+        with zipfile.ZipFile(self.native) as archive:
+            payload = base64.b64encode(archive.read('__main__.py')).decode('ascii')
+        code = f"import base64; exec(base64.b64decode('{payload}'))"
+        self.wrapper.write_text(f'@echo off\n"{sys.executable}" -I -c "{code}" %*\n', encoding='utf-8')
+        return code
+
+    def test_base64_launcher_preserves_multiline_and_shell_characters(self):
+        code = self._base64_launcher()
+        argv = hermes_runtime.command()
+        self.assertEqual(argv, [sys.executable, '-I', '-c', code])
+        body = '中文 "引号"\n\n第二行\r\n& | < > ^ %PATH% !NAME! $(literal) `literal`\\'
+        received = self._run(argv, body)
+        self.assertEqual(received['query'], body)
+        self.assertEqual(received['cwd'], str(self.work))
+
+    def test_spawn_through_base64_launcher_preserves_messages(self):
+        self._base64_launcher()
+        received = self._spawn('chat')
+        self.assertIn(self.messages[0]['content'], received['query'])
+        self.assertIn(self.messages[1]['content'], received['query'])
 
     def test_old_cmd_returns_zero_but_truncates_multiline(self):
         # 原始机制复现：真正启动 cmd 包装，无 Popen mock；仅使用无副作用正文。

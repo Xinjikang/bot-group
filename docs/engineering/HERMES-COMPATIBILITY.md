@@ -6,7 +6,9 @@
 
 ## 入口与源码
 
-`engine.hermes_runtime` 供安装检查、唤醒和会话适配共用。入口按 `HERMES_BIN`、`HERMES_HOME/bin`、PATH、默认源码虚拟环境顺序选择。Windows 继续使用原生 EXE 传递多行正文；仅支持已知的纯转发 CMD/BAT 包装。
+`engine.hermes_runtime` 供安装检查、唤醒和会话适配共用。入口按 `HERMES_BIN`、`HERMES_HOME/bin`、该 home 下源码虚拟环境、PATH、默认安装目录顺序选择。Windows 默认安装目录覆盖 `%LOCALAPPDATA%/hermes` 的 bin 启动器与 `hermes-agent/venv/Scripts/hermes.exe`。
+
+Windows 支持纯转发 CMD/BAT，以及 Hermes 0.22.x 安装器生成的单条 `"<绝对python.exe>" -I -c "import base64; exec(base64.b64decode('<载荷>'))" %*`。入口定位函数保留带固定参数的启动器路径，`command()` 将其展开为 Python EXE、`-I`、`-c` 和原始载荷组成的 argv；唤醒与 gateway 共用该前缀，以 `shell=False` 原生传参。解析仅验证包装语法、目标路径和 base64/UTF-8 编码，安装检查保持静态。额外命令、控制流、未解析变量、相对目标及任意其他固定参数会返回配置错误。源码定位对纯转发包装使用实际目标，对固定参数启动器使用安装器发布的 bin 所属目录。
 
 从实际入口附近识别含 `hermes_state.py` 和 `hermes_state_registry.py` 的源码目录，支持源码虚拟环境与根目录 bin 布局。`HERMES_HOME/hermes-agent` 存在时，识别结果必须与其一致。运行中已导入的 Hermes 状态模块也必须属于同一源码；更换安装后重启引擎。
 

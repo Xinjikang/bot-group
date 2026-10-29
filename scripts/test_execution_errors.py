@@ -89,6 +89,9 @@ class ExecutionErrorTests(unittest.TestCase):
                 text = self.conn.execute('SELECT content FROM messages WHERE id=?', (message_id,)).fetchone()[0]
                 self.assertIn(expected, text)
                 self.assertNotIn('private/source/path', text)
+                if exception == 'HermesConfigurationError':
+                    self.assertIn('hermes-agent/venv/Scripts/hermes.exe', text)
+                    self.assertIn('安装检查输出', text)
 
     def test_profile_custom_secret_is_redacted(self):
         home = self.root / 'hermes'
