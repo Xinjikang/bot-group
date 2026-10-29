@@ -1,5 +1,9 @@
 # 测试脚本索引
 
+网页 Hermes 授权：`python -X utf8 -B -m unittest scripts.test_hermes_approvals scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway_sessions scripts.test_access_contract -q`。隔离 SQLite 和 RPC 替身覆盖用户/Bot 身份、项目/话题范围、轮次、非法选项、终态、重复提交、Hermes 先处理、过期快照和回执丢失。浏览器运行 `python -X utf8 -B scripts/test_hermes_approvals_browser.py --evidence <主目录报告目录>/browser`，需要 Playwright 与 Chrome；合成 HTTP 覆盖刷新恢复、话题切换、深浅主题、窄屏、纯文本显示、范围确认、提交禁用及错误提示。
+
+原生审批队列：使用带 Hermes 及 bot-group 依赖的解释器运行 `python -X utf8 -B scripts/verify_hermes_approvals_native.py --hermes-source <Hermes 源码目录> --evidence <主目录报告下的新目录>`。所有 home/数据库创建于新报告目录，WebSocket 使用随机回环端口。真实 Hermes waiter、pending controls、RPC handler 与 bot-group 客户端验证允许、拒绝、原生先处理及重复处理；ticket 为合成传输夹具，测试保持零模型调用和零命令执行。该用例验证审批桥接，不覆盖生产身份票据及模型触发策略。
+
 跨平台兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_posix_compatibility scripts.test_install scripts.test_mcp_lock scripts.test_directory_picker scripts.test_process_query scripts.test_process_tree scripts.test_project_hud scripts.test_release_upgrade scripts.test_bootstrap -q`。隔离目录/模拟进程覆盖目标解释器 marker 求值、安装版本漂移、POSIX Python/Hermes 名称及 profile 范围、进程树保护、macOS/Linux 目录窗口命令与取消/失败、HUD 依赖错误、ZIP shell 权限和 LF。设置 `BASH_TEST_BIN` 为 Bash 可执行路径可验证升级脚本的含空格路径、参数及退出码；未配置时仅跳过该项。真实 Windows 子进程用例需要进程查询和终止权限，macOS 原生窗口与整机安装仍需对应平台验证。
 
 升级反馈：`python -X utf8 -B scripts/test_app_upgrade_browser.py --evidence <主目录报告目录>/upgrade-browser`，需要 Playwright 与 Chrome。合成 HTTP 隔离升级操作，覆盖两个入口的慢响应、提交中即时提示、500 通用错误、503 具体原因、关闭弹窗后保留错误与允许重试、轮询错误及恢复、响应丢失续查和成功刷新；检查桌面、390px 及深浅主题。

@@ -12,6 +12,16 @@
 
 危险命令审批采用 Hermes 原生 `approvals.mode: smart`，配置由管理员在 Hermes 中维护。ACP 编辑策略采用官方 `edit_policy=workspace_session`：普通工作区编辑按原生策略放行，敏感路径和工作区外请求遵循原生审批规则。引擎沿用这些原生能力。
 
+### 网页处理授权
+
+网关托管执行中的普通命令、文件编辑授权显示在消息区“需要你授权”卡片中。卡片列出 Bot、项目、话题、操作内容和原因，按 Hermes 提供的范围显示“仅允许这一次”“拒绝”“本会话允许”“长期允许”；后两项需要确认后续授权范围。密码、sudo、澄清及旧版 CLI 交互仍在 Hermes 中处理。授权规则由 Hermes 配置决定，网页处理入口保持原有审批策略。
+
+`engine/hermes_approvals.py` 使用 `hermes_executions` 的宿主、session ID、generation 确定归属。执行观察器每轮通过 `session.resume(omit_messages=true)` 读取 `prompts` 中的普通 approval，并将快照保存到 `hermes_approval_snapshots`。执行终态移除卡片；快照超过 15 秒、查询失败、取消中或轮次变化时禁用操作。浏览器约每 3 秒查询，重新打开页面恢复待处理卡片；在 Hermes 先处理的请求随下一次同步移除。
+
+`GET /hermes-approvals` 支持 project/thread_id 过滤；`POST /hermes-approvals/{execution_id}` 接收 prompt_id、generation、choice，禁止额外字段。两个接口均限管理员用户，Bot 凭据无法查看或代批。服务端串行处理同一执行，提交前通过已有网关重新读取原生快照，复核执行状态和选项后调用 `approval.respond`。原生端以精确请求 ID 和 generation 判定重复或过期；结果为 resolved/already_resolved。断线或回执丢失显示结果未确认，后续只查询状态，自动重发关闭。
+
+设计依据见 [Hermes 授权卡片](../design/2026-10-29-hermes-approvals.md)。验证入口见测试索引中的“网页 Hermes 授权”；原生验证使用隔离队列和真实 RPC handler，传输 ticket 为合成夹具，模型与实际命令执行另行验证。
+
 旧 CLI 会话通过官方 `session.export` 和 `session.mutate import` 建立确定 ID 的 ACP 副本，原会话完整保留，映射记录在 `hermes_session_migrations`。活动会话先等待终态。`/new` 使用 `session.create`，绑定 generation 按现有流程递增。恢复、标题查找和思考记录分别使用 `session.resume`、`session.list`、`session.export`。压缩后的逻辑会话由 Hermes 解析。
 
 已有绑定按持久化 session ID 恢复。首次绑定时调用官方 `session.list title=...`；v0.22.5 的原生标题解析返回零个或一个结果。适配器对多候选响应返回 `ambiguous_session_title`，保留原会话及绑定状态；管理员核对标题归属后重试。空结果按原有流程创建会话，唯一结果写入 ID 绑定。

@@ -253,6 +253,8 @@ def _watch(execution_id):
                 if row['execution_deadline'] and time.time() >= row['execution_deadline'] and not row['cancel_reason']:
                     ledger.cancel(conn, execution_id, 'timeout')
                 row = ledger.reconcile(client, conn, execution_id)
+                from . import hermes_approvals
+                hermes_approvals.sync(conn, row, client)
                 from . import wake
                 with wake._session_lock:
                     if row['session'] in wake._running_wakes:

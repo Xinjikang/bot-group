@@ -930,6 +930,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
       </div>
       <div class="col-body" id="msg-list"></div>
       <div id="think-bubbles"></div>
+      <section id="hermes-approvals" aria-label="Hermes 操作授权" hidden></section>
       <div id="mention-pop" hidden></div>
       <div id="command-pop" role="listbox" aria-label="支持的命令" hidden></div>
       <div id="command-receipt" hidden><div class="command-receipt-text" role="status" aria-live="polite"></div><button type="button" aria-label="关闭命令回执">×</button></div>
@@ -2171,6 +2172,7 @@ async function selectThread(id) {
   resetMessageWindow();
   mpHide();
   S.currentThread = id;
+  document.dispatchEvent(new Event('approval-context-changed'));
   composerImages.refresh();
   const t = S.threads.find(x => x.id === id);
   $("#msg-title").textContent = t ? "话题：" + t.title : "群聊";
@@ -4772,5 +4774,7 @@ themeBtn.addEventListener("click", () => {
 <link rel="stylesheet" href="/app/project_hud.css?v=20261029-progress">
 <script src="/app/project_hud.js?v=20261029-progress"></script>
 <script src="/app/requirement_details.js?v=20261012-controls"></script>
+<link rel="stylesheet" href="/app/hermes_approvals.css?v=20261029">
+<script src="/app/hermes_approvals.js?v=20261029"></script>
 </body>
 </html>

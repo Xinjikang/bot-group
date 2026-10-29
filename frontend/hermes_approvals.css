@@ -1,0 +1,14 @@
+#hermes-approvals{position:relative;z-index:1;flex:none;max-height:min(340px,38dvh);overflow:auto;padding:12px 16px;border-top:1px solid var(--border);background:var(--card);font-size:13px}
+#hermes-approvals[hidden]{display:none}
+#hermes-approvals .approval-card{padding:12px 0;border-bottom:1px solid var(--border-soft)}
+#hermes-approvals .approval-card:last-child{border-bottom:0}
+#hermes-approvals .approval-owner{color:var(--fg-2);overflow-wrap:anywhere}
+#hermes-approvals p{margin:8px 0;white-space:pre-wrap;overflow-wrap:anywhere}
+#hermes-approvals pre{margin:8px 0;padding:8px;background:var(--card-2);white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 Consolas,monospace}
+#hermes-approvals .approval-error,#hermes-approvals .approval-status{color:var(--warn)}
+#hermes-approvals .approval-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+#hermes-approvals button{font:inherit;min-height:36px;padding:7px 12px;border:1px solid var(--border);border-radius:10px;background:var(--card-2);color:var(--fg);cursor:pointer}
+#hermes-approvals button:hover:not(:disabled){border-color:var(--accent);color:var(--accent-2)}
+#hermes-approvals button:focus-visible{outline:2px solid var(--accent-2);outline-offset:2px}
+#hermes-approvals button:disabled{opacity:.6;cursor:wait}
+#hermes-approvals.approval-floating{position:fixed;z-index:50;left:12px;right:12px;bottom:12px;max-height:45dvh;border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.35)}

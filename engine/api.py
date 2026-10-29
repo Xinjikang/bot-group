@@ -72,6 +72,8 @@ def _admin_only(identity: tuple[str, str], message: str) -> None:
 
 from .hud_api import router as _hud_router
 router_api.include_router(_hud_router(_resolve_identity, _admin_only))
+from .hermes_approvals import router as _approvals_router
+router_api.include_router(_approvals_router(_resolve_identity, _admin_only))
 
 
 # --------------------------------------------------------------------------
