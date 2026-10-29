@@ -8,6 +8,7 @@
       <div class="hud-context"><span id="hud-context"></span><nav aria-label="维护工具"><button class="hud-link" id="hud-scene-toggle" hidden>对话记录</button><button class="hud-link hud-more" id="hud-more" aria-label="更多维护工具" aria-expanded="false">···</button></nav></div>
       <nav class="hud-tools" id="hud-tools" aria-label="更多维护工具" hidden><button class="hud-link" id="hud-projects-toggle">切换项目</button><button class="hud-link" id="hud-history-toggle">已确认资料</button><button class="hud-link" id="hud-settings-toggle">设置</button></nav>
       <button class="hud-link hud-back" id="hud-back" hidden>← 返回对话</button>
+      <div class="hud-progress" id="hud-progress" role="status" hidden><span id="hud-progress-text"></span><time id="hud-progress-time"></time></div>
       <div class="hud-scroll">
         <div id="hud-settings" class="hud-settings" hidden></div>
         <div id="hud-notices" class="hud-notices" hidden></div>
@@ -79,6 +80,23 @@
     }
     render();
   }
+  function renderProgress(){
+    const active=current?.status==='running'||current?.status==='queued';
+    el('progress').hidden=!active;
+    if(!active)return;
+    const progress=current.state.progress;
+    const text=progress?.text||(current.status==='queued'?'等待开始检查':'正在等待模型响应');
+    const line=el('progress-text');
+    const label=(progress?.kind==='reasoning'?'推理摘要：':'')+text;
+    if(line.textContent!==label){
+      line.textContent=label;
+      requestAnimationFrame(()=>{line.scrollLeft=line.scrollWidth;});
+    }
+    line.title=label;
+    const elapsed=Math.max(0,Math.floor(Date.now()/1000-(progress?.started||current.checked||current.updated)));
+    el('progress-time').textContent=elapsed+'秒';
+    host.querySelector('.hud-status').textContent=' · '+text;
+  }
   function render() {
     const item=current, q=item?.state.question, proposal=item?.state.proposal;
     const state=item?.status;
@@ -96,6 +114,7 @@
     host.querySelector('.hud-name').textContent=item?.bot?.display_name||'项目助手';
     host.querySelector('.hud-status').textContent=' · '+label;
     host.classList.toggle('hud-attention',!!q||!!proposal);host.classList.toggle('hud-running',state==='running'||state==='queued');host.classList.toggle('hud-error',state==='error');
+    renderProgress();
     const project=typeof S!=='undefined'?S.projects?.find(p=>p.name===item?.project):null;
     el('context').textContent=(project?.display_name||item?.state.draft?.display_name|| (item?.project?'当前项目':'创建项目'))+' · '+(stages[item?.stage]||'项目维护');
     const scroll=host.querySelector('.hud-scroll'),oldTop=scroll.scrollTop;
@@ -139,8 +158,7 @@
       options.addEventListener('keydown',e=>{if(!['ArrowDown','ArrowUp','ArrowLeft','ArrowRight'].includes(e.key))return;e.preventDefault();const buttons=[...options.children],i=buttons.indexOf(document.activeElement),d=['ArrowDown','ArrowRight'].includes(e.key)?1:-1;buttons[(i+d+buttons.length)%buttons.length]?.focus();});
       box.append(options);(reply||content).append(box);
     }else{
-      if(state==='queued'||state==='running')content.append(node('p','正在回复…','hud-replying'));
-      else if(!item.entries.length)content.append(node('p','告诉我你想完善什么，我们一起把项目准备好。','hud-muted'));
+      if(state!=='queued'&&state!=='running'&&!item.entries.length)content.append(node('p','告诉我你想完善什么，我们一起把项目准备好。','hud-muted'));
     }
     if(proposal&&scene==='confirm'){
       const box=node('div',null,'hud-proposal');box.append(node('strong','待确认的配置建议'));const dl=node('dl');
@@ -274,6 +292,7 @@
       const [data,index]=await Promise.all([api('/hud/'+sid),api('/hud')]);
       if(stamp!==version)return;
       if(data.revision>=current.revision&&(data.revision!==current.revision||data.status!==current.status))setData(data);
+      else if(data.revision===current.revision){current.state.progress=data.state.progress;renderProgress();}
       const notices=el('notices');notices.replaceChildren();
       const others=index.sessions.filter(x=>x.id!==sid&&(x.question||!x.project&&x.title!=='创建项目草稿'));
       const pending=others.filter(x=>x.question);
@@ -301,6 +320,7 @@
     changed(){refresh();},
   };
   setInterval(refresh,3000);
+  setInterval(renderProgress,1000);
   for(const dialog of document.querySelectorAll('#dlg-project-detail,#dlg-project-import')){
     new ResizeObserver(placeBesideDialog).observe(dialog);
     new MutationObserver(placeBesideDialog).observe(dialog,{attributes:true,attributeFilter:['open','style']});

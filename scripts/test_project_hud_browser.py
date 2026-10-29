@@ -2,6 +2,7 @@
 import argparse
 import json
 import re
+import time
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -233,10 +234,47 @@ def main():
         page.locator('#hud-input').fill('整理研究资料并形成决策报告')
         assert page.locator('#hud-send').is_enabled()
         page.screenshot(path=str(args.evidence/'hud-free-text.png'))
+        page.unroute(re.compile(r'/hud/[^/?]+$'), free_text_question)
+        progress_state={'kind':'stage','text':'正在读取项目资料','started':time.time(),'updated':time.time()}
+        progress_status={'value':'running'}
+        def progress_response(route):
+            response=route.fetch()
+            data=response.json()
+            if route.request.method=='GET' and isinstance(data,dict) and 'state' in data:
+                data['status']=progress_status['value']
+                data['state'].pop('question',None)
+                data['state'].pop('proposal',None)
+                data['state']['progress']=dict(progress_state)
+                data['error']='Hermes 运行环境缺少依赖（dotenv），请检查所选宿主的 Python 环境' if data['status']=='error' else ''
+            route.fulfill(response=response,json=data)
+        page.route(re.compile(r'/hud/[^/?]+$'), progress_response)
+        page.evaluate('ProjectHUD.changed()')
+        page.wait_for_function("document.querySelector('#hud-progress-text').textContent==='正在读取项目资料'")
+        progress_state.update(kind='reasoning',text='核对已有需求中的项目目标、约束与验收条件。'*15+'最新：确认缺少的验收标准',updated=time.time())
+        page.wait_for_function("document.querySelector('#hud-progress-text').textContent.endsWith('最新：确认缺少的验收标准')")
+        line=page.locator('#hud-progress-text')
+        assert line.evaluate('(e)=>e.scrollLeft>0 && e.scrollHeight<=e.clientHeight+1')
+        first_elapsed=page.locator('#hud-progress-time').inner_text()
+        page.wait_for_timeout(1200)
+        assert page.locator('#hud-progress-time').inner_text()!=first_elapsed
+        for theme in ('dark','light'):
+            page.evaluate('theme=>document.documentElement.dataset.theme=theme',theme)
+            page.screenshot(path=str(args.evidence/f'hud-progress-mobile-{theme}.png'))
+        page.reload()
+        page.wait_for_function("!document.querySelector('#hud-progress')?.hidden")
+        if page.locator('#hud-toggle').get_attribute('aria-expanded')!='true':page.locator('#hud-toggle').click()
+        page.wait_for_selector('#hud-progress:not([hidden])')
+        assert line.inner_text().endswith('最新：确认缺少的验收标准')
+        progress_status['value']='error'
+        page.wait_for_selector('#hud-error:not([hidden])')
+        assert page.locator('#hud-progress').is_hidden()
+        assert '缺少依赖（dotenv）' in page.locator('#hud-error').inner_text()
+        assert not page.locator('#project-hud').evaluate('(e)=>e.classList.contains("hud-running")')
+        page.screenshot(path=str(args.evidence/'hud-progress-error.png'))
         assert not errors,errors
         (args.evidence/'browser.json').write_text(json.dumps({'passed':True,'errors':errors,'checks':[
             'automatic question expansion','all detail tabs retain identical window geometry','assistant and sent user text visible in conversation','options send as user message and disappear','choice / confirmation / conversation / guide scene transitions','guide history and free-text follow-up','detail position unchanged; HUD docks at equal height and returns on collapse','project details stay open with unsaved fields and active tab','options and custom text','refresh preserves input','confirmed facts',
-            'wizard uses detail docking rule and floating fallback; geometry and draft preserved','wizard draft restore','390px dark/light','Escape and focus','detail project context and mobile reply','free-text question without options']},ensure_ascii=False,indent=2),encoding='utf-8')
+            'wizard uses detail docking rule and floating fallback; geometry and draft preserved','wizard draft restore','390px dark/light','Escape and focus','detail project context and mobile reply','free-text question without options','same-revision live reasoning summary; single latest line; elapsed time; reload; failure stops progress']},ensure_ascii=False,indent=2),encoding='utf-8')
         browser.close()
 
 

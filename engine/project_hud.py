@@ -126,6 +126,7 @@ def store(conn, item, *, queue=False, activity=True):
     if queue:
         item['status'] = 'queued' if item['bot_id'] else 'idle'
         item['error'] = ''
+        item['state'].pop('progress', None)
     conn.execute('UPDATE hud_sessions SET state=?,bot_id=?,stage=?,generation=?,status=?,error=?, '
                  'activity=?,updated=?,revision=revision+1,idle_seconds=? WHERE id=?',
                  (encode(item['state']), item['bot_id'], item['stage'], item['generation'], item['status'],
@@ -373,7 +374,7 @@ def validate_response(value):
 
 
 def run_one(sid):
-    from .hud_runtime import respond
+    from .hud_runtime import respond, progress_sink
     with _LOCK, connection() as conn:
         item = row(conn, sid)
         if item['status'] != 'queued' or not item['bot_id']:
@@ -387,7 +388,31 @@ def run_one(sid):
         conn.commit()
         revision = item['revision']
     events.bus.publish('hud.changed', {'session': sid})
+    last_progress = 0.0
+
+    def progress(kind, text):
+        nonlocal last_progress
+        if kind not in ('stage', 'reasoning') or not isinstance(text, str) or not text.strip():
+            return
+        now = time.time()
+        if kind == 'reasoning' and now - last_progress < 0.3:
+            return
+        with _LOCK, connection() as conn:
+            current = row(conn, sid)
+            if current['revision'] != revision or current['status'] != 'running':
+                return
+            previous = current['state'].get('progress', {})
+            current['state']['progress'] = {
+                'kind': kind, 'text': ' '.join(text.split())[-500:],
+                'started': previous.get('started', now), 'updated': now,
+            }
+            conn.execute('UPDATE hud_sessions SET state=? WHERE id=? AND revision=? AND status=?',
+                         (encode(current['state']), sid, revision, 'running'))
+        last_progress = now
+        events.bus.publish('hud.changed', {'session': sid})
+
     try:
+        progress('stage', '正在读取项目资料')
         with connection() as conn:
             bot = valid_bot(conn, item['bot_id'])
             payload = context(conn, item)
@@ -395,7 +420,10 @@ def run_one(sid):
                 snapshot = {**payload['project'], 'documents': payload['materials']['signatures']}
                 conn.execute('UPDATE hud_sessions SET digest=? WHERE id=? AND revision=?',
                              (hashlib.sha256(encode(snapshot).encode()).hexdigest(), sid, revision))
-        response = validate_response(respond(bot, payload))
+        with progress_sink(progress):
+            response = respond(bot, payload)
+        progress('stage', '正在整理检查结果')
+        response = validate_response(response)
         proposal = response.get('proposal')
         if proposal and set(proposal['changes']) - set(payload['allowed_changes']):
             raise ValueError('此配置需要通过项目设置修改')
@@ -408,6 +436,7 @@ def run_one(sid):
         current = row(conn, sid)
         if current['revision'] != revision or current['status'] != 'running':
             return
+        current['state'].pop('progress', None)
         if error:
             current['status'], current['error'] = 'error', error
         else:

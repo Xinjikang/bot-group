@@ -87,6 +87,9 @@
 .hud-guide h4{font-size:14px;font-weight:500;margin:0 0 5px}
 .hud-guide p{font-size:13px;line-height:1.7;color:var(--fg-2);margin:0}
 #hud-latest{align-self:center;font-size:12px;margin-bottom:6px}
+.hud-progress{display:flex;align-items:center;gap:10px;flex-shrink:0;margin:0 18px 8px;padding:8px 10px;border-left:2px solid var(--cyan);background:color-mix(in srgb,var(--cyan) 6%,transparent);color:var(--fg-2);font-size:12px;min-width:0}
+#hud-progress-text{display:block;flex:1;min-width:0;white-space:nowrap;overflow:hidden}
+#hud-progress-time{flex-shrink:0;color:var(--fg-3);font-variant-numeric:tabular-nums}
 @keyframes hud-breathe{50%{opacity:.35}}
 @media(prefers-reduced-motion:reduce){.hud-running .hud-light{animation:none}.hud-shell{transition:none!important}}
 @media(max-width:1100px){#topbar{padding-bottom:58px!important}#project-hud{top:58px}#topbar .project-bar{max-width:none}}

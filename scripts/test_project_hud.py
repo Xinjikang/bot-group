@@ -218,6 +218,70 @@ class HudTests(unittest.TestCase):
         self.assertFalse(Path(captured[0]).exists())
         self.assertIn('mcp_servers.production',(home/'config.toml').read_text(encoding='utf-8'))
 
+    def test_progress_is_live_revision_fenced_and_cleared_on_completion(self):
+        from engine import hud_runtime
+        item = self.session()
+        def responding(*args):
+            hud_runtime.report_progress('stage', '正在等待模型响应')
+            running = hud.view(item['id'])
+            self.assertEqual(running['revision'], item['revision'])
+            self.assertEqual(running['state']['progress']['text'], '正在等待模型响应')
+            with patch('engine.project_hud.time.time', return_value=time.time()+1):
+                hud_runtime.report_progress('reasoning', '先核对目标\n再检查验收条件')
+            running = hud.view(item['id'])
+            self.assertEqual(running['state']['progress']['kind'], 'reasoning')
+            self.assertEqual(running['state']['progress']['text'], '先核对目标 再检查验收条件')
+            return {'text': '检查完成'}
+        with patch('engine.hud_runtime.respond', side_effect=responding):
+            hud.run_one(item['id'])
+        self.assertNotIn('progress', hud.view(item['id'])['state'])
+        item = hud.update(item['id'], {'revision': hud.view(item['id'])['revision'], 'draft': {'description': '新版'}})
+        def obsolete(*args):
+            hud.update(item['id'], {'revision': item['revision'], 'draft': {'description': '更新版'}})
+            hud_runtime.report_progress('stage', '过期进度')
+            return {'text': '过期回答'}
+        with patch('engine.hud_runtime.respond', side_effect=obsolete):
+            hud.run_one(item['id'])
+        self.assertNotIn('progress', hud.view(item['id'])['state'])
+
+    def test_runtime_streams_progress_before_exit_and_keeps_unicode_diagnostics(self):
+        from engine import hud_runtime
+        inherited = {'__PYVENV_LAUNCHER__': 'other-pythonw', 'PYTHONHOME': 'other-home',
+                     'PYTHONPATH': 'other-modules', 'VIRTUAL_ENV': 'other-venv'}
+        with patch.dict(os.environ, inherited):
+            env = hud_runtime._env()
+        self.assertTrue(set(inherited).isdisjoint(env))
+        marker = self.root/'child-finished'
+        script = (
+            'import json,sys,time; from pathlib import Path; sys.stdin.read(); '
+            'print("HUD_PROGRESS:"+json.dumps({"kind":"stage","text":"等待模型"}),flush=True); '
+            'time.sleep(0.4); '
+            'print("HUD_PROGRESS:"+json.dumps({"kind":"reasoning_delta","text":"核对验收条件"}),flush=True); '
+            'print(json.dumps({"type":"item.completed","item":{"type":"reasoning","text":"确认资料来源"}}),flush=True); '
+            'time.sleep(0.4); Path(sys.argv[1]).touch(); print("HUD_RESULT:{}")'
+        )
+        updates = []
+        def receive(kind, text):
+            updates.append((kind, text, marker.exists()))
+        with hud_runtime.progress_sink(receive):
+            result = hud_runtime._run([sys.executable, '-c', script, str(marker)], 'fixture', env, str(self.root))
+        self.assertIn(('reasoning', '核对验收条件', False), updates)
+        self.assertIn(('reasoning', '确认资料来源', False), updates)
+        self.assertNotIn('HUD_PROGRESS:', result)
+        script = 'import json,sys; print("HUD_ERROR:"+json.dumps({"stage":"启动","type":"ModuleNotFoundError","module":"dotenv"})); sys.exit(1)'
+        with self.assertRaisesRegex(RuntimeError, '缺少依赖（dotenv）'):
+            hud_runtime._run([sys.executable, '-c', script], '', env, str(self.root))
+
+    def test_runtime_timeout_terminates_process_and_clears_registration(self):
+        from engine import hud_runtime
+        original_wait = subprocess.Popen.wait
+        def short_wait(proc, timeout=None):
+            return original_wait(proc, timeout=0.1 if timeout == 180 else timeout)
+        with patch.object(subprocess.Popen, 'wait', short_wait):
+            with self.assertRaisesRegex(RuntimeError, '超过 180 秒'):
+                hud_runtime._run([sys.executable, '-c', 'import time; time.sleep(30)'], '', hud_runtime._env(), str(self.root))
+        self.assertFalse(hud_runtime._PROCESSES)
+
     def test_hermes_worker_does_not_shadow_stdlib_or_replace_isolated_home(self):
         from engine import hud_runtime
         source=self.root/'fake-hermes';source.mkdir()
@@ -230,8 +294,10 @@ class HudTests(unittest.TestCase):
             'class AIAgent:\n'
             ' def __init__(self, **kwargs):\n'
             '  assert kwargs["enabled_toolsets"] == []\n'
+            '  self.progress=kwargs["reasoning_callback"]\n'
             '  self.tools=[]\n'
             ' def run_conversation(self, prompt):\n'
+            '  self.progress("检查项目目标")\n'
             '  return {"final_response":json.dumps({"home":os.environ["HERMES_HOME"],"queue":queue.__file__})}\n'
             ' def close(self): pass\n',encoding='utf-8')
         home=self.root/'disposable';home.mkdir()
@@ -241,6 +307,7 @@ class HudTests(unittest.TestCase):
         result=subprocess.run([sys.executable,str(worker),str(source)],input='fixture',cwd=home,env=env,
                               text=True,encoding='utf-8',capture_output=True,timeout=30)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('reasoning_delta', result.stdout)
         value=json.loads(result.stdout.split('HUD_RESULT:',1)[1])
         self.assertEqual(value['home'],str(home))
         self.assertNotEqual(Path(value['queue']).resolve().parent,worker.parent)

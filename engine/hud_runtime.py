@@ -9,11 +9,29 @@ import shutil
 import subprocess
 import tempfile
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from . import bot_identity, config
 
 _PROCESSES = set()
 _PROCESS_LOCK = threading.Lock()
+_PROGRESS = ContextVar('hud_progress', default=None)
+
+
+@contextmanager
+def progress_sink(callback):
+    token = _PROGRESS.set(callback)
+    try:
+        yield
+    finally:
+        _PROGRESS.reset(token)
+
+
+def report_progress(kind, text):
+    callback = _PROGRESS.get()
+    if callback:
+        callback(kind, text)
 
 
 def _terminate(proc):
@@ -70,7 +88,10 @@ deferred_questions 是阶段切换时尚未回答的问题；在需要它的阶�
 
 
 def _env():
-    env = {k: v for k, v in os.environ.items() if not k.startswith(('GROUP_', 'XDG_GROUP_', 'HERMES_', 'CODEX_'))}
+    # Python launchers must resolve the selected host's environment independently.
+    inherited_python = {'__PYVENV_LAUNCHER__', 'PYTHONHOME', 'PYTHONPATH', 'VIRTUAL_ENV'}
+    env = {k: v for k, v in os.environ.items() if k not in inherited_python
+           and not k.startswith(('GROUP_', 'XDG_GROUP_', 'HERMES_', 'CODEX_'))}
     env.update(PYTHONIOENCODING='utf-8', PYTHONUTF8='1')
     return env
 
@@ -81,20 +102,71 @@ def _run(command, prompt, env, cwd):
                             stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', creationflags=flags)
     with _PROCESS_LOCK:
         _PROCESSES.add(proc)
+    output = []
+    progress = _PROGRESS.get()
+    reasoning = ''
+
+    def read_output():
+        nonlocal reasoning
+        for line in proc.stdout:
+            if not line.startswith('HUD_PROGRESS:'):
+                output.append(line)
+            try:
+                event = json.loads(line.removeprefix('HUD_PROGRESS:'))
+                if line.startswith('HUD_PROGRESS:'):
+                    kind, text = event.get('kind'), event.get('text')
+                    if kind == 'reasoning_delta' and isinstance(text, str):
+                        reasoning = (reasoning + text)[-500:]
+                        if progress:
+                            progress('reasoning', reasoning)
+                    elif kind == 'stage' and isinstance(text, str) and progress:
+                        progress('stage', text)
+                elif event.get('type') in ('item.started', 'item.updated', 'item.completed'):
+                    item = event.get('item', {})
+                    if item.get('type') == 'reasoning' and isinstance(item.get('text'), str) and progress:
+                        progress('reasoning', item['text'][-500:])
+            except (ValueError, TypeError, AttributeError):
+                continue
+            except Exception as exc:
+                logging.getLogger(__name__).warning('HUD progress update failed: %s', type(exc).__name__)
+
+    def drain_errors():
+        while proc.stderr.read(8192):
+            pass
+
+    def send_prompt():
+        try:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+
+    readers = [threading.Thread(target=fn, daemon=True) for fn in (read_output, drain_errors, send_prompt)]
+    for reader in readers:
+        reader.start()
     try:
-        stdout, _ = proc.communicate(prompt, timeout=180)
+        proc.wait(timeout=180)
     except subprocess.TimeoutExpired:
         _terminate(proc)
-        proc.communicate()
+        proc.wait()
         raise RuntimeError('AI 维护检查超过 180 秒，输入已保存，可重试') from None
     finally:
+        for reader in readers:
+            reader.join(timeout=5)
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            stream.close()
         with _PROCESS_LOCK:
             _PROCESSES.discard(proc)
+    stdout = ''.join(output)
     if proc.returncode:
         if 'HUD_ERROR:' in stdout:
             try:
-                detail = json.loads(stdout.rsplit('HUD_ERROR:', 1)[1])
+                detail = json.loads(stdout.rsplit('HUD_ERROR:', 1)[1].splitlines()[0])
                 logging.getLogger(__name__).warning('HUD runtime diagnostic: %s', json.dumps(detail, ensure_ascii=False))
+                if detail.get('type') == 'ModuleNotFoundError':
+                    module = detail.get('module', '')
+                    suffix = f'（{module}）' if isinstance(module, str) and module.replace('_', '').replace('.', '').isalnum() else ''
+                    raise RuntimeError(f'Hermes 运行环境缺少依赖{suffix}，请检查所选宿主的 Python 环境')
                 raise RuntimeError(f"AI 在{detail.get('stage', '运行')}时遇到 {detail.get('type', '异常')}，请检查模型配置后重试")
             except (ValueError, TypeError):
                 pass
@@ -105,6 +177,7 @@ def _run(command, prompt, env, cwd):
 def respond(bot, payload):
     from .wake import _codex_bin
     import tomlkit
+    report_progress('stage', '正在准备模型运行环境')
     base = config.data_dir() / 'hud-runtime'
     base.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='turn-', dir=base) as folder:
@@ -122,12 +195,14 @@ def respond(bot, payload):
             allowed = ('model', 'model_provider', 'model_providers', 'model_reasoning_effort', 'model_context_window')
             clean = {key: selected[key] for key in allowed if key in selected}
             clean.update(approval_policy='never', sandbox_mode='read-only', web_search='disabled',
+                         model_reasoning_summary='concise',
                          features={'shell_tool': False, 'apply_patch_freeform': False})
             (scratch / 'config.toml').write_text(tomlkit.dumps(clean), encoding='utf-8')
             if (home / 'auth.json').is_file():
                 shutil.copyfile(home / 'auth.json', scratch / 'auth.json')
             env['CODEX_HOME'] = str(scratch)
             output = scratch / 'answer.json'
+            report_progress('stage', '正在等待模型响应')
             _run([_codex_bin(), 'exec', '--json', '--ephemeral', '--skip-git-repo-check',
                   '--sandbox', 'read-only', '--output-last-message', str(output), '-'], prompt, env, str(scratch))
             raw = output.read_text(encoding='utf-8')
