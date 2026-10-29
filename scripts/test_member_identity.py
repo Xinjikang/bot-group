@@ -7,7 +7,12 @@ from engine import auth, discovery
 
 
 class MemberIdentityTests(unittest.TestCase):
-    setUp = test_project_roles.ProjectRoleTests.setUp
+    def setUp(self):
+        gateway = patch('engine.hermes_gateway.enabled', return_value=False)
+        gateway.start()
+        self.addCleanup(gateway.stop)
+        test_project_roles.ProjectRoleTests.setUp(self)
+
     join = test_project_roles.ProjectRoleTests.join
     roster = test_project_roles.ProjectRoleTests.roster
     set_role = test_project_roles.ProjectRoleTests.set_role

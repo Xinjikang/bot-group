@@ -14,6 +14,9 @@ from scripts import test_project_roles
 
 class ExecutionErrorTests(unittest.TestCase):
     def setUp(self):
+        gateway = patch('engine.hermes_gateway.enabled', return_value=False)
+        gateway.start()
+        self.addCleanup(gateway.stop)
         test_project_roles.ProjectRoleTests.setUp(self)
         environment = patch.dict(os.environ, {'GROUP_DATA_DIR': str(self.root)})
         environment.start()

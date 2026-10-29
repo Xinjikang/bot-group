@@ -16,6 +16,10 @@
 
 已有绑定按持久化 session ID 恢复。首次绑定时调用官方 `session.list title=...`；v0.22.5 的原生标题解析返回零个或一个结果。适配器对多候选响应返回 `ambiguous_session_title`，保留原会话及绑定状态；管理员核对标题归属后重试。空结果按原有流程创建会话，唯一结果写入 ID 绑定。
 
+只读状态查询 `existing_session_id()` 优先读取已有绑定；缺少绑定时以 `read_only=True` 解析标题。网关模式通过本地 control `identify` 发现已运行的实例，校验 profile、协议、实例身份与回环地址，再调用 `session.list`，完成后关闭 viewer。命名 profile 可查询承载它的根目录 multiplexer；发现过程保持目录与进程状态。查询中的网关传输、拒绝、配置和超时异常降级为 `None`。旧版模式使用 SQLite `mode=ro` 查询已有 state.db。创建与执行路径继续使用 `ensure`。工作区 GET 对查询层抛出的已知数据库、系统和网关异常返回 `work_session_exists=null`，成员视图仍可读取。
+
+旧 subprocess 路径的执行错误、任务重试、异常退出和成员身份测试显式 mock `hermes_gateway.enabled()` 为 `False`；任务重试复用异常退出夹具。网关查询另用隔离数据库、临时 home 和模拟 control/RPC 回执验证，测试分支由夹具确定。
+
 ## 执行与恢复
 
 `hermes_executions` 在 `prompt.submit` 前提交执行身份、submission ID、会话/profile 身份及固定截止时间；回执到达后保存 admission ID、generation 和 authority epoch。引擎重启恢复原记录，并继续查询 `prompt.receipt`。已登记远端执行的投递作业保持已投递状态。

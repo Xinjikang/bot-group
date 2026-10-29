@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+只读会话与旧 subprocess 隔离：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_session_readonly scripts.test_execution_errors scripts.test_task_retry scripts.test_abnormal_exit scripts.test_member_identity scripts.test_member_session_reset scripts.test_hermes_gateway scripts.test_hermes_gateway_sessions -q`。使用临时 SQLite/home 与模拟 control/RPC，覆盖已有绑定直接读取、网关缺失和存活标题查询、multiplexer 发现、异常降级及工作区 GET 200/null、查询期间 Bot/绑定/目录保持、旧版只读数据库和创建路径保留 ensure。旧 subprocess 用例显式关闭 gateway；任务重试继承异常退出夹具的开关。网关发现夹具只模拟回环地址，外部进程启动由断言阻断。
+
 HUD 与网关整合回归：运行 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud scripts.test_hermes_compatibility scripts.test_hermes_gateway scripts.test_engine_shutdown scripts.test_project_setup_history -q`。未知执行停机用例使用隔离数据库，覆盖没有现场账本的干净工作区。HUD 预览必须指定 `--data-dir` 和 `--port`，浏览器回归必须指定 `--url` 与 `--evidence`。
 
 HUD 场景布局：`test_project_hud_browser.py` 验证五个详情标签等高且坐标稳定、对话/选择/确认/使用说明切换、正文及用户回答可见、选项点击即发送并消失、刷新恢复消息、更多入口、历史说明与自由追问。使用说明另覆盖 390px 深浅主题。`scripts.test_project_hud` 验证 guide 持久化、后续上下文、步骤格式边界及问题优先级。截图包含 `hud-conversation.png`、`hud-confirmation.png`、`hud-guide.png`、`hud-guide-mobile-*.png` 和 `hud-with-project-detail.png`。

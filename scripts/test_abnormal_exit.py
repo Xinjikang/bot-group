@@ -10,6 +10,9 @@ from engine import db, taskpool, wake, heartbeat
 
 class AbnormalExitTests(unittest.TestCase):
     def setUp(self):
+        gateway = patch('engine.hermes_gateway.enabled', return_value=False)
+        gateway.start()
+        self.addCleanup(gateway.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         host = patch.dict(os.environ, {
