@@ -34,7 +34,7 @@ HUD 展开时读取详情边界，将自身放在详情右侧并与其同高；�
 
 `hud_sessions`：稳定 ID、项目归属、Bot、阶段、修订号、模型上下文代次、状态、草稿、待答问题、配置提案和确认事实。每个正式项目只有一个维护会话；草稿使用独立 ID。
 
-`hud_entries`：追加维护发言及配置确认记录，带会话和代次。空闲重置默认 30 分钟，可设 5 分钟至 24 小时。下一轮在过期后换代，持久事实、用户决策与待答问题保留。模型每轮在独立临时宿主中根据该代历史与项目快照重建上下文。
+`hud_entries`：追加维护发言及配置确认记录，带会话和代次。空闲重置默认 30 分钟，可设 5 分钟至 24 小时。下一轮在过期后换代，持久事实、用户决策与待答问题保留。模型每轮在独立维护会话中根据该代历史与项目快照重建上下文。
 
 一次超时续接只增加一个上下文代次，模型完成时刷新活动时间，避免同一轮保存结果时重复换代。
 
@@ -42,11 +42,17 @@ HUD 展开时读取详情边界，将自身放在详情右侧并与其同高；�
 
 ## 模型与运行
 
-`hud_runtime.py` 读取选定 Bot 的模型路由；Hermes 使用独立进程中的无工具 AIAgent，Codex 使用隔离 CODEX_HOME、只读沙箱和关闭 shell 工具的 exec。配置、认证副本仅存在于临时目录，完成后清理。单次模型调用最长 180 秒，超时终止其进程树。真实宿主与模型的兼容性需通过现场联调确认。
+`hud_runtime.py` 复用群聊的 `hermes_gateway.enabled()` 判定：具备新版网关布局的 Hermes（0.22.x 路线）通过现有 `hermes_gateway.connection()` 连接公开 `/api/ws`；旧版通过公开 `hermes chat -Q --ignore-rules --query-file -` 子进程调用。判定依据与群聊一致，由已安装入口对应的源码布局识别，连接错误继续报告网关错误。项目助手调用链仅使用公开 CLI 和 RPC。
 
-子进程输出按行消费，Hermes 进度与错误使用 ASCII 转义 JSON，保持 Windows 管道中的中文可恢复。独立线程发送输入、读取标准输出和排空标准错误，超时仍终止进程树。清除继承的 Python 虚拟环境标记、PYTHONHOME 和 PYTHONPATH，交由所选解释器定位依赖。缺模块错误额外显示模块名；异常正文及凭据保持隐藏。推理摘要回调的可用性由模型和宿主决定。
+`hud_gateway.py` 复用群聊的会话创建、恢复与传输接口，使用唯一标题的 ACP 维护会话。会话沿用所选 profile 的模型配置，通过公开 `toolsets: [no_mcp]` 排除全局 MCP，空 editor MCP 清单、`ignore_rules`、关闭 checkpoints/hooks 保持原有维护权限边界。提交前查询 `tools.show`，工具数为零才继续。工具白名单、文档写入与提案确认属于独立能力边界。
 
-Hermes 工作进程移除脚本目录对模块搜索路径的影响，避免本地 `queue.py` 遮蔽标准库；宿主 `.env` 中的 HERMES、CODEX、GROUP、XDG 路径设置保持隔离进程的值。错误诊断只输出阶段、异常类型及栈帧位置，省略异常正文。经明确授权可运行 `scripts/verify_project_hud_live.py`，按精确服务路由执行五轮合成场景，记录原宿主配置摘要、群会话隔离与临时目录清理结果。
+会话级 `config.set show_reasoning=1` 开启公开推理事件，按 session_id 过滤 `reasoning.delta`，通过现有 HUD 进度回调显示最新一行。模型与宿主决定事件是否提供；等待期间保留阶段与耗时显示。
+
+`hud_sessions.state.gateway` 保存 request/submission/admission ID、原 profile home、提示摘要和截止时间。断线或引擎重启后，显式重试先核对原 admission 回执；提交确认丢失时保留会话标识并报告待核对，防止重复发起未知执行。检查预算为 180 秒，届满对排队输入执行 `prompt.cancel`，运行输入按原 generation 执行 `session.interrupt`，再核对终态，最多等待 30 秒。未确认终态继续保留原执行记录。
+
+旧版 Hermes 与 Codex 使用临时配置和认证副本，完成后清理。Hermes 临时配置关闭 CLI 工具、MCP、记忆和 checkpoints；Codex 使用隔离 CODEX_HOME、只读沙箱和关闭 shell 工具的 exec。子进程按 UTF-8 消费输出，独立线程发送输入、读取输出和排空错误，超时终止进程树。清除继承的 Python 环境标记；Codex JSON 事件继续支持已有进度显示。
+
+`scripts/verify_hud_gateway.py --inspect-only` 使用独立会话核验公开创建、工具清单与推理显示配置，全程省略模型提交。`--live` 在明确模型、服务商、域名及合成资料发送范围后验证单次提交与完成回执。验证记录包含会话标识，宿主配置保持原值；测试命令及参数见 `scripts/TEST_INDEX.md`。
 
 `scripts/preview_project_hud.py` 提供独立 SQLite 和固定响应的本地交互验证服务，明确标记“本地验证”，不连接模型。其测试重置接口只存在于该脚本的预览实例。生产入口为 `python -m engine.main`。
 

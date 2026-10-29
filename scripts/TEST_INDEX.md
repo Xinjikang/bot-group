@@ -1,6 +1,10 @@
 # 测试脚本索引
 
-HUD 实时进度：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud -q` 覆盖子进程退出前推理回调、中文诊断、虚拟环境变量隔离、进度更新不改变配置修订、旧调用隔离与结束清理。`test_project_hud_browser.py --url <隔离预览地址> --evidence <主目录报告路径>` 增加同修订号最新摘要更新、单行末尾定位、秒数变化、刷新恢复、390px 深浅主题及错误后停止更新；截图 `hud-progress-mobile-*.png` 和 `hud-progress-error.png`。推理内容使用合成回调，真实模型流式能力单独核验。
+HUD 网关分流：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud scripts.test_hud_gateway scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway -q`。覆盖群聊共用运行时判定、新版网关错误保持网关路径、旧版公开 CLI、空工具会话、推理事件过滤、断线复用 admission、提交回执未知时停止重复提交、超时按 generation 中断及终态核对。使用隔离数据库和模拟公开 RPC。
+
+HUD 真实网关验证：`.venv\Scripts\python.exe -X utf8 -B scripts/verify_hud_gateway.py --live --home <已授权宿主绝对目录> --profile <profile> --expected-model <模型> --expected-provider <服务商> --expected-host <服务域名> --evidence <新的绝对JSON路径>`。核对配置路由后复用群聊网关连接，在独立维护会话中发送一次合成项目说明，验证公开 tools.show 返回零工具、单次提交、完成回执，并记录推理事件数。宿主配置保持原状，验证会话作为证据保留；须先明确模型服务与合成发送范围。将 `--live` 替换为 `--inspect-only` 时只核验本机公开会话接口和工具隔离，省略模型提交；每次使用唯一会话标题，避免复用上次创建参数。
+
+HUD 实时进度：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud -q` 覆盖 Codex 子进程退出前推理回调、虚拟环境变量隔离、进度更新不改变配置修订、旧调用隔离与结束清理。`test_project_hud_browser.py --url <隔离预览地址> --evidence <主目录报告路径>` 增加同修订号最新摘要更新、单行末尾定位、秒数变化、刷新恢复、390px 深浅主题及错误后停止更新；截图 `hud-progress-mobile-*.png` 和 `hud-progress-error.png`。推理内容使用合成回调，真实模型流式能力单独核验。
 
 向导助手贴靠：复用 `test_project_hud_browser.py --url <隔离预览地址> --evidence <主目录报告路径>`，检查 1440、1400、1390、853、390px 深浅主题，验证右侧空间至少 300px 时与向导相隔 8px、等高，空间不足时恢复浮层；展开/收起保持向导尺寸和草稿，Escape 保留向导，关闭后恢复全局位置。截图为 `hud-wizard-<宽度>-<主题>.png`，同时回归项目详情贴靠及刷新恢复。
 

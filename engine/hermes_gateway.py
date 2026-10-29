@@ -25,14 +25,14 @@ def enabled():
     return hermes_runtime.gateway_source(hermes_runtime.source_directory(_hermes_home()))
 
 
-def connection(profile, *, home=None, command=None, read_only=False):
+def connection(profile, *, home=None, command=None, read_only=False, on_event=None):
     from . import bot_identity
     from .session_adapter import _hermes_home
     home = Path(home) if home else bot_identity.hermes_home(profile, _hermes_home())
     if read_only:
-        return GatewayClient(discover(home)), home, command
+        return GatewayClient(discover(home), **({'on_event': on_event} if on_event else {})), home, command
     command = command or hermes_runtime.command()
-    return GatewayClient(ensure(command, home)), home, command
+    return GatewayClient(ensure(command, home), **({'on_event': on_event} if on_event else {})), home, command
 
 
 def _binding(conn, client, bot, project, profile, kind, thread_id, title, workdir, model_args):

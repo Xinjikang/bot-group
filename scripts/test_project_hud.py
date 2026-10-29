@@ -244,7 +244,7 @@ class HudTests(unittest.TestCase):
             hud.run_one(item['id'])
         self.assertNotIn('progress', hud.view(item['id'])['state'])
 
-    def test_runtime_streams_progress_before_exit_and_keeps_unicode_diagnostics(self):
+    def test_runtime_streams_codex_progress_before_exit(self):
         from engine import hud_runtime
         inherited = {'__PYVENV_LAUNCHER__': 'other-pythonw', 'PYTHONHOME': 'other-home',
                      'PYTHONPATH': 'other-modules', 'VIRTUAL_ENV': 'other-venv'}
@@ -254,23 +254,33 @@ class HudTests(unittest.TestCase):
         marker = self.root/'child-finished'
         script = (
             'import json,sys,time; from pathlib import Path; sys.stdin.read(); '
-            'print("HUD_PROGRESS:"+json.dumps({"kind":"stage","text":"等待模型"}),flush=True); '
-            'time.sleep(0.4); '
-            'print("HUD_PROGRESS:"+json.dumps({"kind":"reasoning_delta","text":"核对验收条件"}),flush=True); '
             'print(json.dumps({"type":"item.completed","item":{"type":"reasoning","text":"确认资料来源"}}),flush=True); '
-            'time.sleep(0.4); Path(sys.argv[1]).touch(); print("HUD_RESULT:{}")'
+            'time.sleep(0.4); Path(sys.argv[1]).touch(); print("{}")'
         )
         updates = []
         def receive(kind, text):
             updates.append((kind, text, marker.exists()))
         with hud_runtime.progress_sink(receive):
             result = hud_runtime._run([sys.executable, '-c', script, str(marker)], 'fixture', env, str(self.root))
-        self.assertIn(('reasoning', '核对验收条件', False), updates)
         self.assertIn(('reasoning', '确认资料来源', False), updates)
-        self.assertNotIn('HUD_PROGRESS:', result)
-        script = 'import json,sys; print("HUD_ERROR:"+json.dumps({"stage":"启动","type":"ModuleNotFoundError","module":"dotenv"})); sys.exit(1)'
-        with self.assertRaisesRegex(RuntimeError, '缺少依赖（dotenv）'):
+        self.assertIn('item.completed', result)
+        script = 'import sys; sys.exit(1)'
+        with self.assertRaisesRegex(RuntimeError, '维护调用失败'):
             hud_runtime._run([sys.executable, '-c', script], '', env, str(self.root))
+
+    def test_gateway_execution_record_survives_failed_hud_run(self):
+        from engine import hud_gateway
+        item = self.session()
+        def responding(*args):
+            hud_gateway._save({'session_id': 'isolated-session', 'admission_id': 'pending'})
+            raise RuntimeError('connection lost')
+        with patch('engine.hud_runtime.respond', side_effect=responding):
+            hud.run_one(item['id'])
+        saved = hud.view(item['id'])
+        self.assertEqual(saved['status'], 'error')
+        self.assertEqual(saved['state']['gateway']['admission_id'], 'pending')
+        with hud_gateway.owner(item['id']):
+            self.assertEqual(hud_gateway._saved(), saved['state']['gateway'])
 
     def test_runtime_timeout_terminates_process_and_clears_registration(self):
         from engine import hud_runtime
@@ -282,43 +292,40 @@ class HudTests(unittest.TestCase):
                 hud_runtime._run([sys.executable, '-c', 'import time; time.sleep(30)'], '', hud_runtime._env(), str(self.root))
         self.assertFalse(hud_runtime._PROCESSES)
 
-    def test_hermes_worker_does_not_shadow_stdlib_or_replace_isolated_home(self):
+    def test_legacy_hermes_uses_public_cli_with_isolated_configuration(self):
         from engine import hud_runtime
-        source=self.root/'fake-hermes';source.mkdir()
-        package=source/'hermes_cli';package.mkdir()
-        (package/'__init__.py').write_text('',encoding='utf-8')
-        (package/'config.py').write_text('def load_config():\n return {"model":{"default":"fixture","provider":"fixture"}}\n',encoding='utf-8')
-        (package/'runtime_provider.py').write_text('def resolve_runtime_provider(**kwargs):\n return {}\n',encoding='utf-8')
-        (source/'run_agent.py').write_text(
-            'import json, os, queue, urllib.request\n'
-            'class AIAgent:\n'
-            ' def __init__(self, **kwargs):\n'
-            '  assert kwargs["enabled_toolsets"] == []\n'
-            '  self.progress=kwargs["reasoning_callback"]\n'
-            '  self.tools=[]\n'
-            ' def run_conversation(self, prompt):\n'
-            '  self.progress("检查项目目标")\n'
-            '  return {"final_response":json.dumps({"home":os.environ["HERMES_HOME"],"queue":queue.__file__})}\n'
-            ' def close(self): pass\n',encoding='utf-8')
-        home=self.root/'disposable';home.mkdir()
-        (home/'.env').write_text('HERMES_HOME=/wrong-home\nGROUP_DB=/wrong-db\nFIXTURE_API_KEY=synthetic-only\n',encoding='utf-8')
-        env={**hud_runtime._env(),'HERMES_HOME':str(home)}
-        worker=Path(hud_runtime.__file__).with_name('hud_hermes_worker.py')
-        result=subprocess.run([sys.executable,str(worker),str(source)],input='fixture',cwd=home,env=env,
-                              text=True,encoding='utf-8',capture_output=True,timeout=30)
-        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-        self.assertIn('reasoning_delta', result.stdout)
-        value=json.loads(result.stdout.split('HUD_RESULT:',1)[1])
-        self.assertEqual(value['home'],str(home))
-        self.assertNotEqual(Path(value['queue']).resolve().parent,worker.parent)
-        (package/'runtime_provider.py').write_text('def resolve_runtime_provider(**kwargs):\n raise ValueError("must-never-leak-fixture-secret")\n',encoding='utf-8')
-        result=subprocess.run([sys.executable,str(worker),str(source)],input='fixture',cwd=home,env=env,
-                              text=True,encoding='utf-8',capture_output=True,timeout=30)
-        self.assertNotEqual(result.returncode,0)
-        diagnostic=json.loads(result.stdout.split('HUD_ERROR:',1)[1])
-        self.assertEqual(diagnostic['stage'],'解析模型连接')
-        self.assertEqual(diagnostic['type'],'ValueError')
-        self.assertNotIn('must-never-leak',result.stdout+result.stderr)
+        import yaml
+        home=self.root/'legacy-home';home.mkdir()
+        (home/'config.yaml').write_text('model: fixture\nmcp_servers: {production: {command: unused}}', encoding='utf-8')
+        bot={'runtime':'hermes','config_root':str(home),'profile':'default'}
+        captured=[]
+        def cli(command,prompt,env,cwd):
+            captured.append(cwd)
+            self.assertEqual(command,['hermes-fixture','chat','-Q','--ignore-rules','--query-file','-'])
+            self.assertEqual(env['HERMES_HOME'],cwd)
+            config=yaml.safe_load((Path(cwd)/'config.yaml').read_text(encoding='utf-8'))
+            self.assertEqual(config['platform_toolsets']['cli'],[])
+            self.assertEqual(config['mcp_servers'],{})
+            return '{"text":"ready"}'
+        with patch('engine.hermes_gateway.enabled',return_value=False), \
+             patch('engine.hermes_runtime.command',return_value=['hermes-fixture']), \
+             patch('engine.hud_runtime.config.data_dir',return_value=self.root), \
+             patch('engine.hud_runtime._run',side_effect=cli):
+            self.assertEqual(hud_runtime.respond(bot,{}),{'text':'ready'})
+        self.assertFalse(Path(captured[0]).exists())
+
+    def test_gateway_dispatch_never_falls_back_to_subprocess(self):
+        from engine import hud_runtime
+        from engine.hermes_gateway_client import GatewayTransportError
+        bot={'runtime':'hermes','config_root':str(self.root),'profile':'default'}
+        with patch('engine.hermes_gateway.enabled',return_value=True), \
+             patch('engine.hud_gateway.respond',return_value='{"text":"gateway"}') as call, \
+             patch('engine.hud_runtime._run') as legacy:
+            self.assertEqual(hud_runtime.respond(bot,{}),{'text':'gateway'})
+            call.side_effect=GatewayTransportError('offline')
+            with self.assertRaises(GatewayTransportError):
+                hud_runtime.respond(bot,{})
+            legacy.assert_not_called()
 
 
 if __name__=='__main__':

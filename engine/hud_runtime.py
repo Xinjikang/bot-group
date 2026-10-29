@@ -104,24 +104,13 @@ def _run(command, prompt, env, cwd):
         _PROCESSES.add(proc)
     output = []
     progress = _PROGRESS.get()
-    reasoning = ''
 
     def read_output():
-        nonlocal reasoning
         for line in proc.stdout:
-            if not line.startswith('HUD_PROGRESS:'):
-                output.append(line)
+            output.append(line)
             try:
-                event = json.loads(line.removeprefix('HUD_PROGRESS:'))
-                if line.startswith('HUD_PROGRESS:'):
-                    kind, text = event.get('kind'), event.get('text')
-                    if kind == 'reasoning_delta' and isinstance(text, str):
-                        reasoning = (reasoning + text)[-500:]
-                        if progress:
-                            progress('reasoning', reasoning)
-                    elif kind == 'stage' and isinstance(text, str) and progress:
-                        progress('stage', text)
-                elif event.get('type') in ('item.started', 'item.updated', 'item.completed'):
+                event = json.loads(line)
+                if event.get('type') in ('item.started', 'item.updated', 'item.completed'):
                     item = event.get('item', {})
                     if item.get('type') == 'reasoning' and isinstance(item.get('text'), str) and progress:
                         progress('reasoning', item['text'][-500:])
@@ -159,22 +148,17 @@ def _run(command, prompt, env, cwd):
             _PROCESSES.discard(proc)
     stdout = ''.join(output)
     if proc.returncode:
-        if 'HUD_ERROR:' in stdout:
-            try:
-                detail = json.loads(stdout.rsplit('HUD_ERROR:', 1)[1].splitlines()[0])
-                logging.getLogger(__name__).warning('HUD runtime diagnostic: %s', json.dumps(detail, ensure_ascii=False))
-                if detail.get('type') == 'ModuleNotFoundError':
-                    module = detail.get('module', '')
-                    suffix = f'（{module}）' if isinstance(module, str) and module.replace('_', '').replace('.', '').isalnum() else ''
-                    raise RuntimeError(f'Hermes 运行环境缺少依赖{suffix}，请检查所选宿主的 Python 环境')
-                raise RuntimeError(f"AI 在{detail.get('stage', '运行')}时遇到 {detail.get('type', '异常')}，请检查模型配置后重试")
-            except (ValueError, TypeError):
-                pass
         raise RuntimeError('AI 维护调用失败，请检查所选 Bot 的模型配置与登录状态后重试')
     return stdout
 
 
 def respond(bot, payload):
+    prompt = SYSTEM + '\n\n项目上下文：\n' + json.dumps(payload, ensure_ascii=False)
+    if bot['runtime'] == 'hermes':
+        from . import hermes_gateway, hud_gateway
+        if hermes_gateway.enabled():
+            workdir = str(config.data_dir().resolve())
+            return _parse_response(hud_gateway.respond(bot, prompt, workdir, report_progress))
     from .wake import _codex_bin
     import tomlkit
     report_progress('stage', '正在准备模型运行环境')
@@ -183,7 +167,6 @@ def respond(bot, payload):
     with tempfile.TemporaryDirectory(prefix='turn-', dir=base) as folder:
         scratch = Path(folder)
         env = _env()
-        prompt = SYSTEM + '\n\n项目上下文：\n' + json.dumps(payload, ensure_ascii=False)
         if bot['runtime'] == 'codex':
             home, profile = bot_identity.codex_settings(bot)
             home = Path(home)
@@ -207,35 +190,33 @@ def respond(bot, payload):
                   '--sandbox', 'read-only', '--output-last-message', str(output), '-'], prompt, env, str(scratch))
             raw = output.read_text(encoding='utf-8')
         elif bot['runtime'] == 'hermes':
-            from .hermes_runtime import executable, source_directory
+            from .hermes_runtime import command
             root = Path(bot['config_root'])
-            source = source_directory(root, executable())
             home = root if bot['profile'] == 'default' else root / 'profiles' / bot['profile']
             import yaml
             original = yaml.safe_load((home / 'config.yaml').read_text(encoding='utf-8')) or {}
             # Credentials and provider routing are copied into a disposable home.
             clean = {k: original[k] for k in ('model', 'custom_providers', 'providers', 'reasoning', 'inference') if k in original}
             clean.update(mcp_servers={}, memory={'memory_enabled': False, 'user_profile_enabled': False})
+            clean.update(platform_toolsets={'cli': []}, checkpoints={'enabled': False})
             (scratch / 'config.yaml').write_text(yaml.safe_dump(clean, allow_unicode=True), encoding='utf-8')
             for name in ('.env', 'auth.json'):
                 if (home / name).is_file():
                     shutil.copyfile(home / name, scratch / name)
             env['HERMES_HOME'] = str(scratch)
-            python = source / ('venv/Scripts/python.exe' if os.name == 'nt' else 'venv/bin/python')
-            if not python.is_file():
-                raise RuntimeError('Hermes 的 Python 运行环境不可用，请检查安装')
-            raw = _run([str(python), str(Path(__file__).with_name('hud_hermes_worker.py')), str(source)],
+            report_progress('stage', '正在通过旧版 Hermes CLI 检查项目')
+            raw = _run(command() + ['chat', '-Q', '--ignore-rules', '--query-file', '-'],
                        prompt, env, str(scratch))
-            marker = 'HUD_RESULT:'
-            if marker not in raw:
-                raise RuntimeError('Hermes 未返回维护结果，请检查模型配置')
-            raw = raw.rsplit(marker, 1)[1].strip()
         else:
             raise RuntimeError('所选 Bot 的运行方式尚不支持项目维护')
-        raw = raw.strip()
-        if raw.startswith('```'):
-            raw = raw.split('\n', 1)[1].rsplit('```', 1)[0].strip()
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            raise RuntimeError('AI 返回了无法识别的维护结果，输入已保存，可重试') from None
+        return _parse_response(raw)
+
+
+def _parse_response(raw):
+    raw = raw.strip()
+    if raw.startswith('```'):
+        raw = raw.split('\n', 1)[1].rsplit('```', 1)[0].strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        raise RuntimeError('AI 返回了无法识别的维护结果，输入已保存，可重试') from None
