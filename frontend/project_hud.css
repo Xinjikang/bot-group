@@ -51,7 +51,7 @@
 .hud-settings-bot{display:grid;gap:10px}
 .hud-settings-tools{display:flex;flex-wrap:wrap;gap:8px 18px}
 .hud-settings-tools .hud-link{padding:4px 0}
-.hud-settings-save{display:flex;flex-direction:column;align-items:flex-start;gap:16px}
+.hud-settings-card{display:flex;flex-direction:column;gap:22px;padding:14px;min-width:0;border:1px solid var(--border-soft);border-radius:12px;background:color-mix(in srgb,var(--card) 55%,transparent)}
 .hud-settings-buttons{display:flex;align-items:center;gap:12px}
 .hud-cancel{background:transparent;border:1px solid var(--border-soft);border-radius:9px;padding:7px 15px}
 .hud-settings select{width:100%;padding:8px;background:var(--card-2);border:1px solid var(--border-soft);border-radius:8px}
