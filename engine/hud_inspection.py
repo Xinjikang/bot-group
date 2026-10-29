@@ -242,9 +242,16 @@ def inspect(project, materials):
         worktree_root = project.get('worktree_root')
         add('worktree_root', 'ok' if worktree_root and Path(worktree_root).is_dir() else 'missing',
             '独立工作区根目录可以访问' if worktree_root and Path(worktree_root).is_dir() else '独立工作区根目录尚未准备好')
-    if 'settings' in project:
-        resources = [s for s in project['settings'] if s['key'].startswith('workspace_resources:')]
-        add('resources', 'ok' if resources else 'missing',
-            '已登记工作区资源；实际端口与服务连通性待核实' if resources else '尚未登记工作区资源，请结合项目需要核对端口、数据和浏览器配置',
-            configured=len(resources))
+    if 'workspace_resources' in project:
+        workspaces = project['workspace_resources']
+        saved = [w for w in workspaces if w['revision'] > 0]
+        missing = [w['path'] for w in workspaces if not w['revision']]
+        errors = project.get('workspace_errors', [])
+        status = 'unknown' if errors else 'missing' if missing or not workspaces else 'ok'
+        summary = ('部分成员的工作目录尚未确认，资源配置待核实' if errors else
+                   '部分工作目录尚未保存资源配置' if missing and saved else
+                   '尚未保存工作区资源配置' if not saved else
+                   '已保存工作区资源配置；共用目录的成员使用同一份配置，实际服务运行情况待核实')
+        add('resources', status, summary, configured=len(saved), workspaces=len(workspaces),
+            missing_paths=missing, unresolved=errors)
     return result

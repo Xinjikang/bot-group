@@ -189,7 +189,7 @@
       box.append(action(changes.length&&facts.length?`确认保存以上 ${count} 项`:changes.length?(item.project?'确认修改项目设置':'确认更新向导草稿'):'确认保存项目备注',async()=>{
         if(draftMode)await beforeConfirm?.();
         const data=await mutate('/accept',{proposal_id:proposal.id});if(data&&draftMode&&Object.keys(proposal.changes).length)onApply?.(data.state.draft);
-      },'hud-primary'),action('暂不处理',()=>mutate('/answer',{text:'这项建议暂不处理，请继续当前问题。',question_id:null})));(reply||content).append(box);
+      },'hud-primary'),action('暂不处理',()=>mutate('/answer',{text:'这项建议暂不处理，请继续当前问题。',question_id:null,dismiss_proposal:proposal.id})));(reply||content).append(box);
     }
     if(guide&&scene==='guide'){
       (reply||content).append(guideContent(guide));

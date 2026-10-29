@@ -23,6 +23,7 @@ class Create(BaseModel):
 class Answer(Revision):
     text: str = Field(min_length=1, max_length=12000)
     question_id: str | None = None
+    dismiss_proposal: str | None = None
 
 
 class Proposal(Revision):

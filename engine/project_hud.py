@@ -76,7 +76,8 @@ def add_entry(conn, item, role, content):
 
 
 def advance_generation(item):
-    if item['status'] != 'running' and time.time() - item['activity'] > item['idle_seconds']:
+    if (item['status'] != 'running' and not item['state'].get('proposal')
+            and time.time() - item['activity'] > item['idle_seconds']):
         item['generation'] += 1
         item['activity'] = time.time()
 
@@ -178,13 +179,19 @@ def answer(sid, body):
         question = item['state'].get('question')
         if body.get('question_id') != (question or {}).get('id'):
             raise HTTPException(409, '当前问题已变化，请核对后再提交')
+        dismissed = body.get('dismiss_proposal')
+        if dismissed:
+            proposal = item['state'].get('proposal')
+            if not proposal or proposal['id'] != dismissed:
+                raise HTTPException(409, '配置提案已变化')
+            item['state'].pop('proposal')
+            item['activity'] = time.time()
         if question:
             decisions = item['state'].setdefault('decisions', [])
             decisions.append({'question': question['title'], 'answer': text})
             item['state'].pop('question')
         advance_generation(item)
         add_entry(conn, item, 'user', {'text': text})
-        item['state'].pop('proposal', None)
         return store(conn, item, queue=True)
 
 
@@ -221,6 +228,8 @@ def share_facts(conn, item):
 def accept(sid, body):
     with _LOCK, connection() as conn:
         item = checked(conn, sid, body['revision'])
+        if item['status'] in ('queued', 'running'):
+            raise HTTPException(409, '助手正在处理补充，请等待回复后确认提案')
         proposal = item['state'].get('proposal')
         if not proposal or proposal['id'] != body['proposal_id']:
             raise HTTPException(409, '配置提案已变化')
@@ -245,17 +254,37 @@ def accept(sid, body):
             saved_text += ('，并保存项目备注' if saved_text else '已保存项目备注')
         add_entry(conn, item, 'system', {'text': saved_text, 'proposal': proposal})
         item['state'].pop('proposal')
+        item['activity'] = time.time()
         result = store(conn, item, queue=True)
         events.bus.publish('project.updated', {'project': item['project']})
         return result
 
 
 def project_snapshot(conn, project):
+    from . import project_workspaces as ws
     config = dict(conn.execute('SELECT name,display_name,root,description,directory_mode,worktree_root,readiness_status '
                                'FROM projects WHERE name=?', (project,)).fetchone())
     config['settings'] = [dict(r) for r in conn.execute(
-        "SELECT key,value FROM settings WHERE project=? AND (key='owner_profile' OR key LIKE 'workspace_resources:%')", (project,))]
+        "SELECT key,value FROM settings WHERE project=? AND key='owner_profile'", (project,))]
     config['members'] = [dict(r) for r in conn.execute('SELECT profile,role,active FROM project_members WHERE project=?', (project,))]
+    resources = {r['path']: dict(r) for r in conn.execute(
+        'SELECT path,workspace_id,revision,config FROM workspace_resources WHERE project=?', (project,))}
+    workspaces, errors = {}, []
+    for member in config['members']:
+        try:
+            path = ws.key(ws.selected_path(conn, config, member['profile']))
+        except HTTPException as exc:
+            errors.append({'profile': member['profile'], 'error': exc.detail})
+            continue
+        if path not in workspaces:
+            saved = resources.get(path)
+            workspaces[path] = {'path': path, 'members': [],
+                                'workspace_id': saved['workspace_id'] if saved else None,
+                                'revision': saved['revision'] if saved else 0,
+                                'config': json.loads(saved['config']) if saved else None}
+        workspaces[path]['members'].append(member['profile'])
+    config['workspace_resources'] = list(workspaces.values())
+    config['workspace_errors'] = errors
     config['requirements'] = [dict(r) for r in conn.execute(
         "SELECT id,title,status,gate_reason FROM requirements WHERE project=? AND status<>'done' ORDER BY id DESC LIMIT 20", (project,))]
     config['tasks'] = [dict(r) for r in conn.execute(
@@ -283,6 +312,7 @@ def context(conn, item):
     return {'stage': item['stage'], 'project_created': bool(item['project']), 'project': config, 'template': template,
             'materials': materials, 'inspection': hud_inspection.inspect(config, materials), 'facts': state.get('facts', []),
             'deferred_questions': state.get('deferred_questions', [])[-12:],
+            'pending_proposal': state.get('proposal'),
             'decisions': state.get('decisions', [])[-60:], 'history': history,
             'allowed_changes': sorted({'display_name', 'description'} if item['project'] else DRAFT_FIELDS)}
 
@@ -354,8 +384,7 @@ def run_one(sid):
         if item['project'] and not conn.execute('SELECT 1 FROM projects WHERE name=? AND removed=0 AND archived=0', (item['project'],)).fetchone():
             conn.execute("UPDATE hud_sessions SET status='idle' WHERE id=?", (sid,))
             return
-        if time.time() - item['activity'] > item['idle_seconds']:
-            item['generation'] += 1
+        advance_generation(item)
         conn.execute("UPDATE hud_sessions SET status='running',generation=?,checked=? WHERE id=?", (item['generation'], time.time(), sid))
         conn.commit()
         revision = item['revision']
@@ -425,10 +454,10 @@ def run_one(sid):
             for key in ('question', 'proposal'):
                 if response.get(key):
                     current['state'][key] = response[key]
-                else:
+                elif key != 'proposal':
                     current['state'].pop(key, None)
             add_entry(conn, current, 'assistant', response)
-            current['status'], current['error'] = ('waiting' if response.get('question') or response.get('proposal') else 'idle'), ''
+            current['status'], current['error'] = ('waiting' if current['state'].get('question') or current['state'].get('proposal') else 'idle'), ''
         current['activity'] = time.time()
         store(conn, current)
 

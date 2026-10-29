@@ -10,6 +10,10 @@
 
 项目助手引导与实测依据：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_inspection scripts.test_project_hud scripts.test_hud_gateway -q`。隔离目录覆盖关键文档优先读取、扫描限额、失效链接、仓库范围、Git 远程缺失与凭据隐藏、CodeGraph 未初始化/过期/失败、系统指令分离、当前值来源与重复提案消除。浏览器复用 `test_project_hud_browser.py --url <隔离地址> --evidence <报告目录>` 检查保存位置、当前内容与建议内容对照、备注确认及窄屏可读性。
 
+助手提案与资源读取回归：复用上述三个模块。隔离 SQLite 验证待处理提案阻止回答/执行入口超时换代、普通解释及历史截断后仍传递完整八项提案、确认/暂不处理后重新计时、旧提案 ID 与补充处理期间确认的 409、新提案替换及无提案时正常重置。资源覆盖共享目录归并、逐成员独立目录、部分资源缺失、目录未分配的 unknown、与页面 GET 返回的持久配置一致、项目隔离及只读查询。浏览器回归另核对“暂不处理”请求携带当前提案 ID，服务数据与端口由预览参数注入。
+
+提案浏览器续接：先用 `scripts/preview_project_hud.py --data-dir <隔离目录> --port <分配端口>` 启动固定响应预览，再运行 `node scripts/test_hud_proposal_browser.cjs --url <隔离预览地址> --evidence <主目录报告目录>`。Node 须可解析 `playwright`，可通过 `NODE_PATH` 注入现有依赖路径，并已安装 Chrome。覆盖追问普通解释后保留提案、刷新恢复、桌面/390px 展示、暂不处理传入当前 ID 及提案解除。脚本仅访问该预览，退出关闭本次浏览器；预览由启动者停止。
+
 真实引导回复：在下述 `verify_hud_gateway.py --live` 命令追加 `--scenario explain|conflict|change`，分别验证解释资料位置时直接回答、文档声明与 Git/CodeGraph 检测冲突时保留缺口、用户明确修改简介时返回待确认提案。每次使用新的 evidence 文件，只发送合成项目资料；同时校验会话专用系统指令、零工具、单次提交及结果格式，实际措辞另行审阅。
 
 HUD 普通回复兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud scripts.test_hud_gateway -q`。隔离数据库验证普通中文回复保存为对话且保持项目配置与共享资料原值；同时覆盖 JSON/围栏提案解析、空输出、损坏结构、越权字段和超长正文校验，复用提案确认回归。

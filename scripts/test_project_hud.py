@@ -136,7 +136,8 @@ class HudTests(unittest.TestCase):
             'reason': '方便新成员了解项目', 'changes': {'description': '建议简介'}, 'facts': []}})
         self.assertEqual(result['state']['proposal']['before']['description'], '当前简介')
         self.assertEqual(self.conn.execute("SELECT description FROM projects WHERE name='p'").fetchone()[0], '当前简介')
-        item = hud.answer(item['id'], {'revision': result['revision'], 'question_id': None, 'text': '保持现状'})
+        item = hud.answer(item['id'], {'revision': result['revision'], 'question_id': None, 'text': '保持现状',
+                                      'dismiss_proposal': result['state']['proposal']['id']})
         result = self.infer(item, {'text': '重复建议', 'proposal': {'changes': {'description': '当前简介'}, 'facts': []}})
         self.assertEqual(result['status'], 'idle')
         self.assertNotIn('proposal', result['state'])
@@ -229,6 +230,180 @@ class HudTests(unittest.TestCase):
         self.assertIn('proposal',result['state'])
         saved=hud.update(item['id'],{'revision':result['revision'],'draft':{'description':'用户新目标'}})
         self.assertNotIn('proposal',saved['state'])
+
+    def test_pending_proposal_survives_timeout_followup_and_history_limit(self):
+        item = self.session('p')
+        result = self.infer(item, {'text': '逐项核对建议', 'proposal': {'changes': {}, 'facts': [
+            {'label': f'第{i}项', 'value': f'待讨论内容{i}'} for i in range(1, 9)]}})
+        proposal = result['state']['proposal']
+        with hud.connection() as conn:
+            for i in range(18):
+                hud.add_entry(conn, result, 'user', {'text': f'补充说明{i}'})
+            conn.execute('UPDATE hud_sessions SET activity=? WHERE id=?', (time.time()-3600, item['id']))
+        response = self.client.post('/hud/'+item['id']+'/answer', json={
+            'revision': result['revision'], 'question_id': None, 'text': '这8条我们一条一条谈'})
+        self.assertEqual(response.status_code, 200, response.text)
+        queued = response.json()
+        self.assertEqual(queued['generation'], result['generation'])
+        self.assertEqual(queued['state']['proposal'], proposal)
+        blocked = self.client.post('/hud/'+item['id']+'/accept', json={
+            'revision': queued['revision'], 'proposal_id': proposal['id']})
+        self.assertEqual(blocked.status_code, 409)
+        with hud.connection() as conn:
+            conn.execute('UPDATE hud_sessions SET activity=? WHERE id=?', (time.time()-3600, item['id']))
+        def explain(bot, payload):
+            self.assertEqual(payload['pending_proposal'], proposal)
+            self.assertEqual(len(payload['pending_proposal']['facts']), 8)
+            self.assertFalse(any(entry.get('proposal') for entry in payload['history']))
+            self.assertEqual(payload['history'][-1]['text'], '这8条我们一条一条谈')
+            return {'text': '先看第一项的来源。', 'proposal': None}
+        with patch('engine.hud_runtime.respond', side_effect=explain):
+            hud.run_one(item['id'])
+        saved = hud.view(item['id'])
+        self.assertEqual(saved['generation'], result['generation'])
+        self.assertEqual(saved['state']['proposal'], proposal)
+        self.assertEqual(saved['status'], 'waiting')
+
+    def test_resolving_proposal_restarts_idle_timer_and_allows_later_reset(self):
+        for action in ('accept', 'dismiss'):
+            with self.subTest(action=action):
+                result = self.infer(self.session(), {'text': '建议', 'proposal': {
+                    'changes': {'description': '待确认目标'}, 'facts': []}})
+                proposal_id = result['state']['proposal']['id']
+                with hud.connection() as conn:
+                    conn.execute('UPDATE hud_sessions SET activity=? WHERE id=?', (time.time()-3600, result['id']))
+                if action == 'accept':
+                    response = self.client.post('/hud/'+result['id']+'/accept', json={
+                        'revision': result['revision'], 'proposal_id': proposal_id})
+                else:
+                    stale = self.client.post('/hud/'+result['id']+'/answer', json={
+                        'revision': result['revision'], 'question_id': None,
+                        'text': '暂不处理', 'dismiss_proposal': 'old-proposal'})
+                    self.assertEqual(stale.status_code, 409)
+                    response = self.client.post('/hud/'+result['id']+'/answer', json={
+                        'revision': result['revision'], 'question_id': None,
+                        'text': '暂不处理', 'dismiss_proposal': proposal_id})
+                self.assertEqual(response.status_code, 200, response.text)
+                resolved = response.json()
+                self.assertNotIn('proposal', resolved['state'])
+                self.assertEqual(resolved['generation'], result['generation'])
+                self.assertLess(time.time()-resolved['activity'], 5)
+                finished = self.infer(resolved, {'text': '已处理，继续讨论。'})
+                with hud.connection() as conn:
+                    conn.execute('UPDATE hud_sessions SET activity=? WHERE id=?', (time.time()-3600, result['id']))
+                fresh = hud.answer(result['id'], {'revision': finished['revision'], 'question_id': None, 'text': '新的话题'})
+                self.assertEqual(fresh['generation'], result['generation']+1)
+
+    def test_new_proposal_replaces_pending_proposal(self):
+        result = self.infer(self.session(), {'text': '建议', 'proposal': {
+            'changes': {'description': '原目标'}, 'facts': []}})
+        queued = hud.answer(result['id'], {'revision': result['revision'], 'question_id': None, 'text': '改成新目标'})
+        replacement = self.infer(queued, {'text': '调整建议', 'proposal': {
+            'changes': {'description': '新目标'}, 'facts': []}})
+        self.assertNotEqual(replacement['state']['proposal']['id'], result['state']['proposal']['id'])
+        self.assertEqual(replacement['state']['proposal']['changes']['description'], '新目标')
+
+    def test_workspace_snapshot_matches_saved_shared_configuration(self):
+        from engine import project_workspaces as ws
+        item = self.session('p')
+        self.join(profile='peer')
+        config = {'services': {'frontend': {'port': 21001, 'host': '127.0.0.1'}},
+                  'browser': None, 'test_data_directory': str(self.root/'test-data')}
+        self.conn.execute('INSERT INTO workspace_resources(project,path,workspace_id,config,revision) VALUES(?,?,?,?,?)',
+                          ('p', ws.key(self.root), 'fixture-shared', json.dumps(config), 3))
+        self.conn.commit()
+        payload = hud.context(self.conn, item)
+        resources = payload['project']['workspace_resources']
+        self.assertEqual(len(resources), 1)
+        self.assertEqual(len(resources[0]['members']), 2)
+        profile = resources[0]['members'][0]
+        response = self.client.get(f'/projects/p/workspaces/{profile}/resources')
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(resources[0]['config'], response.json()['config'])
+        self.assertEqual(resources[0]['revision'], response.json()['revision'])
+        check = next(c for c in payload['inspection']['checks'] if c['key']=='resources')
+        self.assertEqual(check['status'], 'ok')
+        self.assertEqual(check['evidence']['configured'], 1)
+        self.assertEqual(hud.project_snapshot(self.conn, 'q')['workspace_resources'], [])
+
+    def test_workspace_snapshot_distinguishes_missing_and_unresolved_directories(self):
+        item = self.session('p')
+        profile = self.conn.execute("SELECT profile FROM project_members WHERE project='p'").fetchone()[0]
+        payload = hud.context(self.conn, item)
+        resources = payload['project']['workspace_resources']
+        self.assertEqual(resources[0]['revision'], 0)
+        self.assertIsNone(resources[0]['config'])
+        self.assertEqual(next(c for c in payload['inspection']['checks'] if c['key']=='resources')['status'], 'missing')
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM workspace_resources').fetchone()[0], 0)
+        self.conn.execute("UPDATE projects SET directory_mode='worktree' WHERE name='p'")
+        self.conn.execute("INSERT INTO project_workspace_modes(project,profile,mode) VALUES('p',?,'worktree')", (profile,))
+        self.conn.commit()
+        payload = hud.context(self.conn, item)
+        self.assertEqual(payload['project']['workspace_resources'], [])
+        self.assertEqual(payload['project']['workspace_errors'][0]['profile'], profile)
+        self.assertEqual(next(c for c in payload['inspection']['checks'] if c['key']=='resources')['status'], 'unknown')
+
+    def test_workspace_snapshot_checks_each_selected_directory(self):
+        from engine import project_workspaces as ws
+        item = self.session('p')
+        first = self.conn.execute("SELECT profile FROM project_members WHERE project='p'").fetchone()[0]
+        second = self.join(profile='peer')
+        separate = self.root/'peer-workspace'
+        separate.mkdir()
+        self.conn.execute("UPDATE projects SET directory_mode='worktree',worktree_root=? WHERE name='p'", (str(self.root),))
+        self.conn.executemany("INSERT INTO project_workspace_modes(project,profile,mode) VALUES('p',?,?)",
+                              [(first, 'shared'), (second, 'worktree')])
+        self.conn.execute("INSERT INTO project_workspaces(project,profile,path) VALUES('p',?,?)", (second, str(separate)))
+        config = {'services': {}, 'browser': None, 'test_data_directory': str(self.root/'isolated-data')}
+        self.conn.execute('INSERT INTO workspace_resources(project,path,workspace_id,config) VALUES(?,?,?,?)',
+                          ('p', ws.key(self.root), 'fixture-main', json.dumps(config)))
+        self.conn.commit()
+        payload = hud.context(self.conn, item)
+        resources = {r['path']: r for r in payload['project']['workspace_resources']}
+        self.assertEqual(resources[ws.key(self.root)]['members'], [first])
+        self.assertEqual(resources[ws.key(separate)]['members'], [second])
+        check = next(c for c in payload['inspection']['checks'] if c['key']=='resources')
+        self.assertEqual(check['status'], 'missing')
+        self.assertEqual(check['evidence']['configured'], 1)
+        self.assertEqual(check['evidence']['missing_paths'], [ws.key(separate)])
+        self.conn.execute('INSERT INTO workspace_resources(project,path,workspace_id,config) VALUES(?,?,?,?)',
+                          ('p', ws.key(separate), 'fixture-peer', json.dumps(config)))
+        self.conn.commit()
+        payload = hud.context(self.conn, item)
+        check = next(c for c in payload['inspection']['checks'] if c['key']=='resources')
+        self.assertEqual(check['status'], 'ok')
+        self.assertEqual(check['evidence']['configured'], 2)
+
+    def test_workspace_snapshot_checks_each_selected_directory(self):
+        from engine import project_workspaces as ws
+        item = self.session('p')
+        first = self.conn.execute("SELECT profile FROM project_members WHERE project='p'").fetchone()[0]
+        second = self.join(profile='peer')
+        separate = self.root/'peer-workspace'
+        separate.mkdir()
+        self.conn.execute("UPDATE projects SET directory_mode='worktree',worktree_root=? WHERE name='p'", (str(self.root),))
+        self.conn.executemany("INSERT INTO project_workspace_modes(project,profile,mode) VALUES('p',?,?)",
+                              [(first, 'shared'), (second, 'worktree')])
+        self.conn.execute("INSERT INTO project_workspaces(project,profile,path) VALUES('p',?,?)", (second, str(separate)))
+        config = {'services': {}, 'browser': None, 'test_data_directory': str(self.root/'isolated-data')}
+        self.conn.execute('INSERT INTO workspace_resources(project,path,workspace_id,config) VALUES(?,?,?,?)',
+                          ('p', ws.key(self.root), 'fixture-main', json.dumps(config)))
+        self.conn.commit()
+        payload = hud.context(self.conn, item)
+        resources = {r['path']: r for r in payload['project']['workspace_resources']}
+        self.assertEqual(resources[ws.key(self.root)]['members'], [first])
+        self.assertEqual(resources[ws.key(separate)]['members'], [second])
+        check = next(c for c in payload['inspection']['checks'] if c['key']=='resources')
+        self.assertEqual(check['status'], 'missing')
+        self.assertEqual(check['evidence']['configured'], 1)
+        self.assertEqual(check['evidence']['missing_paths'], [ws.key(separate)])
+        self.conn.execute('INSERT INTO workspace_resources(project,path,workspace_id,config) VALUES(?,?,?,?)',
+                          ('p', ws.key(separate), 'fixture-peer', json.dumps(config)))
+        self.conn.commit()
+        payload = hud.context(self.conn, item)
+        check = next(c for c in payload['inspection']['checks'] if c['key']=='resources')
+        self.assertEqual(check['status'], 'ok')
+        self.assertEqual(check['evidence']['configured'], 2)
 
     def test_default_bot_does_not_enable_other_projects(self):
         item=self.session()
