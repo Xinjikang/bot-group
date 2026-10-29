@@ -214,9 +214,13 @@ def respond(bot, payload):
 
 def _parse_response(raw):
     raw = raw.strip()
-    if raw.startswith('```'):
+    structured = raw.startswith(('{', '[', '```'))
+    if raw.startswith('```') and '\n' in raw and raw.endswith('```'):
         raw = raw.split('\n', 1)[1].rsplit('```', 1)[0].strip()
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
+        # Prose is display-only; malformed structured results still require retry.
+        if raw and not structured:
+            return {'text': raw}
         raise RuntimeError('AI 返回了无法识别的维护结果，输入已保存，可重试') from None

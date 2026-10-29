@@ -133,6 +133,38 @@ class HudTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             hud.validate_response({'text':'执行操作','proposal':{'changes':{'command':'run'},'facts':[]}})
 
+    def test_plain_response_persists_as_conversation_without_configuration_changes(self):
+        from engine import hud_runtime
+        item = self.session('p')
+        before = dict(self.conn.execute('SELECT * FROM projects WHERE name=?', ('p',)).fetchone())
+        message = '维护资料用于记录目录用途和资料来源。\n配置调整需要先确认提案。'
+        with patch('engine.hud_runtime.respond', side_effect=lambda *_: hud_runtime._parse_response(message)):
+            hud.run_one(item['id'])
+        saved = hud.view(item['id'])
+        self.assertEqual(saved['status'], 'idle')
+        self.assertEqual(saved['error'], '')
+        self.assertEqual(saved['entries'][-1]['content']['text'], message)
+        self.assertFalse(saved['state'].get('proposal'))
+        self.assertFalse(saved['state'].get('question'))
+        self.assertFalse(saved['state'].get('facts'))
+        self.assertEqual(dict(self.conn.execute('SELECT * FROM projects WHERE name=?', ('p',)).fetchone()), before)
+        self.assertIsNone(self.conn.execute(
+            "SELECT value FROM settings WHERE project='p' AND key='maintenance_facts'").fetchone())
+
+    def test_runtime_response_parser_preserves_structured_validation(self):
+        from engine import hud_runtime
+        proposal = {'text': '建议补充简介', 'proposal': {'changes': {'description': '测试项目'}, 'facts': []}}
+        encoded = json.dumps(proposal, ensure_ascii=False)
+        for raw in (encoded, '```json\n' + encoded + '\n```', '```\n' + encoded + '\n```'):
+            with self.subTest(raw=raw):
+                self.assertEqual(hud_runtime._parse_response(raw), proposal)
+        for raw in ('', '   ', '{"text":"建议调整","proposal":', '[{"text":', '```', '```json\n{}'):
+            with self.subTest(raw=raw), self.assertRaises(RuntimeError):
+                hud_runtime._parse_response(raw)
+        for raw in ('[]', 'null', '"回复"', '{"text":"建议调整","proposal":{"changes":{"command":"run"}}}', '正文' * 3001):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                hud.validate_response(hud_runtime._parse_response(raw))
+
     def test_free_text_after_timeout_is_in_new_context(self):
         item=self.session()
         with hud.connection() as conn:
