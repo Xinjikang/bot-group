@@ -76,8 +76,7 @@ def steer_mcp():
             if time.monotonic() >= deadline:
                 raise TimeoutError("Steer controller did not confirm delivery")
             time.sleep(0.2)
-        correction = (root / "correction").read_text(encoding="utf-8")
-        return f"STEER_APPLIED:{correction}"
+        return "release acknowledged"
 
     server.run()
 
@@ -205,7 +204,7 @@ def verify(args):
         assert boot is not None, "isolated engine readiness deadline exceeded"
         signal = ("Isolated steer test. First call group_read_inbox, then call tool_search for steer_wait, "
                   "then call steer_wait exactly once and wait for its result. "
-                  "After it returns, call group_send exactly once with text \"[收口] @user STEER_DONE\" "
+                  "After it returns, call group_send exactly once with text \"[收口] @user STEER_ORIGINAL\" "
                   "and need_reply=false, then finish.")
         response = client.post("/probe/spawn", json={"thread": thread, "signal": signal}, timeout=120)
         response.raise_for_status()
@@ -220,7 +219,7 @@ def verify(args):
                            (thread,)).fetchone()
         assert row is not None and row["state"] == "running", row
         # 发送 /steer，投递到运行中执行
-        steer_text = "请改用方案 B 并回复 STEER_B"
+        steer_text = "请改为发送 STEER_CORRECTED 代替 STEER_ORIGINAL，并在最终回复中写明 STEER_CORRECTED"
         from engine import commands, steer_ledger
         outcome = commands.dispatch(conn, "alpha", "user", "user", f"/steer @default {steer_text}", thread)
         result["steer_outcome"] = outcome
@@ -249,16 +248,26 @@ def verify(args):
             time.sleep(1)
         from engine.hermes_gateway_client import GatewayClient
         with GatewayClient(endpoint) as viewer:
+            snapshot = viewer.rpc("session.resume", session_id=row["session_id"])
             history = viewer.rpc("session.export", session_id=row["session_id"], format="json")["content"]
+        # 行为改变：目标 assistant 最终输出反映纠偏（不搜整段 history，防 steer 输入/工具返回泄露假阳性）
+        final_assistant = ""
+        for message in reversed(snapshot.get("messages") or []):
+            if isinstance(message, dict) and message.get("role") == "assistant":
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    final_assistant = content
+                    break
         for secret in [env["GROUP_SECRET"], env["GROUP_ENGINE_KEY"], env["GROUP_ADMIN_PASSWORD"], credential]:
             history = history.replace(secret, "[REDACTED]")
         (evidence / "history.json").write_text(history, encoding="utf-8")
-        result["checks"]["behavior_observed"] = ("STEER_B" in history or "STEER_APPLIED" in history)
+        result["checks"]["behavior_observed"] = bool(final_assistant) and "STEER_CORRECTED" in final_assistant
         result["checks"]["steer_message_recorded"] = conn.execute(
             "SELECT count(*) FROM messages WHERE thread_id=? AND content LIKE ?",
-            (thread, "%STEER_DONE%")).fetchone()[0] == 1
+            (thread, "%STEER_CORRECTED%")).fetchone()[0] == 1
         result["history"] = {"marker_present": "OUT-OF-BAND USER MESSAGE" in history,
-                             "steer_text_present": steer_text in history}
+                             "steer_text_present": steer_text in history,
+                             "final_assistant": final_assistant}
     finally:
         try:
             from engine.maintenance.stop_engine import stop
@@ -275,7 +284,13 @@ def verify(args):
             client.close()
             conn.close()
             (evidence / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    assert result["resources_released"], "resources not released"
+    required_checks = ("inserted_evidence", "behavior_observed", "steer_message_recorded")
+    failed = [k for k in required_checks if not result["checks"].get(k)]
+    if not result["resources_released"]:
+        failed.append("resources_released")
+    if failed:
+        print(json.dumps({"FAILED_CHECKS": failed, "checks": result["checks"]}, ensure_ascii=False), flush=True)
+        sys.exit(1)
     print(json.dumps(result["checks"], ensure_ascii=False), flush=True)
 
 
