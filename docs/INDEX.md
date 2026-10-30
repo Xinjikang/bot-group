@@ -10,6 +10,8 @@ Hermes 网关版的官方接口、原生审批、临时 MCP、会话迁移与执
 
 Hermes WS 连接复用、业务空闲回收和顶栏全局状态见 [连接复用与状态设计](design/2026-10-30-hermes-gateway-connections.md)。
 
+Hermes 网关会话级资源复用（agent 跨轮复用、消除每轮重建）见 [会话复用设计](design/2026-10-30-hermes-gateway-session-reuse.md)。
+
 Hermes 系统层与用户层规则判重、admission 记账及旧会话补齐见 [提示词持久化判重](design/2026-10-30-hermes-prompt-dedup.md)。
 
 Codex 与 Hermes 连续唤醒的规则正文、原生系统文本和工具 schema 哈希验证见 [前缀验证设计](design/2026-10-30-wake-prefix-verification.md)。共享工具白名单包含 `operation_get`，同时覆盖 Codex 与 Hermes 子进程。
