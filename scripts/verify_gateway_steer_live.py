@@ -81,6 +81,16 @@ def steer_mcp():
     server.run()
 
 
+def _pid_alive(pid: int) -> bool | None:
+    """网关进程存活核验：tasklist 查询；查询失败返回 None（未知，不当作已退出）。"""
+    try:
+        r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return str(pid) in (r.stdout or "")
+
+
 def serve(url):
     """隔离引擎：暴露 /probe/spawn，用真实网关 spawn 运行中执行。
 
@@ -282,7 +292,26 @@ def verify(args):
         finally:
             if initial is not None:
                 initial.wait(timeout=10)
+            gateway_pid = None
+            gateway_pid_owned = False
             if endpoint:
+                # 停前读取网关 pid：归属核对（hermes_home 须等于本次 home）+ 停后进程退出核验
+                pid_file = home / "gateway.pid"
+                if pid_file.exists():
+                    try:
+                        meta = json.loads(pid_file.read_text(encoding="utf-8", errors="replace"))
+                        pid = meta.get("pid")
+                        gh = meta.get("hermes_home")
+                        if isinstance(pid, int):
+                            gateway_pid = pid
+                            if gh:
+                                try:
+                                    gateway_pid_owned = (os.path.normcase(str(Path(gh).resolve()))
+                                                         == os.path.normcase(str(home.resolve())))
+                                except (OSError, ValueError):
+                                    gateway_pid_owned = False
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        gateway_pid = None
                 stopped = False
                 try:
                     r = subprocess.run(command + ["gateway", "stop", "--yes"], env=env,
@@ -292,20 +321,33 @@ def verify(args):
                 except subprocess.TimeoutExpired:
                     stopped = False
                 if not stopped:
-                    # 优雅停止被 source-update 依赖同步阻塞/超时：按 gateway.pid 强制终止，保证资源释放
+                    # 优雅停止被 source-update 依赖同步阻塞/超时：按 gateway.pid 强制终止（记录返回码）
                     result["gateway_stop_forced"] = True
-                    pid_file = home / "gateway.pid"
-                    if pid_file.exists():
-                        try:
-                            pid = json.loads(pid_file.read_text(encoding="utf-8", errors="replace")).get("pid")
-                            if isinstance(pid, int):
-                                subprocess.run(["taskkill", "/F", "/PID", str(pid)],
-                                               capture_output=True, timeout=30,
-                                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                        except (OSError, ValueError):
-                            pass
+                    if gateway_pid is not None and gateway_pid_owned:
+                        kill = subprocess.run(["taskkill", "/F", "/PID", str(gateway_pid)],
+                                              capture_output=True, timeout=30,
+                                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                        result["taskkill_rc"] = kill.returncode
+                    else:
+                        result["gateway_pid_unavailable"] = True
+            # 资源释放核验：backend 端口 + 网关进程均退出（fail-closed：pid 缺失/未归属/存活查询失败均判未释放）
+            backend_free = False
             with socket.socket() as check:
-                result["resources_released"] = check.connect_ex((target.hostname, target.port)) != 0
+                backend_free = check.connect_ex((target.hostname, target.port)) != 0
+            gateway_gone = True
+            if endpoint:
+                if gateway_pid is None or not gateway_pid_owned:
+                    gateway_gone = False
+                    result["gateway_exit"] = "missing" if gateway_pid is None else "unowned"
+                else:
+                    alive = _pid_alive(gateway_pid)
+                    if alive is None:
+                        gateway_gone = False
+                        result["gateway_exit"] = "unknown"
+                    else:
+                        gateway_gone = not alive
+                        result["gateway_exit"] = "alive" if alive else "exited"
+            result["resources_released"] = backend_free and gateway_gone
             client.close()
             conn.close()
             (evidence / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
