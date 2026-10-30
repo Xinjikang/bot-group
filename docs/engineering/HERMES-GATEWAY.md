@@ -6,6 +6,16 @@
 
 网关版采用独立执行路径；旧版 Hermes 和 Codex 保留现有运行时。安装来源由 `HERMES_BIN`、`HERMES_HOME` 和已有安装定位规则确定。
 
+## 连接复用与状态
+
+`engine/hermes_connections.py` 按 profile 维护 WS 和使用租约。业务优先通过 control identify 发现现有网关，发现、票据与握手共用 5 秒预算；所有候选 control 端点均缺失时才调用官方 `gateway ensure`。启动按根宿主与启动命令串行合并，失败结果保留 5 秒。身份、权限、协议与版本错误保留明确失败。安装身份取实际源码的 install-stamp 提交或 Git HEAD，运行实例提交必须一致；版本变化显示需要重启。control 的 epoch 属于启动 profile，`runtime.describe` 返回票据 profile 的独立正整数 epoch，并校验 profile、instance 和能力。
+
+同一 profile 的租约共享物理 WS，RPC 按请求 ID 分发，会话事件按 session ID 分发。最后一个会话使用者释放时调用 `session.detach`，下一次 `resume` 建立新订阅，保证原生配置重读边界。事件队列有界，思考增量为辅助信息；RPC 回执和持久执行账本保持独立。连接传输失败交由原账本核对 admission/submission，连接池只重连传输。
+
+业务空闲 600 秒、租约为空、执行账本与助手均无未决记录时关闭 WS。心跳间隔 20 秒，页面状态读取及只读查询保持业务空闲计时；运行中、取消中、结果未知和待清理记录保护连接。意外断线最多自动重连 3 次，后台重连只发现现有实例；新业务请求可以再次尝试连接。引擎退出停止连接池并通过集中连接注册表有界关闭 WS。
+
+管理员接口 `GET /system/hermes-gateway` 被动读取全局模式和池状态，返回 `mode`、`state`、`updated_at`，设置 `Cache-Control: no-store`。浏览器每 3 秒读取，单次请求上限 4 秒，结果超过 15 秒或引擎失联显示状态未知。子进程模式隐藏顶栏状态；空闲释放显示待连接。设计与验证范围见 [连接复用与状态设计](../design/2026-10-30-hermes-gateway-connections.md) 和测试索引。
+
 ## 会话、MCP 和原生审批
 
 新会话使用 `source=acp`，通过 `session.mutate editor_mcp` 注入本次执行的 task_queue。每轮先提交空列表以释放旧连接，再提交新凭据。实际工具发现和调用由 Hermes 原生机制完成。
@@ -26,7 +36,7 @@
 
 已有绑定按持久化 session ID 恢复。首次绑定时调用官方 `session.list title=...`；v0.22.5 的原生标题解析返回零个或一个结果。适配器对多候选响应返回 `ambiguous_session_title`，保留原会话及绑定状态；管理员核对标题归属后重试。空结果按原有流程创建会话，唯一结果写入 ID 绑定。
 
-只读状态查询 `existing_session_id()` 优先读取已有绑定；缺少绑定时以 `read_only=True` 解析标题。网关模式通过本地 control `identify` 发现已运行的实例，校验 profile、协议、实例身份与回环地址，再调用 `session.list`，完成后关闭 viewer。命名 profile 可查询承载它的根目录 multiplexer；发现过程保持目录与进程状态。查询中的网关传输、拒绝、配置和超时异常降级为 `None`。旧版模式使用 SQLite `mode=ro` 查询已有 state.db。创建与执行路径继续使用 `ensure`。工作区 GET 对查询层抛出的已知数据库、系统和网关异常返回 `work_session_exists=null`，成员视图仍可读取。
+只读状态查询 `existing_session_id()` 优先读取已有绑定；缺少绑定时以 `read_only=True` 解析标题。网关模式从连接池取得只读租约，通过本地 control `identify` 发现已运行的实例，校验 profile、协议、实例身份与回环地址，再调用 `session.list`，完成后释放租约。命名 profile 可查询承载它的根目录 multiplexer；发现过程保持目录与进程状态。查询中的网关传输、拒绝、配置和超时异常降级为 `None`。旧版模式使用 SQLite `mode=ro` 查询已有 state.db。创建与执行路径按上述发现优先契约取得业务租约。工作区 GET 对查询层抛出的已知数据库、系统和网关异常返回 `work_session_exists=null`，成员视图仍可读取。
 
 旧 subprocess 路径的执行错误、任务重试、异常退出和成员身份测试显式 mock `hermes_gateway.enabled()` 为 `False`；任务重试复用异常退出夹具。网关查询另用隔离数据库、临时 home 和模拟 control/RPC 回执验证，测试分支由夹具确定。
 

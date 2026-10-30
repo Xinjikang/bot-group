@@ -8,6 +8,8 @@
 
 Hermes 网关版的官方接口、原生审批、临时 MCP、会话迁移与执行恢复见 [Hermes 网关执行适配](engineering/HERMES-GATEWAY.md)。
 
+Hermes WS 连接复用、业务空闲回收和顶栏全局状态见 [连接复用与状态设计](design/2026-10-30-hermes-gateway-connections.md)。
+
 网页授权卡片的范围、身份校验及双端处理规则见 [Hermes 授权卡片设计](design/2026-10-29-hermes-approvals.md)。
 
 Hermes 新旧会话接口、安装定位和兼容提示见 [Hermes 兼容性](engineering/HERMES-COMPATIBILITY.md) 与 [设计依据](design/2026-10-27-hermes-compatibility.md)。

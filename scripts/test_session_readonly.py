@@ -8,11 +8,18 @@ from unittest.mock import MagicMock, patch
 
 from engine import hermes_gateway as gateway, hermes_gateway_client as transport
 from engine import hermes_runtime, session_adapter as adapter
+from engine import hermes_connections as connections
 from scripts import test_project_roles
 
 
 class ReadOnlySessionTests(unittest.TestCase):
-    setUp = test_project_roles.ProjectRoleTests.setUp
+    def setUp(self):
+        test_project_roles.ProjectRoleTests.setUp(self)
+        self.pool = connections.Pool(revision=lambda: ('fixture', 'fixture-sha'), pinned=lambda home: False)
+        patcher = patch.object(connections, '_POOL', self.pool)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.pool.stop)
     join = test_project_roles.ProjectRoleTests.join
 
     def lookup(self, profile='unregistered'):
@@ -22,7 +29,8 @@ class ReadOnlySessionTests(unittest.TestCase):
         return {'protocol': 1, 'id': 1, 'ok': True, 'result': {
             'state': 'ready', 'served_profiles': [{'home': str(home), 'profile_id': str(home)}],
             'instance_id': 'fixture-instance', 'authority_epoch': 1, 'runtime_protocol': 1,
-            'api_origin': 'http://127.0.0.1:12345', 'capabilities': ['session-authority-v1']}}
+            'api_origin': 'http://127.0.0.1:12345', 'code_sha': 'fixture-sha',
+            'capabilities': ['session-authority-v1']}}
 
     def exchange_patch(self, **kwargs):
         name = '_pipe_exchange' if os.name == 'nt' else '_socket_exchange'
@@ -47,12 +55,16 @@ class ReadOnlySessionTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM bots').fetchone()[0], bots_before)
         self.assertFalse((self.root / 'hermes').exists())
 
-    def test_live_gateway_title_lookup_is_read_only_and_closes_client(self):
+    def test_live_gateway_title_lookup_releases_lease_and_reuses_ws(self):
         home = self.root / 'hermes'
         member = self.join(host='hermes')
         remote = MagicMock()
+        remote.closed = False
         remote.__enter__.return_value = remote
-        remote.rpc.return_value = {'sessions': [{'session_id': 'existing'}]}
+        remote.rpc.side_effect = lambda method, **kw: ({
+            'instance_id': 'fixture-instance', 'profile_id': str(home), 'authority_epoch': 1,
+            'capabilities': ['durable-admission-v1', 'acp-session-mcp-v1']
+        } if method == 'runtime.describe' else {'sessions': [{'session_id': 'existing'}]})
         before = self.conn.total_changes
         with patch.object(gateway, 'enabled', return_value=True), \
              patch.object(gateway, 'ensure', side_effect=AssertionError('read started gateway')), \
@@ -62,8 +74,9 @@ class ReadOnlySessionTests(unittest.TestCase):
             response = self.client.get('/projects/p/workspaces')
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIs(response.json()['members'][0]['work_session_exists'], True)
-        self.assertEqual(exchange.call_count, 2)
-        self.assertEqual(remote.__exit__.call_count, 2)
+        self.assertEqual(exchange.call_count, 1)
+        remote.close.assert_not_called()
+        self.assertFalse(next(iter(self.pool.entries.values())).leases)
         self.assertEqual(self.conn.total_changes, before)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM session_bindings').fetchone()[0], 0)
         self.assertEqual(remote.rpc.call_args.args, ('session.list',))
@@ -125,17 +138,15 @@ class ReadOnlySessionTests(unittest.TestCase):
             self.assertIsNone(self.lookup())
         self.assertFalse(missing.parent.exists())
 
-    def test_create_session_keeps_gateway_startup(self):
+    def test_create_session_uses_gateway_pool(self):
         remote = MagicMock()
         remote.__enter__.return_value = remote
         with patch.object(gateway, 'enabled', return_value=True), \
              patch.object(hermes_runtime, 'executable', return_value='fixture-hermes'), \
-             patch.object(gateway, 'ensure', return_value={'fixture': True}) as ensure, \
-             patch.object(gateway, 'discover', side_effect=AssertionError('creation used discovery')), \
-             patch.object(gateway, 'GatewayClient', return_value=remote), \
+             patch.object(connections, 'acquire', return_value=remote) as acquire, \
              patch.object(gateway.sessions, 'new', return_value={'session_id': 'new'}):
             self.assertEqual(adapter.create_session('default', 'title'), 'new')
-        ensure.assert_called_once_with(['fixture-hermes'], self.root / 'hermes')
+        acquire.assert_called_once_with(self.root / 'hermes', ['fixture-hermes'], callback=None, business=True)
 
     def test_discovery_resolves_multiplexer_without_starting_profile(self):
         home = self.root / 'profiles' / 'worker'

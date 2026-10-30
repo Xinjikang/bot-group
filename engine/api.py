@@ -87,6 +87,13 @@ def get_app_version(identity=Depends(_resolve_identity)):
     return JSONResponse(version_info(), headers={"Cache-Control": "no-store"})
 
 
+@router_api.get('/system/hermes-gateway')
+def get_hermes_gateway_status(identity=Depends(_resolve_identity)):
+    _admin_only(identity, '网关状态仅限管理员使用')
+    from .hermes_connections import status
+    return JSONResponse(status(), headers={'Cache-Control': 'no-store'})
+
+
 @router_api.get("/system/updates")
 def get_app_updates(identity=Depends(_resolve_identity)):
     _admin_only(identity, '更新检查仅限管理员使用')

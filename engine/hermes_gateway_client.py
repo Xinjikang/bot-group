@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -26,6 +27,17 @@ class GatewayRefusal(RuntimeError):
     def __init__(self, reason, code=None):
         super().__init__(reason)
         self.reason, self.code = reason, code
+
+
+class GatewayUnavailable(GatewayTransportError):
+    """All eligible local control endpoints are absent."""
+
+
+def remaining(deadline):
+    value = deadline - time.monotonic()
+    if value <= 0:
+        raise GatewayTransportError('Hermes gateway connection deadline exceeded')
+    return value
 
 
 def _pipe_exchange(home, data, timeout):
@@ -100,6 +112,7 @@ def _pipe_exchange(home, data, timeout):
 
 
 def _socket_exchange(home, data, timeout):
+    deadline = time.monotonic() + timeout
     path = Path(home) / 'gateway.sock'
     if not path.exists():
         pointer = Path(home) / 'gateway.sock.path'
@@ -111,11 +124,13 @@ def _socket_exchange(home, data, timeout):
     if stat.st_uid != os.getuid() or stat.st_mode & 0o077:
         raise PermissionError('Unsafe Hermes control socket')
     with socket.socket(socket.AF_UNIX) as peer:
-        peer.settimeout(timeout)
+        peer.settimeout(remaining(deadline))
         peer.connect(str(path))
+        peer.settimeout(remaining(deadline))
         peer.sendall(data)
         response = bytearray()
         while b'\n' not in response:
+            peer.settimeout(remaining(deadline))
             chunk = peer.recv(4096)
             if not chunk or len(response) + len(chunk) > 65536:
                 raise ConnectionError('Invalid Hermes control response')
@@ -123,12 +138,12 @@ def _socket_exchange(home, data, timeout):
     return bytes(response).split(b'\n', 1)[0]
 
 
-def ticket(endpoint, *, purpose='interactive'):
+def ticket(endpoint, *, purpose='interactive', timeout=5):
     request = {'protocol': 1, 'id': 1, 'verb': 'session-ticket', 'params': {
         'profile_id': endpoint['profile_id'], 'instance_id': endpoint['instance_id'], 'purpose': purpose}}
     exchange = _pipe_exchange if os.name == 'nt' else _socket_exchange
     response = json.loads(exchange(endpoint.get('control_home') or endpoint['profile_id'],
-                                   json.dumps(request).encode() + b'\n', 5))
+                                   json.dumps(request).encode() + b'\n', timeout))
     result = response.get('result') or {}
     if (response.get('ok') is not True or response.get('protocol') != 1 or response.get('id') != 1
             or any(result.get(key) != endpoint[key] for key in ('profile_id', 'instance_id', 'runtime_protocol'))
@@ -140,12 +155,13 @@ def ticket(endpoint, *, purpose='interactive'):
 def discover(home: Path, *, timeout=2):
     """Read an existing owner's control identity, including a serving multiplexer."""
     exchange = _pipe_exchange if os.name == 'nt' else _socket_exchange
+    deadline = time.monotonic() + timeout
     homes = [home]
     if home.parent.name == 'profiles':
         homes.append(home.parent.parent)
     for control_home in homes:
         try:
-            raw = exchange(control_home, b'{"protocol":1,"verb":"identify","id":1}\n', timeout)
+            raw = exchange(control_home, b'{"protocol":1,"verb":"identify","id":1}\n', remaining(deadline))
         except (FileNotFoundError, ConnectionRefusedError):
             continue
         try:
@@ -161,6 +177,7 @@ def discover(home: Path, *, timeout=2):
             endpoint = {key: payload[key] for key in
                         ('instance_id', 'authority_epoch', 'runtime_protocol', 'api_origin')}
             endpoint.update(profile_id=matches[0]['profile_id'], control_home=str(control_home))
+            endpoint['code_sha'] = payload.get('code_sha')
             if (not isinstance(endpoint['instance_id'], str) or not endpoint['instance_id']
                     or type(endpoint['authority_epoch']) is not int or endpoint['authority_epoch'] <= 0
                     or 'session-authority-v1' not in payload['capabilities']):
@@ -168,7 +185,7 @@ def discover(home: Path, *, timeout=2):
             return _validate_endpoint(endpoint, home)
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise GatewayTransportError('Hermes gateway discovery returned invalid data') from exc
-    raise GatewayTransportError('Hermes gateway is not running')
+    raise GatewayUnavailable('Hermes gateway is not running')
 
 
 def _validate_endpoint(endpoint, home):
@@ -185,9 +202,20 @@ def _validate_endpoint(endpoint, home):
 def ensure(command: list[str], home: Path, *, env=None, timeout=60):
     child_env = dict(os.environ if env is None else env)
     child_env['HERMES_HOME'] = str(home)
-    result = subprocess.run(command + ['gateway', 'ensure', '--json', '--timeout', str(timeout)],
-                            env=child_env, capture_output=True, text=True, encoding='utf-8',
-                            timeout=timeout + 10, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    started = time.monotonic()
+    try:
+        result = subprocess.run(command + ['gateway', 'ensure', '--json', '--timeout', str(timeout)],
+                                env=child_env, capture_output=True, text=True, encoding='utf-8',
+                                timeout=timeout + 10, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except subprocess.TimeoutExpired as exc:
+        from .execution_errors import redact
+        def safe(value):
+            if isinstance(value, bytes):
+                value = value.decode('utf-8', errors='replace')
+            return redact(str(value or '')[-6000:])
+        logging.getLogger(__name__).error('Hermes gateway ensure timeout elapsed=%.2fs stdout=%s stderr=%s',
+                                         time.monotonic()-started, safe(exc.stdout), safe(exc.stderr))
+        raise
     try:
         status = json.loads(result.stdout)
     except ValueError as exc:
@@ -216,6 +244,8 @@ def _register(client: 'GatewayClient') -> bool:
 
 
 def resume_connections() -> None:
+    from . import hermes_connections
+    hermes_connections.resume()
     with _ACTIVE_LOCK:
         _CLOSING.clear()
 
@@ -234,6 +264,8 @@ def _close_one(client: 'GatewayClient') -> None:
 
 def close_all(timeout: float = 5.0) -> None:
     """Close viewers within one total budget and reject late connections."""
+    from . import hermes_connections
+    hermes_connections.stop()
     with _ACTIVE_LOCK:
         _CLOSING.set()
         clients = list(_ACTIVE)
@@ -251,15 +283,17 @@ def close_all(timeout: float = 5.0) -> None:
 
 class GatewayClient:
     """One viewer connection; the receiver drains events independently of RPCs."""
-    def __init__(self, endpoint, *, on_event=None):
+    def __init__(self, endpoint, *, on_event=None, deadline=None):
         from websockets.sync.client import connect
         if _CLOSING.is_set():
             raise GatewayTransportError('Hermes viewers are closing')
         origin = endpoint['api_origin'].rstrip('/')
         url = origin.replace('https:', 'wss:', 1).replace('http:', 'ws:', 1) + '/api/ws'
         self.endpoint = endpoint
-        self._socket = connect(url, subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + ticket(endpoint)],
-                               proxy=None, open_timeout=10, close_timeout=3, max_size=8 * 1024 * 1024)
+        token = ticket(endpoint, **({'timeout': remaining(deadline)} if deadline else {}))
+        self._socket = connect(url, subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + token],
+                               proxy=None, open_timeout=remaining(deadline) if deadline else 10,
+                               close_timeout=1, ping_interval=20, ping_timeout=5, max_size=8 * 1024 * 1024)
         if self._socket.subprotocol != 'hermes-gateway-v1':
             self._socket.close()
             raise GatewayTransportError('Hermes gateway protocol mismatch')
@@ -277,13 +311,16 @@ class GatewayClient:
         try:
             for raw in self._socket:
                 frame = json.loads(raw)
+                callback = None
                 with self._condition:
                     rid = frame.get('id')
                     if rid in self._pending:
                         self._pending[rid] = frame
                         self._condition.notify_all()
                     elif self._on_event is not None:
-                        self._on_event(frame)
+                        callback = self._on_event
+                if callback:
+                    callback(frame)
         except Exception:
             pass
         finally:
@@ -293,6 +330,7 @@ class GatewayClient:
                 self._condition.notify_all()
 
     def rpc(self, method, *, timeout=30, **params):
+        from websockets.exceptions import ConnectionClosed
         with self._condition:
             if self._closed or _CLOSING.is_set():
                 raise GatewayTransportError('Hermes viewer disconnected')
@@ -312,8 +350,14 @@ class GatewayClient:
                     safe = reason if isinstance(reason, str) and re.fullmatch(r'[a-zA-Z0-9_]{1,80}', reason) else 'request_failed'
                     raise GatewayRefusal(safe, error.get('code'))
                 return frame['result']
+            except (OSError, ConnectionClosed) as exc:
+                raise GatewayTransportError('Hermes RPC outcome unknown; reconcile its receipt') from exc
             finally:
                 self._pending.pop(rid, None)
+
+    @property
+    def closed(self):
+        return self._closed
 
     def close(self):
         _unregister(self)
