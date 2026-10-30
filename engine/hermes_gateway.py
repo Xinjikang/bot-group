@@ -27,12 +27,11 @@ def enabled():
 
 def connection(profile, *, home=None, command=None, read_only=False, on_event=None):
     from . import bot_identity
+    from . import hermes_connections
     from .session_adapter import _hermes_home
     home = Path(home) if home else bot_identity.hermes_home(profile, _hermes_home())
-    if read_only:
-        return GatewayClient(discover(home), **({'on_event': on_event} if on_event else {})), home, command
-    command = command or hermes_runtime.command()
-    return GatewayClient(ensure(command, home), **({'on_event': on_event} if on_event else {})), home, command
+    command = command or ([] if read_only else hermes_runtime.command())
+    return hermes_connections.acquire(home, command, callback=on_event, business=not read_only), home, command
 
 
 def _binding(conn, client, bot, project, profile, kind, thread_id, title, workdir, model_args):
@@ -255,6 +254,8 @@ def _watch(execution_id):
                 row = ledger.reconcile(client, conn, execution_id)
                 from . import hermes_approvals
                 hermes_approvals.sync(conn, row, client)
+                from . import hermes_gateway_steer
+                hermes_gateway_steer.observe_session(conn, client, row['session_id'], row['started_at'])
                 from . import wake
                 with wake._session_lock:
                     if row['session'] in wake._running_wakes:

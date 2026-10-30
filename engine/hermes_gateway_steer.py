@@ -125,3 +125,43 @@ def deliver_steer(conn: sqlite3.Connection, project: str, profile: str, kind: st
     # 未知回执形状
     steer_ledger.mark_pending_verify(conn, operation_id, f"未知回执状态 {status!r}，待核实")
     return {"status": "pending_verify", "detail": "回执未知，待核实"}
+
+
+def observe_session(conn: sqlite3.Connection, client, session_id: str, started_at: float) -> int:
+    """观察指定 session 的消费证据：delivering 操作匹配 OUT-OF-BAND marker 后 report_consumed(inserted)。
+
+    精确绑定：session_id + run_started_at（timestamp >= started_at）+ 正文匹配，
+    防重复正文/旧历史误归因；观察失败不改变账本（下次轮询再试）。
+    由 hermes_gateway._watch 在运行中执行轮询时调用（复用已有 client）。
+    """
+    ops = conn.execute(
+        "SELECT operation_id, text FROM steer_operations "
+        "WHERE session_id=? AND run_started_at=? AND status='delivering'",
+        (session_id, started_at),
+    ).fetchall()
+    if not ops:
+        return 0
+    try:
+        snapshot = client.rpc("session.resume", session_id=session_id, timeout=5)
+    except (GatewayRefusal, GatewayTransportError):
+        return 0
+    if not isinstance(snapshot, dict) or snapshot.get("session_id") != session_id:
+        return 0
+    changed = 0
+    for op in ops:
+        text = op["text"]
+        for message in snapshot.get("messages") or []:
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            ts = message.get("timestamp")
+            if not isinstance(ts, (int, float)) or ts < started_at:
+                continue  # 旧历史（本次 run 之前），不误归因
+            content = message.get("content") or ""
+            if "OUT-OF-BAND USER MESSAGE" not in content:
+                continue
+            if text not in content:
+                continue  # 正文不匹配，不误归因
+            steer_ledger.report_consumed(conn, op["operation_id"], "inserted")
+            changed += 1
+            break
+    return changed

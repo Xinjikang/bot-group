@@ -153,6 +153,58 @@ def main() -> int:
         finally:
             conn.close()
 
+        # 12. observe_session 消费证据观察（inserted）
+        def observe_scenario(label, snapshot, *, started_at=100.0, expected_consumed=True):
+            conn = db.get_connection()
+            try:
+                conn.execute("DELETE FROM steer_operations")
+                conn.commit()
+                op = steer_ledger.new_operation(conn, "bot-group", "be-dev-01", "work", None, "纠偏正文")
+                steer_ledger.record_delivery(conn, op["operation_id"], "gw-sid", 1, started_at)
+                fake = _FakeClient(result=snapshot)
+                changed = hermes_gateway_steer.observe_session(conn, fake, "gw-sid", started_at)
+                op2 = steer_ledger.get_operation(conn, op["operation_id"])
+                if expected_consumed:
+                    check(label, changed == 1 and op2["status"] == "consumed"
+                          and op2["deliver_layer"] == "inserted",
+                          f"changed={changed} status={op2['status']}/{op2['deliver_layer']}")
+                else:
+                    check(label, changed == 0 and op2["status"] == "delivering",
+                          f"changed={changed} status={op2['status']}")
+            finally:
+                conn.close()
+
+        observe_scenario("observe 匹配 marker+正文", {
+            "session_id": "gw-sid",
+            "messages": [{"role": "user", "content": "[OUT-OF-BAND USER MESSAGE] 纠偏正文", "timestamp": 101}],
+        })
+        observe_scenario("observe 旧历史不误归因", {
+            "session_id": "gw-sid",
+            "messages": [{"role": "user", "content": "[OUT-OF-BAND USER MESSAGE] 纠偏正文", "timestamp": 99}],
+        }, expected_consumed=False)
+        observe_scenario("observe 正文不匹配不误归因", {
+            "session_id": "gw-sid",
+            "messages": [{"role": "user", "content": "[OUT-OF-BAND USER MESSAGE] 别的正文", "timestamp": 101}],
+        }, expected_consumed=False)
+        observe_scenario("observe 非 marker 普通消息", {
+            "session_id": "gw-sid",
+            "messages": [{"role": "user", "content": "普通消息", "timestamp": 101}],
+        }, expected_consumed=False)
+        # 传输失败观察不改变账本
+        conn = db.get_connection()
+        try:
+            conn.execute("DELETE FROM steer_operations")
+            conn.commit()
+            op = steer_ledger.new_operation(conn, "bot-group", "be-dev-01", "work", None, "纠偏正文")
+            steer_ledger.record_delivery(conn, op["operation_id"], "gw-sid", 1, 100.0)
+            fake = _FakeClient(error=GatewayTransportError("boom"))
+            changed = hermes_gateway_steer.observe_session(conn, fake, "gw-sid", 100.0)
+            op2 = steer_ledger.get_operation(conn, op["operation_id"])
+            check("observe 传输失败不改账本", changed == 0 and op2["status"] == "delivering",
+                  f"changed={changed} status={op2['status']}")
+        finally:
+            conn.close()
+
     finally:
         patcher.stop()
 
@@ -160,7 +212,7 @@ def main() -> int:
     if failures:
         print("SOME FAIL:", ", ".join(failures))
         return 1
-    print("ALL PASS：定位（project/空值/歧义）+ 回执映射（queued/rejected/refusal/transport）+ state 原因 全部通过")
+    print("ALL PASS：定位（project/空值/歧义）+ 回执映射（queued/rejected/refusal/transport）+ state 原因 + 观察消费证据（inserted/不误归因） 全部通过")
     return 0
 
 
