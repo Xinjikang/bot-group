@@ -5,7 +5,7 @@
 - 命令落 commands 表留痕（rejected/unknown 也留，审计纪律）。
 - 目标用 @ 带目标；多个 @、缺目标、未知命令、目标=user 返回确定错误。
 - /new 调 session_adapter.switch_session（#144），目标忙碌时拒绝。
-- /steer 传输通道待 adapter 接入（#145 blocked），框架层只留痕 + 明确报未实现。
+- /steer 定位运行中执行 + 调网关 session.steer（#261），回执映射回账本；目标无运行中 → target_ended。
 - /help 由 COMMAND_REGISTRY 渲染命令表。
 
 运行（纯 stdlib + mock 隔离 Hermes，系统 python 即可）：
@@ -167,24 +167,26 @@ def main() -> int:
         finally:
             conn.close()
 
-        # 10. /steer 有正文 → 落账本 queued + 留痕 ok（路线 A，传输待 adapter）
+        # 10. /steer 有正文但目标无运行中执行 → 落账本 target_ended + 留痕 error
         conn = db.get_connection()
         try:
             r = commands.dispatch(conn, "bot-group", "user", "user", "/steer @be-dev-01 请改用方案 B", None)
         finally:
             conn.close()
-        check("/steer 明确未送达", not r.get("ok") and r.get("operations"), str(r))
+        check("/steer 无运行中目标未送达", not r.get("ok") and r.get("operations"), str(r))
+        check("/steer 状态 target_ended", r.get("statuses") == ["target_ended"], str(r.get("statuses")))
         rows = cmd_rows()
         last = rows[-1]
         check("/steer 留痕 error 状态", last["status"] == "error" and last["command"] == "/steer")
-        # 账本 steer_operations 也落了 queued
+        # 账本 steer_operations 落 target_ended（目标当前无运行中 turn，finalize_target_ended）
         from engine import steer_ledger
         conn = db.get_connection()
         try:
             ops = [steer_ledger.get_operation(conn, op_id) for op_id in r['operations']]
         finally:
             conn.close()
-        check("/steer 落 steer_operations 账本", any(o["text"] == "请改用方案 B" and o["status"] == "undelivered" for o in ops),
+        check("/steer 落 steer_operations 账本 target_ended",
+              any(o["text"] == "请改用方案 B" and o["status"] == "target_ended" for o in ops),
               f"pend={len(ops)}")
 
         # 11. /steer 参数提取：去掉 @目标，保留正文

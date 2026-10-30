@@ -106,7 +106,9 @@ def record_delivery(conn: sqlite3.Connection, operation_id: str, session_id: str
                     generation: int, run_started_at: float) -> dict:
     """投递动作已发起（delivering，等消费证据）——传输通道落地的入口。
 
-    adapter 落地后调用：绑定目标会话/代际/运行，标记已投递等消费证据。
+    传输通道（hermes_gateway_steer）投递时调用：绑定目标会话 / 网关 execution_generation /
+    运行，标记已投递等消费证据。generation 是网关 execution_generation
+    （hermes_executions.generation，设计 §4.8），不是 session_bindings.generation。
     五层口径：这一层仍属「已入队/已投递」，未到 inserted。
     """
     row = conn.execute(
@@ -114,10 +116,10 @@ def record_delivery(conn: sqlite3.Connection, operation_id: str, session_id: str
     ).fetchone()
     if row is None:
         raise SteerError(f"操作不存在：{operation_id}")
-    # 跨 /new 失效判定：已绑定 generation 且与当前不同 → generation_stale
+    # 重复投递防护：已绑定 generation 且与本次不同 → generation_stale（不盲目重投）
     if row["generation"] is not None and row["status"] in ("queued",) and row["generation"] != generation:
         return _advance(conn, operation_id, "generation_stale",
-                        result=f"目标会话已 /new（generation {row['generation']}→{generation}），旧运行纠偏失效")
+                        result=f"已绑定不同执行代际（generation {row['generation']}→{generation}），拒绝重复投递")
     conn.execute(
         "UPDATE steer_operations SET session_id=?, generation=?, run_started_at=?, updated_at=? "
         "WHERE operation_id=?",
@@ -198,16 +200,14 @@ def reconcile_targets(conn) -> int:
 
     Delivery with missing consumption evidence stays pending_verify until TTL.
     Legacy unbound queued intents cannot safely be assigned to a later run.
+    steer_operations.generation 现绑定网关 execution_generation（设计 §4.8），
+    不在此处与 session_bindings.generation 比对——两套代际分开对账，防代际混用误判；
+    会话级失效由目标 run 生命周期（run_started_at → wake_runs ended_at）判定。
     """
     changed = 0
     for row in pending_operations(conn):
         status = reason = None
-        binding = conn.execute(
-            'SELECT generation FROM session_bindings WHERE project=? AND profile=? AND kind=? AND thread_id=?',
-            (row['project'], row['profile'], row['kind'], row['thread_id'])).fetchone()
-        if row['generation'] is not None and binding and row['generation'] != binding['generation']:
-            status, reason = 'generation_stale', '目标会话已切换，本次纠偏投递关闭'
-        elif row['run_started_at'] is None and row['status'] == 'queued':
+        if row['run_started_at'] is None and row['status'] == 'queued':
             status, reason = 'undelivered', '缺少精确运行绑定，未投递，禁止转移到后续运行'
         elif row['run_started_at'] is not None:
             run = conn.execute(

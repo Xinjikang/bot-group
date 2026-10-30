@@ -110,7 +110,7 @@ class ReviewTests(unittest.TestCase):
         result = commands.dispatch(self.conn, 'p', 'user', 'user', '/steer @dev-1 correct this', None)
         self.assertFalse(result['ok'])
         op = steer_ledger.get_operation(self.conn, result['operations'][0])
-        self.assertEqual(op['status'], 'undelivered')
+        self.assertEqual(op['status'], 'target_ended')
         self.assertEqual(op['text'], 'correct this')
 
     def test_passwordless_user_commands_reach_dispatch(self):
@@ -216,12 +216,14 @@ class ReviewTests(unittest.TestCase):
         self.conn.execute("INSERT INTO session_bindings(project,profile,kind,thread_id,session_id,generation,title,updated_at) VALUES('p','dev-1','work',0,'sid',2,'dev-1-p-work','now')")
         self.conn.execute("INSERT INTO wake_runs(session,started_at,profile,project,ended_at) VALUES('dev-1-p-work',100,'dev-1','p',101)")
         self.conn.commit()
-        stale = steer_ledger.new_operation(self.conn,'p','dev-1','work',None,'text','old',1,100)
+        # 设计 §4.8：steer_operations.generation 现绑定网关 execution_generation，
+        # 不参与 reconcile_targets 与 session_bindings 的比对；会话级失效由 run 生命周期判定。
+        bound = steer_ledger.new_operation(self.conn,'p','dev-1','work',None,'text','old',1,100)
         ended = steer_ledger.new_operation(self.conn,'p','dev-1','work',None,'text','sid',2,100)
         delivering = steer_ledger.new_operation(self.conn,'p','dev-1','work',None,'text','sid',2,100)
         steer_ledger.record_delivery(self.conn,delivering['operation_id'],'sid',2,100)
         steer_ledger.reconcile_targets(self.conn)
-        self.assertEqual(steer_ledger.get_operation(self.conn,stale['operation_id'])['status'],'generation_stale')
+        self.assertEqual(steer_ledger.get_operation(self.conn,bound['operation_id'])['status'],'target_ended')
         self.assertEqual(steer_ledger.get_operation(self.conn,ended['operation_id'])['status'],'target_ended')
         self.assertEqual(steer_ledger.get_operation(self.conn,delivering['operation_id'])['status'],'pending_verify')
         self.assertEqual(steer_ledger.expire_stale(self.conn, now=time.time()+3600),1)

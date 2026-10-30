@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+全局智能审批策略：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_edit_policy scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway scripts.test_access_contract -q`。隔离 SQLite 和 RPC 替身覆盖默认 workspace、全局持久化、跨项目/profile 每轮更新、身份与非法字段校验、忙碌轮次保护和策略设置失败。浏览器执行 `python -X utf8 -B scripts/test_edit_policy_browser.py --evidence <主目录报告目录>/browser`，需要 Playwright 和 Chrome；合成 HTTP 验证三档选择、取消、刷新/跨页面读取、错误重试、重复提交保护、身份变更、键盘及桌面/390px 深浅主题。配套复用 `test_app_settings_browser.py` 检查已有设置菜单。
+
 网页 Hermes 授权：`python -X utf8 -B -m unittest scripts.test_hermes_approvals scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway_sessions scripts.test_access_contract -q`。隔离 SQLite 和 RPC 替身覆盖用户/Bot 身份、项目/话题范围、轮次、非法选项、终态、重复提交、Hermes 先处理、过期快照和回执丢失。浏览器运行 `python -X utf8 -B scripts/test_hermes_approvals_browser.py --evidence <主目录报告目录>/browser`，需要 Playwright 与 Chrome；合成 HTTP 覆盖刷新恢复、话题切换、深浅主题、窄屏、纯文本显示、范围确认、提交禁用及错误提示。
 
 原生审批队列：使用带 Hermes 及 bot-group 依赖的解释器运行 `python -X utf8 -B scripts/verify_hermes_approvals_native.py --hermes-source <Hermes 源码目录> --evidence <主目录报告下的新目录>`。所有 home/数据库创建于新报告目录，WebSocket 使用随机回环端口。真实 Hermes waiter、pending controls、RPC handler 与 bot-group 客户端验证允许、拒绝、原生先处理及重复处理；ticket 为合成传输夹具，测试保持零模型调用和零命令执行。该用例验证审批桥接，不覆盖生产身份票据及模型触发策略。
@@ -82,6 +84,8 @@ MCP 离线重试与回执：`.venv\Scripts\python.exe -X utf8 -B -m unittest scr
 真实探针运行配置：运行 `gw_probe.py`、`gw_stop_probe.py`、`gw_recovery_probe.py`、`gw_mcp_probe.py`、`gw_ownership_probe.py` 和 `verify_hermes_gateway_adapter.py` 前，必须设置 `GW_PROBE_DATA` 为当前工作区分配的测试数据根绝对路径。`GW_PROBE_ROOT` 可指定隔离源码父目录（默认仓库内 `.probe-worktrees`），`GW_EVIDENCE_DIR` 可指定证据目录。ownership 探针使用当前 Python 解释器，scratch 位于本次运行的测试数据子目录；可选 `GW_OBSERVER_URL=http://127.0.0.1:<授权观察端口>` 仅用于显式授权的心跳观察，未配置时报告 skipped。网关自身的日志心跳隔离门禁保持启用。
 
 Hermes 旧接口专项：设置 `HERMES_TEST_SOURCE` 为已安装 Hermes 源码的绝对路径，使用含对应依赖的 Python 运行 `test_hermes_embed_entry.py`、`test_hermes_session_restore.py`、`test_hermes_steer_delivery.py` 或 `test_session_binding.py`。缺少源码配置时，在创建隔离 home 前报错。
+
+/steer 网关传输（req#136 #261）：`.venv\Scripts\python.exe -X utf8 -B scripts/test_hermes_gateway_steer.py`（纯 stdlib + mock 隔离网关）。覆盖目标定位（project+profile+kind+COALESCE(thread_id,0) 唯一 running 执行；无 → target_ended；多 → pending_verify 身份歧义，不取最大 generation）与回执映射（queued → 保持 delivering 非 inserted；rejected+delivered:False → undelivered 且按 hermes_executions.state 补原因；rejected 缺 delivered → pending_verify；stale_generation → target_ended；unsupported_control/execution_not_ready → undelivered 能力边界；permission_denied/GatewayTransportError → pending_verify）。账本回归复用 `test_steer_ledger.py`、命令分发复用 `test_commands_dispatch.py`。真实网关链路与插入消费证据（inserted/behavior_observed）属隔离验收观测，见设计 docs/design/2026-10-30-steer-transport.md。
 
 现场浏览器与安装验证：`verify_release_install.py` 必须传 `--port <分配后端端口> --debug-port <分配浏览器端口>` 以及原有目录/解释器参数；`verify_release_browser.py --url http://127.0.0.1:<分配后端端口> --debug-port <分配浏览器端口> --profile <分配浏览器目录> --report-dir <报告目录>` 核验实际监听。`verify_zindex.py --url <隔离服务origin> --project <测试项目ID>` 使用可选 `PROBE_ADMIN_PASSWORD`；`verify_hide_chain.py --url <隔离服务origin> --database <隔离数据库绝对路径>` 先核对服务 `/health` 的实际数据库，再执行测试及清理。`verify_directory_picker_live.py --port <授权隔离端口>` 或 `--isolated` 显式选择目标。所有现场地址由调用方提供，禁止将生产地址作为默认值。
 

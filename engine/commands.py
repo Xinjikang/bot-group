@@ -8,10 +8,10 @@
 
 命令注册表（COMMAND_REGISTRY）：
 - /new  → 调 session_adapter.switch_session（#144 交付），目标 bot 忙碌时拒绝
-- /steer → 传输通道待 adapter 接入（#145 技术障碍待解），当前留痕 + 明确报未实现
+- /steer → 定位运行中执行 + 调网关 session.steer（#261），回执映射回账本
 - /help → 渲染命令表
 
-本模块只做「分发 + 留痕 + 目标解析 + /help」，不实现 #145 的 steer 传输（那是 blocked 的独立任务）。
+本模块只做「分发 + 留痕 + 目标解析 + /help」，steer 传输由 hermes_gateway_steer 落地。
 """
 
 from __future__ import annotations
@@ -133,31 +133,36 @@ def _handle_stop(conn: sqlite3.Connection, project: str, targets: list[str],
 
 def _handle_steer(conn: sqlite3.Connection, project: str, targets: list[str],
                   args: str, thread_id: int | None) -> dict:
-    """/steer：向运行中目标注入纠偏——路线 A：落账本 queued，传输接口待 adapter 接入。
+    """/steer：向运行中目标注入纠偏——定位运行中执行 + 调网关 session.steer + 回执映射回账本。
 
-    账本层与传输通道解耦。命令框架层写入 steer_operations 账本
-    （精确绑定运行 + 回执五层 + 悬空终态状态机），实际传输由 adapter 落地后经
-    steer_ledger.record_delivery 消费。本层不主动调进程内 IPC 的 agent.steer。
+    命令框架层落 steer_operations 账本（queued），实际传输由 hermes_gateway_steer
+    定位运行中执行并经 session.steer 投递，回执映射走 steer_ledger 五层状态机。
     """
     if not targets:
         raise CommandError("请用 @ 指定目标 bot（如 /steer @苏瑾 请改用方案 B）")
     if not args:
         raise CommandError("/steer 需要纠偏正文（如 /steer @苏瑾 请改用方案 B）")
-    from . import steer_ledger
+    from . import steer_ledger, hermes_gateway_steer
     kind = "chat" if thread_id is not None else "work"
-    # 精确绑定运行：投递时补 session/generation/run，这里先落 queued（绑定字段留空）
+    # 每个 target 落一条 queued 账本，随即定位运行中执行并投递，回执映射回账本
     ops = []
+    statuses = []
+    details = []
     for t in targets:
         if db.is_builtin_user(t):
             continue  # 目标必须 bot，user 不记账本
         op = steer_ledger.new_operation(conn, project, t, kind, thread_id, args)
-        steer_ledger.report_leftover(conn, op['operation_id'], args, result='传输通道尚未接入，纠偏未投递')
         ops.append(op["operation_id"])
+        outcome = hermes_gateway_steer.deliver_steer(
+            conn, project, t, kind, thread_id, args, op["operation_id"])
+        statuses.append(outcome["status"])
+        details.append(f"@{t}：{outcome['detail']}")
     if not ops:
         raise CommandError("/steer 目标必须是 bot（@ 里不含 user）")
-    return {"handled": True, "ok": False, "command": "/steer", "targets": targets,
-            "operations": ops,
-            "detail": "纠偏未送达：当前传输通道尚未接入。已记录为 undelivered，请保留正文，待通道可用后重新发送。"}
+    ok = all(s == "queued" for s in statuses)
+    return {"handled": True, "ok": ok, "command": "/steer", "targets": targets,
+            "operations": ops, "statuses": statuses,
+            "detail": "；".join(details)}
 
 
 def _handle_help(conn: sqlite3.Connection, project: str, targets: list[str],
@@ -194,10 +199,10 @@ COMMAND_REGISTRY = {
     "steer": {
         "name": "/steer",
         "requires_target": True,
-        "menu_description": "填写纠偏指令；当前纠偏通道待接入",
-        "help": "向运行中的目标 bot 注入纠偏；当前传输通道尚未接入，提交将明确返回未送达。",
+        "menu_description": "向运行中的目标 bot 注入纠偏（网关运行中执行）",
+        "help": "向运行中的目标 bot 注入纠偏；已接入网关 session.steer 运行中纠偏，子进程/Codex 后端不支持。",
         "scope": "@ 目标 bot + 纠偏正文",
-        "busy_policy": "目标空闲时无法投递",
+        "busy_policy": "目标空闲时无法投递；仅网关（hermes）运行中执行可纠偏",
         "handler": _handle_steer,
     },
     "help": {
