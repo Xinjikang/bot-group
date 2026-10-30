@@ -69,7 +69,7 @@ MCP 服务（`mcp/server.py`）配套改为识别稳定的会话身份，不再�
 
 1. **分流点**（`engine/wake.py:912-916`）：仅 `runtime=hermes` 且 `hermes_gateway.enabled()` 时进入 WS 路径；子进程仍走既有 spawn、逐执行 env 与进程退出清理。WS 的稳定会话配置走独立构造分支，保留共用 `_mcp_server_config` 的原调用行为，不改其签名与子进程侧语义。
 2. **共用鉴权模块**（`engine/auth.py`、`engine/access.py`、`mcp/server.py`）：新增「网关会话凭据/上下文」分支，与子进程的 `execution_token`、`wake_started_at` 校验、终态规则并存。子进程侧原逻辑保持原样；网关会话授权按会话记录独立校验。
-3. **MCP 执行上下文**（`mcp/server.py` 的 `_execution_context`、`group_send`、`_task_call`）：当前强制要求 `wake_started_at` 并逐执行传递。网关分支改用稳定会话上下文，不再每轮携带唤醒时间；单次执行的消息记账与任务关联，由引擎串行调度记录（执行账本）承载，设计需明确这一关联方式，避免常驻 MCP 一直携带首次唤醒时间。
+3. **MCP 执行上下文**（`mcp/server.py` 的 `_execution_context`、`group_send`、`_task_call`）：当前强制要求 `wake_started_at` 并逐执行传递。网关分支改用稳定会话上下文，不再每轮携带唤醒时间；单次执行的消息记账与任务关联，由「消息/任务记账」规则承载。
 
 ### 保留不动的部分
 
