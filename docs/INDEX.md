@@ -78,6 +78,7 @@ Profile 凭证继承与异常可见性见 [设计依据](design/2026-10-25-profi
 | [多行参数传输](engineering/HERMES-ARGUMENT-TRANSPORT-2026-10-17.md) | Windows Hermes 原生入口 |
 | [消息执行归属](engineering/BOT-MESSAGE-EXECUTION.md) | 消息与具体运行的关联 |
 | [斜杠命令](design/SLASH-COMMAND-DESIGN-2026-09-27.md) | 会话重置、停止、纠偏与分层回执 |
+| [steer 网关纠偏接入](design/2026-10-30-steer-transport.md) | /steer 运行中纠偏的网关 session.steer 传输通道与回执映射 |
 | [Codex 配置目录](guides/CODEX-PROFILE-HOMES.md) | 独立 home、发现、入组与目录授权 |
 | [Codex 内联指令](engineering/REQ100-INLINE-INSTRUCTIONS-IMPLEMENTATION-2026-10-08.md) | 首次及续会话的协作规则、项目信息与命令预算 |
 | [任务说明契约](engineering/TASK-BRIEF-CONTRACT.md) | 发布、依赖、交接与领取门禁 |
