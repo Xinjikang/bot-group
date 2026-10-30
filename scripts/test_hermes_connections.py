@@ -62,17 +62,20 @@ class PoolTests(unittest.TestCase):
             lease.close()
         self.assertFalse(self.remotes[0].closed)
 
-    def test_last_subscriber_detaches_with_latest_subscription(self):
+    def test_subscription_survives_last_lease_until_idle_sweep(self):
         first, second = self.acquire(), self.acquire()
         first.rpc('session.resume', session_id='a')
         snapshot = second.rpc('session.resume', session_id='a')
         first.close()
         self.assertFalse(any(m == 'session.detach' for m, _ in second.client.calls))
         second.close()
+        self.assertFalse(any(m == 'session.detach' for m, _ in second.client.calls))
+        self.now = 600
+        self.pool.sweep()
         self.assertEqual(second.client.calls[-1], ('session.detach', {
             'session_id': 'a', 'subscription_id': snapshot['subscription_id'],
             'timeout': second.client.calls[-1][1]['timeout']}))
-        self.assertFalse(second.client.closed)
+        self.assertTrue(second.client.closed)
 
     def test_events_routed_by_session_and_consumer_failure_isolated(self):
         self.pool.start()

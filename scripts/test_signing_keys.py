@@ -333,8 +333,9 @@ class SigningTests(unittest.TestCase):
             result = subprocess.run(['powershell', '-NoProfile', '-Command',
                 "$a=Get-Acl -LiteralPath $env:TEST_SIGNING_PATH; "
                 "if (!$a.AreAccessRulesProtected -or $a.Access.Count -ne 1) {exit 1}"],
-                env={**os.environ, 'TEST_SIGNING_PATH': str(keys.path())}, capture_output=True)
-            self.assertEqual(result.returncode, 0)
+                env={**{k: v for k, v in os.environ.items() if k.upper() != 'PSMODULEPATH'},
+                     'TEST_SIGNING_PATH': str(keys.path())}, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
         else:
             self.assertEqual(keys.path().stat().st_mode & 0o777, 0o600)
             self.assertEqual(keys.path().parent.stat().st_mode & 0o777, 0o700)

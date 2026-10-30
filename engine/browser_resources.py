@@ -23,12 +23,23 @@ def directory(resource_id):
     return Path(db.db_path()).resolve().parent / 'cache' / 'browser-runtime' / resource_id
 
 
-def register(conn, env, *, project, profile, session, started_at, thread_id, task_id):
-    key = hashlib.sha256(f'{session}\0{started_at!r}'.encode()).hexdigest()[:32]
+def session_environment(context):
+    identity = [context[k] for k in ('profile', 'project', 'session_id', 'generation')]
+    key = hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:32]
+    root = directory(key)
+    return dict(BH_RUNTIME_DIR=str(root), BH_RUNTIME_DIR_SHARED='1',
+                BH_TMP_DIR=str(root / 'artifacts'), BH_TMP_DIR_SHARED='1', BU_NAME=f'bg-{key}')
+
+
+def register(conn, env, *, project, profile, session, started_at, thread_id, task_id, session_context=None):
+    key = (session_environment(session_context)['BU_NAME'][3:] if session_context else
+           hashlib.sha256(f'{session}\0{started_at!r}'.encode()).hexdigest()[:32])
     root = directory(key)
     root.mkdir(parents=True, exist_ok=True)
     conn.execute('INSERT INTO browser_resources(id,project,profile,session,started_at,thread_id,task_id) '
-                 'VALUES(?,?,?,?,?,?,?)', (key, project, profile, session, started_at, thread_id, task_id))
+                 'VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET started_at=excluded.started_at, '
+                 'task_id=excluded.task_id,release_requested=0',
+                 (key, project, profile, session, started_at, thread_id, task_id))
     env.update(BH_RUNTIME_DIR=str(root), BH_RUNTIME_DIR_SHARED='1',
                BH_TMP_DIR=str(root / 'artifacts'), BH_TMP_DIR_SHARED='1', BU_NAME=f'bg-{key}')
 

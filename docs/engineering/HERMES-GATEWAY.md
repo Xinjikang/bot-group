@@ -12,15 +12,19 @@
 
 `engine/hermes_connections.py` 按 profile 维护 WS 和使用租约。业务优先通过 control identify 发现现有网关，发现、票据与握手共用 5 秒预算；所有候选 control 端点均缺失时才调用官方 `gateway ensure`。启动按根宿主与启动命令串行合并，失败结果保留 5 秒。身份、权限、协议与版本错误保留明确失败。安装身份取实际源码的 install-stamp 提交或 Git HEAD，运行实例提交必须一致；版本变化显示需要重启。control 的 epoch 属于启动 profile，`runtime.describe` 返回票据 profile 的独立正整数 epoch，并校验 profile、instance 和能力。
 
-同一 profile 的租约共享物理 WS，RPC 按请求 ID 分发，会话事件按 session ID 分发。最后一个会话使用者释放时调用 `session.detach`，下一次 `resume` 建立新订阅，保证原生配置重读边界。事件队列有界，思考增量为辅助信息；RPC 回执和持久执行账本保持独立。连接传输失败交由原账本核对 admission/submission，连接池只重连传输。
+同一 profile 的租约共享物理 WS，RPC 按请求 ID 分发，会话事件按 session ID 分发。轮次租约释放后保留订阅；会话撤权或业务空闲回收时调用 `session.detach`。后续轮次在同一订阅内恢复会话。事件队列有界，思考增量为辅助信息；RPC 回执和持久执行账本保持独立。连接传输失败交由原账本核对 admission/submission，连接池只重连传输。
 
-业务空闲 600 秒、租约为空、执行账本与助手均无未决记录时关闭 WS。心跳间隔 20 秒，页面状态读取及只读查询保持业务空闲计时；运行中、取消中、结果未知和待清理记录保护连接。意外断线最多自动重连 3 次，后台重连只发现现有实例；新业务请求可以再次尝试连接。引擎退出停止连接池并通过集中连接注册表有界关闭 WS。
+业务空闲 600 秒、租约为空、执行账本与助手均无未决记录时先释放订阅，再关闭 WS。心跳间隔 20 秒，页面状态读取及只读查询保持业务空闲计时；运行中、取消中、结果未知和待清理记录保护连接。意外断线最多自动重连 3 次，后台重连只发现现有实例；新业务请求可以再次尝试连接。引擎退出停止连接池并通过集中连接注册表有界关闭 WS。
 
 管理员接口 `GET /system/hermes-gateway` 被动读取全局模式和池状态，返回 `mode`、`state`、`updated_at`，设置 `Cache-Control: no-store`。浏览器每 3 秒读取，单次请求上限 4 秒，结果超过 15 秒或引擎失联显示状态未知。子进程模式隐藏顶栏状态；空闲释放显示待连接。设计与验证范围见 [连接复用与状态设计](../design/2026-10-30-hermes-gateway-connections.md) 和测试索引。
 
 ## 会话、MCP 和原生审批
 
-新会话使用 `source=acp`，通过 `session.mutate editor_mcp` 注入本次执行的 task_queue。每轮先提交空列表以释放旧连接，再提交新凭据。实际工具发现和调用由 Hermes 原生机制完成。
+新会话使用 `source=acp`，首次通过 `session.mutate editor_mcp` 注入会话级 task_queue。配置指纹按 profile/session/project 持久化；后续相同配置通过 `session.resume(editor=...)` 恢复私有传输参数，保留原生 agent 与 MCP 连接。model/provider/reasoning 仅在引擎指定值变化时更新；workspace/edit_policy 按会话快照比较。实际工具发现和调用由 Hermes 原生机制完成。
+
+`hermes_session_grants` 保存会话授权、当前签名代、待交接代和撤权释放状态。`session_token` 签名绑定 profile/project/thread_id/session/session_id/generation，类型参与签名；MCP 上下文跨轮固定。消息和任务在服务端定位唯一非终态执行，取消中、人工核对态及空闲会话拒绝写入；消息和任务事务再次校验授权与执行身份。会话回执按稳定身份查询，消息来源仍按每轮 started_at 记账。浏览器资源目录使用会话身份生成，每轮资源记录关联当前执行。
+
+关闭话题、移除或停用成员、撤销项目权限、归档或移除项目、切换会话绑定时撤销对应授权。绑定、成员及话题变更通过数据库触发器持久化撤权，权限变更与授权更新处于同一事务。后台每 3 秒重试待释放订阅；撤权即时生效，网关暂时不可用时保留释放待办。重新授权使用递增绑定 generation，旧凭据持续失效。设计见[会话资源复用](../design/2026-10-30-hermes-gateway-session-reuse.md)。
 
 危险命令审批采用 Hermes 原生 `approvals.mode: smart`，配置由管理员在 Hermes 中维护。ACP 编辑策略由右上角“设置 → 智能审批策略”全局选择 `ask`、`workspace_session` 或 `session`，默认 `workspace_session`。所有项目与 Hermes ACP Bot 每轮执行前读取全局设置，策略不同时调用官方 `session.mutate edit_policy` 更新。运行中与待审批轮次保留原策略。工作区、临时目录及敏感路径判断沿用 Hermes 原生实现；Codex 和旧版 Hermes CLI 保留各自机制。存储、接口和验证见 [全局审批策略](../design/2026-10-30-global-edit-policy.md)。
 
@@ -50,9 +54,9 @@ queued 执行通过 `prompt.cancel` 取消；started 执行通过携带 generati
 
 引擎优雅停止/重启先关闭新任务入口：停派发期间新的写工具请求（`/msg`、`/thread`、`/thread/task-update`、`/inbox/seen`、`/task-tools/{operation}`、撤回）明确未受理，返回 503 且带 `X-Group-Not-Accepted:1`；管理查询（GET）与心跳保留。本地执行（Codex/旧 CLI）等待自然结束，默认 120 秒，超时终止；Hermes gateway 托管执行不取消、不等 bot 终态——本地收尾有界关闭全部 viewer 连接（硬超时 5 秒，覆盖挂住 RPC 与并发建立中的连接），保留未终态执行与浏览器资源，停机期间 worker 断线不误记 uncertain。引擎退出后重启，`recover()` 接回原任务：对账 bot 状态（`prompt.receipt` 查询原 admission），已结束收尾、没结束继续跟踪，不重新 `prompt.submit`（防重复派发），原 admission/submission 保留。远端接管异步进行，不阻塞引擎就绪。`start.bat` / `start.sh` 只有确认旧引擎进程退出和端口释放后才启动新引擎；快捷方式复用健康实例不经过停机。停机取消使用 `shutdown` 原因、保留会话历史，仅作用于本地执行；gateway 托管执行跨重启继续运行。
 
-终态立即撤销执行凭据；清理临时 MCP、浏览器资源和引擎记录后解除会话清理禁用。MCP 心跳使用自身 PID，凭据校验约束项目、话题和 inbox 类型。停机按 `session + started_at` 精确区分网关托管执行与本地执行，包含已终态但尚待清理的网关记录；同 session 的后继本地执行继续遵循本地收尾流程。停止失败时重新开放 viewer 连接和执行跟踪。
+终态结束本轮写入资格，保留会话凭据、MCP 配置及订阅；完成浏览器资源和引擎记录收尾后解除会话清理禁用。MCP 心跳使用自身 PID，仅有活跃执行时更新思考状态，凭据校验约束项目、话题和 inbox 类型。停机按 `session + started_at` 精确区分网关托管执行与本地执行，包含已终态但尚待清理的网关记录；同 session 的后继本地执行继续遵循本地收尾流程。停止失败时重新开放 viewer 连接和执行跟踪。
 
-执行终态与清理完成是两个独立状态机。终态回执落库即撤销执行凭据并释放执行占用：`active()` 只看 `state != 'terminal'`，`cleanup_pending` 不算占用（不进入 busy 判定）；同一逻辑会话仍受「清理禁用」约束，清理恢复后才可复用，其他独立会话可运行。清理待办（`cleanup_pending=1`）按退避序列重试（1/2/4/8 秒）最多 5 次；`retry_count`、`next_retry_at` 与 `cleanup_deadline` 持久化，清理最终期限（`cleanup_deadline`）到期即转 `cleanup_failed` 停止重试。耗尽（重试 5 次或期限到期）转 `cleanup_failed`（`detail` 标记）并停止自动循环，保留 `cleanup_pending=1` 与会话禁用，仅人工明确重试才开启新预算。引擎启动恢复只续剩余额度，已耗尽或期限已过不自动重试；恢复沿用原 admission 与取消原因。取消有界：`cancel_deadline`=首次 cancel+30s、`reconcile_deadline`=首次 cancel+150s，超时转 `manual` 停止自动循环；单次 RPC 超时=min(默认 30s, 剩余预算)（仅取消/对账时生效，正常轮询保持默认 30s，不因 reconcile_deadline 过期而打断长时间运行执行）。清理走引擎自身 GatewayClient（ensure+ticket），非 run.token 执行凭据，撤销凭据不影响清理重试。清理登记按 execution_id/started_at 精确匹配，不按 session 删除，避免迟到清理误删后继执行。
+执行终态与清理完成是两个独立状态机。终态回执落库即释放执行占用，历史逐执行凭据同时失效：`active()` 只看 `state != 'terminal'`，`cleanup_pending` 不算占用（不进入 busy 判定）；同一逻辑会话仍受「清理禁用」约束，清理恢复后才可复用，其他独立会话可运行。清理待办（`cleanup_pending=1`）按退避序列重试（1/2/4/8 秒）最多 5 次；`retry_count`、`next_retry_at` 与 `cleanup_deadline` 持久化，清理最终期限（`cleanup_deadline`）到期即转 `cleanup_failed` 停止重试。耗尽（重试 5 次或期限到期）转 `cleanup_failed`（`detail` 标记）并停止自动循环，保留 `cleanup_pending=1` 与会话禁用，仅人工明确重试才开启新预算。引擎启动恢复只续剩余额度，已耗尽或期限已过不自动重试；恢复沿用原 admission 与取消原因。取消有界：`cancel_deadline`=首次 cancel+30s、`reconcile_deadline`=首次 cancel+150s，超时转 `manual` 停止自动循环；单次 RPC 超时=min(默认 30s, 剩余预算)（仅取消/对账时生效，正常轮询保持默认 30s，不因 reconcile_deadline 过期而打断长时间运行执行）。清理走引擎自身 GatewayClient（ensure+ticket），非 run.token 执行凭据，撤销凭据不影响清理重试。清理登记按 execution_id/started_at 精确匹配，不按 session 删除，避免迟到清理误删后继执行。
 
 提交回执缺失时，当前公开接口缺少按 submission ID 只读找回 admission 的入口。适配器保留 `unknown`，到固定截止时间转 `manual` 并保留占用。管理员需核对原执行，自动重提保持关闭。已有 admission 的执行在断线后重新取一次性 ticket，并查询原回执。
 
@@ -60,7 +64,7 @@ queued 执行通过 `prompt.cancel` 取消；started 执行通过携带 generati
 
 ## 空闲唤醒的 reasoning 覆盖
 
-`configure_tracked()` 将引擎已成功设置的 reasoning 保存到业务库 settings，键由 profile 身份和 session ID 派生，并受 project 隔离。每次唤醒按 UI 显式参数设置 reasoning；显式参数删除后，存在记录的会话通过官方 `reasoning/effort:null` 重置一次，成功即删除记录。RPC 失败保留记录，下次唤醒继续处理。没有引擎覆盖记录的会话保留原生 reasoning 选择；清除完成后的原生选择也保持有效。默认配置在新 viewer 的空闲 resume 路径刷新，持续附着的同一 viewer 重复 resume 会跳过该刷新。
+`configure_tracked()` 将引擎已成功设置的 reasoning 保存到业务库 settings，键由 profile 身份和 session ID 派生，并受 project 隔离。每次唤醒比较 UI 显式参数，变化时设置 reasoning；显式参数删除后，存在记录的会话通过官方 `reasoning/effort:null` 重置一次，成功即删除记录。RPC 失败保留记录，下次唤醒继续处理。没有引擎覆盖记录的会话保留原生 reasoning 选择；清除完成后的原生选择也保持有效。默认配置在新 viewer 的空闲 resume 路径刷新，持续附着的同一 viewer 重复 resume 会跳过该刷新。
 
 记录自启用该跟踪机制后建立。升级前已有的 pin 缺少引擎归属记录时，维护者需明确设置一次项目 reasoning 后再清空，或在 Hermes 使用原生 reasoning reset；引擎保持未知归属的原生会话选择。
 
@@ -70,19 +74,19 @@ AGENTS.md、SOUL 和记忆通过用户主动 `/new` 刷新。v0.22.5 在同 sid 
 
 `hermes_prompt_updates` 在 `ledger.prepare` 提交前保存本轮候选哈希。`apply_receipt` 校验 profile/session/admission 与执行代数后，在同一事务中处理 queued/started/terminal 回执和用户层哈希；unknown 回执继续等待对账。更新按持久序号投影，重复、迟到回执保持幂等。首回执丢失且 admission ID 未知时保留执行占用，按现有期限转人工核对；可取得原 admission 的后续回执时继续原执行对账。明确未提交时保留旧哈希，停止后的原生 rewind 成功时撤销对应更新。状态写入失败与执行回执一起回滚。
 
-空闲会话通过新的 viewer 恢复时，profile 配置派生的 max_turns、checkpoints 和 terminal 字段重新计算；删除配置恢复原生默认值，显式选择的 cwd/workspace 保持。普通 CLI 会话的配置派生 toolsets 随配置刷新。editor MCP 会话的工具集随 editor manifest 冻结；引擎每轮通过 editor_mcp mutation 更新 MCP 工具描述和集合。
+空闲会话通过新的 viewer 恢复时，profile 配置派生的 max_turns、checkpoints 和 terminal 字段重新计算；删除配置恢复原生默认值，显式选择的 cwd/workspace 保持。普通 CLI 会话的配置派生 toolsets 随配置刷新。editor MCP 会话的工具集随 editor manifest 冻结；引擎仅在会话配置变化或凭据交接时通过 editor_mcp mutation 更新，普通轮次由原生 admission 检查工具描述变化。
 
 固定配置的连续唤醒验证使用 `scripts/verify_wake_prefix.py`，保存模型实际请求中的 system/developer 文本、工具 schema 和 SHA-256。Hermes 延迟加载工具时额外记录完整 MCP manifest；配置与凭据的传输对象不作为 schema 哈希输入。共享 `_MCP_TOOLS` 包含只读对账工具 `operation_get`，Codex `enabled_tools` 和 Hermes 子进程 `tools.include` 同步使用该列表。验证边界见[前缀验证设计](../design/2026-10-30-wake-prefix-verification.md)。
 
 `verify_gateway_refresh_live.py` 在隔离 home 中通过公开协议执行配置刷新和模型调用。配置字段以只读的已提交 policy 回执核验；规则与工具描述以模型最终回答及实际 tool_search 结果核验。policy 回执证明派生值变化，max_turns 耗尽和 checkpoint 文件生成属于独立运行行为验证。
 
-## 签名密钥与逐执行撤销
+## 签名密钥与凭据生命周期
 
 服务启动在恢复执行和启动 worker 前初始化 `config.data_dir()/secrets/bot-signing.key`。文件保存当前代和最多一个退役代，目录和临时文件均受权限保护：POSIX 为目录 0700、文件 0600，Windows 使用当前运行账户的独占受保护 DACL。密钥与签名凭据禁止进入源码包、Git、普通诊断报告及数据库；数据库仅保存初始化标记、代次及密钥摘要用于恢复一致性检查。
 
-首次生成或导入 `GROUP_ENGINE_KEY` 为第 1 代，当次保持该代。后续启动在退役代没有活动执行时轮换；旧代仍有活动执行时保留两代。执行记录的 `signing_generation` 在提交 admission 前落盘，MCP 配置按该记录签发。文件更新使用受限临时文件、fsync 与原子替换，跨进程文件锁和数据库写事务串行化轮换、执行登记和退役。已写文件但数据库提交失败时，下一次启动保留文件中的有效代次继续恢复。
+首次生成或导入 `GROUP_ENGINE_KEY` 为第 1 代，当次保持该代。后续启动在退役代没有活动执行和有效会话引用时轮换；存在引用时保留两代。逐执行凭据按执行记录的 `signing_generation` 签发，会话凭据按授权记录签发。重启后后台仅为空闲会话换证；更新前保存 pending_generation，成功配置并记录交接后解除旧代引用。失败保留两代与待交接状态，下一轮派发须先成功完成交接。文件更新使用受限临时文件、fsync 与原子替换，跨进程文件锁和数据库写事务串行化轮换、执行登记和退役。已写文件但数据库提交失败时，下一次启动保留文件中的有效代次继续恢复。
 
-验签纯函数接收密钥集合并返回命中代次；HTTP 身份解析共用一次密钥快照。通用成员凭据只接受当前代。网关执行凭据必须匹配账本中的成员、项目、话题、执行类型及签发代次；终态立即对所有受保护 Bot 入口返回 401。当前代 Codex 和旧版 Hermes CLI 执行按其有效 `wake_runs` 身份验证，要求运行时为 `codex` 或 `hermes`、执行尚未结束且成员/项目/话题一致；旧代仅用于已登记未终态的 Hermes 网关执行。最后一个旧代执行终态提交后立即尝试退役旧密钥，当前代始终保留。
+验签纯函数接收密钥集合并返回命中代次；HTTP 身份解析共用一次密钥快照。通用成员凭据只接受当前代。历史网关执行凭据必须匹配账本中的成员、项目、话题、执行类型及签发代次，终态返回 401。新网关会话凭据独立校验绑定与授权，终态后保留授权且空闲写入返回 409；撤权后返回 401。当前代 Codex 和旧版 Hermes CLI 执行按其有效 `wake_runs` 身份验证，要求运行时为 `codex` 或 `hermes`、执行尚未结束且成员/项目/话题一致；旧代用于已登记未终态的 Hermes 网关执行及尚未交接的有效会话。旧代的执行引用和会话引用均解除后退役，当前代始终保留。
 
 服务重启入口与源码升级流程在请求旧服务退出前执行只读预检。首次升级有在途 Hermes 执行且缺少可迁移的环境密钥时，预检拒绝停机；管理员保留旧进程，等待执行结束后重试。已初始化但文件缺失、格式损坏、代次缺失或摘要不符时，恢复失败并阻断派发，保留文件与执行记录；管理员从同一实例的受控备份恢复匹配密钥，禁止自动生成替代文件。采用尚未包含预检的历史升级器时，应先运行新源码中的预检，确认成功后再安排停机。直接 Python 入口读取进程环境中的 `GROUP_ENGINE_KEY`；服务脚本会先加载实例 `.env`。
 

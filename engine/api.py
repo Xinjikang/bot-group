@@ -255,6 +255,11 @@ def post_msg(
     if kind == "dev" and sender != "user":
         kind = "bot"
     if kind == "bot":
+        from . import task_access
+        if getattr(getattr(request, 'state', None), 'session_scope', None) is not None:
+            body = {**body, 'execution': task_access.execution_for(request, body.get('execution'))}
+        elif isinstance(body.get('execution'), dict) and body['execution'].get('credential_type') == 'session':
+            raise HTTPException(403, 'Session credential required')
         from .message_execution import validate_shape
         validate_shape(sender, body)
     raw_text = body.get("text")
@@ -1271,7 +1276,7 @@ def set_member_active(profile: str, body: dict[str, Any], identity=Depends(_reso
 
 
 @router_api.post("/heartbeat")
-def post_heartbeat(body: dict[str, Any], identity=Depends(_resolve_identity)):
+def post_heartbeat(body: dict[str, Any], request: Request = None, identity=Depends(_resolve_identity)):
     """MCP server 续租心跳：记录该 profile 的 agent 循环仍在跑（= 正在思考）。
 
     身份由成员凭据校验，心跳只更新该成员。
@@ -1282,6 +1287,15 @@ def post_heartbeat(body: dict[str, Any], identity=Depends(_resolve_identity)):
     if identity[1] != "bot":
         raise HTTPException(403, "Heartbeat requires a member credential")
     profile = identity[0]
+    session_scope = getattr(getattr(request, 'state', None), 'session_scope', None)
+    if session_scope:
+        from . import hermes_session_auth
+        conn = db.get_connection()
+        try:
+            if hermes_session_auth.execution(conn, session_scope, required=False) is None:
+                return {'ok': True, 'profile': profile, 'idle': True}
+        finally:
+            conn.close()
     if not profile:
         raise HTTPException(status_code=400, detail="profile required")
     thread_id = body.get("thread_id")

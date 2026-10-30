@@ -70,7 +70,10 @@ def _execution_context() -> dict:
         data = json.loads(raw)
         if not isinstance(data, dict) or data.get("profile") != _profile():
             raise ValueError("execution profile does not match MCP profile")
-        if not data.get("session") or not data.get("project") or type(data.get("wake_started_at")) not in (int, float):
+        session_context = data.get('credential_type') == 'session'
+        if (not data.get("session") or not data.get("project")
+                or (not session_context and type(data.get("wake_started_at")) not in (int, float))
+                or (session_context and (not data.get('session_id') or type(data.get('generation')) is not int))):
             raise ValueError("incomplete execution metadata")
         tid = data.get("thread_id")
         if "thread_id" not in data or (tid is not None and (type(tid) is not int or tid <= 0)):
@@ -532,7 +535,7 @@ def _get(path: str, params: dict | None = None) -> dict:
 def operation_get(operation_id: str) -> dict:
     """查证结果未知的操作回执。使用错误返回中的 operation_id，只读查询原操作。
     completed 返回原 HTTP 状态码和业务结果；unknown 保留待核对状态。
-    回执绑定原成员及执行凭据，后继执行无法读取前次回执。
+    回执按成员及凭据作用域绑定：子进程限定执行，网关限定会话代次。
     """
     return _get('/mcp-operations/' + quote(operation_id, safe=''))
 
@@ -547,7 +550,7 @@ def group_send(text: str | None, need_reply: bool) -> dict:
     复用 group_read_inbox 同一条 fail-closed 路径：_session_resolve 解析失败
     显式报错、绝不静默兜底（防消息发错话题）。
 
-    project、thread_id、session 和 wake_started_at 全部由 MCP 自动填充。
+    project、thread_id 和会话身份由 MCP 自动填充；网关执行由服务端关联。
     bot 只提供 text 和 need_reply；执行上下文缺失或无效时返回错误。
     On your unmentioned topic turn, text=null silently skips; text="pass"
     publicly skips. Both complete the turn. An @ reply requires real content.
@@ -571,7 +574,9 @@ def group_send(text: str | None, need_reply: bool) -> dict:
         return {"error": context.get("error", "Missing execution context; start a new engine execution after upgrading")}
     body = {"text": text, "thread_id": thread_id, "need_reply": need_reply,
             "project": context["project"], "execution": {
-                "session": context["session"], "wake_started_at": context["wake_started_at"]}}
+                "session": context["session"], "wake_started_at": context.get("wake_started_at")}}
+    if context.get('credential_type') == 'session':
+        body['execution'] = context
     if thread_id is None:
         session_project, error = _work_project()
         if error:

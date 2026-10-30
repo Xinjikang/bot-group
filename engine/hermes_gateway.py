@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 from datetime import datetime
 import logging
-import os
 import sqlite3
 from pathlib import Path
 import threading
@@ -113,12 +112,14 @@ def _publish(row):
 
 def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args,
           bound_task=None, job_id=None, trigger_msg_id=None):
-    from . import wake, browser_resources
+    from . import wake, browser_resources, hermes_session_auth
     session = wake.session_name(profile, kind, thread_id, project)
     client = None
     row = None
     attempted = False
     conn = db.get_connection()
+    session_lock = hermes_session_auth.lock_for(session)
+    session_lock.acquire()
     try:
         if ledger.active(conn, session):
             return {'ok': False, 'busy': True, 'detail': 'gateway execution still active'}
@@ -131,6 +132,17 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
         snapshot = _binding(conn, client, bot, project, profile, kind, thread_id, session, workdir, model_args)
         if snapshot['running'] or snapshot['pending']:
             return {'ok': False, 'busy': True, 'detail': 'native session has pending execution'}
+        grant = hermes_session_auth.grant(conn, project=project, profile=profile, bot_id=bot['id'],
+            kind=kind, thread_id=thread_id, session=session, home=home, command=command,
+            workdir=workdir, model_args=model_args)
+        try:
+            snapshot = hermes_session_auth.configure(conn, grant, client, snapshot)
+        except Exception:
+            pending = conn.execute('SELECT pending_generation FROM hermes_session_grants WHERE ' +
+                                   hermes_session_auth.WHERE, hermes_session_auth.key(grant)).fetchone()
+            if pending and pending['pending_generation'] is not None:
+                return {'ok': False, 'busy': True, 'detail': 'gateway session credential handoff pending'}
+            raise
         if signal is None:
             signal = wake._finalize_injection_signal(profile, kind, thread_id, project,
                                                      trigger_msg_id, bound_task, [])
@@ -141,7 +153,6 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
         if prompt_hash is not None:
             signal = current_prompt + '\n\n' + signal
         start = time.time()
-        context = dict(profile=profile, project=project, thread_id=thread_id, session=session, wake_started_at=start)
         floor = conn.execute('SELECT COALESCE(MAX(id),0) FROM events').fetchone()[0]
         topic = conn.execute('SELECT turn_parent_id,round FROM threads WHERE id=? AND project=?',
                              (thread_id, project)).fetchone() if thread_id is not None else None
@@ -153,17 +164,10 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
             parent_id=topic['turn_parent_id'] if topic else None, round_no=topic['round'] if topic else None,
             prompt_hash=prompt_hash)
         _publish(row)
-        server = wake._mcp_server_config(profile, context=context, chat=kind == 'chat',
-                                       signing_generation=row['signing_generation'])
-        resource_env = dict(os.environ)
-        browser_resources.register(conn, resource_env, project=project, profile=profile, session=session,
-                                   started_at=start, thread_id=thread_id, task_id=bound_task)
-        server['env'].update({key: resource_env[key] for key in
-                             ('BH_RUNTIME_DIR', 'BH_RUNTIME_DIR_SHARED', 'BH_TMP_DIR', 'BH_TMP_DIR_SHARED', 'BU_NAME')})
-        server['env']['GROUP_GATEWAY_EXECUTION'] = '1'
+        browser_resources.register(conn, {}, project=project, profile=profile, session=session,
+                                   started_at=start, thread_id=thread_id, task_id=bound_task,
+                                   session_context=hermes_session_auth.context(grant))
         conn.commit()
-        sessions.configure_tracked(conn, project, client, snapshot,
-                                   workdir=workdir, model_args=model_args, server=server)
         attempted = True
         receipt = client.rpc('prompt.submit', session_id=row['session_id'], submission_id=row['submission_id'], text=signal)
         ledger.apply_receipt(conn, row['execution_id'], receipt)
@@ -182,6 +186,7 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
         conn.close()
         if client:
             client.close()
+        session_lock.release()
 
 
 def _finish(conn, row, client):
@@ -205,7 +210,6 @@ def _finish(conn, row, client):
                                 request_id='stop-' + row['execution_id'])
                 prompt_state.withdraw(conn, row['execution_id'], 'rewound')
                 conn.commit()
-        sessions.clear_mcp(client, row['session_id'])
     elif row['outcome'] != 'not_submitted':
         return False
     code = 0 if row['outcome'] == 'completed' else 1
@@ -324,6 +328,8 @@ def _start_worker(execution_id):
 
 
 def recover():
+    from . import hermes_connections
+    hermes_connections._POOL.start()
     conn = db.get_connection()
     try:
         for row in ledger.active(conn):

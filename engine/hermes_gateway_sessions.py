@@ -29,8 +29,10 @@ def new(client, *, title, workdir, system_prompt, model_args, request_id=None, l
 
 
 def configure(client, snapshot, *, workdir, model_args, server,
-              reset_reasoning=False, reasoning_applied=None, edit_approval_policy='workspace_session'):
-    """Refresh the session-local MCP transport before each admission."""
+              reset_reasoning=False, reasoning_applied=None, edit_approval_policy='workspace_session',
+              previous=None):
+    """Apply changed policy and restore an unchanged private MCP transport on resume."""
+    previous = previous or {}
     sid = snapshot['session_id']
     if snapshot['info']['source'] != 'acp':
         raise GatewayRefusal('editor_mcp_requires_acp_session')
@@ -43,18 +45,19 @@ def configure(client, snapshot, *, workdir, model_args, server,
         mutate(client, snapshot, 'workspace', {'cwd': workdir})
         snapshot = attach(client, sid)
     options = dict(zip(model_args[::2], model_args[1::2]))
-    if '--model' in options:
+    model = {k: options[k] for k in ('--model', '--provider') if k in options}
+    if '--model' in options and model != previous.get('model'):
         payload = {'model': options['--model']}
         if '--provider' in options:
             payload['provider'] = options['--provider']
         mutate(client, snapshot, 'model', payload)
         snapshot = attach(client, sid)
-    if '--reasoning' in options:
+    if '--reasoning' in options and options['--reasoning'] != previous.get('reasoning'):
         mutate(client, snapshot, 'reasoning', {'effort': options['--reasoning']})
         if reasoning_applied:
             reasoning_applied(options['--reasoning'])
         snapshot = attach(client, sid)
-    elif reset_reasoning:
+    elif '--reasoning' not in options and reset_reasoning:
         mutate(client, snapshot, 'reasoning', {'effort': None})
         if reasoning_applied:
             reasoning_applied(None)
@@ -64,15 +67,14 @@ def configure(client, snapshot, *, workdir, model_args, server,
     if snapshot['info'].get('edit_approval_policy') != edit_approval_policy:
         mutate(client, snapshot, 'edit_policy', {'policy': edit_approval_policy})
         snapshot = attach(client, sid)
-    # An empty committed manifest retires the previous connection even when its
-    # new tool schema is identical and only the execution credential changed.
-    mutate(client, snapshot, 'editor_mcp', {'mcp_servers': []})
-    snapshot = attach(client, sid)
     spec = {'name': 'task_queue', 'command': server['command'], 'args': server['args'],
-            'env': [{'name': key, 'value': value} for key, value in server['env'].items()]}
-    mutate(client, snapshot, 'editor_mcp', {'mcp_servers': [spec]})
-    snapshot = attach(client, sid)
-    # Session-local tools are discovered lazily; session.info lists profile MCPs.
+            'env': [{'name': key, 'value': value} for key, value in sorted(server['env'].items())]}
+    fingerprint = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
+    if previous.get('mcp') != fingerprint:
+        mutate(client, snapshot, 'editor_mcp', {'mcp_servers': [spec]})
+        snapshot = attach(client, sid)
+    else:
+        snapshot = client.rpc('session.resume', session_id=sid, editor={'mcp_servers': [spec]})
     return snapshot
 
 
@@ -92,16 +94,23 @@ def configure_tracked(conn, project, client, snapshot, *, workdir, model_args, s
                          (project, key, effort, db.now_iso()))
         conn.commit()
 
-    return configure(client, snapshot, workdir=workdir, model_args=model_args, server=server,
-                     reset_reasoning=previous is not None, reasoning_applied=applied,
-                     edit_approval_policy=edit_policy.read(conn))
-
-
-def clear_mcp(client, session_id):
-    snapshot = attach(client, session_id)
-    if snapshot['running'] or snapshot['pending']:
-        raise GatewayRefusal('session_busy')
-    mutate(client, snapshot, 'editor_mcp', {'mcp_servers': []})
+    config_key = 'hermes_config:' + hashlib.sha256(identity.encode()).hexdigest()
+    saved = conn.execute('SELECT value FROM settings WHERE project=? AND key=?', (project, config_key)).fetchone()
+    prior = json.loads(saved['value']) if saved else {}
+    result = configure(client, snapshot, workdir=workdir, model_args=model_args, server=server,
+                       reset_reasoning=previous is not None, reasoning_applied=applied,
+                       edit_approval_policy=edit_policy.read(conn), previous=prior)
+    options = dict(zip(model_args[::2], model_args[1::2]))
+    spec = {'name': 'task_queue', 'command': server['command'], 'args': server['args'],
+            'env': [{'name': k, 'value': v} for k, v in sorted(server['env'].items())]}
+    state = dict(model={k: options[k] for k in ('--model', '--provider') if k in options},
+                 reasoning=options.get('--reasoning'),
+                 mcp=hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest())
+    conn.execute('INSERT INTO settings(project,key,value,updated_at) VALUES(?,?,?,?) '
+                 'ON CONFLICT(key,project) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',
+                 (project, config_key, json.dumps(state), db.now_iso()))
+    conn.commit()
+    return result
 
 
 def migrate_legacy(client, snapshot, *, workdir):

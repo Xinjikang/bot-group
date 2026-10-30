@@ -181,6 +181,26 @@ class WakePromptTests(unittest.TestCase):
         for row in ledger.cleanup_pending(self.conn): ledger.finish_cleanup(self.conn, row['execution_id'])
         return result
 
+    def test_failed_handoff_keeps_next_wake_queued_without_execution(self):
+        from engine import auth
+        ring = (1, {1: b'old'})
+        with patch.object(auth, 'signing_keys', side_effect=lambda: ring):
+            self.assertTrue(self.spawn()['ok'])
+            ring = (2, {1: b'old', 2: b'new'})
+            def fail_configuration(method, **params):
+                if method == 'session.mutate' and params['operation'] == 'editor_mcp':
+                    raise GatewayTransportError('fixture handoff unavailable')
+                return self.rpc(method, **params)
+            self.remote.rpc.side_effect = fail_configuration
+            result = self.spawn()
+            self.assertTrue(result['busy'], result)
+            self.assertEqual(len(self.sent), 1)
+            self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM hermes_executions').fetchone()[0], 1)
+            self.assertEqual(self.conn.execute('SELECT pending_generation FROM hermes_session_grants').fetchone()[0], 2)
+            self.remote.rpc.side_effect = self.rpc
+            self.assertTrue(self.spawn()['ok'])
+            self.assertEqual(len(self.sent), 2)
+
     def test_new_session_and_aba_send_rules_exactly_when_needed(self):
         for index, prompt in enumerate(('A','A','B','B','A','A')):
             self.prompt = prompt
@@ -204,20 +224,6 @@ class WakePromptTests(unittest.TestCase):
         self.assertTrue(self.spawn()['busy'])
         self.assertEqual(len(self.sent), 2)
         self.assertIsNotNone(prompts.pending_hash(self.conn, 'pid', 'sid-1', 'B'))
-
-    def test_migrated_session_backfills_user_rules_without_claiming_system_identity(self):
-        def legacy_rpc(method, **params):
-            if method == 'session.list': return {'sessions': [{'session_id': 'old-cli'}]}
-            if method == 'session.resume' and params['session_id'] == 'old-cli':
-                return {**_snapshot(source='cli'), 'session_id': 'old-cli'}
-            return self.rpc(method, **params)
-        self.remote.rpc.side_effect = legacy_rpc
-        with patch.object(gateway.sessions, 'migrate_legacy', return_value={**_snapshot(), 'session_id':'migrated'}):
-            self.spawn(); self.spawn()
-        self.assertEqual([r['text'] for r in self.sent], ['A\n\nevent', 'event'])
-        row = self.conn.execute("SELECT * FROM hermes_prompt_state WHERE session_id='migrated'").fetchone()
-        self.assertIsNone(row['system_hash'])
-        self.assertEqual(row['user_hash'], prompts.digest('A'))
 
     def test_migrated_session_backfills_user_rules_without_claiming_system_identity(self):
         def legacy_rpc(method, **params):

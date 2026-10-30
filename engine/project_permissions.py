@@ -157,6 +157,16 @@ def save_in_transaction(conn, project, body, actor):
                 raise HTTPException(400, '授权成员不存在')
     after = {k: sorted(set(v)) for k, v in grants.items()}
     if after != before['grants']:
+        revoked = {target for permission, targets in before['grants'].items()
+                   for target in targets if target not in after[permission]}
+        for target in revoked:
+            if _is_role_grant(target):
+                conn.execute('UPDATE hermes_session_grants SET revoked=1 WHERE project=? AND profile IN '
+                             '(SELECT profile FROM project_members WHERE project=? AND role_id=?)',
+                             (project, project, _role_id_from_grant(target)))
+            else:
+                conn.execute('UPDATE hermes_session_grants SET revoked=1 WHERE project=? AND profile=?',
+                             (project, target))
         conn.execute('DELETE FROM project_permissions WHERE project=?', (project,))
         conn.executemany('INSERT INTO project_permissions(project,profile,permission) VALUES(?,?,?)',
                          [(project, p, k) for k, targets in after.items() for p in targets])

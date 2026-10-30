@@ -46,7 +46,14 @@ def resolve_identity(
         if not auth.verify_bot(profile, key, ring=ring) or db.is_builtin_user(profile):
             raise HTTPException(401, "Invalid member credential")
         if request is not None:
-            request.state.execution_scope = auth.execution_scope(profile, key, ring[1])
+            session_scope = auth.session_scope(profile, key, ring[1])
+            previous = getattr(request.state, 'execution_scope', None)
+            request.state.session_scope = session_scope
+            if session_scope is not None:
+                request.state.execution_scope = (previous if previous and all(
+                    previous.get(k) == v for k, v in session_scope.items()) else session_scope)
+            else:
+                request.state.execution_scope = auth.execution_scope(profile, key, ring[1])
         return profile, "bot"
     if isinstance(authorization, str):
         if authorization.startswith("Bearer ") and auth.verify_token(authorization[7:].strip()):
@@ -120,7 +127,31 @@ async def authorize(request: Request, identity=Depends(resolve_identity)):
         path = route[1]
         scope = getattr(request.state, 'execution_scope', None)
         gateway_run = None
-        if scope is not None:
+        session_scope = getattr(request.state, 'session_scope', None)
+        if session_scope is not None:
+            from . import hermes_session_auth
+            hermes_session_auth.validate(conn, session_scope)
+            scope = session_scope
+            if route in WRITE_ROUTES:
+                scope = hermes_session_auth.resolve(conn, scope)
+            request.state.execution_scope = scope
+            requested_project = request.query_params.get('project')
+            if requested_project and requested_project != scope['project']:
+                raise HTTPException(403, 'Session project mismatch')
+            requested_thread = request.query_params.get('id' if path == '/thread' else 'thread_id')
+            if requested_thread is not None and str(scope['thread_id']) != requested_thread:
+                raise HTTPException(403, 'Session topic mismatch')
+            if path == '/inbox':
+                expected_kind = 'chat' if scope['thread_id'] is not None else 'work'
+                if (request.query_params.get('kind') != expected_kind
+                        or (expected_kind == 'chat' and requested_thread is None)
+                        or (expected_kind == 'work' and requested_project != scope['project'])):
+                    raise HTTPException(403, 'Session inbox scope mismatch')
+            if path == '/heartbeat':
+                gateway_run = hermes_session_auth.execution(conn, scope, required=False)
+                if gateway_run is not None:
+                    scope = {**scope, 'wake_started_at': gateway_run['started_at']}
+        elif scope is not None:
             gateway_run = conn.execute('SELECT * FROM hermes_executions WHERE session=? AND started_at=?',
                                        (scope['session'], scope['wake_started_at'])).fetchone()
             if gateway_run is not None:
@@ -180,6 +211,11 @@ async def authorize(request: Request, identity=Depends(resolve_identity)):
                 raise HTTPException(422, "JSON object required")
             if not isinstance(body, dict):
                 raise HTTPException(422, "JSON object required")
+            if session_scope is not None:
+                if body.get('project') and body['project'] != session_scope['project']:
+                    raise HTTPException(403, 'Session project mismatch')
+                if 'thread_id' in body and body['thread_id'] != session_scope['thread_id']:
+                    raise HTTPException(403, 'Session topic mismatch')
             if gateway_run is not None and path == '/heartbeat':
                 if body.get('thread_id') != scope['thread_id']:
                     raise HTTPException(403, 'Heartbeat topic mismatch')
@@ -190,10 +226,16 @@ async def authorize(request: Request, identity=Depends(resolve_identity)):
                              (pid, scope['session'], scope['wake_started_at']))
                 conn.commit()
             if path == "/msg":
+                if session_scope is not None:
+                    from . import task_access
+                    execution = task_access.execution_for(request, body.get('execution'))
+                    if body.get('project') != execution['project'] or body.get('thread_id') != execution['thread_id']:
+                        raise HTTPException(403, 'Message does not match the session')
+                    body = {**body, 'execution': execution}
                 from .message_execution import validate_shape
                 validate_shape(profile, body)
                 scope = getattr(request.state, "execution_scope", None)
-                if scope is not None and any(
+                if session_scope is None and scope is not None and any(
                     scope[key] != (body[key] if key in ("project", "thread_id") else body["execution"][key])
                     for key in ("project", "thread_id", "session", "wake_started_at")
                 ):

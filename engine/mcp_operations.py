@@ -23,7 +23,8 @@ def _owner(request):
     if kind != 'bot':
         raise HTTPException(403, 'Operation receipts require a member credential')
     scope = getattr(request.state, 'execution_scope', None)
-    identity = {key: scope[key] for key in auth.EXECUTION_FIELDS} if scope else None
+    fields = auth.SESSION_FIELDS if scope and scope.get('credential_type') == 'session' else auth.EXECUTION_FIELDS
+    identity = {key: scope[key] for key in fields} if scope else None
     return hashlib.sha256(_json([actor, identity]).encode()).hexdigest()
 
 

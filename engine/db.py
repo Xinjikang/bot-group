@@ -209,6 +209,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE projects SET directory_mode=CASE WHEN COALESCE(worktree_root,'')='' "
                  "THEN 'shared' ELSE 'worktree' END WHERE directory_mode=''")
     conn.commit()
+    from . import hermes_session_auth
+    conn.executescript(hermes_session_auth.SCHEMA)
 
 
 def _migrate_permission_membership(conn: sqlite3.Connection) -> None:

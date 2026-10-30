@@ -1,5 +1,9 @@
 # 测试脚本索引
 
+Hermes 会话级复用：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_session_reuse scripts.test_hermes_gateway scripts.test_hermes_gateway_sessions scripts.test_hermes_connections scripts.test_hermes_prompt_state scripts.test_signing_keys scripts.test_task_api scripts.test_access_contract scripts.test_mcp_operations scripts.test_message_execution -q`。隔离 SQLite、模拟 RPC 与真实 MCP HTTP 转发覆盖跨轮凭据、逐执行消息来源、取消后续轮、空闲拒写、事务撤权、关闭/重开、权限撤销、订阅释放重试、旧代引用与换证失败、原子交接和子进程鉴权。Windows 签名权限用例使用独立 PowerShell 模块搜索环境与临时 DACL。
+
+原生复用验收：使用同时安装 Hermes/ACP 与引擎依赖的解释器执行 `python -X utf8 -B scripts/verify_hermes_session_reuse_native.py --hermes-source <Hermes源码绝对目录> --mcp-python <MCP解释器绝对路径> --evidence <主目录报告下的新目录>`。真实 GatewayRunner、WS admission、AIAgent、stdio MCP 与引擎 HTTP API；隔离 home/SQLite、随机回环模型、合成 ticket。验证两轮构建/进程计数均为 1，密钥轮换交接后连续两轮计数均为 2，以及空闲 600 秒释放；输出逐轮耗时和 RPC 类型，零外部模型请求，结束关闭自身连接、MCP 和模型服务。
+
 话题成员项目范围：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_member_identity scripts.test_member_disabled scripts.test_member_add_turn -q` 验证成员范围过滤、停用保留、移出后刷新、项目参数校验及既有话题增删。`python -X utf8 -B scripts/test_thread_members_browser.py --evidence <主目录报告目录>` 使用 Playwright/Chrome 和全拦截合成 API，覆盖话题所属项目、全局花名册隔离、停用按钮、加入/移出、空列表、读取失败重试、异步竞态、重开及 1280px/390px 深浅主题。无需业务服务或端口，退出关闭自身浏览器。
 
 HUD 双标签与项目隔离：`python -X utf8 -B scripts/test_hud_notifications_browser.py --evidence <主目录报告目录>` 验证对话/待办标签、卡片数量、旧单问题/提案兼容、空状态、逐项操作及失败保留、切换标签保留输入、键盘导航、切换项目重置视图。断言项目轮询从不读取全局会话索引，其他项目提醒和草稿不会出现，更多菜单仅保留备注和设置；截图覆盖 1440px/390px 深浅主题。合成 API，无业务服务或模型调用。
@@ -20,7 +24,7 @@ Hermes 租约接口兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scr
 
 Hermes 连接池与顶栏状态：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_connections scripts.test_session_readonly scripts.test_hermes_compatibility scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway_sessions scripts.test_hud_gateway scripts.test_project_hud scripts.test_engine_shutdown scripts.test_access_contract scripts.test_hermes_transport -q`。隔离数据库、可控时钟和回环随机端口覆盖发现优先、启动去重、独立 profile 身份/epoch、并发 RPC、会话订阅释放、空闲 600 秒、未决执行保护、三次重连、版本变更、停机竞态及状态接口身份限制。回归使用模拟回执，真实传输夹具覆盖乱序响应。
 
-连接池原生订阅：使用带 Hermes 与 bot-group 依赖的解释器执行 `python -X utf8 -B scripts/verify_hermes_connections_native.py --hermes-source <Hermes源码绝对目录> --evidence <主目录报告下的新目录>`。真实 SessionAuthority、AuthorityConnection 和回环 WS 验证共享连接、最后使用者 detach、再次 resume 与空闲关闭。home、数据库全部隔离，control 身份与 ticket 为合成夹具，保持零模型调用。
+连接池原生订阅：使用带 Hermes 与 bot-group 依赖的解释器执行 `python -X utf8 -B scripts/verify_hermes_connections_native.py --hermes-source <Hermes源码绝对目录> --evidence <主目录报告下的新目录>`。真实 SessionAuthority、AuthorityConnection 和回环 WS 验证共享连接、最后租约释放保留订阅、再次 resume 与空闲 detach/关闭。home、数据库全部隔离，control 身份与 ticket 为合成夹具，保持零模型调用。
 
 顶栏浏览器验证：`python -X utf8 -B scripts/preview_hermes_gateway_status.py [--port <隔离端口>]`，默认由系统分配端口。浏览器访问输出地址，真实前端资产与合成只读响应自动验证七种状态、子进程隐藏、引擎断连、过期、退出登录和无交互；1200px 深色及 390px 深浅主题各检查全部标签边界。三个面板均应显示 `PASS 21 checks`。验证结束关闭预览服务，截图和文本证据放入主目录报告。
 

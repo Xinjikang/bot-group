@@ -175,7 +175,8 @@ def main():
                 assert recovered['status'] == 'terminal'
                 assert sessions.attach(reconnected, sid)['session_id'] == sid
                 evidence['checks'].append('reconnect_new_ticket_terminal_receipt')
-            sessions.clear_mcp(client, sid)
+            final = sessions.attach(client, sid)
+            client.rpc('session.detach', session_id=sid, subscription_id=final['subscription_id'])
             legacy_id = 'legacy-test-' + uuid.uuid4().hex
             marker = 'LEGACY_HISTORY_' + uuid.uuid4().hex
             client.rpc('session.mutate', session_id=legacy_id, request_id=uuid.uuid4().hex,

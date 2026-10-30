@@ -212,21 +212,20 @@ class GatewayTests(unittest.TestCase):
         remote = Mock()
         with patch.object(gateway.sessions, 'attach', return_value={'messages': [
                 {'role': 'user', 'row_id': 5, 'timestamp': self.start - 5}]}), \
-                patch.object(gateway.sessions, 'mutate') as mutate, \
-                patch.object(gateway.sessions, 'clear_mcp') as clear:
+                patch.object(gateway.sessions, 'mutate') as mutate:
             gateway._finish(self.conn, row, remote)
         mutate.assert_not_called()
-        clear.assert_called_once_with(remote, 'sid')
+        self.assertFalse(any(c.args and c.args[0] == 'session.mutate' for c in remote.rpc.call_args_list))
         self.assertFalse(gateway.active(self.session))
 
-    def test_pre_submit_failure_still_clears_native_mcp(self):
+    def test_pre_submit_failure_finishes_local_execution(self):
         ledger.not_submitted(self.conn, self.eid, 'configuration_failed')
         remote = Mock()
         with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
-                patch.object(gateway.sessions, 'attach'), patch.object(gateway.sessions, 'clear_mcp') as clear, \
+                patch.object(gateway.sessions, 'attach'), patch.object(gateway, '_finish', wraps=gateway._finish) as finish, \
                 patch.object(wake, '_report_execution_error'), patch.object(wake, '_handle_task_exit'):
             gateway._watch(self.eid)
-        clear.assert_called_once_with(remote, 'sid')
+        self.assertFalse(any(c.args and c.args[0] == 'session.mutate' for c in remote.rpc.call_args_list))
         self.assertFalse(gateway.active(self.session))
 
     def test_ambiguous_title_does_not_attach_create_or_bind(self):
@@ -273,12 +272,12 @@ class GatewayTests(unittest.TestCase):
         remote = Mock()
         with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
              patch.object(gateway.sessions, 'attach'), \
-             patch.object(gateway.sessions, 'clear_mcp', side_effect=ConnectionError('offline')) as clear, \
+             patch.object(gateway, '_finish', side_effect=ConnectionError('offline')) as finish, \
              patch.object(gateway.time, 'sleep') as sleep, \
              patch.object(wake, '_handle_task_exit'):
             gateway._watch(self.eid)
         row = ledger.read(self.conn, self.eid)
-        self.assertEqual(clear.call_count, 5)
+        self.assertEqual(finish.call_count, 5)
         self.assertEqual(len(sleep.call_args_list), 4)
         for expected, actual in zip((1.0, 2.0, 4.0, 8.0), [c.args[0] for c in sleep.call_args_list]):
             self.assertAlmostEqual(actual, expected, delta=0.5)
@@ -306,11 +305,11 @@ class GatewayTests(unittest.TestCase):
         remote = Mock()
         with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
              patch.object(gateway.sessions, 'attach'), \
-             patch.object(gateway.sessions, 'clear_mcp', side_effect=ConnectionError('offline')) as clear, \
+             patch.object(gateway, '_finish', side_effect=ConnectionError('offline')) as finish, \
              patch.object(gateway.time, 'sleep'), patch.object(wake, '_handle_task_exit'):
             gateway._watch(self.eid)
         row = ledger.read(self.conn, self.eid)
-        self.assertEqual(clear.call_count, 1)  # 期限已过，不再登记重试
+        self.assertEqual(finish.call_count, 1)  # 期限已过，不再登记重试
         self.assertEqual(row['retry_count'], 0)
         self.assertIn('cleanup deadline exceeded', row['detail'])
         self.assertEqual(row['cleanup_pending'], 1)
@@ -326,7 +325,7 @@ class GatewayTests(unittest.TestCase):
         remote = Mock()
         with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
              patch.object(gateway.sessions, 'attach'), \
-             patch.object(gateway.sessions, 'clear_mcp'), \
+             patch.object(gateway, '_finish', wraps=gateway._finish), \
              patch.object(wake, '_handle_task_exit'):
             gateway._watch(self.eid)
         a_ended = self.conn.execute('SELECT ended_at FROM wake_runs WHERE started_at=?',
@@ -343,11 +342,11 @@ class GatewayTests(unittest.TestCase):
         remote = Mock()
         with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
              patch.object(gateway.sessions, 'attach'), \
-             patch.object(gateway.sessions, 'clear_mcp') as clear, \
+             patch.object(gateway, '_finish', wraps=gateway._finish) as finish, \
              patch.object(wake, '_handle_task_exit'), \
              patch.object(gateway, '_start_worker', side_effect=gateway._watch):
             gateway.recover()
-        clear.assert_called_once_with(remote, 'sid')
+        self.assertFalse(any(c.args and c.args[0] == 'session.mutate' for c in remote.rpc.call_args_list))
         self.assertEqual(ledger.read(self.conn, self.eid)['cleanup_pending'], 0)
         self.assertEqual(ledger.read(self.conn, self.eid)['retry_count'], 0)
 
@@ -363,14 +362,19 @@ class GatewayTests(unittest.TestCase):
         self.assertIn('cleanup_failed', ledger.read(self.conn, self.eid)['detail'])
 
     def test_transient_cleanup_failure_finishes_within_retry_limit(self):
+        original_finish = gateway._finish
+        def retry_finish(*args):
+            if finish.call_count == 1:
+                raise ConnectionError('offline')
+            return original_finish(*args)
         self.terminal()
         remote = Mock()
         with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
              patch.object(gateway.sessions, 'attach'), \
-             patch.object(gateway.sessions, 'clear_mcp', side_effect=[ConnectionError('offline'), None]) as clear, \
+             patch.object(gateway, '_finish', side_effect=retry_finish) as finish, \
              patch.object(gateway.time, 'sleep'), patch.object(wake, '_handle_task_exit'):
             gateway._watch(self.eid)
-        self.assertEqual(clear.call_count, 2)
+        self.assertEqual(finish.call_count, 2)
         self.assertFalse(gateway.active(self.session))
         self.assertEqual(ledger.read(self.conn, self.eid)['detail'], '')
 
@@ -402,11 +406,11 @@ class GatewayTests(unittest.TestCase):
         self.conn.commit()
         remote = Mock()
         with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
-             patch.object(gateway.sessions, 'attach'), patch.object(gateway.sessions, 'clear_mcp') as clear, \
+             patch.object(gateway.sessions, 'attach'), patch.object(gateway, '_finish', wraps=gateway._finish) as finish, \
              patch.object(gateway.sessions, 'mutate') as rewind, \
              patch.object(gateway, '_start_worker', side_effect=gateway._watch):
             self.assertTrue(gateway.cancel(self.session))
-        clear.assert_called_once_with(remote, 'sid')
+        self.assertFalse(any(c.args and c.args[0] == 'session.mutate' for c in remote.rpc.call_args_list))
         rewind.assert_not_called()
         self.assertFalse(gateway.active(self.session))
         self.assertEqual(ledger.read(self.conn, self.eid)['cancel_reason'], 'shutdown')
