@@ -1,5 +1,7 @@
 # 项目文档索引
 
+全局 Hermes 文件编辑审批的三档选择、持久化与每轮应用规则见 [全局审批策略设计](design/2026-10-30-global-edit-policy.md)。
+
 项目维护 HUD 的独立会话、提问与创建向导联动见 [设计](design/2026-10-27-project-maintenance-hud.md) 和 [工程契约](engineering/PROJECT-HUD.md)。
 
 项目助手的实际配置检查、文档依据与修改前后确认见 [引导设计](design/2026-10-29-project-assistant-guidance.md)。

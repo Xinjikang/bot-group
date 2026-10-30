@@ -10,7 +10,7 @@
 
 新会话使用 `source=acp`，通过 `session.mutate editor_mcp` 注入本次执行的 task_queue。每轮先提交空列表以释放旧连接，再提交新凭据。实际工具发现和调用由 Hermes 原生机制完成。
 
-危险命令审批采用 Hermes 原生 `approvals.mode: smart`，配置由管理员在 Hermes 中维护。ACP 编辑策略采用官方 `edit_policy=workspace_session`：普通工作区编辑按原生策略放行，敏感路径和工作区外请求遵循原生审批规则。引擎沿用这些原生能力。
+危险命令审批采用 Hermes 原生 `approvals.mode: smart`，配置由管理员在 Hermes 中维护。ACP 编辑策略由右上角“设置 → 智能审批策略”全局选择 `ask`、`workspace_session` 或 `session`，默认 `workspace_session`。所有项目与 Hermes ACP Bot 每轮执行前读取全局设置，策略不同时调用官方 `session.mutate edit_policy` 更新。运行中与待审批轮次保留原策略。工作区、临时目录及敏感路径判断沿用 Hermes 原生实现；Codex 和旧版 Hermes CLI 保留各自机制。存储、接口和验证见 [全局审批策略](../design/2026-10-30-global-edit-policy.md)。
 
 ### 网页处理授权
 

@@ -936,6 +936,35 @@ def get_user_display_name(identity=Depends(_resolve_identity)):
         conn.close()
 
 
+@router_api.get('/system/edit-approval-policy')
+def get_edit_approval_policy(identity=Depends(_resolve_identity)):
+    _admin_only(identity, '仅管理员可读取全局智能审批策略')
+    from . import edit_policy
+    conn = _conn()
+    try:
+        return JSONResponse({'policy': edit_policy.read(conn)}, headers={'Cache-Control': 'no-store'})
+    finally:
+        conn.close()
+
+
+@router_api.patch('/system/edit-approval-policy')
+def set_edit_approval_policy(body: dict[str, Any], identity=Depends(_resolve_identity)):
+    _admin_only(identity, '仅管理员可修改全局智能审批策略')
+    from . import edit_policy
+    if set(body) != {'policy'}:
+        raise HTTPException(400, '仅支持全局 policy 字段')
+    conn = _conn()
+    try:
+        with conn:
+            try:
+                edit_policy.write(conn, body['policy'])
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+        return JSONResponse({'policy': edit_policy.read(conn)}, headers={'Cache-Control': 'no-store'})
+    finally:
+        conn.close()
+
+
 @router_api.patch('/user/display-name')
 def set_user_display_name(body: dict[str, Any], identity=Depends(_resolve_identity)):
     _admin_only(identity, '仅用户可修改自己的称呼')

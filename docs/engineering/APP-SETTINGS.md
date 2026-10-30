@@ -2,7 +2,9 @@
 
 ## 页面设置
 
-右上角“设置”集中提供我的称呼、背景、主题、重启服务和关于。称呼保持服务端持久化，重启沿用管理员鉴权、确认、操作回执与刷新续查；连接状态持续显示重启进度。菜单支持点击外部、Escape 和焦点离开关闭，通过 `aria-expanded` 暴露展开状态。
+右上角“设置”集中提供智能审批策略、我的称呼、背景、主题、重启服务和关于。称呼保持服务端持久化，重启沿用管理员鉴权、确认、操作回执与刷新续查；连接状态持续显示重启进度。菜单支持点击外部、Escape 和焦点离开关闭，通过 `aria-expanded` 暴露展开状态。
+
+“智能审批策略”通过 `GET/PATCH /system/edit-approval-policy` 保存全局 Hermes ACP 文件编辑策略，默认 `workspace_session`，另支持 `ask` 和 `session`。所有项目与 Hermes ACP Bot 在下一轮执行前应用；Codex 沿用自身配置。每次打开读取服务端最新值，保存失败保留选择，读取失败禁用保存。详见 [全局审批策略设计](../design/2026-10-30-global-edit-policy.md)。
 
 “关于”通过 `engine/version.py` 识别运行代码。Git 仓库和 worktree 优先读取本地 Git：正式三段 tag 显示版本号，后续提交显示 tag、提交距离和提交号，本地改动加“本地有修改”；没有本地正式 tag 时显示“开发版 · 提交号”。Git 查询保持只读，整个查询预算为 4 秒。普通源码安装读取包内有效的 `VERSION`；Git 信息读取失败时保留失败状态，避免使用过时包版本。仅管理员身份可以请求 `GET /system/version` 和 `GET /system/updates`，响应使用 `Cache-Control: no-store`。
 
