@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+Hermes 租约接口兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_connections scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway -q`。真实 Pool/Lease 配合隔离 SQLite 和模拟 RPC，覆盖 configure_tracked 的推理配置跟踪、旧会话首次迁移与复用，以及重连前后租约 endpoint 身份绑定；endpoint 属性保持只读。无需模型和生产网关。
+
 Hermes 连接池与顶栏状态：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_connections scripts.test_session_readonly scripts.test_hermes_compatibility scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway_sessions scripts.test_hud_gateway scripts.test_project_hud scripts.test_engine_shutdown scripts.test_access_contract scripts.test_hermes_transport -q`。隔离数据库、可控时钟和回环随机端口覆盖发现优先、启动去重、独立 profile 身份/epoch、并发 RPC、会话订阅释放、空闲 600 秒、未决执行保护、三次重连、版本变更、停机竞态及状态接口身份限制。回归使用模拟回执，真实传输夹具覆盖乱序响应。
 
 连接池原生订阅：使用带 Hermes 与 bot-group 依赖的解释器执行 `python -X utf8 -B scripts/verify_hermes_connections_native.py --hermes-source <Hermes源码绝对目录> --evidence <主目录报告下的新目录>`。真实 SessionAuthority、AuthorityConnection 和回环 WS 验证共享连接、最后使用者 detach、再次 resume 与空闲关闭。home、数据库全部隔离，control 身份与 ticket 为合成夹具，保持零模型调用。

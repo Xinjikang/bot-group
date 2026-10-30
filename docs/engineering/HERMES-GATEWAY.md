@@ -8,6 +8,8 @@
 
 ## 连接复用与状态
 
+连接租约公开只读 `endpoint`，直接转发到该租约绑定的底层客户端。配置跟踪与旧会话迁移通过 `endpoint.profile_id` 取得身份；池重连后，旧租约继续引用原连接的 endpoint，新租约引用新连接。
+
 `engine/hermes_connections.py` 按 profile 维护 WS 和使用租约。业务优先通过 control identify 发现现有网关，发现、票据与握手共用 5 秒预算；所有候选 control 端点均缺失时才调用官方 `gateway ensure`。启动按根宿主与启动命令串行合并，失败结果保留 5 秒。身份、权限、协议与版本错误保留明确失败。安装身份取实际源码的 install-stamp 提交或 Git HEAD，运行实例提交必须一致；版本变化显示需要重启。control 的 epoch 属于启动 profile，`runtime.describe` 返回票据 profile 的独立正整数 epoch，并校验 profile、instance 和能力。
 
 同一 profile 的租约共享物理 WS，RPC 按请求 ID 分发，会话事件按 session ID 分发。最后一个会话使用者释放时调用 `session.detach`，下一次 `resume` 建立新订阅，保证原生配置重读边界。事件队列有界，思考增量为辅助信息；RPC 回执和持久执行账本保持独立。连接传输失败交由原账本核对 admission/submission，连接池只重连传输。

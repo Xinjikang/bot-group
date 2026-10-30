@@ -127,6 +127,11 @@ class Lease:
         self.sessions = set()
         self.closed = False
 
+    @property
+    def endpoint(self):
+        """Identity of this lease's bound connection, including after pool reconnects."""
+        return self.client.endpoint
+
     def rpc(self, method, **params):
         if self.closed:
             raise GatewayTransportError('Hermes connection lease closed')

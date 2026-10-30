@@ -127,6 +127,22 @@ class PoolTests(unittest.TestCase):
         self.assertIs(self.opener.call_args.kwargs['allow_start'], False)
         lease.close()
 
+    def test_endpoint_stays_bound_to_lease_after_reconnect(self):
+        first = self.acquire()
+        first.client.endpoint = {'profile_id': 'fixture', 'instance_id': 'original'}
+        original = first.client.endpoint
+        self.pool.failed(first.entry, first.client)
+        self.now = 1
+        self.pool.sweep()
+        second = self.acquire()
+        second.client.endpoint = {'profile_id': 'fixture', 'instance_id': 'replacement'}
+        self.assertIs(first.endpoint, original)
+        self.assertEqual(second.endpoint['instance_id'], 'replacement')
+        with self.assertRaises(AttributeError):
+            first.endpoint = second.endpoint
+        first.close()
+        second.close()
+
     def test_reconnect_attempts_are_bounded(self):
         lease = self.acquire(); lease.close(); self.remotes[0].close()
         self.opener.side_effect = transport.GatewayUnavailable('offline')
