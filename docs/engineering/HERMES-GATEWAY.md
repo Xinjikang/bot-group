@@ -66,6 +66,10 @@ queued 执行通过 `prompt.cancel` 取消；started 执行通过携带 generati
 
 AGENTS.md、SOUL 和记忆通过用户主动 `/new` 刷新。v0.22.5 在同 sid 的 resume 中复用已保存的 system prompt；文件修改或删除后，新 sid 读取当前内容。引擎在原话题更新会话绑定并递增 generation，原会话历史保留。出站载荷夹具、真实模型生成和引擎 `/new` 绑定切换分别记录证据。
 
+引擎协作规则采用[两层持久化判重](../design/2026-10-30-hermes-prompt-dedup.md)。`hermes_prompt_state` 按 `(profile_id, session_id)` 保存系统层初始 `system_hash` 和用户层最新受理 `user_hash`；有用户层记录时以它为比较依据，配置 A→B→A 会再次补充 A。首次创建与 `/new` 创建时注入当前项目规则并记录系统层哈希；既有和迁移会话保持未知系统层哈希，首次向用户消息补齐后记用户层。哈希只覆盖规则正文，动态唤醒信号保持独立。
+
+`hermes_prompt_updates` 在 `ledger.prepare` 提交前保存本轮候选哈希。`apply_receipt` 校验 profile/session/admission 与执行代数后，在同一事务中处理 queued/started/terminal 回执和用户层哈希；unknown 回执继续等待对账。更新按持久序号投影，重复、迟到回执保持幂等。首回执丢失且 admission ID 未知时保留执行占用，按现有期限转人工核对；可取得原 admission 的后续回执时继续原执行对账。明确未提交时保留旧哈希，停止后的原生 rewind 成功时撤销对应更新。状态写入失败与执行回执一起回滚。
+
 空闲会话通过新的 viewer 恢复时，profile 配置派生的 max_turns、checkpoints 和 terminal 字段重新计算；删除配置恢复原生默认值，显式选择的 cwd/workspace 保持。普通 CLI 会话的配置派生 toolsets 随配置刷新。editor MCP 会话的工具集随 editor manifest 冻结；引擎每轮通过 editor_mcp mutation 更新 MCP 工具描述和集合。
 
 `verify_gateway_refresh_live.py` 在隔离 home 中通过公开协议执行配置刷新和模型调用。配置字段以只读的已提交 policy 回执核验；规则与工具描述以模型最终回答及实际 tool_search 结果核验。policy 回执证明派生值变化，max_turns 耗尽和 checkpoint 文件生成属于独立运行行为验证。

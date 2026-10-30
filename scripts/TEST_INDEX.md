@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+Hermes 提示词持久化判重：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_prompt_state scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway_migration scripts.test_hermes_connections scripts.test_session_readonly scripts.test_member_session_reset scripts.test_engine_shutdown scripts.test_hud_gateway -q`；另执行 `python -X utf8 -B scripts/test_session_switch.py`。隔离 SQLite、真实 Pool/Lease 和模拟 RPC 覆盖首建、连续相同配置、A→B→A、老会话及迁移补齐、/new、跨 profile/session 隔离、重开数据库、未知首回执、admission 对账、未提交、非法/重复/迟到回执、事务回滚和 rewind 后恢复前一版本。出站断言核对规则正文与动态信号分离，原生返回不含 client_env；模型调用为零。签名轮换集成另复用 `scripts.test_signing_keys`，Windows ACL 用例需要执行用户可设置独占 ACL 的隔离临时目录。
+
 Hermes 租约接口兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_connections scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway -q`。真实 Pool/Lease 配合隔离 SQLite 和模拟 RPC，覆盖 configure_tracked 的推理配置跟踪、旧会话首次迁移与复用，以及重连前后租约 endpoint 身份绑定；endpoint 属性保持只读。无需模型和生产网关。
 
 Hermes 连接池与顶栏状态：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_connections scripts.test_session_readonly scripts.test_hermes_compatibility scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway_sessions scripts.test_hud_gateway scripts.test_project_hud scripts.test_engine_shutdown scripts.test_access_contract scripts.test_hermes_transport -q`。隔离数据库、可控时钟和回环随机端口覆盖发现优先、启动去重、独立 profile 身份/epoch、并发 RPC、会话订阅释放、空闲 600 秒、未决执行保护、三次重连、版本变更、停机竞态及状态接口身份限制。回归使用模拟回执，真实传输夹具覆盖乱序响应。

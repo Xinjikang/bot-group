@@ -74,7 +74,7 @@ def main() -> int:
 
         # mock 隔离 Hermes 原生调用（不碰真实 state.db）
         with patch.object(session_adapter, "create_session",
-                          side_effect=lambda profile, title: new_session()), \
+                          side_effect=lambda profile, title, **kwargs: new_session()), \
              patch.object(session_adapter, "session_exists",
                           return_value=True), \
              patch.object(session_adapter, "resolve_session_by_title",

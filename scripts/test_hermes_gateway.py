@@ -256,7 +256,7 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT session_id FROM session_bindings').fetchone()[0], 'one')
 
     def test_missing_title_creates_and_binds_native_session(self):
-        remote = Mock()
+        remote = Mock(endpoint={'profile_id': 'fixture-profile'})
         remote.rpc.return_value = {'sessions': []}
         snapshot = {'session_id': 'new', 'info': {'source': 'acp'}}
         with patch.object(gateway.sessions, 'attach') as attach, \

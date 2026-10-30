@@ -13,6 +13,7 @@ import uuid
 
 from . import db, hermes_runtime
 from . import hermes_gateway_ledger as ledger, hermes_gateway_sessions as sessions
+from . import hermes_prompt_state as prompt_state
 from .hermes_gateway_client import GatewayClient, GatewayRefusal, GatewayTransportError, discover, ensure
 
 logger = logging.getLogger(__name__)
@@ -48,9 +49,14 @@ def _binding(conn, client, bot, project, profile, kind, thread_id, title, workdi
         found = client.rpc('session.list', title=title)['sessions']
         if len(found) > 1:
             raise GatewayRefusal('ambiguous_session_title')
-        snapshot = sessions.attach(client, found[0]['session_id']) if found else sessions.new(
-            client, title=title, workdir=workdir, system_prompt=wake.wake_system_prompt(kind, project, workdir),
-            model_args=model_args, request_id=uuid.uuid5(uuid.NAMESPACE_URL, repr(key)).hex)
+        if found:
+            snapshot = sessions.attach(client, found[0]['session_id'])
+        else:
+            prompt = wake.wake_system_prompt(kind, project, workdir)
+            request_id = uuid.uuid5(uuid.NAMESPACE_URL, repr(key) + ':' + prompt_state.digest(prompt)).hex
+            snapshot = sessions.new(client, title=title, workdir=workdir, system_prompt=prompt,
+                                    model_args=model_args, request_id=request_id)
+            prompt_state.created(conn, client.endpoint['profile_id'], snapshot['session_id'], prompt)
     if snapshot['info']['source'] != 'acp':
         old_sid = snapshot['session_id']
         snapshot = sessions.migrate_legacy(client, snapshot, workdir=workdir)
@@ -131,8 +137,8 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
         elif bound_task is not None:
             signal += wake._TASK_SUFFIX.format(task_id=bound_task)
         current_prompt = wake.wake_system_prompt(kind, project, workdir)
-        launch = snapshot['info'].get('launch_request') or {}
-        if (launch.get('client_env') or {}).get('HERMES_EPHEMERAL_SYSTEM_PROMPT') != current_prompt:
+        prompt_hash = prompt_state.pending_hash(conn, description['profile_id'], snapshot['session_id'], current_prompt)
+        if prompt_hash is not None:
             signal = current_prompt + '\n\n' + signal
         start = time.time()
         context = dict(profile=profile, project=project, thread_id=thread_id, session=session, wake_started_at=start)
@@ -144,7 +150,8 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
         row = ledger.prepare(conn, session=session, project=project, profile=profile, kind=kind, thread_id=thread_id,
             task_id=bound_task, job_id=job_id, event_floor=floor, source='', python=json.dumps(command), home=home,
             workdir=workdir, session_id=snapshot['session_id'], profile_id=description['profile_id'], started_at=start,
-            parent_id=topic['turn_parent_id'] if topic else None, round_no=topic['round'] if topic else None)
+            parent_id=topic['turn_parent_id'] if topic else None, round_no=topic['round'] if topic else None,
+            prompt_hash=prompt_hash)
         _publish(row)
         server = wake._mcp_server_config(profile, context=context, chat=kind == 'chat',
                                        signing_generation=row['signing_generation'])
@@ -196,6 +203,8 @@ def _finish(conn, row, client):
             if target is not None:
                 sessions.mutate(client, snapshot, 'rewind', {'target_message_id': target},
                                 request_id='stop-' + row['execution_id'])
+                prompt_state.withdraw(conn, row['execution_id'], 'rewound')
+                conn.commit()
         sessions.clear_mcp(client, row['session_id'])
     elif row['outcome'] != 'not_submitted':
         return False
