@@ -82,13 +82,25 @@ def steer_mcp():
 
 
 def _pid_alive(pid: int) -> bool | None:
-    """网关进程存活核验：tasklist 查询；查询失败返回 None（未知，不当作已退出）。"""
+    """网关进程存活核验：tasklist 查询；查询失败（异常或非零返回）返回 None（未知，不当作已退出）。"""
     try:
         r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"],
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
     except (OSError, subprocess.SubprocessError):
         return None
+    if r.returncode != 0:
+        return None
     return str(pid) in (r.stdout or "")
+
+
+def _gateway_gone(gateway_pid: int | None, gateway_pid_owned: bool) -> tuple[bool, str | None]:
+    """网关是否已退出（fail-closed：pid 缺失/未归属/存活查询失败均判未退出，不误报已释放）。"""
+    if gateway_pid is None or not gateway_pid_owned:
+        return False, ("missing" if gateway_pid is None else "unowned")
+    alive = _pid_alive(gateway_pid)
+    if alive is None:
+        return False, "unknown"
+    return (not alive), ("alive" if alive else "exited")
 
 
 def serve(url):
@@ -336,17 +348,9 @@ def verify(args):
                 backend_free = check.connect_ex((target.hostname, target.port)) != 0
             gateway_gone = True
             if endpoint:
-                if gateway_pid is None or not gateway_pid_owned:
-                    gateway_gone = False
-                    result["gateway_exit"] = "missing" if gateway_pid is None else "unowned"
-                else:
-                    alive = _pid_alive(gateway_pid)
-                    if alive is None:
-                        gateway_gone = False
-                        result["gateway_exit"] = "unknown"
-                    else:
-                        gateway_gone = not alive
-                        result["gateway_exit"] = "alive" if alive else "exited"
+                gateway_gone, exit_state = _gateway_gone(gateway_pid, gateway_pid_owned)
+                if exit_state:
+                    result["gateway_exit"] = exit_state
             result["resources_released"] = backend_free and gateway_gone
             client.close()
             conn.close()

@@ -205,6 +205,36 @@ def main() -> int:
         finally:
             conn.close()
 
+        # 13. 资源释放核验回归：_pid_alive（tasklist 非零/异常→unknown）+ _gateway_gone fail-closed
+        import subprocess as _sp
+        import verify_gateway_steer_live as live
+
+        def _completed(rc, out):
+            return _sp.CompletedProcess([], rc, out, "")
+
+        with patch.object(live.subprocess, "run", return_value=_completed(1, "")):
+            check("pid_alive 非零+空stdout→unknown", live._pid_alive(123) is None)
+        with patch.object(live.subprocess, "run", side_effect=OSError("boom")):
+            check("pid_alive 异常→unknown", live._pid_alive(123) is None)
+        with patch.object(live.subprocess, "run", return_value=_completed(0, "python.exe  123  Console")):
+            check("pid_alive 含PID→alive", live._pid_alive(123) is True)
+        with patch.object(live.subprocess, "run",
+                          return_value=_completed(0, "INFO: No tasks are running which match the specified criteria.")):
+            check("pid_alive 无匹配→exited", live._pid_alive(123) is False)
+        with patch.object(live, "_pid_alive", return_value=None):
+            gone, state = live._gateway_gone(123, True)
+            check("gateway_gone unknown→未释放", gone is False and state == "unknown", f"{gone}/{state}")
+        with patch.object(live, "_pid_alive", return_value=True):
+            gone, state = live._gateway_gone(123, True)
+            check("gateway_gone alive→未释放", gone is False and state == "alive", f"{gone}/{state}")
+        with patch.object(live, "_pid_alive", return_value=False):
+            gone, state = live._gateway_gone(123, True)
+            check("gateway_gone exited→已释放", gone is True and state == "exited", f"{gone}/{state}")
+        gone, state = live._gateway_gone(None, True)
+        check("gateway_gone pid缺失→未释放", gone is False and state == "missing", f"{gone}/{state}")
+        gone, state = live._gateway_gone(123, False)
+        check("gateway_gone 未归属→未释放", gone is False and state == "unowned", f"{gone}/{state}")
+
     finally:
         patcher.stop()
 
