@@ -82,14 +82,13 @@ def steer_mcp():
 
 
 def serve(url):
-    """隔离引擎：暴露 /probe/spawn，用真实网关 spawn 运行中执行。"""
+    """隔离引擎：暴露 /probe/spawn，用真实网关 spawn 运行中执行。
+
+    长连接路径：不覆盖 gateway.connection，引擎经 hermes_connections.acquire →
+    discover(HERMES_HOME) 复用 verify() 已 ensure 的隔离网关（不退回短连接）。
+    """
     from fastapi import Depends
     from engine import main, hermes_gateway as gateway, db
-    from engine.hermes_gateway_client import GatewayClient
-    endpoint = json.loads(os.environ["STEER_PROBE_ENDPOINT"])
-    command = json.loads(os.environ["STEER_PROBE_COMMAND"])
-    home = Path(os.environ["HERMES_HOME"])
-    gateway.connection = lambda *a, **k: (GatewayClient(endpoint), home, command)
     issued = {}
     original_configure = gateway.sessions.configure_tracked
 
