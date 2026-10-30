@@ -92,11 +92,13 @@ git show v0.22.5:gateway/session_busy_controls.py
 |---|---|---|
 | 发起前（已定位 running） | `record_delivery(session_id, generation, run_started_at)` | delivering（通道接受层，绑定 session/generation/run） |
 | `status='queued'` | 保持 delivering，等实际插入证据（§4.4） | delivering（文本已 latch / 入 pending 队列，未到 inserted） |
-| `status='rejected'` 且带 `delivered: False` | `report_leftover` → undelivered | 目标已结束 / 无 agent |
+| `status='rejected'` 且带 `delivered: False` | **回查 `hermes_executions.state` 再判**：state 仍 `running` → `mark_pending_verify`（目标运行中但 agent 未就绪/已 reaped 未及更新 receipt，非终态，不误报已结束，可稍后重试或待核实）；state 已 `terminal` → `report_leftover` → undelivered | pending_verify（非终态）/ undelivered（终态） |
 | `status='rejected'` 但缺 `delivered` 字段 | 保守 `mark_pending_verify` | 回执语义不完整，不误报确定未投递 |
 | 拒 `stale_generation` | `finalize_target_ended` | 目标运行已结束 |
 | 拒 `unsupported_control` / `execution_not_ready` | `report_leftover` → undelivered | 能力边界，明确报告 |
 | 拒 `permission_denied` / `invalid_params` | 已 `record_delivery` 则 `mark_pending_verify`（不留 delivering 悬空）；未发起则命令层报错 | 参数/权限问题，保留准确账本结果 |
+
+> rejected 不等于「目标已结束」。`session.steer` 返回 rejected 有两个来源（session_busy_controls.py:208-215）：① `agent is None`——注释「a reaped turn the client still believes is running / build window 无 agent」，此刻 receipt 可能仍为 started；② `agent.steer(text)` 返回 False——agent 已进入 finalize 不再收 steer。两者都发生在 execution_state 仍为 running 的窗口内，不能据此判目标 terminal。因此 rejected 必须回查 `hermes_executions.state`（引擎侧最近一次 apply_receipt 记的状态）区分非终态与终态，避免把「bot 还在跑只是没收下纠偏」误报成「bot 已挂」。
 
 ### 4.4 回执五层落地口径
 
