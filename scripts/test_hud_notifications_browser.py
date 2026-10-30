@@ -24,9 +24,11 @@ def main():
                 window.fixture={id:'session',project:'fixture',revision:1,status:'idle',
                     bot:{display_name:'测试助手'},state:{notification:{id:'n1',kind:'pending'}},
                     entries:[{id:1,role:'assistant',content:{text:'测试脚本由执行成员收尾。'}}]};
-                window.others=[];
+                window.others=[];window.calls=[];window.failNext=false;
                 window.api=async (path,options)=>{
+                    window.calls.push({path,method:options?.method||'GET'});
                     window.lastAction={path,body:options?.body?JSON.parse(options.body):null};
+                    if(window.failNext&&path.endsWith('/answer')){window.failNext=false;throw new Error('合成提交失败');}
                     if(path.endsWith('/answer')){
                         fixture.entries.push({id:fixture.entries.at(-1).id+1,role:'user',content:{text:JSON.parse(options.body).text}});
                         const questionId=JSON.parse(options.body).question_id;
@@ -47,7 +49,7 @@ def main():
                 page.add_style_tag(path=str(root/'frontend/appearance.css'))
                 page.add_style_tag(path=str(root/'frontend/project_hud.css'))
                 page.add_script_tag(path=str(root/'frontend/project_hud.js'))
-                page.wait_for_function("document.querySelector('.hud-status').textContent.includes('有待处理事项')")
+                page.wait_for_function("document.querySelector('.hud-name').textContent==='测试助手'")
 
             def update(state, status='idle'):
                 page.evaluate('''({state,status})=>{
@@ -61,13 +63,17 @@ def main():
 
             load()
             assert not opened()
+            assert '有待处理事项' not in page.locator('.hud-status').inner_text()
+            assert page.locator('#hud-todos .hud-todo-card').count() == 0
             update({'question': {'id': 'q1', 'title': '可选整理？', 'reason': '普通建议', 'options': []}}, 'waiting')
             assert not opened()
             update({'proposal': {'id': 'p1', 'changes': {}, 'facts': [], 'reason': '可选建议'}}, 'waiting')
             assert not opened()
             update({'notification': {'id': 'n2', 'kind': 'user_action', 'action': '请授权资料访问，当前输入读取受阻。'}})
             assert opened()
-            assert page.locator('.hud-action-required').inner_text().startswith('请授权')
+            assert page.locator('#hud-chat-tab').get_attribute('aria-selected') == 'true'
+            page.locator('#hud-todos-tab').click()
+            assert page.locator('#hud-todos .hud-action-required').inner_text().startswith('请授权')
             page.locator('#hud-toggle').click()
             update({'notification': {'id': 'n2', 'kind': 'user_action', 'action': '请授权资料访问，当前输入读取受阻。'}})
             assert not opened()
@@ -78,6 +84,9 @@ def main():
             assert opened()
             update({'notification': {'id': 'n4', 'kind': 'pending'}})
             assert opened(), 'Preserve a panel already being read'
+            assert '有待处理事项' not in page.locator('.hud-status').inner_text()
+            assert page.locator('#hud-todos .hud-todo-card').count() == 0
+            update({'question': {'id':'pending-q','title':'请确认资料位置','reason':'登记项目输入','options':[]}})
             page.locator('#hud-toggle').click()
             for width in (1440, 390):
                 page.set_viewport_size({'width': width, 'height': 844})
@@ -90,14 +99,17 @@ def main():
             assert opened()
             page.screenshot(path=str(args.evidence/'action-390.png'))
             page.locator('#hud-toggle').click()
-            page.evaluate("others=[{id:'other',project:'other-project',notification:{id:'other-n1',kind:'pending'}}];ProjectHUD.changed()")
-            page.wait_for_function("document.querySelector('.hud-status').textContent.includes('另有 1 项待处理')")
+            page.evaluate("others=[{id:'other',project:'other-project',notification:{id:'other-n1',kind:'user_action',action:'其他项目操作'}},{id:'draft',title:'proj-7'},{id:'empty',title:''}];ProjectHUD.changed()")
+            page.wait_for_timeout(200)
             assert not opened()
-            page.evaluate("others[0].notification={id:'other-n2',kind:'user_action',action:'请提供项目资料'};ProjectHUD.changed()")
-            page.wait_for_selector('#hud-notices', state='visible')
-            assert opened()
-            assert '需要你行动' in page.locator('#hud-notices').inner_text()
-            page.locator('#hud-back').click()
+            assert page.evaluate("calls.every(c=>c.path!=='/hud'||c.method==='POST')"), 'Project HUD must never fetch the global session index'
+            page.locator('#hud-toggle').click()
+            page.locator('#hud-more').click()
+            assert page.locator('#hud-tools button').all_text_contents() == ['项目备注', '设置']
+            assert 'proj-7' not in page.locator('#project-hud').inner_text()
+            assert '其他项目操作' not in page.locator('#project-hud').inner_text()
+            page.locator('#hud-more').click()
+            page.locator('#hud-chat-tab').click()
             page.evaluate('''()=>{
                 fixture.entries=[{id:1,role:'user',content:{text:'旧问题'}},
                     {id:2,role:'assistant',content:{text:'旧回答'}},
@@ -127,11 +139,29 @@ def main():
             proposals = [{'text': f'备注说明 {i}', 'proposal': {'id': f'p{i}', 'changes': {},
                           'facts': [{'label': f'资料 {i}', 'value': '登记位置'}]}} for i in range(6)]
             update({'cards': questions + proposals}, 'waiting')
+            assert page.locator('#hud-chat-tab').get_attribute('aria-selected') == 'true'
+            assert page.locator('#hud-content .hud-todo-card').count() == 0
+            page.locator('#hud-input').fill('对话草稿')
+            page.locator('#hud-todos-tab').click()
+            assert page.locator('#hud-content').is_hidden()
+            assert page.locator('#hud-todos .hud-todo-card').count() == 15
+            assert page.locator('#hud-todos-tab').inner_text() == '待办事项 (15)'
+            page.locator('[data-card="q8"] textarea').fill('保留卡片输入')
+            page.locator('#hud-chat-tab').click()
+            assert page.locator('#hud-input').input_value() == '对话草稿'
+            page.locator('#hud-chat-tab').press('ArrowRight')
+            assert page.locator('[data-card="q8"] textarea').input_value() == '保留卡片输入'
+            assert page.locator('#hud-todos-tab').evaluate('(e)=>e===document.activeElement')
             assert page.locator('.hud-question').count() == 9
             assert page.locator('.hud-proposal').count() == 6
             assert page.locator('.hud-message').count() == 2
+            page.evaluate('failNext=true')
+            page.locator('[data-card="q8"] .hud-primary').click()
+            assert page.locator('[data-card="q8"] textarea').input_value() == '保留卡片输入'
+            assert '合成提交失败' in page.locator('#hud-error').inner_text()
             page.locator('[data-card="q8"] .hud-option').click()
             assert page.evaluate('lastAction.body.question_id') == 'q8'
+            assert page.locator('#hud-todos-tab').get_attribute('aria-selected') == 'true'
             assert page.locator('.hud-question').count() == 8
             assert page.locator('.hud-proposal').count() == 6
             page.evaluate("fixture.status='waiting';fixture.revision++;ProjectHUD.changed()")
@@ -142,11 +172,35 @@ def main():
             assert page.locator('.hud-proposal').count() == 5
             page.locator('.hud-scroll').evaluate('(element)=>element.scrollTop=0')
             page.screenshot(path=str(args.evidence/'many-cards-390.png'))
+            for width in (1440,390):
+                page.set_viewport_size({'width':width,'height':844})
+                for theme in ('dark','light'):
+                    page.evaluate('theme=>document.documentElement.dataset.theme=theme',theme)
+                    for tab in ('chat','todos'):
+                        page.locator('#hud-'+tab+'-tab').click()
+                        box=page.locator('#project-hud').bounding_box()
+                        assert box['x']>=0 and box['x']+box['width']<=width+.5
+                        assert page.locator('#hud-tabs').is_visible()
+                        page.screenshot(path=str(args.evidence/f'tabs-{tab}-{width}-{theme}.png'))
+            update({'question':{'id':'legacy-q','title':'单个问题','reason':'确认资料','options':[]},
+                    'proposal':{'id':'legacy-p','changes':{},'facts':[{'label':'约定','value':'资料路径'}]}})
+            assert page.locator('#hud-todos .hud-todo-card').count() == 2
+            page.locator('[data-card="legacy-q"] textarea').fill('单项回答')
+            page.locator('[data-card="legacy-q"] .hud-primary').click()
+            assert page.evaluate('lastAction.body.question_id') == 'legacy-q'
+            update({})
+            assert page.locator('#hud-todos').inner_text() == '当前项目暂无待办事项。'
+            assert page.locator('#hud-todos-tab').inner_text() == '待办事项'
+            page.evaluate("fixture.id='second-session';fixture.project='second-project';S.currentProject='second-project';S.projects=[{name:'second-project',display_name:'second-project'}];fixture.entries=[];fixture.revision++;ProjectHUD.changed()")
+            page.wait_for_function("document.querySelector('#hud-context').textContent.includes('second-project')")
+            assert page.locator('#hud-chat-tab').get_attribute('aria-selected') == 'true'
+            assert page.locator('#hud-input').input_value() == ''
+            assert page.locator('#hud-todos .hud-todo-card').count() == 0
             assert not errors, errors
             (args.evidence/'notifications-browser.json').write_text(json.dumps({
-                'passed': True, 'checks': ['pending text/question/proposal stay collapsed',
+                'passed': True, 'checks': ['member work never creates a badge or card; question/proposal stay collapsed',
                     'explicit action opens', 'collapse survives refresh', 'new action opens',
-                    'preserve active reading', 'desktop/mobile', 'other project notification gate',
+                    'preserve active reading', 'desktop/mobile', 'current project isolation and no global index requests', 'two tabs and per-card input', 'failed answer retained', 'legacy cards and empty state', 'scope switch resets tab',
                     'latest user/reply only', '12px user text', 'new send clears previous reply',
                     '15 cards all visible', 'answer ninth question preserves other cards',
                     'confirm sixth proposal preserves other cards'],

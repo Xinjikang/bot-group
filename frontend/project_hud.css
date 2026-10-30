@@ -59,7 +59,12 @@
 .hud-settings-buttons{display:flex;align-items:center;gap:12px}
 .hud-cancel{background:transparent;border:1px solid var(--border-soft);border-radius:9px;padding:7px 15px}
 .hud-settings select{width:100%;padding:8px;background:var(--card-2);border:1px solid var(--border-soft);border-radius:8px}
-.hud-notices{display:flex;flex-wrap:wrap;gap:5px;margin:8px 0}
+.hud-tabs{display:flex;gap:16px;flex-shrink:0;padding:0 18px;border-bottom:1px solid var(--border-soft)}
+.hud-tabs [role=tab]{padding:9px 2px;background:transparent;border:0;border-bottom:2px solid transparent;color:var(--fg-2)!important}
+.hud-tabs [aria-selected=true]{border-bottom-color:var(--accent-2);color:var(--accent-2)!important;font-weight:600!important}
+.hud-todo-card{margin:0 0 12px;padding:14px;border:1px solid var(--border-soft);border-radius:12px;background:var(--card-2);overflow-wrap:anywhere}
+.hud-todo-card h3{margin-top:0}
+.hud-todo-card .hud-text:first-child:empty{display:none}
 .hud-context nav{display:flex;gap:2px;flex-shrink:0}
 .hud-context .hud-link{font-size:11px;color:var(--fg-2)!important}
 .hud-context .hud-link[aria-pressed=true]{color:var(--accent-2)!important}
@@ -78,14 +83,6 @@
 .hud-past-question{font-size:13px;color:var(--fg-2);margin:6px 0;white-space:pre-wrap}
 .hud-past-guide{margin-top:10px;color:var(--fg-2)}
 .hud-past-guide summary{cursor:pointer}
-#project-hud[data-scene=choice] .hud-speaker,#project-hud[data-scene=guide] .hud-speaker,#project-hud[data-scene=confirm] .hud-speaker{display:none}
-#project-hud[data-scene=choice] .hud-scroll,#project-hud[data-scene=guide] .hud-scroll,#project-hud[data-scene=confirm] .hud-scroll{padding:28px 24px}
-#project-hud[data-scene=choice] .hud-message-text,#project-hud[data-scene=guide] .hud-message-text{font-size:13px;color:var(--fg-2)}
-#project-hud[data-scene=choice] .hud-question h3,.hud-guide>h3{font-size:21px;font-weight:500;line-height:1.5;margin:16px 0 14px;letter-spacing:.2px}
-#project-hud[data-scene=choice] .hud-options{margin-top:22px;gap:0}
-#project-hud[data-scene=choice] .hud-option{position:relative;padding:15px 28px 15px 0;border:0;border-bottom:1px solid var(--border-soft);border-radius:0;background:transparent}
-#project-hud[data-scene=choice] .hud-option::after{content:'↗';position:absolute;right:3px;color:var(--cyan)}
-#project-hud[data-scene=choice] .hud-option:hover{color:var(--cyan);background:color-mix(in srgb,var(--cyan) 5%,transparent)}
 .hud-guide ol{list-style:none;counter-reset:guide;padding:0;margin:24px 0}
 .hud-guide li{counter-increment:guide;position:relative;padding:0 0 24px 34px;white-space:pre-wrap;overflow-wrap:anywhere}
 .hud-guide li::before{content:counter(guide,decimal-leading-zero);position:absolute;left:0;top:1px;font-size:11px;color:var(--cyan)}

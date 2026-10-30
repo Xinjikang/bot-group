@@ -2,7 +2,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { chromium } = require('playwright');
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
 async function main() {
   const args = process.argv.slice(2);
@@ -19,9 +19,11 @@ async function main() {
     page.on('pageerror', error => errors.push(String(error)));
     assert.equal((await page.request.post(url + '/hud-preview/reset')).ok(), true);
     await page.goto(url + '/app/');
+    await page.locator('.hud-question').waitFor({ state: 'attached' });
+    await page.locator('#hud-todos-tab').click();
     await page.locator('.hud-option').first().click();
     await page.getByRole('button', { name: '确认保存项目备注', exact: true }).click();
-    await page.waitForFunction(() => document.querySelector('#project-hud').dataset.scene === 'chat');
+    await page.locator('.hud-proposal').waitFor({ state: 'detached' });
     await page.locator('#hud-input').fill('把简介改成用于测试的简介');
     await page.locator('#hud-send').click();
     await page.locator('.hud-proposal').waitFor();
@@ -37,6 +39,9 @@ async function main() {
     assert.deepEqual(explained.state.proposal, before.state.proposal);
     assert.equal(explained.status, 'waiting');
     await page.reload();
+    if(await page.locator('#hud-toggle').getAttribute('aria-expanded')!=='true')await page.locator('#hud-toggle').click();
+    await page.locator('.hud-proposal').waitFor({state:'attached'});
+    await page.locator('#hud-todos-tab').click();
     await page.locator('.hud-proposal').waitFor();
     assert.equal((await getSession()).state.proposal.id, before.state.proposal.id);
     await page.screenshot({ path: path.join(evidence, 'pending-proposal-desktop.png') });

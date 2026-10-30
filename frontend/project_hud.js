@@ -5,15 +5,19 @@
   host.innerHTML = `<div class="hud-shell">
     <button class="hud-toggle" id="hud-toggle" aria-expanded="false" aria-controls="hud-panel"><span class="hud-light" aria-hidden="true"></span><span class="hud-caption"><span class="hud-name">项目助手</span><span class="hud-status"> · 准备就绪</span></span><span class="hud-chevron">展开</span></button>
     <div class="hud-panel" id="hud-panel" hidden>
-      <div class="hud-context"><span id="hud-context"></span><nav aria-label="维护工具"><button class="hud-link" id="hud-scene-toggle" hidden>本轮对话</button><button class="hud-link hud-more" id="hud-more" aria-label="更多维护工具" aria-expanded="false">···</button></nav></div>
+      <div class="hud-context"><span id="hud-context"></span><nav aria-label="维护工具"><button class="hud-link hud-more" id="hud-more" aria-label="更多维护工具" aria-expanded="false">···</button></nav></div>
       <nav class="hud-tools" id="hud-tools" aria-label="更多维护工具" hidden><button class="hud-link" id="hud-history-toggle">项目备注</button><button class="hud-link" id="hud-settings-toggle">设置</button></nav>
-      <button class="hud-link hud-back" id="hud-back" hidden>← 返回对话</button>
+      <button class="hud-link hud-back" id="hud-back" hidden>← 返回助手</button>
+      <div class="hud-tabs" id="hud-tabs" role="tablist" aria-label="助手内容">
+        <button id="hud-chat-tab" role="tab" aria-controls="hud-content" aria-selected="true">对话消息</button>
+        <button id="hud-todos-tab" role="tab" aria-controls="hud-todos" aria-selected="false" tabindex="-1">待办事项</button>
+      </div>
       <div class="hud-progress" id="hud-progress" role="status" hidden><span id="hud-progress-text"></span><time id="hud-progress-time"></time></div>
       <div class="hud-scroll">
         <div id="hud-settings" class="hud-settings" hidden></div>
-        <div id="hud-notices" class="hud-notices" hidden></div>
         <div id="hud-history" class="hud-history" hidden></div>
-        <div id="hud-content" role="log" aria-label="维护对话" aria-live="polite"></div>
+        <div id="hud-content" role="tabpanel" aria-labelledby="hud-chat-tab" aria-live="polite"></div>
+        <div id="hud-todos" role="tabpanel" aria-labelledby="hud-todos-tab" hidden></div>
         <p id="hud-error" class="hud-error-text" role="alert" hidden></p>
         <button class="hud-link" id="hud-retry" hidden>重新检查</button>
       </div>
@@ -29,8 +33,8 @@
   let current = null, scope = '', version = 0, expanded = false, settings = false, busy = false, selected = '', refreshing = false;
   let draftMode = false, draftId = '', onApply = null, beforeConfirm = null, errorText = '', chain = Promise.resolve();
   let auxiliary = '', renderedKey = '', followNext = false;
-  let sceneKey='', conversationOnly=false;
-  const inputs = new Map(), silenced = new Set(), seenOthers = new Set();
+  let activeTab='chat';
+  const inputs = new Map(), silenced = new Set();
   const notificationKey = item => item?.state.notification?.id||item?.state.question?.id||item?.state.proposal?.id;
   function isSilenced(key) {
     if(!key)return false;
@@ -40,8 +44,6 @@
   const fieldNames = {display_name:'项目名称',description:'项目简介',root:'项目目录',template:'项目模板',directory_mode:'协作方式',worktree_root:'工作区根目录'};
   const node = (tag, text, cls) => { const n = document.createElement(tag); if (text != null) n.textContent = text; if (cls) n.className = cls; return n; };
   const action = (text, fn, cls='hud-link') => { const b=node('button',text,cls); b.type='button'; b.addEventListener('click',fn); return b; };
-  const noticesToggle=action('待处理事项',()=>showAuxiliary('notices'));
-  noticesToggle.hidden=true;el('tools').prepend(noticesToggle);
   function remember() {
     if (!current) return;
     inputs.set(current.id, el('input').value);
@@ -79,7 +81,7 @@
   host.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();toggle(false);el('toggle').focus();}});
   function updateSend() {
     el('send').disabled=busy||!current?.bot||current?.status==='running'||!(selected||el('input').value.trim());
-    host.querySelectorAll('.hud-option').forEach(button=>button.disabled=busy||current?.status==='running');
+    host.querySelectorAll('#hud-todos button').forEach(button=>button.disabled=busy||!current?.bot||['running','queued'].includes(current?.status));
   }
   function setData(data) {
     const changed=current?.id!==data.id;
@@ -114,20 +116,15 @@
     const notification=item?.state.notification;
     const cards=item?.state.cards||[];
     const actionable=notification?.kind==='user_action';
-    const pending=actionable||notification?.kind==='pending'||!!q||!!proposal||cards.length>0;
+    const pending=actionable||!!q||!!proposal||cards.some(card=>card.question||card.proposal);
     const entries=item?.entries||[];
     const userIndex=entries.findLastIndex(e=>e.role==='user');
     const lastUser=userIndex>=0?entries[userIndex]:null;
     const lastReply=entries.slice(userIndex+1).filter(e=>e.role==='assistant').at(-1);
-    const guide=lastReply?.content.guide;
-    const activeKey=q?.id||proposal?.id||cards[0]?.question?.id||cards[0]?.proposal?.id||(guide?String(lastReply.id):'');
-    if(activeKey!==sceneKey){sceneKey=activeKey;conversationOnly=false;}
-    const scene=conversationOnly?'chat':q?'choice':proposal?'confirm':guide?'guide':cards.length?'cards':'chat';
+    const scene=activeTab==='todos'?'cards':'chat';
     const changedScene=host.dataset.scene!==scene;
     host.dataset.scene=scene;
-    el('scene-toggle').hidden=!activeKey;
-    el('scene-toggle').textContent=conversationOnly?(q?'当前问题':proposal?'待确认建议':cards.length?'待办卡片':'使用说明'):'本轮对话';
-    el('input').placeholder=scene==='choice'?'也可以输入自己的回答…':scene==='guide'?'继续问，或描述你卡在哪一步…':'输入你的想法…';
+    el('input').placeholder='输入你的想法…';
     const label=!item?.bot?'选择 AI 开始维护':state==='paused'?'点击开始维护':state==='running'||state==='queued'?'正在检查项目':state==='error'?'检查未完成':actionable?'有事项需要你行动':pending?'有待处理事项':'随时为你维护项目';
     host.querySelector('.hud-name').textContent=item?.bot?.display_name||'项目助手';
     host.querySelector('.hud-status').textContent=' · '+label;
@@ -140,7 +137,7 @@
     const key=`${item?.id}/${item?.entries.at(-1)?.id}/${state}/${scene}`;
     const newTurn=key!==renderedKey,firstView=!renderedKey||!renderedKey.startsWith(item?.id+'/');
     const content=el('content'); content.replaceChildren();
-    let reply=null;
+    const todos=el('todos');todos.replaceChildren();
     for(const entry of [lastUser,lastReply].filter(Boolean)){
       const message=node('article',null,`hud-message hud-message-${entry.role}`);
       message.dataset.entry=entry.id;
@@ -148,12 +145,9 @@
       else {
         message.append(node('small',entry.role==='user'?'你':item.bot?.display_name||'助手','hud-speaker'),node('p',entry.content.text,'hud-message-text'));
         if(entry.role==='assistant'){
-          reply=message;
           const oldQuestion=entry.content.question;
           if(oldQuestion&&oldQuestion.id!==q?.id)message.append(node('p',oldQuestion.title,'hud-past-question'));
-          if(entry.content.guide&&scene==='chat'){
-            const details=node('details',null,'hud-past-guide');details.append(node('summary',entry.content.guide.title),guideContent(entry.content.guide));message.append(details);
-          }
+          if(entry.content.guide)message.append(guideContent(entry.content.guide));
         }
       }
       content.append(message);
@@ -164,22 +158,13 @@
       if(!item)content.append(action('重试连接',()=>attach(scope||null,draftMode?draftId:null)));
     }else if(state==='paused'){
       content.append(node('h3','开始维护这个项目'),node('p','启用后，所选 AI 将使用项目配置、模板和项目内文档帮助你完善配置，并在发生变化时主动检查。','hud-muted'),action('开始维护',()=>mutate('/retry'),'hud-primary'));
-    }else if(q&&scene==='choice'){
-      const box=node('div',null,'hud-question');box.append(node('h3',q.title));
-      const why=node('details',null,'hud-reason');why.append(node('summary','为什么问这个？'),node('p',q.reason));box.append(why);
-      const options=node('div',null,'hud-options');options.setAttribute('role','group');options.setAttribute('aria-label','选择并发送回答');
-      for(const option of q.options||[]){
-        const b=action(option,()=>{selected=option;updateSend();el('compose').requestSubmit();},'hud-option');
-        options.append(b);
-      }
-      options.addEventListener('keydown',e=>{if(!['ArrowDown','ArrowUp','ArrowLeft','ArrowRight'].includes(e.key))return;e.preventDefault();const buttons=[...options.children],i=buttons.indexOf(document.activeElement),d=['ArrowDown','ArrowRight'].includes(e.key)?1:-1;buttons[(i+d+buttons.length)%buttons.length]?.focus();});
-      box.append(options);(reply||content).append(box);
     }else{
       if(state!=='queued'&&state!=='running'&&!item.entries.length)content.append(node('p','告诉我你想完善什么，我们一起把项目准备好。','hud-muted'));
     }
-    if(scene!=='chat')for(const card of cards.filter(card=>card.question)){
+    const questions=[...(q?[{question:q}]:[]),...cards.filter(card=>card.question&&card.question.id!==q?.id)];
+    for(const card of questions){
       const question=card.question;
-      const box=node('section',null,'hud-question');box.dataset.card=question.id;
+      const box=node('section',null,'hud-question hud-todo-card');box.dataset.card=question.id;
       box.append(node('p',card.text,'hud-text'),node('h3',question.title));
       const why=node('details',null,'hud-reason');why.append(node('summary','为什么问这个？'),node('p',question.reason));box.append(why);
       const input=node('textarea',null,'hud-card-answer');input.maxLength=12000;input.placeholder='填写这项待办的回答…';input.setAttribute('aria-label',question.title);
@@ -188,17 +173,22 @@
       const send=async text=>{
         if(!text.trim())return;
         const data=await mutate('/answer',{text,question_id:question.id});
-        if(data)inputs.delete(question.id);else {inputs.set(question.id,text);input.value=text;}
+        if(data){inputs.delete(question.id);render();}
+        else {
+          inputs.set(question.id,text);
+          const field=[...todos.querySelectorAll('[data-card]')].find(e=>e.dataset.card===question.id)?.querySelector('textarea');
+          if(field)field.value=text;
+        }
       };
       for(const option of question.options||[])options.append(action(option,()=>send([option,input.value.trim()].filter(Boolean).join('\n补充：')),'hud-option'));
       const submit=action('发送这项回答',()=>send(input.value),'hud-primary');submit.disabled=busy||state==='running'||state==='queued';
-      box.append(options,input,submit);(reply||content).append(box);
+      box.append(options,input,submit);todos.append(box);
     }
-    const proposals=[...(proposal&&scene==='confirm'?[{proposal}]:[]),...(scene!=='chat'?cards.filter(card=>card.proposal):[])];
+    const proposals=[...(proposal?[{proposal}]:[]),...cards.filter(card=>card.proposal&&card.proposal.id!==proposal?.id)];
     for(const card of proposals){
       const proposal=card.proposal;
       const changes=Object.entries(proposal.changes),facts=proposal.facts;
-      const box=node('div',null,'hud-proposal');box.dataset.card=proposal.id;
+      const box=node('section',null,'hud-proposal hud-todo-card');box.dataset.card=proposal.id;
       if(card.text)box.append(node('p',card.text,'hud-text'));
       box.append(node('strong','以下建议尚未保存'));
       if(proposal.reason)box.append(node('p',proposal.reason,'hud-text'));
@@ -227,12 +217,17 @@
       box.append(action(changes.length&&facts.length?`确认保存以上 ${count} 项`:changes.length?(item.project?'确认修改项目设置':'确认更新向导草稿'):'确认保存项目备注',async()=>{
         if(draftMode)await beforeConfirm?.();
         const data=await mutate('/accept',{proposal_id:proposal.id});if(data&&draftMode&&Object.keys(proposal.changes).length)onApply?.(data.state.draft);
-      },'hud-primary'),action('暂不处理',()=>mutate('/answer',{text:'这项建议暂不处理，请继续当前问题。',question_id:null,dismiss_proposal:proposal.id})));(reply||content).append(box);
+      },'hud-primary'),action('暂不处理',()=>mutate('/answer',{text:'这项建议暂不处理，请继续当前问题。',question_id:null,dismiss_proposal:proposal.id})));todos.append(box);
     }
-    if(guide&&scene==='guide'){
-      (reply||content).append(guideContent(guide));
+    const reminder=actionable?notification.action:'';
+    if(reminder){
+      const box=node('section',null,'hud-todo-card hud-reminder');
+      box.append(node('strong',actionable?'需要你行动':'待处理提醒'),node('p',reminder,'hud-action-required hud-text'));todos.append(box);
     }
-    if(actionable&&notification.action)content.append(node('p',notification.action,'hud-action-required hud-text'));
+    const count=todos.children.length;
+    el('todos-tab').textContent=count?`待办事项 (${count})`:'待办事项';
+    if(!count)todos.append(node('p','当前项目暂无待办事项。','hud-muted'));
+    syncTabs();
     el('error').textContent=errorText||item?.error||'';el('error').hidden=!el('error').textContent;
     el('retry').hidden=!item?.bot||state!=='error';
     el('hint').textContent=busy?'正在发送…':state==='running'?'正在回复，输入会为你保留':'Ctrl + Enter 发送';
@@ -247,8 +242,8 @@
     const follow=followNext||firstView||nearBottom||changedScene;followNext=false;
     if(newTurn)requestAnimationFrame(()=>{
       if(renderedKey!==key)return;
-      if(follow&&!auxiliary)showLatest();
-      else {scroll.scrollTop=oldTop;if(!auxiliary)el('latest').hidden=false;}
+      if(activeTab==='chat'&&follow&&!auxiliary)showLatest();
+      else {scroll.scrollTop=oldTop;if(!auxiliary&&activeTab==='chat')el('latest').hidden=false;}
     });
     else scroll.scrollTop=oldTop;
   }
@@ -269,15 +264,32 @@
   function showAuxiliary(name){
     el('tools').hidden=true;el('more').setAttribute('aria-expanded','false');
     auxiliary=name;settings=name==='settings';
-    for(const panel of ['settings','history','notices'])el(panel).hidden=panel!==name;
-    el('content').hidden=!!name;el('compose').hidden=!!name;el('back').hidden=!name||settings;el('latest').hidden=true;
+    for(const panel of ['settings','history'])el(panel).hidden=panel!==name;
+    syncTabs();el('compose').hidden=!!name;el('back').hidden=!name||settings;el('latest').hidden=true;
     for(const [id,panel] of [['settings','settings'],['history','history']])el(id+'-toggle').setAttribute('aria-pressed',String(panel===name));
     host.querySelector('.hud-scroll').scrollTop=0;
     if(!name)requestAnimationFrame(showLatest);
   }
   el('back').onclick=()=>showAuxiliary('');
   el('more').onclick=()=>{el('tools').hidden=!el('tools').hidden;el('more').setAttribute('aria-expanded',String(!el('tools').hidden));};
-  el('scene-toggle').onclick=()=>{showAuxiliary('');conversationOnly=!conversationOnly;render();};
+  function syncTabs(){
+    el('tabs').hidden=!!auxiliary;
+    for(const name of ['chat','todos']){
+      const active=activeTab===name,tab=el(name+'-tab');
+      tab.setAttribute('aria-selected',String(active));tab.tabIndex=active?0:-1;
+      el(name==='chat'?'content':'todos').hidden=!!auxiliary||!active;
+    }
+  }
+  function selectTab(name){
+    activeTab=name;showAuxiliary('');render();host.querySelector('.hud-scroll').scrollTop=0;
+  }
+  for(const name of ['chat','todos'])el(name+'-tab').onclick=()=>selectTab(name);
+  el('tabs').addEventListener('keydown',event=>{
+    if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
+    event.preventDefault();
+    const name=event.key==='Home'?'chat':event.key==='End'?'todos':activeTab==='chat'?'todos':'chat';
+    selectTab(name);el(name+'-tab').focus();
+  });
   el('latest').onclick=showLatest;
   el('history-toggle').onclick=()=>showAuxiliary(auxiliary==='history'?'':'history');
   async function mutate(path,body={},method='POST') {
@@ -333,9 +345,9 @@
   }
   async function attach(project, id=null){
     showAuxiliary('');
+    activeTab='chat';
     const stamp=++version;remember();scope=project||'';errorText='';current=null;selected='';el('input').value='';render();
     try{
-      if(!project&&!id&&!draftMode){const index=await api('/hud');id=index.sessions.find(s=>!s.project)?.id;}
       const data=id?await api('/hud/'+id):await api('/hud',{method:'POST',body:JSON.stringify({project:project||null})});
       if(stamp!==version)return null;setData(data);if(!project)draftId=data.id;return data;
     }catch(e){if(stamp===version){errorText=e.message;render();}return null;}
@@ -349,32 +361,10 @@
     const sid=current.id,stamp=version;
     refreshing=true;
     try{
-      const [data,index]=await Promise.all([api('/hud/'+sid),api('/hud')]);
+      const data=await api('/hud/'+sid);
       if(stamp!==version)return;
       if(data.revision>=current.revision&&(data.revision!==current.revision||data.status!==current.status))setData(data);
       else if(data.revision===current.revision){current.state.progress=data.state.progress;renderProgress();}
-      const notices=el('notices');notices.replaceChildren();
-      const hasPending=x=>x.question||x.proposal||x.cards?.length||['pending','user_action'].includes(x.notification?.kind);
-      const others=index.sessions.filter(x=>x.id!==sid&&(hasPending(x)||!x.project&&x.title!=='创建项目草稿'));
-      const pending=others.filter(hasPending);
-      noticesToggle.hidden=!others.length;
-      host.querySelector('.hud-status').textContent=host.querySelector('.hud-status').textContent.replace(/ · 另有 \d+ 项待处理$/,'');
-      if(pending.length)host.querySelector('.hud-status').textContent+=` · 另有 ${pending.length} 项待处理`;
-      for(const other of others){
-        const project=S.projects?.find(p=>p.name===other.project);
-        notices.append(action(other.project?`${project?.display_name||other.project} · ${other.notification?.kind==='user_action'?'需要你行动':'待处理'}`:`继续：${other.title}`,()=>{
-          showAuxiliary('');
-          if(other.project&&!draftMode)selectProject(other.project);
-          else if(!other.project){window.openProjectImport({mode:other.mode||'new',hudDraftId:other.id});}
-        }));
-        if(other.notification?.kind==='user_action'&&other.notification.action)notices.append(node('p',other.notification.action,'hud-text'));
-        const key=other.notification?.id;
-        if(other.notification?.kind==='user_action'&&key&&!seenOthers.has(key)&&!isSilenced(key)&&!el('input').value&&!draftMode){
-          seenOthers.add(key);silenced.add(key);
-          try {sessionStorage.setItem('hud-silenced:'+key,'1');}catch{}
-          toggle(true);showAuxiliary('notices');
-        }
-      }
     }catch(e){if(stamp===version){errorText='维护连接暂时中断，输入已保留。'+e.message;render();}}
     finally{refreshing=false;}
   }

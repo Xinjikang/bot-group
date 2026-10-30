@@ -509,8 +509,9 @@ def run_one(sid):
             urgent = next((c for c in cards if (c.get('notification') or {}).get('kind') == 'user_action'), None)
             if notification['kind'] != 'user_action' and urgent:
                 notification = urgent['notification']
-            if notification['kind'] == 'none' and (current['state'].get('question') or current['state'].get('proposal') or cards):
-                notification = {'kind': 'pending'}
+            if notification['kind'] != 'user_action':
+                has_todos = current['state'].get('question') or current['state'].get('proposal') or cards
+                notification = {'kind': 'pending' if has_todos else 'none'}
             pending = ((urgent.get('proposal') or urgent.get('question')) if urgent else None) or current['state'].get('proposal') or current['state'].get('question') or {}
             current['state']['notification'] = {**notification, 'id': pending.get('id') or uuid.uuid4().hex}
             current['status'], current['error'] = ('waiting' if current['state'].get('question') or current['state'].get('proposal') or cards else 'idle'), ''

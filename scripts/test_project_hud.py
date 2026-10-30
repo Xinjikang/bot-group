@@ -56,7 +56,9 @@ class HudTests(unittest.TestCase):
         item = self.session('p')
         result = self.infer(item, {'text': '测试脚本由执行成员收尾。',
                                    'notification': {'kind': 'pending'}})
-        self.assertEqual(result['state']['notification']['kind'], 'pending')
+        self.assertEqual(result['state']['notification']['kind'], 'none')
+        self.assertEqual(result['status'], 'idle')
+        self.assertEqual(result['entries'][-1]['content']['text'], '测试脚本由执行成员收尾。')
         listed = next(s for s in self.client.get('/hud').json()['sessions'] if s['id'] == item['id'])
         self.assertEqual(listed['notification'], result['state']['notification'])
         queued = hud.answer(item['id'], {'revision': result['revision'], 'text': '检查访问权限'})

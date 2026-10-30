@@ -2,11 +2,15 @@
 
 话题成员项目范围：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_member_identity scripts.test_member_disabled scripts.test_member_add_turn -q` 验证成员范围过滤、停用保留、移出后刷新、项目参数校验及既有话题增删。`python -X utf8 -B scripts/test_thread_members_browser.py --evidence <主目录报告目录>` 使用 Playwright/Chrome 和全拦截合成 API，覆盖话题所属项目、全局花名册隔离、停用按钮、加入/移出、空列表、读取失败重试、异步竞态、重开及 1280px/390px 深浅主题。无需业务服务或端口，退出关闭自身浏览器。
 
+HUD 双标签与项目隔离：`python -X utf8 -B scripts/test_hud_notifications_browser.py --evidence <主目录报告目录>` 验证对话/待办标签、卡片数量、旧单问题/提案兼容、空状态、逐项操作及失败保留、切换标签保留输入、键盘导航、切换项目重置视图。断言项目轮询从不读取全局会话索引，其他项目提醒和草稿不会出现，更多菜单仅保留备注和设置；截图覆盖 1440px/390px 深浅主题。合成 API，无业务服务或模型调用。
+
+HUD 待办误报回归：`scripts.test_project_hud` 验证执行成员工作即使被模型标为 pending，服务端也按实际卡片归一为 none；仍保留原始对话。浏览器用例另注入旧 pending 状态，验证无徽标、无虚构卡片、用户打开的面板保持原状；真实问题和提案继续显示待办数量。
+
 HUD 多待办卡片：`scripts.test_project_hud` 验证 15 张卡片持久化、完整上下文、逐项回答和确认、独立字段连续保存、去重、越权校验及单项暂不处理。`test_hud_notifications_browser.py` 同时展示 9 张问题卡与 6 张提案卡，验证第 9 个问题和第 6 个提案可独立处理，其他卡片继续显示，正文仍最多两条。卡片数量不设上限，使用面板滚动查看。
 
 HUD 本轮消息：`test_hud_notifications_browser.py --evidence <主目录报告目录>` 额外验证最多两条、用户优先且字号 12px、旧消息与系统记录隐藏、新发送成功立即清除上一轮回复、新回复替换。复用隔离预览的 `test_project_hud_browser.py` 检查提问、确认与使用说明卡片保持完整交互。
 
-HUD 提醒分级：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud scripts.test_hud_gateway -q` 验证提醒分类、必要行动说明、历史问题静默兼容、持久化与会话列表。使用已安装 Playwright 的 Python 运行 `python -X utf8 -B scripts/test_hud_notifications_browser.py --evidence <主目录报告目录>`，以合成 API 和当前前端资产验证普通待办/问题/提案保持收起、明确行动自动展开、手动收起后刷新保持安静、新行动触发、保留正在阅读的面板、跨项目提醒及桌面/390px。脚本拦截全部页面请求，结束关闭自身浏览器，无模型和业务服务调用。
+HUD 提醒分级：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud scripts.test_hud_gateway -q` 验证提醒分类、必要行动说明、历史问题静默兼容、持久化与会话列表。使用已安装 Playwright 的 Python 运行 `python -X utf8 -B scripts/test_hud_notifications_browser.py --evidence <主目录报告目录>`，以合成 API 和当前前端资产验证普通待办/问题/提案保持收起、明确行动自动展开、手动收起后刷新保持安静、新行动触发、保留正在阅读的标签、项目隔离及桌面/390px。脚本拦截全部页面请求，结束关闭自身浏览器，无模型和业务服务调用。
 
 连续唤醒前缀：`python -X utf8 -B scripts/verify_wake_prefix.py --runtime <codex|hermes-subprocess|hermes-gateway> --kind <work|chat> --mcp-python <安装项目依赖的Python绝对路径> --evidence <主目录报告下的新目录>`；Codex 追加 `--codex-bin <原生Codex可执行文件>`，Hermes 使用其依赖解释器并追加 `--hermes-source <Hermes源码绝对目录>`。临时 home/工作区/数据库、随机回环模型端点、真实 MCP 工具枚举；每场景同 sid 两轮并改变信号与合成凭据。保存原始请求、规则正文、system/developer 文本、完整有序 schema 和 SHA-256；Hermes 延迟工具同时保存完整发现 manifest，第二轮禁止重新构建 system。Codex 使用真实 exec/resume；Hermes 使用真实 AIAgent/SessionDB 与子进程/网关命名，网关 WS admission 另由既有回归覆盖。无外部模型调用或业务工具调用，测试结束关闭模型服务、MCP 及临时资源。适配层回归：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_runtime_fork scripts.test_hermes_prompt_state scripts.test_hermes_gateway scripts.test_hermes_connections -q`，覆盖连续唤醒、共享白名单和 Hermes work/chat overlay 中的 `operation_get`。
 
@@ -34,7 +38,7 @@ Hermes 连接池与顶栏状态：`.venv\Scripts\python.exe -X utf8 -B -m unitte
 
 助手提案与资源读取回归：复用上述三个模块。隔离 SQLite 验证待处理提案阻止回答/执行入口超时换代、普通解释及历史截断后仍传递完整八项提案、确认/暂不处理后重新计时、旧提案 ID 与补充处理期间确认的 409、新提案替换及无提案时正常重置。资源覆盖共享目录归并、逐成员独立目录、部分资源缺失、目录未分配的 unknown、与页面 GET 返回的持久配置一致、项目隔离及只读查询。浏览器回归另核对“暂不处理”请求携带当前提案 ID，服务数据与端口由预览参数注入。
 
-提案浏览器续接：先用 `scripts/preview_project_hud.py --data-dir <隔离目录> --port <分配端口>` 启动固定响应预览，再运行 `node scripts/test_hud_proposal_browser.cjs --url <隔离预览地址> --evidence <主目录报告目录>`。Node 须可解析 `playwright`，可通过 `NODE_PATH` 注入现有依赖路径，并已安装 Chrome。覆盖追问普通解释后保留提案、刷新恢复、桌面/390px 展示、暂不处理传入当前 ID 及提案解除。脚本仅访问该预览，退出关闭本次浏览器；预览由启动者停止。
+提案浏览器续接：先用 `scripts/preview_project_hud.py --data-dir <隔离目录> --port <分配端口>` 启动固定响应预览，再运行 `node scripts/test_hud_proposal_browser.cjs --url <隔离预览地址> --evidence <主目录报告目录>`。Node 须可解析 `playwright`，可通过 `NODE_PATH` 注入现有依赖路径，或设置 `PLAYWRIGHT_MODULE` 为已有 Playwright 模块目录，并已安装 Chrome。覆盖待办标签中的提案追问、刷新恢复、桌面/390px 展示、暂不处理传入当前 ID 及提案解除。脚本仅访问该预览，退出关闭本次浏览器；预览由启动者停止。
 
 真实引导回复：在下述 `verify_hud_gateway.py --live` 命令追加 `--scenario explain|conflict|change`，分别验证解释资料位置时直接回答、文档声明与 Git/CodeGraph 检测冲突时保留缺口、用户明确修改简介时返回待确认提案。每次使用新的 evidence 文件，只发送合成项目资料；同时校验会话专用系统指令、零工具、单次提交及结果格式，实际措辞另行审阅。
 

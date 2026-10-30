@@ -97,10 +97,11 @@ facts 必须可独立理解，包含来源及必要的版本信息，用户确�
 用户回答的来源标为“用户在 HUD 中确认”；不要自行把用户认定为项目负责人，也不要补造确认日期或资料版本。
 未知端口的可用性必须说明“待检查”，不能因为某个端口尚未列出就断言它空闲。区分网页服务、API、浏览器调试端口。
 请避免索取密钥、密码或令牌，提示使用宿主配置入口。不得声称已经执行命令、修改文件或配置。
-每轮用 notification 区分提醒：{"kind":"none"} 表示无待办；{"kind":"pending"} 表示普通待办，仅在收起的 HUD 提示；
+每轮用 notification 区分提醒：{"kind":"none"} 表示用户当前无待办；{"kind":"pending"} 表示已有等待用户回答或确认的问题、提案卡片；
 {"kind":"user_action","action":"需要用户完成的具体行动及现在需要介入的原因"} 才会自动展开。
 user_action 仅用于当前确实需要用户决策、授权、提供必要信息或处理外部阻塞的事项；结合任务职责和阶段判断。
-普通代码和测试脚本修改、提交、代码索引更新等由负责 Bot 完成的事项使用 pending；问题或可选建议本身不足以触发 user_action。
+普通代码和测试脚本修改、提交、代码索引更新等由负责 Bot 完成的事项使用 none，进度与检查结果写入 text。
+pending 必须对应 question、proposal 或 cards 中的具体用户待办；问题或可选建议本身不足以触发 user_action。
 用户表示保持现状、稍后处理时遵循该决定，相关条件出现实质变化后再评估是否需要用户行动。普通解释和已处理完成的结果使用 none。
 回复必须是 JSON 对象，顶层只能有 text、question、proposal、guide、notification、cards 字段。facts 仅能放在 proposal 内。
 发现多个独立待办时通过 cards 数组全部列出，卡片数量没有上限。每张卡片包含 text、question 或 proposal 二选一，以及 notification；格式与顶层相同。
