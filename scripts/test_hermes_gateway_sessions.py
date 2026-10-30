@@ -1,10 +1,14 @@
 """Session policy refresh, persisted override ownership and native reset boundaries."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
 import unittest
+import uuid
 from unittest.mock import Mock
 
 from engine import hermes_gateway_sessions as sessions
+from engine.hermes_connections import Pool
 from engine.hermes_gateway_client import GatewayRefusal
 from engine import db
 from scripts.unified_test_support import isolated_database
@@ -87,13 +91,19 @@ class TrackedReasoningTests(unittest.TestCase):
         self.addCleanup(fixture.__exit__, None, None, None)
         self.snapshot = _snapshot()
         self.client = Mock(endpoint={'profile_id': 'isolated-profile'})
+        self.client.closed = False
         self.client.rpc.return_value = self.snapshot
+        self.pool = Pool(opener=lambda *args, **kwargs: self.client,
+                         revision=lambda: ('fixture-source', 'fixture-sha'), pinned=lambda _: False)
+        self.addCleanup(self.pool.stop)
+        self.lease = self.pool.acquire(Path(db.db_path()).parent, ['fixture'])
+        self.addCleanup(self.lease.close)
         self.server = {'command': 'python', 'args': [], 'env': {}}
 
     def configure(self, args=(), project='alpha', snapshot=None):
         conn = db.get_connection()
         try:
-            return sessions.configure_tracked(conn, project, self.client, snapshot or self.snapshot,
+            return sessions.configure_tracked(conn, project, self.lease, snapshot or self.snapshot,
                 workdir='/w', model_args=list(args), server=self.server)
         finally:
             conn.close()
@@ -135,6 +145,34 @@ class TrackedReasoningTests(unittest.TestCase):
         self.client.reset_mock()
         self.configure()
         self.assertNotIn('reasoning', _mutation_ops(self.client))
+
+    def test_legacy_migration_uses_lease_profile_and_reuses_import(self):
+        target = 'bg-' + uuid.uuid5(uuid.NAMESPACE_URL, 'isolated-profile:legacy:acp').hex
+        imported = []
+
+        def rpc(method, **params):
+            if method == 'session.resume':
+                self.assertEqual(params['session_id'], target)
+                if not imported:
+                    raise GatewayRefusal('not_found')
+                return {**self.snapshot, 'session_id': target}
+            if method == 'session.export':
+                self.assertEqual(params['session_id'], 'legacy')
+                return {'content': json.dumps({'id': 'legacy', 'title': 'fixture'})}
+            if method == 'session.mutate':
+                self.assertEqual(params['operation'], 'import')
+                imported.append(params['payload']['sessions'][0])
+                return {}
+            raise AssertionError(method)
+
+        self.client.rpc.side_effect = rpc
+        legacy = {**_snapshot(source='cli'), 'session_id': 'legacy'}
+        for _ in range(2):
+            result = sessions.migrate_legacy(self.lease, legacy, workdir='/w')
+            self.assertEqual(result['session_id'], target)
+        self.assertEqual(len(imported), 1)
+        self.assertEqual(imported[0]['id'], target)
+        self.assertEqual(imported[0]['source'], 'acp')
 
 
 if __name__ == '__main__':

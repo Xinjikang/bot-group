@@ -1,0 +1,12 @@
+#hermes-gateway-status {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--fg-2); font-size: 12px; white-space: nowrap;
+}
+#hermes-gateway-status[hidden] { display: none; }
+#hermes-gateway-status .gateway-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--fg-3);
+}
+#hermes-gateway-status[data-state="connected"] .gateway-dot { background: var(--ok); }
+#hermes-gateway-status[data-state="connecting"] .gateway-dot,
+#hermes-gateway-status[data-state="restart_required"] .gateway-dot { background: var(--warn); }
+#hermes-gateway-status[data-state="error"] .gateway-dot { background: var(--danger); }

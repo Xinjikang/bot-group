@@ -45,10 +45,13 @@ def router(identity, admin):
     @routes.get('')
     def index():
         with hud.connection() as conn:
-            sessions = [dict(r) for r in conn.execute('SELECT id,project,bot_id,status,state,updated FROM hud_sessions ORDER BY updated DESC LIMIT 100')]
+            sessions = [dict(r) for r in conn.execute('SELECT id,project,bot_id,status,state,updated FROM hud_sessions ORDER BY updated DESC')]
             for session in sessions:
                 state = hud.json.loads(session.pop('state'))
                 session['question'] = state.get('question')
+                session['proposal'] = state.get('proposal')
+                session['notification'] = state.get('notification')
+                session['cards'] = state.get('cards', [])
                 session['title'] = state.get('draft', {}).get('display_name', '创建项目草稿')
             return {'sessions': sessions, 'default_bot_id': hud.default_bot(conn)}
 

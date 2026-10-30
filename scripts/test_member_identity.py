@@ -17,6 +17,31 @@ class MemberIdentityTests(unittest.TestCase):
     roster = test_project_roles.ProjectRoleTests.roster
     set_role = test_project_roles.ProjectRoleTests.set_role
 
+    def test_enrolled_roster_keeps_disabled_and_excludes_other_projects(self):
+        local = self.join('p')
+        foreign = self.join('q', profile='other')
+        self.conn.execute("UPDATE project_members SET active=0 WHERE project='p' AND profile=?", (local,))
+        self.conn.commit()
+        response = self.client.get('/members', params={'project': 'p', 'enrolled_only': True})
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertEqual([m['profile'] for m in data['members']], [local])
+        self.assertEqual(data['count'], 1)
+        self.assertEqual(data['members'][0]['active'], 0)
+        active = self.client.get('/members?project=p&enrolled_only=true&active_only=true').json()
+        self.assertEqual(active['members'], [])
+        global_roster = self.client.get('/members?project=p').json()['members']
+        self.assertIn(foreign, [m['profile'] for m in global_roster])
+        self.conn.execute("DELETE FROM project_members WHERE project='p' AND profile=?", (local,))
+        self.conn.commit()
+        self.assertEqual(self.client.get('/members?project=p&enrolled_only=true').json()['members'], [])
+        self.assertTrue(self.client.get('/members?project=q&enrolled_only=true').json()['members'])
+
+    def test_enrolled_roster_requires_project(self):
+        for project in ('', '   '):
+            response = self.client.get('/members', params={'project': project, 'enrolled_only': True})
+            self.assertEqual(response.status_code, 400)
+
     def test_shared_projection_and_global_rename_for_both_hosts(self):
         for host in ('hermes', 'codex'):
             with self.subTest(host=host):

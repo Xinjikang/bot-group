@@ -29,13 +29,16 @@ def new(client, *, title, workdir, system_prompt, model_args, request_id=None, l
 
 
 def configure(client, snapshot, *, workdir, model_args, server,
-              reset_reasoning=False, reasoning_applied=None):
+              reset_reasoning=False, reasoning_applied=None, edit_approval_policy='workspace_session'):
     """Refresh the session-local MCP transport before each admission."""
     sid = snapshot['session_id']
     if snapshot['info']['source'] != 'acp':
         raise GatewayRefusal('editor_mcp_requires_acp_session')
     if snapshot['running'] or snapshot['pending']:
         raise GatewayRefusal('session_busy')
+    from .edit_policy import POLICIES
+    if edit_approval_policy not in POLICIES:
+        raise GatewayRefusal('invalid_edit_approval_policy')
     if snapshot['info'].get('cwd') != workdir:
         mutate(client, snapshot, 'workspace', {'cwd': workdir})
         snapshot = attach(client, sid)
@@ -58,8 +61,8 @@ def configure(client, snapshot, *, workdir, model_args, server,
         snapshot = attach(client, sid)
     # Native ordinary-edit policy and native dangerous-command smart review are
     # independent. No client-side reviewer or blanket approval responder is used.
-    if snapshot['info'].get('edit_approval_policy') != 'workspace_session':
-        mutate(client, snapshot, 'edit_policy', {'policy': 'workspace_session'})
+    if snapshot['info'].get('edit_approval_policy') != edit_approval_policy:
+        mutate(client, snapshot, 'edit_policy', {'policy': edit_approval_policy})
         snapshot = attach(client, sid)
     # An empty committed manifest retires the previous connection even when its
     # new tool schema is identical and only the execution credential changed.
@@ -75,7 +78,7 @@ def configure(client, snapshot, *, workdir, model_args, server,
 
 def configure_tracked(conn, project, client, snapshot, *, workdir, model_args, server):
     """Reset removed engine overrides while preserving native session choices."""
-    from . import db
+    from . import db, edit_policy
     identity = json.dumps([client.endpoint['profile_id'], snapshot['session_id']])
     key = 'hermes_reasoning:' + hashlib.sha256(identity.encode()).hexdigest()
     previous = conn.execute('SELECT value FROM settings WHERE project=? AND key=?', (project, key)).fetchone()
@@ -90,7 +93,8 @@ def configure_tracked(conn, project, client, snapshot, *, workdir, model_args, s
         conn.commit()
 
     return configure(client, snapshot, workdir=workdir, model_args=model_args, server=server,
-                     reset_reasoning=previous is not None, reasoning_applied=applied)
+                     reset_reasoning=previous is not None, reasoning_applied=applied,
+                     edit_approval_policy=edit_policy.read(conn))
 
 
 def clear_mcp(client, session_id):

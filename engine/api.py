@@ -87,6 +87,13 @@ def get_app_version(identity=Depends(_resolve_identity)):
     return JSONResponse(version_info(), headers={"Cache-Control": "no-store"})
 
 
+@router_api.get('/system/hermes-gateway')
+def get_hermes_gateway_status(identity=Depends(_resolve_identity)):
+    _admin_only(identity, '网关状态仅限管理员使用')
+    from .hermes_connections import status
+    return JSONResponse(status(), headers={'Cache-Control': 'no-store'})
+
+
 @router_api.get("/system/updates")
 def get_app_updates(identity=Depends(_resolve_identity)):
     _admin_only(identity, '更新检查仅限管理员使用')
@@ -883,9 +890,11 @@ def post_member(body: dict[str, Any]):
 
 @router_api.get("/members")
 def get_members(project: str = "", active_only: bool = False, role: str | None = None,
-                request: Request = None):
-    """花名册（纯身份）。带 project 时每个成员附该项目的启停状态（req#27）。"""
+                request: Request = None, enrolled_only: bool = False):
+    """身份花名册；project 附项目状态，enrolled_only 仅返回显式入组成员。"""
     project = project.strip()
+    if enrolled_only and not project:
+        raise HTTPException(400, "project is required when enrolled_only=true")
     if active_only and not project:
         raise HTTPException(400, "project is required when active_only=true")
     if role is not None and not project:
@@ -902,6 +911,8 @@ def get_members(project: str = "", active_only: bool = False, role: str | None =
                 for r in conn.execute("SELECT project, profile, active, role, role_id FROM project_members WHERE project=?", (project,))
             }
         for r in rows:
+            if enrolled_only and (project, r["profile"]) not in pm:
+                continue
             if request is not None and request.state.identity[1] == "bot":
                 if (project, r["profile"]) not in pm:
                     continue
@@ -932,6 +943,35 @@ def get_user_display_name(identity=Depends(_resolve_identity)):
                            (db.BUILTIN_USER_PROFILE,)).fetchone()
         return JSONResponse({'profile': db.BUILTIN_USER_PROFILE, 'display_name': row['display_name']},
                             headers={'Cache-Control': 'private, no-store'})
+    finally:
+        conn.close()
+
+
+@router_api.get('/system/edit-approval-policy')
+def get_edit_approval_policy(identity=Depends(_resolve_identity)):
+    _admin_only(identity, '仅管理员可读取全局智能审批策略')
+    from . import edit_policy
+    conn = _conn()
+    try:
+        return JSONResponse({'policy': edit_policy.read(conn)}, headers={'Cache-Control': 'no-store'})
+    finally:
+        conn.close()
+
+
+@router_api.patch('/system/edit-approval-policy')
+def set_edit_approval_policy(body: dict[str, Any], identity=Depends(_resolve_identity)):
+    _admin_only(identity, '仅管理员可修改全局智能审批策略')
+    from . import edit_policy
+    if set(body) != {'policy'}:
+        raise HTTPException(400, '仅支持全局 policy 字段')
+    conn = _conn()
+    try:
+        with conn:
+            try:
+                edit_policy.write(conn, body['policy'])
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+        return JSONResponse({'policy': edit_policy.read(conn)}, headers={'Cache-Control': 'no-store'})
     finally:
         conn.close()
 

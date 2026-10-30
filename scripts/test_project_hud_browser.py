@@ -20,9 +20,11 @@ def main():
         page.on('pageerror',lambda e:errors.append(str(e)))
         assert page.request.post(args.url+'/hud-preview/reset').ok
         page.goto(args.url+'/app/')
-        page.wait_for_selector('.hud-question',timeout=20000)
+        page.wait_for_selector('#hud-tabs')
+        assert page.locator('#hud-chat-tab').get_attribute('aria-selected')=='true'
         assert '先把需求资料准备好' in page.locator('.hud-message-assistant').last.inner_text()
-        assert page.locator('#project-hud').get_attribute('data-scene')=='choice'
+        page.locator('#hud-todos-tab').click()
+        page.wait_for_selector('.hud-question')
         page.screenshot(path=str(args.evidence/'hud-desktop.png'))
         page.locator('#hud-toggle').click()
         page.evaluate("openProjectDetail('hud-preview',document.querySelector('#chip-all'))")
@@ -79,14 +81,19 @@ def main():
         page.locator('#hud-toggle').click()
         page.locator('#hud-input').fill('需求放在 specs-v2，原型放在 design-sketches。')
         page.reload()
+        page.locator('#hud-toggle').click()
         page.wait_for_selector('#hud-input')
+        page.wait_for_function("document.querySelector('#hud-input').value.includes('specs-v2')")
         assert 'specs-v2' in page.locator('#hud-input').input_value()
+        page.locator('#hud-todos-tab').click()
+        page.locator('.hud-card-answer').fill(page.locator('#hud-input').input_value())
+        page.locator('#hud-input').fill('')
         page.locator('.hud-option').first.click()
         page.wait_for_selector('.hud-proposal',timeout=20000)
         assert page.locator('.hud-option').count()==0
-        assert page.locator('#project-hud').get_attribute('data-scene')=='confirm'
+        assert page.locator('#project-hud').get_attribute('data-scene')=='cards'
         page.screenshot(path=str(args.evidence/'hud-confirmation.png'))
-        page.locator('#hud-scene-toggle').click()
+        page.locator('#hud-chat-tab').click()
         assert '已有完整文档' in page.locator('.hud-message-user').last.inner_text()
         assert 'specs-v2' in page.locator('.hud-message-user').last.inner_text()
         assert '刚说明的资料位置' in page.locator('.hud-message-assistant').last.inner_text()
@@ -95,6 +102,9 @@ def main():
             assert page.locator(selector).last.evaluate("e=>{const a=e.getBoundingClientRect(),b=document.querySelector('.hud-scroll').getBoundingClientRect();return a.top>=b.top&&a.bottom<=b.bottom}")
         page.screenshot(path=str(args.evidence/'hud-conversation.png'))
         page.reload()
+        page.locator('#hud-toggle').click()
+        page.wait_for_selector('.hud-proposal',state='attached')
+        page.locator('#hud-todos-tab').click()
         page.wait_for_selector('.hud-proposal')
         assert page.locator('.hud-option').count()==0
         assert '以下建议尚未保存' in page.locator('.hud-proposal').inner_text()
@@ -107,10 +117,12 @@ def main():
         page.locator('#hud-history-toggle').click()
         assert 'specs-v2' in page.locator('#hud-history').inner_text()
         page.locator('#hud-back').click()
+        page.locator('#hud-chat-tab').click()
         page.wait_for_function("document.querySelector('#project-hud').dataset.scene==='chat'")
         assert 'specs-v2' in page.locator('.hud-message-user').last.inner_text()
         page.locator('#hud-input').fill('把简介改成用于测试的简介')
         page.locator('#hud-send').click()
+        page.locator('#hud-todos-tab').click()
         page.wait_for_selector('.hud-proposal',timeout=20000)
         proposal_text=page.locator('.hud-proposal').inner_text()
         assert '修改位置：项目设置' in proposal_text
@@ -125,12 +137,12 @@ def main():
             page.screenshot(path=str(args.evidence/f'hud-change-mobile-{theme}.png'))
         page.get_by_role('button',name='暂不处理',exact=True).click()
         page.wait_for_function("!document.querySelector('.hud-proposal')",timeout=20000)
-        page.wait_for_function("!document.querySelector('#hud-send').disabled || document.querySelector('#project-hud').dataset.scene==='chat'")
+        page.locator('#hud-chat-tab').click()
         page.set_viewport_size({'width':1440,'height':1000})
         page.evaluate("document.documentElement.dataset.theme='dark'")
         page.locator('#hud-input').fill('怎么更换维护助手？')
         page.locator('#hud-send').click()
-        page.wait_for_selector('#project-hud[data-scene="guide"] .hud-guide')
+        page.wait_for_selector('#hud-content .hud-guide')
         assert page.locator('.hud-guide li').count()==3
         assert page.locator('.hud-option').count()==0
         page.screenshot(path=str(args.evidence/'hud-guide.png'))
@@ -144,11 +156,12 @@ def main():
             page.screenshot(path=str(args.evidence/('hud-guide-mobile-'+theme+'.png')))
         page.set_viewport_size({'width':1440,'height':1000})
         page.evaluate("document.documentElement.dataset.theme='dark'")
-        page.locator('#hud-scene-toggle').click()
+        page.locator('#hud-chat-tab').click()
         assert page.locator('#project-hud').get_attribute('data-scene')=='chat'
         assert '怎么更换维护助手' in page.locator('.hud-message-user').last.inner_text()
-        page.locator('#hud-scene-toggle').click()
-        assert page.locator('#project-hud').get_attribute('data-scene')=='guide'
+        page.locator('#hud-todos-tab').click()
+        assert page.locator('#hud-todos').is_visible()
+        page.locator('#hud-chat-tab').click()
         page.locator('#hud-input').fill('知道了，继续交流。')
         page.locator('#hud-send').click()
         page.wait_for_function("document.querySelector('#project-hud').dataset.scene==='chat'&&document.querySelector('#hud-input').value===''")
@@ -244,6 +257,9 @@ def main():
                 route.fulfill(response=response)
         page.route(re.compile(r'/hud/[^/?]+$'),free_text_question)
         page.reload()
+        page.locator('#hud-toggle').click()
+        page.wait_for_selector('.hud-question',state='attached')
+        page.locator('#hud-todos-tab').click()
         page.wait_for_selector('.hud-question')
         assert page.locator('.hud-option').count()==0
         assert page.locator('#hud-input').is_enabled()
@@ -288,7 +304,7 @@ def main():
         page.screenshot(path=str(args.evidence/'hud-progress-error.png'))
         assert not errors,errors
         (args.evidence/'browser.json').write_text(json.dumps({'passed':True,'errors':errors,'checks':[
-            'automatic question expansion','all detail tabs retain identical window geometry','assistant and sent user text visible in conversation','options send as user message and disappear','choice / confirmation / conversation / guide scene transitions','guide history and free-text follow-up','detail position unchanged; HUD docks at equal height and returns on collapse','project details stay open with unsaved fields and active tab','options and custom text','refresh preserves input','confirmed facts',
+            'automatic question expansion','all detail tabs retain identical window geometry','assistant and sent user text visible in conversation','options send as user message and disappear','conversation and todo tabs with question/proposal cards and inline guide','guide history and free-text follow-up','detail position unchanged; HUD docks at equal height and returns on collapse','project details stay open with unsaved fields and active tab','options and custom text','refresh preserves input','confirmed facts',
             'wizard uses detail docking rule and floating fallback; geometry and draft preserved','wizard draft input and template selection','390px dark/light','Escape and focus','detail project context and mobile reply','free-text question without options','same-revision live reasoning summary; single latest line; elapsed time; reload; failure stops progress']},ensure_ascii=False,indent=2),encoding='utf-8')
         browser.close()
 

@@ -1,16 +1,24 @@
 # 项目文档索引
 
+全局 Hermes 文件编辑审批的三档选择、持久化与每轮应用规则见 [全局审批策略设计](design/2026-10-30-global-edit-policy.md)。
+
 项目维护 HUD 的独立会话、提问与创建向导联动见 [设计](design/2026-10-27-project-maintenance-hud.md) 和 [工程契约](engineering/PROJECT-HUD.md)。
 
 项目助手的实际配置检查、文档依据与修改前后确认见 [引导设计](design/2026-10-29-project-assistant-guidance.md)。
 
 Hermes 网关版的官方接口、原生审批、临时 MCP、会话迁移与执行恢复见 [Hermes 网关执行适配](engineering/HERMES-GATEWAY.md)。
 
+Hermes WS 连接复用、业务空闲回收和顶栏全局状态见 [连接复用与状态设计](design/2026-10-30-hermes-gateway-connections.md)。
+
+Hermes 系统层与用户层规则判重、admission 记账及旧会话补齐见 [提示词持久化判重](design/2026-10-30-hermes-prompt-dedup.md)。
+
+Codex 与 Hermes 连续唤醒的规则正文、原生系统文本和工具 schema 哈希验证见 [前缀验证设计](design/2026-10-30-wake-prefix-verification.md)。共享工具白名单包含 `operation_get`，同时覆盖 Codex 与 Hermes 子进程。
+
 网页授权卡片的范围、身份校验及双端处理规则见 [Hermes 授权卡片设计](design/2026-10-29-hermes-approvals.md)。
 
 Hermes 新旧会话接口、安装定位和兼容提示见 [Hermes 兼容性](engineering/HERMES-COMPATIBILITY.md) 与 [设计依据](design/2026-10-27-hermes-compatibility.md)。
 
-当前发布说明：[v0.2.2](releases/v0.2.2.md)。历史版本：[v0.2.1](releases/v0.2.1.md)、[v0.2.0](releases/v0.2.0.md)、[v0.1.9](releases/v0.1.9.md)、[v0.1.8](releases/v0.1.8.md)、[v0.1.7](releases/v0.1.7.md)、[v0.1.6](releases/v0.1.6.md)、[v0.1.5](releases/v0.1.5.md)、[v0.1.4](releases/v0.1.4.md)、[v0.1.3](releases/v0.1.3.md)、[v0.1.2](releases/v0.1.2.md)。
+当前发布说明：[v0.2.3](releases/v0.2.3.md)。历史版本：[v0.2.2](releases/v0.2.2.md)、[v0.2.1](releases/v0.2.1.md)、[v0.2.0](releases/v0.2.0.md)、[v0.1.9](releases/v0.1.9.md)、[v0.1.8](releases/v0.1.8.md)、[v0.1.7](releases/v0.1.7.md)、[v0.1.6](releases/v0.1.6.md)、[v0.1.5](releases/v0.1.5.md)、[v0.1.4](releases/v0.1.4.md)、[v0.1.3](releases/v0.1.3.md)、[v0.1.2](releases/v0.1.2.md)。
 
 需求超时拆解、部分任务恢复和队列空唤醒抑制见 [需求恢复契约](engineering/REQUIREMENT-RECOVERY.md) 与 [设计依据](design/2026-10-27-requirement-recovery.md)。
 
@@ -78,6 +86,7 @@ Profile 凭证继承与异常可见性见 [设计依据](design/2026-10-25-profi
 | [多行参数传输](engineering/HERMES-ARGUMENT-TRANSPORT-2026-10-17.md) | Windows Hermes 原生入口 |
 | [消息执行归属](engineering/BOT-MESSAGE-EXECUTION.md) | 消息与具体运行的关联 |
 | [斜杠命令](design/SLASH-COMMAND-DESIGN-2026-09-27.md) | 会话重置、停止、纠偏与分层回执 |
+| [steer 网关纠偏接入](design/2026-10-30-steer-transport.md) | /steer 运行中纠偏的网关 session.steer 传输通道与回执映射 |
 | [Codex 配置目录](guides/CODEX-PROFILE-HOMES.md) | 独立 home、发现、入组与目录授权 |
 | [Codex 内联指令](engineering/REQ100-INLINE-INSTRUCTIONS-IMPLEMENTATION-2026-10-08.md) | 首次及续会话的协作规则、项目信息与命令预算 |
 | [任务说明契约](engineering/TASK-BRIEF-CONTRACT.md) | 发布、依赖、交接与领取门禁 |

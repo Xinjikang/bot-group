@@ -33,6 +33,19 @@ dialog [data-error="true"] {
 dialog .dialog-field-error { margin: 5px 0 8px; }
 dialog [data-error="true"] { color: var(--danger) !important; }
 
+#dlg-edit-policy { z-index: 1300; width: 440px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 32px); overflow-y: auto; box-sizing: border-box; }
+#edit-policy-options { border: 0; padding: 0; margin: 18px 0; min-width: 0; }
+#edit-policy-options legend { color: var(--fg); font-size: 13px; margin-bottom: 8px; }
+#edit-policy-options .edit-policy-option { display: flex; gap: 10px; padding: 12px; margin: 8px 0; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--card-2); cursor: pointer; }
+#edit-policy-options .edit-policy-option:has(input:checked) { border-color: var(--accent); }
+#edit-policy-options input { width: 16px; height: 16px; margin: 3px 0 0; flex: 0 0 16px; accent-color: var(--accent); }
+#edit-policy-options input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+#edit-policy-options strong { display: block; color: var(--fg); font-size: 13px; }
+#edit-policy-options small { display: block; margin: 3px 0 5px; color: var(--fg-2); font-size: 12px; font-weight: 400; overflow-wrap: anywhere; }
+#edit-policy-options strong + span { color: var(--fg-2); font-size: 12px; line-height: 1.6; }
+#edit-policy-options:disabled { opacity: .65; }
+#edit-policy-status { overflow-wrap: anywhere; }
+
 #app-alert button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;

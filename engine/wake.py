@@ -650,7 +650,7 @@ _MCP_TOOLS = (
     "task_claim", "task_log", "task_complete", "task_block",
     "group_send", "group_read_image", "group_read_inbox", "group_mark_seen",
     "group_get_thread", "group_create_thread", "group_task_update",
-    "group_list_threads", "group_list_members",
+    "group_list_threads", "group_list_members", "operation_get",
 )
 
 

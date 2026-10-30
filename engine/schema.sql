@@ -456,7 +456,7 @@ CREATE TABLE IF NOT EXISTS steer_operations (
     kind           TEXT NOT NULL,             -- work / chat
     thread_id      INTEGER NOT NULL DEFAULT 0,
     session_id     TEXT NOT NULL DEFAULT '',  -- 目标会话真实 session_id（投递时绑定）
-    generation     INTEGER,                   -- 目标会话 generation（跨 /new 失效判定）
+    generation     INTEGER,                   -- 网关 execution_generation（投递时绑定，session.steer 精确运行绑定；设计 §4.8）
     run_started_at REAL,                      -- 目标 run 的 started_at（精确绑定运行，wake_runs 同键）
     text           TEXT NOT NULL,             -- 纠偏正文
     status         TEXT NOT NULL DEFAULT 'queued',

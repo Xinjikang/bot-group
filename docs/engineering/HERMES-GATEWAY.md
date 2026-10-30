@@ -6,11 +6,23 @@
 
 网关版采用独立执行路径；旧版 Hermes 和 Codex 保留现有运行时。安装来源由 `HERMES_BIN`、`HERMES_HOME` 和已有安装定位规则确定。
 
+## 连接复用与状态
+
+连接租约公开只读 `endpoint`，直接转发到该租约绑定的底层客户端。配置跟踪与旧会话迁移通过 `endpoint.profile_id` 取得身份；池重连后，旧租约继续引用原连接的 endpoint，新租约引用新连接。
+
+`engine/hermes_connections.py` 按 profile 维护 WS 和使用租约。业务优先通过 control identify 发现现有网关，发现、票据与握手共用 5 秒预算；所有候选 control 端点均缺失时才调用官方 `gateway ensure`。启动按根宿主与启动命令串行合并，失败结果保留 5 秒。身份、权限、协议与版本错误保留明确失败。安装身份取实际源码的 install-stamp 提交或 Git HEAD，运行实例提交必须一致；版本变化显示需要重启。control 的 epoch 属于启动 profile，`runtime.describe` 返回票据 profile 的独立正整数 epoch，并校验 profile、instance 和能力。
+
+同一 profile 的租约共享物理 WS，RPC 按请求 ID 分发，会话事件按 session ID 分发。最后一个会话使用者释放时调用 `session.detach`，下一次 `resume` 建立新订阅，保证原生配置重读边界。事件队列有界，思考增量为辅助信息；RPC 回执和持久执行账本保持独立。连接传输失败交由原账本核对 admission/submission，连接池只重连传输。
+
+业务空闲 600 秒、租约为空、执行账本与助手均无未决记录时关闭 WS。心跳间隔 20 秒，页面状态读取及只读查询保持业务空闲计时；运行中、取消中、结果未知和待清理记录保护连接。意外断线最多自动重连 3 次，后台重连只发现现有实例；新业务请求可以再次尝试连接。引擎退出停止连接池并通过集中连接注册表有界关闭 WS。
+
+管理员接口 `GET /system/hermes-gateway` 被动读取全局模式和池状态，返回 `mode`、`state`、`updated_at`，设置 `Cache-Control: no-store`。浏览器每 3 秒读取，单次请求上限 4 秒，结果超过 15 秒或引擎失联显示状态未知。子进程模式隐藏顶栏状态；空闲释放显示待连接。设计与验证范围见 [连接复用与状态设计](../design/2026-10-30-hermes-gateway-connections.md) 和测试索引。
+
 ## 会话、MCP 和原生审批
 
 新会话使用 `source=acp`，通过 `session.mutate editor_mcp` 注入本次执行的 task_queue。每轮先提交空列表以释放旧连接，再提交新凭据。实际工具发现和调用由 Hermes 原生机制完成。
 
-危险命令审批采用 Hermes 原生 `approvals.mode: smart`，配置由管理员在 Hermes 中维护。ACP 编辑策略采用官方 `edit_policy=workspace_session`：普通工作区编辑按原生策略放行，敏感路径和工作区外请求遵循原生审批规则。引擎沿用这些原生能力。
+危险命令审批采用 Hermes 原生 `approvals.mode: smart`，配置由管理员在 Hermes 中维护。ACP 编辑策略由右上角“设置 → 智能审批策略”全局选择 `ask`、`workspace_session` 或 `session`，默认 `workspace_session`。所有项目与 Hermes ACP Bot 每轮执行前读取全局设置，策略不同时调用官方 `session.mutate edit_policy` 更新。运行中与待审批轮次保留原策略。工作区、临时目录及敏感路径判断沿用 Hermes 原生实现；Codex 和旧版 Hermes CLI 保留各自机制。存储、接口和验证见 [全局审批策略](../design/2026-10-30-global-edit-policy.md)。
 
 ### 网页处理授权
 
@@ -26,7 +38,7 @@
 
 已有绑定按持久化 session ID 恢复。首次绑定时调用官方 `session.list title=...`；v0.22.5 的原生标题解析返回零个或一个结果。适配器对多候选响应返回 `ambiguous_session_title`，保留原会话及绑定状态；管理员核对标题归属后重试。空结果按原有流程创建会话，唯一结果写入 ID 绑定。
 
-只读状态查询 `existing_session_id()` 优先读取已有绑定；缺少绑定时以 `read_only=True` 解析标题。网关模式通过本地 control `identify` 发现已运行的实例，校验 profile、协议、实例身份与回环地址，再调用 `session.list`，完成后关闭 viewer。命名 profile 可查询承载它的根目录 multiplexer；发现过程保持目录与进程状态。查询中的网关传输、拒绝、配置和超时异常降级为 `None`。旧版模式使用 SQLite `mode=ro` 查询已有 state.db。创建与执行路径继续使用 `ensure`。工作区 GET 对查询层抛出的已知数据库、系统和网关异常返回 `work_session_exists=null`，成员视图仍可读取。
+只读状态查询 `existing_session_id()` 优先读取已有绑定；缺少绑定时以 `read_only=True` 解析标题。网关模式从连接池取得只读租约，通过本地 control `identify` 发现已运行的实例，校验 profile、协议、实例身份与回环地址，再调用 `session.list`，完成后释放租约。命名 profile 可查询承载它的根目录 multiplexer；发现过程保持目录与进程状态。查询中的网关传输、拒绝、配置和超时异常降级为 `None`。旧版模式使用 SQLite `mode=ro` 查询已有 state.db。创建与执行路径按上述发现优先契约取得业务租约。工作区 GET 对查询层抛出的已知数据库、系统和网关异常返回 `work_session_exists=null`，成员视图仍可读取。
 
 旧 subprocess 路径的执行错误、任务重试、异常退出和成员身份测试显式 mock `hermes_gateway.enabled()` 为 `False`；任务重试复用异常退出夹具。网关查询另用隔离数据库、临时 home 和模拟 control/RPC 回执验证，测试分支由夹具确定。
 
@@ -54,7 +66,13 @@ queued 执行通过 `prompt.cancel` 取消；started 执行通过携带 generati
 
 AGENTS.md、SOUL 和记忆通过用户主动 `/new` 刷新。v0.22.5 在同 sid 的 resume 中复用已保存的 system prompt；文件修改或删除后，新 sid 读取当前内容。引擎在原话题更新会话绑定并递增 generation，原会话历史保留。出站载荷夹具、真实模型生成和引擎 `/new` 绑定切换分别记录证据。
 
+引擎协作规则采用[两层持久化判重](../design/2026-10-30-hermes-prompt-dedup.md)。`hermes_prompt_state` 按 `(profile_id, session_id)` 保存系统层初始 `system_hash` 和用户层最新受理 `user_hash`；有用户层记录时以它为比较依据，配置 A→B→A 会再次补充 A。首次创建与 `/new` 创建时注入当前项目规则并记录系统层哈希；既有和迁移会话保持未知系统层哈希，首次向用户消息补齐后记用户层。哈希只覆盖规则正文，动态唤醒信号保持独立。
+
+`hermes_prompt_updates` 在 `ledger.prepare` 提交前保存本轮候选哈希。`apply_receipt` 校验 profile/session/admission 与执行代数后，在同一事务中处理 queued/started/terminal 回执和用户层哈希；unknown 回执继续等待对账。更新按持久序号投影，重复、迟到回执保持幂等。首回执丢失且 admission ID 未知时保留执行占用，按现有期限转人工核对；可取得原 admission 的后续回执时继续原执行对账。明确未提交时保留旧哈希，停止后的原生 rewind 成功时撤销对应更新。状态写入失败与执行回执一起回滚。
+
 空闲会话通过新的 viewer 恢复时，profile 配置派生的 max_turns、checkpoints 和 terminal 字段重新计算；删除配置恢复原生默认值，显式选择的 cwd/workspace 保持。普通 CLI 会话的配置派生 toolsets 随配置刷新。editor MCP 会话的工具集随 editor manifest 冻结；引擎每轮通过 editor_mcp mutation 更新 MCP 工具描述和集合。
+
+固定配置的连续唤醒验证使用 `scripts/verify_wake_prefix.py`，保存模型实际请求中的 system/developer 文本、工具 schema 和 SHA-256。Hermes 延迟加载工具时额外记录完整 MCP manifest；配置与凭据的传输对象不作为 schema 哈希输入。共享 `_MCP_TOOLS` 包含只读对账工具 `operation_get`，Codex `enabled_tools` 和 Hermes 子进程 `tools.include` 同步使用该列表。验证边界见[前缀验证设计](../design/2026-10-30-wake-prefix-verification.md)。
 
 `verify_gateway_refresh_live.py` 在隔离 home 中通过公开协议执行配置刷新和模型调用。配置字段以只读的已提交 policy 回执核验；规则与工具描述以模型最终回答及实际 tool_search 结果核验。policy 回执证明派生值变化，max_turns 耗尽和 checkpoint 文件生成属于独立运行行为验证。
 

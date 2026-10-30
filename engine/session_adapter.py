@@ -72,7 +72,7 @@ def _ensure_profile_dir(profile: str) -> None:
         dbp.parent.mkdir(parents=True, exist_ok=True)
 
 
-def create_session(profile: str, title: str) -> str:
+def create_session(profile: str, title: str, *, project=None, kind='work') -> str:
     """调 Hermes 原生 new_session 拿真实 session_id 并落库（含 title）。
 
     等价于 hermes_cli/main.py::_create_titled_session，但显式定位 per-profile state.db。
@@ -80,10 +80,22 @@ def create_session(profile: str, title: str) -> str:
     """
     from . import hermes_gateway
     if hermes_gateway.enabled():
+        from . import wake, hermes_prompt_state
+        workdir = wake._workdir_for(profile, project) if project is not None else str(Path.cwd())
+        prompt = wake.wake_system_prompt(kind, project, workdir) if project is not None else ''
         client, _, _ = hermes_gateway.connection(profile)
         with client:
-            return hermes_gateway.sessions.new(client, title=title, workdir=str(Path.cwd()),
-                                               system_prompt='', model_args=[])['session_id']
+            sid = hermes_gateway.sessions.new(client, title=title, workdir=workdir,
+                                              system_prompt=prompt, model_args=[])['session_id']
+            if project is not None:
+                from . import db as group_db
+                conn = group_db.get_connection()
+                try:
+                    hermes_prompt_state.created(conn, client.endpoint['profile_id'], sid, prompt)
+                    conn.commit()
+                finally:
+                    conn.close()
+            return sid
     _ensure_src_on_path()
     _ensure_profile_dir(profile)
     from hermes_state_registry import acquire
@@ -379,7 +391,7 @@ def switch_session(conn, project: str, profile: str, kind: str,
         # 原生 new_session 拿新真实 session_id（首建路径复用，与恢复分开）
         try:
             # Hermes titles are unique; logical title remains in the binding.
-            new_sid = create_session(profile, f'{title}#{op_id}')
+            new_sid = create_session(profile, f'{title}#{op_id}', project=project, kind=kind)
         except Exception as exc:
             conn.execute(
                 "UPDATE session_switch_ops SET status='unknown', updated_at=? "

@@ -857,7 +857,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 #dlg-workspace .workspace-danger{color:var(--danger);border-color:var(--danger);background:transparent}
 @media(max-width:420px){.project-member-card{padding:12px}}
 </style>
-<link rel="stylesheet" href="/app/dialogs.css?v=20261029-agents-height">
+<link rel="stylesheet" href="/app/dialogs.css?v=20261030-edit-policy">
 <link rel="stylesheet" href="/app/appearance.css?v=20261017-background-storage">
 </head>
 <body>
@@ -882,10 +882,12 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
       <button id="btn-user-name" type="button" title="我的称呼" aria-haspopup="dialog" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span>我的称呼</span></button>
       <button id="btn-background" type="button" title="更换舷窗背景" aria-label="更换舷窗背景"><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 5-5 4 4 4-6 5 7"/></svg><span>背景</span></button>
       <button id="btn-theme-top" type="button" title="切换深色 / 浅色"><svg class="settings-icon theme-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg><svg class="settings-icon theme-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/></svg><span class="settings-label">切换浅色</span></button>
+      <button id="btn-edit-policy" type="button" aria-haspopup="dialog" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6z"/><path d="m8 12 3 3 5-6"/></svg><span>智能审批策略</span></button>
       <button id="btn-restart" type="button" title="重启服务" aria-label="重启服务" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2.3 5.7"/></svg><span class="settings-label">重启服务</span></button>
       <button id="btn-about" type="button" aria-haspopup="dialog" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></svg><span>关于</span></button>
       </div>
       </div>
+      <span id="hermes-gateway-status" hidden data-state="waiting" role="status" aria-live="polite"><span class="gateway-dot"></span><span class="gateway-label"></span></span>
       <span id="conn" data-state="connecting" role="status"><span class="dot"></span><span id="conn-text">连接中…</span></span>
     </div>
   </div>
@@ -979,6 +981,22 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
       <button type="button" id="user-name-cancel">取消</button>
       <button type="submit" id="user-name-save" class="primary">保存</button>
     </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-edit-policy" aria-labelledby="edit-policy-title" aria-describedby="edit-policy-scope">
+  <form id="edit-policy-form">
+    <h3 id="edit-policy-title">智能审批策略</h3>
+    <p id="edit-policy-scope" class="profile-help">全局设置 · 所有项目的 Hermes ACP Bot 共用。Codex 沿用自身审批配置。</p>
+    <fieldset id="edit-policy-options">
+      <legend>文件编辑授权</legend>
+      <label class="edit-policy-option"><input type="radio" name="policy" value="ask" required><span><strong>逐次确认 <small>ask</small></strong><span>每次文件编辑都请求授权。</span></span></label>
+      <label class="edit-policy-option"><input type="radio" name="policy" value="workspace_session"><span><strong>工作区自动允许 <small>workspace_session · 默认</small></strong><span>工作区和系统临时目录内的普通文件自动放行，其他路径请求授权。</span></span></label>
+      <label class="edit-policy-option"><input type="radio" name="policy" value="session"><span><strong>会话自动允许 <small>session</small></strong><span>本会话各目录的普通文件自动放行，敏感路径继续请求授权。</span></span></label>
+    </fieldset>
+    <p class="profile-help">自动允许仍保留敏感路径确认。命令执行沿用 Hermes 原有审批策略。保存后每轮执行前应用，当前执行与待审批操作保持原策略。</p>
+    <p id="edit-policy-status" class="profile-help" role="status" aria-live="polite"></p>
+    <div class="dlg-btns"><button type="button" id="edit-policy-cancel">关闭</button><button type="submit" id="edit-policy-save" class="primary">保存</button></div>
   </form>
 </dialog>
 
@@ -1336,6 +1354,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 .tm-in  { background: var(--tint-ok); color: var(--ok); }
 .tm-out { background: var(--tint-gray); color: var(--fg-2); }
 .tm-row button { border: none; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; background: var(--card); color: var(--fg); border: 1px solid var(--border); }
+.tm-row button:disabled { opacity: .5; cursor: not-allowed; }
 /* hidden 属性对显式 display 元素失效（display:flex 覆盖）——统一硬规则 */
 [hidden]{display:none !important}
 /* 「全部项目」下拉窗行（切换/归档） */
@@ -1503,6 +1522,7 @@ function setConn(state, connectingText = "连接中…") {
   if (S.restarting) { state = 'connecting'; connectingText = S.restartMessage || '正在重启…'; }
   $("#conn").dataset.state = state;
   $("#conn-text").textContent = state === "connected" ? "已连接" : state === "disconnected" ? "已断开" : connectingText;
+  window.HermesGatewayStatus?.engineConnection(state);
 }
 
 function handleEvent(evt) {
@@ -3244,41 +3264,74 @@ $("#dlg-members-close").addEventListener("click", () => closeDialogAnchored($("#
 $("#dlg-tm-close").addEventListener("click", () => closeDialogAnchored($("#dlg-thread-members")));
 
 // 话题成员管理（需求1a：threads.members 增删——加 bot 立即唤醒看历史、删 bot 清 pending 由引擎做）
+let threadMembersRequest = 0;
+
 function openThreadMemberDlg(t, triggerEl) {
+  const dlg = $("#dlg-thread-members");
+  if (dlg.__outsideCloser) document.removeEventListener('click', dlg.__outsideCloser, true);
   $("#tm-thread-title").textContent = `话题「${t.title}」· ${safeJSON(t.members, []).length} 位成员`;
-  renderThreadMemberList(t);
-  openDialogAnchored($("#dlg-thread-members"), triggerEl);
+  openDialogAnchored(dlg, triggerEl);
+  loadThreadMemberList(t);
 }
 
-function renderThreadMemberList(t) {
+async function loadThreadMemberList(t) {
+  const request = ++threadMembersRequest;
+  const box = $("#thread-member-list");
+  box.textContent = '正在读取项目成员…';
+  try {
+    if (!t.project) throw new Error('话题缺少所属项目');
+    const data = await api(`/members?project=${encodeURIComponent(t.project)}&enrolled_only=true`, { cache: 'no-store' });
+    if (request !== threadMembersRequest || !$("#dlg-thread-members").open) return;
+    renderThreadMemberList(t, data.members || [], request);
+  } catch (err) {
+    if (request !== threadMembersRequest || !$("#dlg-thread-members").open) return;
+    box.textContent = `项目成员读取失败：${err.message} `;
+    const retry = document.createElement('button');
+    retry.textContent = '重试';
+    retry.addEventListener('click', () => loadThreadMemberList(t));
+    box.appendChild(retry);
+  }
+}
+
+function renderThreadMemberList(t, members, request) {
   const box = $("#thread-member-list");
   box.innerHTML = "";
   const inThread = new Set(safeJSON(t.members, []));
-  if (!S.members.length) {
-    box.innerHTML = '<div style="padding:20px;text-align:center;color:var(--fg-2)">花名册为空</div>';
+  const bots = members.filter(m => m.profile !== 'user');
+  if (!bots.length) {
+    box.innerHTML = '<div style="padding:20px;text-align:center;color:var(--fg-2)">本项目暂无 Bot 成员</div>';
     return;
   }
-  for (const m of S.members) {
-    if (m.profile === "user") continue; // 内置 user 具有所有话题的访问权限。
+  for (const m of bots) {
     const isMember = inThread.has(m.profile);
     const row = document.createElement("div");
     row.className = "tm-row";
     row.innerHTML = `
       <span class="tm-name">${esc(memberDisplayName(m))} <span class="m-profile">${esc(memberHostProfile(m))}</span></span>
-      <span class="tm-state ${isMember ? "tm-in" : "tm-out"}">${isMember ? "在话题" : "不在"}</span>
-      <button data-profile="${esc(m.profile)}" data-join="${isMember ? 0 : 1}">${isMember ? "移出" : "加入"}</button>`;
+      <span class="tm-state ${isMember ? "tm-in" : "tm-out"}">${isMember ? "在话题" : "不在"}${m.active ? '' : ' · 已停用'}</span>
+      <button data-profile="${esc(m.profile)}" data-join="${isMember ? 0 : 1}" ${!isMember && !m.active ? 'disabled title="请先在项目成员设置中启用"' : ''}>${isMember ? "移出" : "加入"}</button>`;
     row.querySelector("button").addEventListener("click", async (e) => {
       const p = e.target.dataset.profile;
       const join = e.target.dataset.join === "1";
       const verb = join ? "加入" : "移出";
       if (!join && !await showConfirm(`把 ${NAME_OF(p)} 移出话题？其 pending 私信将被清理。`)) return;
+      if (request !== threadMembersRequest || !$("#dlg-thread-members").open) return;
+      e.target.disabled = true;
       try {
         await api(`/thread/${t.id}/members`, { method: "POST", body: JSON.stringify({
           add: join ? [p] : [], remove: join ? [] : [p] }) });
         await loadThreads();
         const nt = S.threads.find(x => x.id === t.id);
-        if (nt) { $("#tm-thread-title").textContent = `话题「${nt.title}」· ${safeJSON(nt.members, []).length} 位成员`; renderThreadMemberList(nt); }
-      } catch (err) { showAlert(`${verb}失败: ${err.message}`); }
+        if (nt && request === threadMembersRequest && $("#dlg-thread-members").open) {
+          $("#tm-thread-title").textContent = `话题「${nt.title}」· ${safeJSON(nt.members, []).length} 位成员`;
+          await loadThreadMemberList(nt);
+        }
+      } catch (err) {
+        if (request === threadMembersRequest && $("#dlg-thread-members").open) {
+          e.target.disabled = false;
+          showAlert(`${verb}失败: ${err.message}`);
+        }
+      }
     });
     box.appendChild(row);
   }
@@ -4762,6 +4815,7 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/message_navigation.js?v=20261016-read-persistence"></script>
 <script src="/app/service_restart.js?v=20261026-settings-icons"></script>
 <script src="/app/app_settings.js?v=20261026-auto-refresh"></script>
+<script src="/app/edit_policy_settings.js?v=20261030"></script>
 <script src="/app/background_settings.js?v=20261023-settings-anchor"></script>
 <script src="/app/directory_picker.js?v=20261011"></script>
 <script src="/app/workspace_resources.js?v=20261026-resource-spacing"></script>
@@ -4775,6 +4829,8 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/project_hud.js?v=20261029-progress"></script>
 <script src="/app/requirement_details.js?v=20261012-controls"></script>
 <link rel="stylesheet" href="/app/hermes_approvals.css?v=20261029">
+<link rel="stylesheet" href="/app/hermes_gateway_status.css?v=20261030">
 <script src="/app/hermes_approvals.js?v=20261029"></script>
+<script src="/app/hermes_gateway_status.js?v=20261030"></script>
 </body>
 </html>

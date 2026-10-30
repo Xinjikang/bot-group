@@ -1,5 +1,31 @@
 # 测试脚本索引
 
+话题成员项目范围：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_member_identity scripts.test_member_disabled scripts.test_member_add_turn -q` 验证成员范围过滤、停用保留、移出后刷新、项目参数校验及既有话题增删。`python -X utf8 -B scripts/test_thread_members_browser.py --evidence <主目录报告目录>` 使用 Playwright/Chrome 和全拦截合成 API，覆盖话题所属项目、全局花名册隔离、停用按钮、加入/移出、空列表、读取失败重试、异步竞态、重开及 1280px/390px 深浅主题。无需业务服务或端口，退出关闭自身浏览器。
+
+HUD 双标签与项目隔离：`python -X utf8 -B scripts/test_hud_notifications_browser.py --evidence <主目录报告目录>` 验证对话/待办标签、卡片数量、旧单问题/提案兼容、空状态、逐项操作及失败保留、切换标签保留输入、键盘导航、切换项目重置视图。断言项目轮询从不读取全局会话索引，其他项目提醒和草稿不会出现，更多菜单仅保留备注和设置；截图覆盖 1440px/390px 深浅主题。合成 API，无业务服务或模型调用。
+
+HUD 待办误报回归：`scripts.test_project_hud` 验证执行成员工作即使被模型标为 pending，服务端也按实际卡片归一为 none；仍保留原始对话。浏览器用例另注入旧 pending 状态，验证无徽标、无虚构卡片、用户打开的面板保持原状；真实问题和提案继续显示待办数量。
+
+HUD 多待办卡片：`scripts.test_project_hud` 验证 15 张卡片持久化、完整上下文、逐项回答和确认、独立字段连续保存、去重、越权校验及单项暂不处理。`test_hud_notifications_browser.py` 同时展示 9 张问题卡与 6 张提案卡，验证第 9 个问题和第 6 个提案可独立处理，其他卡片继续显示，正文仍最多两条。卡片数量不设上限，使用面板滚动查看。
+
+HUD 本轮消息：`test_hud_notifications_browser.py --evidence <主目录报告目录>` 额外验证最多两条、用户优先且字号 12px、旧消息与系统记录隐藏、新发送成功立即清除上一轮回复、新回复替换。复用隔离预览的 `test_project_hud_browser.py` 检查提问、确认与使用说明卡片保持完整交互。
+
+HUD 提醒分级：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud scripts.test_hud_gateway -q` 验证提醒分类、必要行动说明、历史问题静默兼容、持久化与会话列表。使用已安装 Playwright 的 Python 运行 `python -X utf8 -B scripts/test_hud_notifications_browser.py --evidence <主目录报告目录>`，以合成 API 和当前前端资产验证普通待办/问题/提案保持收起、明确行动自动展开、手动收起后刷新保持安静、新行动触发、保留正在阅读的标签、项目隔离及桌面/390px。脚本拦截全部页面请求，结束关闭自身浏览器，无模型和业务服务调用。
+
+连续唤醒前缀：`python -X utf8 -B scripts/verify_wake_prefix.py --runtime <codex|hermes-subprocess|hermes-gateway> --kind <work|chat> --mcp-python <安装项目依赖的Python绝对路径> --evidence <主目录报告下的新目录>`；Codex 追加 `--codex-bin <原生Codex可执行文件>`，Hermes 使用其依赖解释器并追加 `--hermes-source <Hermes源码绝对目录>`。临时 home/工作区/数据库、随机回环模型端点、真实 MCP 工具枚举；每场景同 sid 两轮并改变信号与合成凭据。保存原始请求、规则正文、system/developer 文本、完整有序 schema 和 SHA-256；Hermes 延迟工具同时保存完整发现 manifest，第二轮禁止重新构建 system。Codex 使用真实 exec/resume；Hermes 使用真实 AIAgent/SessionDB 与子进程/网关命名，网关 WS admission 另由既有回归覆盖。无外部模型调用或业务工具调用，测试结束关闭模型服务、MCP 及临时资源。适配层回归：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_runtime_fork scripts.test_hermes_prompt_state scripts.test_hermes_gateway scripts.test_hermes_connections -q`，覆盖连续唤醒、共享白名单和 Hermes work/chat overlay 中的 `operation_get`。
+
+Hermes 提示词持久化判重：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_prompt_state scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway_migration scripts.test_hermes_connections scripts.test_session_readonly scripts.test_member_session_reset scripts.test_engine_shutdown scripts.test_hud_gateway -q`；另执行 `python -X utf8 -B scripts/test_session_switch.py`。隔离 SQLite、真实 Pool/Lease 和模拟 RPC 覆盖首建、连续相同配置、A→B→A、老会话及迁移补齐、/new、跨 profile/session 隔离、重开数据库、未知首回执、admission 对账、未提交、非法/重复/迟到回执、事务回滚和 rewind 后恢复前一版本。出站断言核对规则正文与动态信号分离，原生返回不含 client_env；模型调用为零。签名轮换集成另复用 `scripts.test_signing_keys`，Windows ACL 用例需要执行用户可设置独占 ACL 的隔离临时目录。
+
+Hermes 租约接口兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_connections scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway -q`。真实 Pool/Lease 配合隔离 SQLite 和模拟 RPC，覆盖 configure_tracked 的推理配置跟踪、旧会话首次迁移与复用，以及重连前后租约 endpoint 身份绑定；endpoint 属性保持只读。无需模型和生产网关。
+
+Hermes 连接池与顶栏状态：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_connections scripts.test_session_readonly scripts.test_hermes_compatibility scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway_sessions scripts.test_hud_gateway scripts.test_project_hud scripts.test_engine_shutdown scripts.test_access_contract scripts.test_hermes_transport -q`。隔离数据库、可控时钟和回环随机端口覆盖发现优先、启动去重、独立 profile 身份/epoch、并发 RPC、会话订阅释放、空闲 600 秒、未决执行保护、三次重连、版本变更、停机竞态及状态接口身份限制。回归使用模拟回执，真实传输夹具覆盖乱序响应。
+
+连接池原生订阅：使用带 Hermes 与 bot-group 依赖的解释器执行 `python -X utf8 -B scripts/verify_hermes_connections_native.py --hermes-source <Hermes源码绝对目录> --evidence <主目录报告下的新目录>`。真实 SessionAuthority、AuthorityConnection 和回环 WS 验证共享连接、最后使用者 detach、再次 resume 与空闲关闭。home、数据库全部隔离，control 身份与 ticket 为合成夹具，保持零模型调用。
+
+顶栏浏览器验证：`python -X utf8 -B scripts/preview_hermes_gateway_status.py [--port <隔离端口>]`，默认由系统分配端口。浏览器访问输出地址，真实前端资产与合成只读响应自动验证七种状态、子进程隐藏、引擎断连、过期、退出登录和无交互；1200px 深色及 390px 深浅主题各检查全部标签边界。三个面板均应显示 `PASS 21 checks`。验证结束关闭预览服务，截图和文本证据放入主目录报告。
+
+全局智能审批策略：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_edit_policy scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway scripts.test_access_contract -q`。隔离 SQLite 和 RPC 替身覆盖默认 workspace、全局持久化、跨项目/profile 每轮更新、身份与非法字段校验、忙碌轮次保护和策略设置失败。浏览器执行 `python -X utf8 -B scripts/test_edit_policy_browser.py --evidence <主目录报告目录>/browser`，需要 Playwright 和 Chrome；合成 HTTP 验证三档选择、取消、刷新/跨页面读取、错误重试、重复提交保护、身份变更、键盘及桌面/390px 深浅主题。配套复用 `test_app_settings_browser.py` 检查已有设置菜单。
+
 网页 Hermes 授权：`python -X utf8 -B -m unittest scripts.test_hermes_approvals scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway_sessions scripts.test_access_contract -q`。隔离 SQLite 和 RPC 替身覆盖用户/Bot 身份、项目/话题范围、轮次、非法选项、终态、重复提交、Hermes 先处理、过期快照和回执丢失。浏览器运行 `python -X utf8 -B scripts/test_hermes_approvals_browser.py --evidence <主目录报告目录>/browser`，需要 Playwright 与 Chrome；合成 HTTP 覆盖刷新恢复、话题切换、深浅主题、窄屏、纯文本显示、范围确认、提交禁用及错误提示。
 
 原生审批队列：使用带 Hermes 及 bot-group 依赖的解释器运行 `python -X utf8 -B scripts/verify_hermes_approvals_native.py --hermes-source <Hermes 源码目录> --evidence <主目录报告下的新目录>`。所有 home/数据库创建于新报告目录，WebSocket 使用随机回环端口。真实 Hermes waiter、pending controls、RPC handler 与 bot-group 客户端验证允许、拒绝、原生先处理及重复处理；ticket 为合成传输夹具，测试保持零模型调用和零命令执行。该用例验证审批桥接，不覆盖生产身份票据及模型触发策略。
@@ -12,7 +38,7 @@
 
 助手提案与资源读取回归：复用上述三个模块。隔离 SQLite 验证待处理提案阻止回答/执行入口超时换代、普通解释及历史截断后仍传递完整八项提案、确认/暂不处理后重新计时、旧提案 ID 与补充处理期间确认的 409、新提案替换及无提案时正常重置。资源覆盖共享目录归并、逐成员独立目录、部分资源缺失、目录未分配的 unknown、与页面 GET 返回的持久配置一致、项目隔离及只读查询。浏览器回归另核对“暂不处理”请求携带当前提案 ID，服务数据与端口由预览参数注入。
 
-提案浏览器续接：先用 `scripts/preview_project_hud.py --data-dir <隔离目录> --port <分配端口>` 启动固定响应预览，再运行 `node scripts/test_hud_proposal_browser.cjs --url <隔离预览地址> --evidence <主目录报告目录>`。Node 须可解析 `playwright`，可通过 `NODE_PATH` 注入现有依赖路径，并已安装 Chrome。覆盖追问普通解释后保留提案、刷新恢复、桌面/390px 展示、暂不处理传入当前 ID 及提案解除。脚本仅访问该预览，退出关闭本次浏览器；预览由启动者停止。
+提案浏览器续接：先用 `scripts/preview_project_hud.py --data-dir <隔离目录> --port <分配端口>` 启动固定响应预览，再运行 `node scripts/test_hud_proposal_browser.cjs --url <隔离预览地址> --evidence <主目录报告目录>`。Node 须可解析 `playwright`，可通过 `NODE_PATH` 注入现有依赖路径，或设置 `PLAYWRIGHT_MODULE` 为已有 Playwright 模块目录，并已安装 Chrome。覆盖待办标签中的提案追问、刷新恢复、桌面/390px 展示、暂不处理传入当前 ID 及提案解除。脚本仅访问该预览，退出关闭本次浏览器；预览由启动者停止。
 
 真实引导回复：在下述 `verify_hud_gateway.py --live` 命令追加 `--scenario explain|conflict|change`，分别验证解释资料位置时直接回答、文档声明与 Git/CodeGraph 检测冲突时保留缺口、用户明确修改简介时返回待确认提案。每次使用新的 evidence 文件，只发送合成项目资料；同时校验会话专用系统指令、零工具、单次提交及结果格式，实际措辞另行审阅。
 
@@ -82,6 +108,8 @@ MCP 离线重试与回执：`.venv\Scripts\python.exe -X utf8 -B -m unittest scr
 真实探针运行配置：运行 `gw_probe.py`、`gw_stop_probe.py`、`gw_recovery_probe.py`、`gw_mcp_probe.py`、`gw_ownership_probe.py` 和 `verify_hermes_gateway_adapter.py` 前，必须设置 `GW_PROBE_DATA` 为当前工作区分配的测试数据根绝对路径。`GW_PROBE_ROOT` 可指定隔离源码父目录（默认仓库内 `.probe-worktrees`），`GW_EVIDENCE_DIR` 可指定证据目录。ownership 探针使用当前 Python 解释器，scratch 位于本次运行的测试数据子目录；可选 `GW_OBSERVER_URL=http://127.0.0.1:<授权观察端口>` 仅用于显式授权的心跳观察，未配置时报告 skipped。网关自身的日志心跳隔离门禁保持启用。
 
 Hermes 旧接口专项：设置 `HERMES_TEST_SOURCE` 为已安装 Hermes 源码的绝对路径，使用含对应依赖的 Python 运行 `test_hermes_embed_entry.py`、`test_hermes_session_restore.py`、`test_hermes_steer_delivery.py` 或 `test_session_binding.py`。缺少源码配置时，在创建隔离 home 前报错。
+
+/steer 网关传输（req#136 #261）：`.venv\Scripts\python.exe -X utf8 -B scripts/test_hermes_gateway_steer.py`（纯 stdlib + mock 隔离网关）。覆盖目标定位（project+profile+kind+COALESCE(thread_id,0) 唯一 running 执行；无 → target_ended；多 → pending_verify 身份歧义，不取最大 generation）、回执映射（queued → 保持 delivering 非 inserted；rejected+delivered:False → undelivered 且按 hermes_executions.state 补原因；rejected 缺 delivered → pending_verify；stale_generation → target_ended；unsupported_control/execution_not_ready → undelivered 能力边界；permission_denied/GatewayTransportError → pending_verify）与消费证据观察 observe_session（delivering 操作匹配 OUT-OF-BAND marker + 正文 + timestamp≥run_started_at → report_consumed(inserted)；旧历史/重复正文不误归因、观察传输失败不改账本）。账本回归复用 `test_steer_ledger.py`、命令分发复用 `test_commands_dispatch.py`。真实网关链路（实际插入 + 行为改变 + 隔离/竞态）：设置 `GW_PROBE_DATA` 为当前工作区测试数据根后，`.venv\Scripts\python.exe -X utf8 -B scripts/verify_gateway_steer_live.py --backend http://127.0.0.1:<分配后端端口> --evidence <绝对证据目录>`（先 `--preflight-only` 核对 worktree/install/model）；隔离真实网关 + 运行中模型执行，验证 /steer 投递 → inserted 消费证据 → 目标 assistant 行为改变 → 资源释放，见设计 docs/design/2026-10-30-steer-transport.md。
 
 现场浏览器与安装验证：`verify_release_install.py` 必须传 `--port <分配后端端口> --debug-port <分配浏览器端口>` 以及原有目录/解释器参数；`verify_release_browser.py --url http://127.0.0.1:<分配后端端口> --debug-port <分配浏览器端口> --profile <分配浏览器目录> --report-dir <报告目录>` 核验实际监听。`verify_zindex.py --url <隔离服务origin> --project <测试项目ID>` 使用可选 `PROBE_ADMIN_PASSWORD`；`verify_hide_chain.py --url <隔离服务origin> --database <隔离数据库绝对路径>` 先核对服务 `/health` 的实际数据库，再执行测试及清理。`verify_directory_picker_live.py --port <授权隔离端口>` 或 `--isolated` 显式选择目标。所有现场地址由调用方提供，禁止将生产地址作为默认值。
 

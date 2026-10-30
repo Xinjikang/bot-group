@@ -56,12 +56,14 @@ CREATE TABLE IF NOT EXISTS hermes_session_migrations (
 
 
 def initialize(conn):
+    from . import hermes_prompt_state
     conn.executescript(SCHEMA)
+    conn.executescript(hermes_prompt_state.SCHEMA)
 
 
 def prepare(conn, *, session, project, profile, kind, thread_id, task_id, job_id,
             event_floor, source, python, home, workdir, session_id, profile_id,
-            started_at=None, parent_id=None, round_no=None):
+            started_at=None, parent_id=None, round_no=None, prompt_hash=None):
     """Commit the write-ahead identity before prompt.submit can reach the wire."""
     start = time.time() if started_at is None else started_at
     eid, submission = uuid.uuid4().hex, uuid.uuid4().hex
@@ -75,6 +77,8 @@ def prepare(conn, *, session, project, profile, kind, thread_id, task_id, job_id
     from . import auth
     conn.execute('UPDATE hermes_executions SET parent_id=?,round=?,signing_generation=? WHERE execution_id=?',
                  (parent_id, round_no, auth.signing_keys()[0], eid))
+    from . import hermes_prompt_state
+    hermes_prompt_state.stage(conn, eid, str(profile_id), str(session_id), prompt_hash)
     conn.commit()
     return read(conn, eid)
 
@@ -170,6 +174,12 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
                 state = 'cancelling'
             conn.execute('UPDATE hermes_executions SET admission_id=?,generation=?,authority_epoch=?,'
                          'state=? WHERE execution_id=?', (aid, gen, epoch, state, execution_id))
+        if status in ('queued', 'started', 'terminal'):
+            from . import hermes_prompt_state
+            if status == 'terminal' and receipt['outcome'] == 'cancelled' and gen is None and row['generation'] is None:
+                hermes_prompt_state.withdraw(conn, execution_id, 'cancelled')
+            else:
+                hermes_prompt_state.accepted(conn, execution_id)
         conn.commit()
         if status == 'terminal':
             from . import signing_keys

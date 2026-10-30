@@ -93,17 +93,16 @@ class HermesCompatibilityTests(unittest.TestCase):
         self.assertEqual(result['source'], str(self.source))
 
     @unittest.skipUnless(sys.platform == 'win32', 'Windows base64 launcher')
-    def test_gateway_ensure_receives_complete_launcher_command(self):
+    def test_gateway_pool_receives_complete_launcher_command(self):
         from engine import hermes_gateway as gateway
+        from engine import hermes_connections
         wrapper, code = self.write_launcher()
         with patch.dict(os.environ, {'HERMES_BIN': str(wrapper)}), \
-             patch.object(gateway, 'ensure', return_value={'fixture': True}) as ensure, \
-             patch.object(gateway, 'GatewayClient') as client:
+             patch.object(hermes_connections, 'acquire') as acquire:
             _, home, argv = gateway.connection('default')
         self.assertEqual(argv, [sys.executable, '-I', '-c', code])
         self.assertEqual(home, self.home)
-        ensure.assert_called_once_with(argv, self.home)
-        client.assert_called_once_with({'fixture': True})
+        acquire.assert_called_once_with(self.home, argv, callback=None, business=True)
 
     @unittest.skipUnless(sys.platform == 'win32', 'Windows launcher grammar')
     def test_launcher_rejects_extra_commands_arguments_and_invalid_payload(self):

@@ -52,6 +52,91 @@ class HudTests(unittest.TestCase):
         for table in ('messages','threads','session_bindings','wake_jobs'):
             self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM '+table).fetchone()[0],0,table)
 
+    def test_notification_classification_and_index(self):
+        item = self.session('p')
+        result = self.infer(item, {'text': '测试脚本由执行成员收尾。',
+                                   'notification': {'kind': 'pending'}})
+        self.assertEqual(result['state']['notification']['kind'], 'none')
+        self.assertEqual(result['status'], 'idle')
+        self.assertEqual(result['entries'][-1]['content']['text'], '测试脚本由执行成员收尾。')
+        listed = next(s for s in self.client.get('/hud').json()['sessions'] if s['id'] == item['id'])
+        self.assertEqual(listed['notification'], result['state']['notification'])
+        queued = hud.answer(item['id'], {'revision': result['revision'], 'text': '检查访问权限'})
+        self.assertNotIn('notification', queued['state'])
+        result = self.infer(queued, {'text': '需要管理员提供必要的访问权限。',
+            'notification': {'kind': 'user_action', 'action': '请授权资料访问，当前输入读取受阻。'}})
+        self.assertEqual(result['state']['notification']['kind'], 'user_action')
+        self.assertEqual(hud.view(item['id'])['state']['notification'], result['state']['notification'])
+
+    def test_legacy_question_is_quiet_and_invalid_action_rejected(self):
+        item = self.session()
+        result = self.infer(item, {'text': '有一个可选建议', 'question': {
+            'title': '要整理资料吗？', 'reason': '可选整理'}})
+        self.assertEqual(result['state']['notification']['kind'], 'pending')
+        for notification in ({'kind': 'user_action'}, {'kind': 'user_action', 'action': ' '},
+                             {'kind': 'urgent'}, {'kind': 'pending', 'action': 42}, True):
+            with self.subTest(notification=notification), self.assertRaises(ValueError):
+                hud.validate_response({'text': '检查结果', 'notification': notification})
+
+    def test_unlimited_cards_independent_answers_and_confirmations(self):
+        item = self.session('p')
+        cards = [{'text': f'待办 {i}', 'question': {'title': f'资料 {i} 在哪里？', 'reason': '需要登记输入'}} for i in range(13)]
+        cards[11]['notification'] = {'kind': 'user_action', 'action': '请提供外部资料位置，当前读取受阻。'}
+        cards += [{'text': '更新简介', 'proposal': {'changes': {'description': '卡片简介'}, 'facts': []}},
+                  {'text': '更新名称', 'proposal': {'changes': {'display_name': '卡片名称'}, 'facts': []}}]
+        result = self.infer(item, {'text': '已整理全部待办。', 'cards': cards})
+        self.assertEqual(len(result['state']['cards']), 15)
+        self.assertEqual(result['status'], 'waiting')
+        self.assertEqual(result['state']['notification']['kind'], 'user_action')
+        self.assertEqual(result['state']['notification']['id'], result['state']['cards'][11]['question']['id'])
+        with hud.connection() as conn:
+            self.assertEqual(len(hud.context(conn, result)['pending_cards']), 15)
+        question = result['state']['cards'][9]['question']
+        queued = hud.answer(item['id'], {'revision': result['revision'], 'question_id': question['id'], 'text': '资料目录'})
+        self.assertEqual(len(queued['state']['cards']), 14)
+        result = self.infer(queued, {'text': '已记录该项回答。'})
+        proposals = [card['proposal'] for card in result['state']['cards'] if card.get('proposal')]
+        queued = hud.accept(item['id'], {'revision': result['revision'], 'proposal_id': proposals[0]['id']})
+        result = self.infer(queued, {'text': '简介已保存。'})
+        queued = hud.accept(item['id'], {'revision': result['revision'], 'proposal_id': proposals[1]['id']})
+        result = self.infer(queued, {'text': '名称已保存。', 'cards': [
+            {'text': '同一待办', 'question': {'title': '资料 0 在哪里？', 'reason': '需要登记输入'}}]})
+        self.assertEqual(len(result['state']['cards']), 12)
+        actual = self.conn.execute("SELECT description,display_name FROM projects WHERE name='p'").fetchone()
+        self.assertEqual(tuple(actual), ('卡片简介', '卡片名称'))
+        index = next(s for s in self.client.get('/hud').json()['sessions'] if s['id'] == item['id'])
+        self.assertEqual(len(index['cards']), 12)
+
+    def test_cards_validate_permissions_and_can_be_dismissed(self):
+        for cards in ('invalid', [{'text': '缺少内容'}], [{'text': '嵌套', 'cards': []}]):
+            with self.assertRaises(ValueError):
+                hud.validate_response({'text': '检查结果', 'cards': cards})
+        item = self.session('p')
+        result = self.infer(item, {'text': '越权提案', 'cards': [
+            {'text': '换目录', 'proposal': {'changes': {'root': '/fixture/alternate'}, 'facts': []}}]})
+        self.assertEqual(result['status'], 'error')
+        self.assertFalse(result['state'].get('cards'))
+        queued = hud.answer(item['id'], {'revision': result['revision'], 'text': '继续检查'})
+        result = self.infer(queued, {'text': '两个建议', 'cards': [
+            {'text': f'备注 {i}', 'proposal': {'changes': {}, 'facts': [{'label': str(i), 'value': '资料位置'}]}}
+            for i in range(2)]})
+        first = result['state']['cards'][0]['proposal']['id']
+        queued = hud.answer(item['id'], {'revision': result['revision'], 'text': '稍后处理', 'dismiss_proposal': first})
+        self.assertEqual(len(queued['state']['cards']), 1)
+
+    def test_draft_change_invalidates_only_proposal_cards(self):
+        item = self.session()
+        result = self.infer(item, {'text': '创建准备', 'cards': [
+            {'text': '资料待办', 'question': {'title': '资料位置？', 'reason': '登记输入'}},
+            {'text': '名称建议', 'proposal': {'changes': {'display_name': '建议名称'}, 'facts': []}}]})
+        result['activity'] = time.time() - result['idle_seconds'] - 1
+        generation = result['generation']
+        hud.advance_generation(result)
+        self.assertEqual(result['generation'], generation)
+        result = hud.update(item['id'], {'revision': result['revision'], 'draft': {'display_name': '手动填写'}})
+        self.assertEqual(len(result['state']['cards']), 1)
+        self.assertTrue(result['state']['cards'][0]['question'])
+
     def test_question_without_options_accepts_free_text(self):
         item=self.session()
         result=self.infer(item,{'text':'先确定项目目标','question':{
