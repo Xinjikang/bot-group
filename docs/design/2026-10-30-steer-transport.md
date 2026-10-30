@@ -130,12 +130,12 @@ git show v0.22.5:gateway/session_busy_controls.py
 引擎存在两套 generation，语义不同、不可混用：
 
 - `hermes_executions.generation` = 网关 admission receipt 的 `execution_generation`，用于 `session.steer` / `session.interrupt` 的精确运行绑定。
-- `session_bindings.generation` = 引擎 `/new` 会话切换计数（每次切换递增），用于会话级失效判定。
+- `session_bindings.generation` = 引擎 `/new` 会话切换计数（每次切换递增），用于 `/new` 并发校验与使旧运行迟到回写被拒，不用于 steer 失效判定。
 
 `steer_operations.generation` 在投递时绑定的是**网关 execution_generation**（来自 hermes_executions.generation），不是 session_bindings.generation。`steer_ledger.reconcile_targets` 现行实现将 `steer_operations.generation` 与 `session_bindings.generation` 直接比较判定 generation_stale，属代际混用、会误判。实现须分开对账：
 
 - 投递精确绑定：用 hermes_executions.generation（网关 execution_generation），`session.steer` 的 `stale_generation` 回执据此判定；
-- `/new` 失效：用 session_bindings.generation 判跨 `/new` 失效（旧运行纠偏作废）；
+- 会话级失效：由目标 run 生命周期判定——`/new`（switch_session）前 busy_check（session_busy）拒绝目标有 running 执行的情况，故 `/new` 换会话时旧 run 必已结束（wake_runs.ended_at 已置），`reconcile_targets` 按 run_started_at → wake_runs.ended_at 判目标结束/待核实，无需再比对 session_bindings.generation；
 - 两套代际分别对账，不交叉比较。
 
 ## 5. 验收标准（对应 req#136 acceptance）
