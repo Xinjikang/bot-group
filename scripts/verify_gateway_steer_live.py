@@ -183,8 +183,16 @@ def verify(args):
     endpoint = None
     initial = None
     try:
-        endpoint = ensure(command, home, env=env, timeout=120)
+        endpoint = ensure(command, home, env=env, timeout=300)
         env["STEER_PROBE_ENDPOINT"] = json.dumps(endpoint)
+        # 网关 ensure 完成后再对齐入口/源码（避免 ensure 把 home/hermes-agent junction 误判为
+        # 待准备的源码触发 source-update 依赖安装）：复制 task-250 入口 + junction 指向 worktree
+        # 源码根，使 serve() 子进程 source_directory 解析到 WORKTREE_SRC、code_sha 与网关一致。
+        (home / "bin").mkdir(exist_ok=True)
+        shutil.copy2(probe.HERMES_HOME / "bin" / "hermes.exe", home / "bin" / "hermes.exe")
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(home / "hermes-agent"), str(probe.WORKTREE_SRC)],
+                       check=True, capture_output=True,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         with (evidence / "boot.log").open("wb") as log:
             initial = subprocess.Popen([sys.executable, "-X", "utf8", "-B", __file__, "--serve", "--backend", url],
                                       cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
@@ -275,9 +283,27 @@ def verify(args):
             if initial is not None:
                 initial.wait(timeout=10)
             if endpoint:
-                subprocess.run(command + ["gateway", "stop", "--yes"], env=env,
-                               capture_output=True, text=True, encoding="utf-8", timeout=60,
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                stopped = False
+                try:
+                    r = subprocess.run(command + ["gateway", "stop", "--yes"], env=env,
+                                       capture_output=True, text=True, encoding="utf-8", timeout=60,
+                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                    stopped = r.returncode == 0
+                except subprocess.TimeoutExpired:
+                    stopped = False
+                if not stopped:
+                    # 优雅停止被 source-update 依赖同步阻塞/超时：按 gateway.pid 强制终止，保证资源释放
+                    result["gateway_stop_forced"] = True
+                    pid_file = home / "gateway.pid"
+                    if pid_file.exists():
+                        try:
+                            pid = json.loads(pid_file.read_text(encoding="utf-8", errors="replace")).get("pid")
+                            if isinstance(pid, int):
+                                subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                                               capture_output=True, timeout=30,
+                                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                        except (OSError, ValueError):
+                            pass
             with socket.socket() as check:
                 result["resources_released"] = check.connect_ex((target.hostname, target.port)) != 0
             client.close()
