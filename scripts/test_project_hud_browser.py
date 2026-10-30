@@ -79,7 +79,9 @@ def main():
         page.locator('#hud-toggle').click()
         page.locator('#hud-input').fill('需求放在 specs-v2，原型放在 design-sketches。')
         page.reload()
+        page.locator('#hud-toggle').click()
         page.wait_for_selector('#hud-input')
+        page.wait_for_function("document.querySelector('#hud-input').value.includes('specs-v2')")
         assert 'specs-v2' in page.locator('#hud-input').input_value()
         page.locator('.hud-option').first.click()
         page.wait_for_selector('.hud-proposal',timeout=20000)
@@ -95,6 +97,7 @@ def main():
             assert page.locator(selector).last.evaluate("e=>{const a=e.getBoundingClientRect(),b=document.querySelector('.hud-scroll').getBoundingClientRect();return a.top>=b.top&&a.bottom<=b.bottom}")
         page.screenshot(path=str(args.evidence/'hud-conversation.png'))
         page.reload()
+        page.locator('#hud-toggle').click()
         page.wait_for_selector('.hud-proposal')
         assert page.locator('.hud-option').count()==0
         assert '以下建议尚未保存' in page.locator('.hud-proposal').inner_text()
@@ -244,6 +247,7 @@ def main():
                 route.fulfill(response=response)
         page.route(re.compile(r'/hud/[^/?]+$'),free_text_question)
         page.reload()
+        page.locator('#hud-toggle').click()
         page.wait_for_selector('.hud-question')
         assert page.locator('.hud-option').count()==0
         assert page.locator('#hud-input').is_enabled()

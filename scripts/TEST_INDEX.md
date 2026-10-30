@@ -1,5 +1,11 @@
 # 测试脚本索引
 
+HUD 多待办卡片：`scripts.test_project_hud` 验证 15 张卡片持久化、完整上下文、逐项回答和确认、独立字段连续保存、去重、越权校验及单项暂不处理。`test_hud_notifications_browser.py` 同时展示 9 张问题卡与 6 张提案卡，验证第 9 个问题和第 6 个提案可独立处理，其他卡片继续显示，正文仍最多两条。卡片数量不设上限，使用面板滚动查看。
+
+HUD 本轮消息：`test_hud_notifications_browser.py --evidence <主目录报告目录>` 额外验证最多两条、用户优先且字号 12px、旧消息与系统记录隐藏、新发送成功立即清除上一轮回复、新回复替换。复用隔离预览的 `test_project_hud_browser.py` 检查提问、确认与使用说明卡片保持完整交互。
+
+HUD 提醒分级：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud scripts.test_hud_gateway -q` 验证提醒分类、必要行动说明、历史问题静默兼容、持久化与会话列表。使用已安装 Playwright 的 Python 运行 `python -X utf8 -B scripts/test_hud_notifications_browser.py --evidence <主目录报告目录>`，以合成 API 和当前前端资产验证普通待办/问题/提案保持收起、明确行动自动展开、手动收起后刷新保持安静、新行动触发、保留正在阅读的面板、跨项目提醒及桌面/390px。脚本拦截全部页面请求，结束关闭自身浏览器，无模型和业务服务调用。
+
 连续唤醒前缀：`python -X utf8 -B scripts/verify_wake_prefix.py --runtime <codex|hermes-subprocess|hermes-gateway> --kind <work|chat> --mcp-python <安装项目依赖的Python绝对路径> --evidence <主目录报告下的新目录>`；Codex 追加 `--codex-bin <原生Codex可执行文件>`，Hermes 使用其依赖解释器并追加 `--hermes-source <Hermes源码绝对目录>`。临时 home/工作区/数据库、随机回环模型端点、真实 MCP 工具枚举；每场景同 sid 两轮并改变信号与合成凭据。保存原始请求、规则正文、system/developer 文本、完整有序 schema 和 SHA-256；Hermes 延迟工具同时保存完整发现 manifest，第二轮禁止重新构建 system。Codex 使用真实 exec/resume；Hermes 使用真实 AIAgent/SessionDB 与子进程/网关命名，网关 WS admission 另由既有回归覆盖。无外部模型调用或业务工具调用，测试结束关闭模型服务、MCP 及临时资源。适配层回归：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_runtime_fork scripts.test_hermes_prompt_state scripts.test_hermes_gateway scripts.test_hermes_connections -q`，覆盖连续唤醒、共享白名单和 Hermes work/chat overlay 中的 `operation_get`。
 
 Hermes 提示词持久化判重：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_prompt_state scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway_migration scripts.test_hermes_connections scripts.test_session_readonly scripts.test_member_session_reset scripts.test_engine_shutdown scripts.test_hud_gateway -q`；另执行 `python -X utf8 -B scripts/test_session_switch.py`。隔离 SQLite、真实 Pool/Lease 和模拟 RPC 覆盖首建、连续相同配置、A→B→A、老会话及迁移补齐、/new、跨 profile/session 隔离、重开数据库、未知首回执、admission 对账、未提交、非法/重复/迟到回执、事务回滚和 rewind 后恢复前一版本。出站断言核对规则正文与动态信号分离，原生返回不含 client_env；模型调用为零。签名轮换集成另复用 `scripts.test_signing_keys`，Windows ACL 用例需要执行用户可设置独占 ACL 的隔离临时目录。

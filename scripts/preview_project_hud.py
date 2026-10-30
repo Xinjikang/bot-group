@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 def fixture_response(bot, context):
     latest=(context.get('history') or [{}])[-1].get('text','')
     if latest=='把简介改成用于测试的简介':
-        return {'text':'建议更新简介，确认后保存。','proposal':{
+        return {'text':'建议更新简介，确认后保存。','notification':{'kind':'user_action','action':'请确认本次要求修改的简介，确认后保存。'},'proposal':{
             'reason':'按本次输入调整项目说明。','changes':{'description':'用于测试的简介'},'facts':[]}}
     if '怎么更换维护助手' in latest:
         return {'text':'可以直接在 HUD 里更换，当前项目的维护记录会保留。','guide':{
@@ -25,7 +25,8 @@ def fixture_response(bot, context):
             'changes': {}, 'facts': [{'label': '需求资料来源', 'value': decisions[-1]['answer']}]}}
     if context.get('facts'):
         return {'text': '资料约定已经保存。接下来想完善哪一部分？'}
-    return {'text': '我们先把需求资料准备好，再确定下一步。', 'question': {
+    return {'text': '我们先把需求资料准备好，再确定下一步。',
+        'notification': {'kind':'user_action','action':'请提供本次项目的需求资料来源，便于确定项目输入。'}, 'question': {
         'title': '这次项目的需求资料准备到哪一步了？',
         'reason': '确认资料来源后，才能把目录用途和后续准备工作整理清楚。你也可以直接输入自己的情况。',
         'options': ['已有完整文档，直接登记位置（推荐）', '资料分散，需要先整理', '还没有资料，先讨论项目目标']}}

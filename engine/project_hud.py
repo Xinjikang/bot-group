@@ -77,6 +77,7 @@ def add_entry(conn, item, role, content):
 
 def advance_generation(item):
     if (item['status'] != 'running' and not item['state'].get('proposal')
+            and not any(c.get('proposal') for c in item['state'].get('cards', []))
             and time.time() - item['activity'] > item['idle_seconds']):
         item['generation'] += 1
         item['activity'] = time.time()
@@ -126,6 +127,7 @@ def store(conn, item, *, queue=False, activity=True):
         item['status'] = 'queued' if item['bot_id'] else 'idle'
         item['error'] = ''
         item['state'].pop('progress', None)
+        item['state'].pop('notification', None)
     conn.execute('UPDATE hud_sessions SET state=?,bot_id=?,stage=?,generation=?,status=?,error=?, '
                  'activity=?,updated=?,revision=revision+1,idle_seconds=? WHERE id=?',
                  (encode(item['state']), item['bot_id'], item['stage'], item['generation'], item['status'],
@@ -160,6 +162,7 @@ def update(sid, body):
                 raise HTTPException(400, '项目草稿格式错误或超过限制')
             if body['draft'] != item['state'].get('draft'):
                 item['state'].pop('proposal', None)
+                item['state']['cards'] = [c for c in item['state'].get('cards', []) if not c.get('proposal')]
             item['state']['draft'] = body['draft']
         if 'stage' in body:
             if body['stage'] not in STAGES:
@@ -176,20 +179,31 @@ def answer(sid, body):
         raise HTTPException(400, '请填写 1 至 12000 字的回答')
     with _LOCK, connection() as conn:
         item = checked(conn, sid, body['revision'])
-        question = item['state'].get('question')
-        if body.get('question_id') != (question or {}).get('id'):
-            raise HTTPException(409, '当前问题已变化，请核对后再提交')
+        card = next((c for c in item['state'].get('cards', [])
+                     if (c.get('question') or {}).get('id') == body.get('question_id') and body.get('question_id')), None)
+        question = card['question'] if card else item['state'].get('question')
         dismissed = body.get('dismiss_proposal')
         if dismissed:
-            proposal = item['state'].get('proposal')
+            question = None
+        if body.get('question_id') != (question or {}).get('id'):
+            raise HTTPException(409, '当前问题已变化，请核对后再提交')
+        if dismissed:
+            proposal_card = next((c for c in item['state'].get('cards', []) if (c.get('proposal') or {}).get('id') == dismissed), None)
+            proposal = proposal_card['proposal'] if proposal_card else item['state'].get('proposal')
             if not proposal or proposal['id'] != dismissed:
                 raise HTTPException(409, '配置提案已变化')
-            item['state'].pop('proposal')
+            if proposal_card:
+                item['state']['cards'].remove(proposal_card)
+            else:
+                item['state'].pop('proposal')
             item['activity'] = time.time()
         if question:
             decisions = item['state'].setdefault('decisions', [])
             decisions.append({'question': question['title'], 'answer': text})
-            item['state'].pop('question')
+            if card:
+                item['state']['cards'].remove(card)
+            else:
+                item['state'].pop('question')
         advance_generation(item)
         add_entry(conn, item, 'user', {'text': text})
         return store(conn, item, queue=True)
@@ -214,6 +228,7 @@ def bind(sid, request_id):
         conn.execute('UPDATE hud_sessions SET project=? WHERE id=?', (project, sid))
         item['project'], item['stage'] = project, 'maintenance'
         item['state'].pop('proposal', None)
+        item['state']['cards'] = [c for c in item['state'].get('cards', []) if not c.get('proposal')]
         share_facts(conn, item)
         return store(conn, item, queue=item['status'] != 'paused')
 
@@ -230,16 +245,17 @@ def accept(sid, body):
         item = checked(conn, sid, body['revision'])
         if item['status'] in ('queued', 'running'):
             raise HTTPException(409, '助手正在处理补充，请等待回复后确认提案')
-        proposal = item['state'].get('proposal')
+        card = next((c for c in item['state'].get('cards', []) if (c.get('proposal') or {}).get('id') == body['proposal_id']), None)
+        proposal = card['proposal'] if card else item['state'].get('proposal')
         if not proposal or proposal['id'] != body['proposal_id']:
             raise HTTPException(409, '配置提案已变化')
         changes = proposal['changes']
         if item['project']:
-            actual = conn.execute('SELECT display_name,description FROM projects WHERE name=?', (item['project'],)).fetchone()
-            if dict(actual) != proposal.get('base_project'):
-                raise HTTPException(409, '项目配置已被其他操作修改，请重新检查')
             if set(changes) - {'display_name', 'description'}:
                 raise HTTPException(400, '此变更需要在项目设置中完成')
+            actual = conn.execute('SELECT display_name,description FROM projects WHERE name=?', (item['project'],)).fetchone()
+            if any(actual[key] != proposal.get('base_project', {}).get(key) for key in changes):
+                raise HTTPException(409, '项目配置已被其他操作修改，请重新检查')
             for key, value in changes.items():
                 conn.execute(f'UPDATE projects SET {key}=? WHERE name=?', (value, item['project']))
         else:
@@ -253,7 +269,10 @@ def accept(sid, body):
         if proposal['facts']:
             saved_text += ('，并保存项目备注' if saved_text else '已保存项目备注')
         add_entry(conn, item, 'system', {'text': saved_text, 'proposal': proposal})
-        item['state'].pop('proposal')
+        if card:
+            item['state']['cards'].remove(card)
+        else:
+            item['state'].pop('proposal')
         item['activity'] = time.time()
         result = store(conn, item, queue=True)
         events.bus.publish('project.updated', {'project': item['project']})
@@ -313,13 +332,32 @@ def context(conn, item):
             'materials': materials, 'inspection': hud_inspection.inspect(config, materials), 'facts': state.get('facts', []),
             'deferred_questions': state.get('deferred_questions', [])[-12:],
             'pending_proposal': state.get('proposal'),
+            'pending_cards': state.get('cards', []),
             'decisions': state.get('decisions', [])[-60:], 'history': history,
             'allowed_changes': sorted({'display_name', 'description'} if item['project'] else DRAFT_FIELDS)}
 
 
 def validate_response(value):
-    if not isinstance(value, dict) or set(value) - {'text', 'question', 'proposal', 'guide'}:
+    if not isinstance(value, dict) or set(value) - {'text', 'question', 'proposal', 'guide', 'notification', 'cards'}:
         raise ValueError('AI 返回格式无效，请重试')
+    cards = value.get('cards', [])
+    if not isinstance(cards, list):
+        raise ValueError('AI 待办卡片格式无效')
+    for card in cards:
+        if (not isinstance(card, dict) or set(card) - {'text', 'question', 'proposal', 'notification'}
+                or bool(card.get('question')) == bool(card.get('proposal'))):
+            raise ValueError('每张待办卡片须包含一个问题或提案')
+        validate_response(card)
+    notification = value.get('notification')
+    if notification is not None:
+        if (not isinstance(notification, dict) or set(notification) - {'kind', 'action'}
+                or notification.get('kind') not in ('none', 'pending', 'user_action')):
+            raise ValueError('AI 提醒分类无效')
+        action = notification.get('action', '')
+        if not isinstance(action, str) or len(action) > 1200:
+            raise ValueError('AI 提醒行动说明无效')
+        if notification['kind'] == 'user_action' and not action.strip():
+            raise ValueError('需要用户行动的提醒必须说明具体行动')
     text = value.get('text', '')
     if not isinstance(text, str) or not text.strip() or len(text) > 6000:
         raise ValueError('AI 回复正文无效')
@@ -425,21 +463,22 @@ def run_one(sid):
             response = respond(bot, payload)
         progress('stage', '正在整理检查结果')
         response = validate_response(response)
-        proposal = response.get('proposal')
-        if proposal and set(proposal['changes']) - set(payload['allowed_changes']):
-            raise ValueError('此配置需要通过项目设置修改')
-        if proposal:
-            before = {key: payload['project'].get(key) or '' for key in proposal['changes']}
-            proposal['changes'] = {key: value for key, value in proposal['changes'].items() if value != before[key]}
-            previous_facts = {fact['label']: fact['value'] for fact in payload['facts']}
-            proposal['facts'] = [fact for fact in proposal['facts'] if previous_facts.get(fact['label']) != fact['value']]
-            proposal['before'] = before
-            proposal['before_facts'] = previous_facts
-            if not proposal['changes'] and not proposal['facts']:
-                response['proposal'] = proposal = None
-                response['text'] = '这些内容与当前配置和项目备注一致，已核对完成。'
-        if proposal and item['project']:
-            proposal['base_project'] = {k: payload['project'][k] for k in ('display_name', 'description')}
+        for result in [response, *response.get('cards', [])]:
+            proposal = result.get('proposal')
+            if proposal and set(proposal['changes']) - set(payload['allowed_changes']):
+                raise ValueError('此配置需要通过项目设置修改')
+            if proposal:
+                before = {key: payload['project'].get(key) or '' for key in proposal['changes']}
+                proposal['changes'] = {key: value for key, value in proposal['changes'].items() if value != before[key]}
+                previous_facts = {fact['label']: fact['value'] for fact in payload['facts']}
+                proposal['facts'] = [fact for fact in proposal['facts'] if previous_facts.get(fact['label']) != fact['value']]
+                proposal['before'] = before
+                proposal['before_facts'] = previous_facts
+                if not proposal['changes'] and not proposal['facts']:
+                    result['proposal'] = proposal = None
+                    result['text'] = '这些内容与当前配置和项目备注一致，已核对完成。'
+            if proposal and item['project']:
+                proposal['base_project'] = {k: payload['project'][k] for k in ('display_name', 'description')}
         error = ''
     except Exception as exc:
         response, error = None, str(exc)[:1500]
@@ -457,7 +496,24 @@ def run_one(sid):
                 elif key != 'proposal':
                     current['state'].pop(key, None)
             add_entry(conn, current, 'assistant', response)
-            current['status'], current['error'] = ('waiting' if current['state'].get('question') or current['state'].get('proposal') else 'idle'), ''
+            cards = current['state'].setdefault('cards', [])
+            def card_key(card):
+                value = card.get('question') or card.get('proposal') or {}
+                return encode({k: v for k, v in value.items() if k in ('title', 'reason', 'options', 'changes', 'facts')})
+            existing = {card_key(card) for card in cards}
+            for card in response.get('cards', []):
+                if (card.get('question') or card.get('proposal')) and card_key(card) not in existing:
+                    cards.append(card)
+                    existing.add(card_key(card))
+            notification = response.get('notification') or {'kind': 'none'}
+            urgent = next((c for c in cards if (c.get('notification') or {}).get('kind') == 'user_action'), None)
+            if notification['kind'] != 'user_action' and urgent:
+                notification = urgent['notification']
+            if notification['kind'] == 'none' and (current['state'].get('question') or current['state'].get('proposal') or cards):
+                notification = {'kind': 'pending'}
+            pending = ((urgent.get('proposal') or urgent.get('question')) if urgent else None) or current['state'].get('proposal') or current['state'].get('question') or {}
+            current['state']['notification'] = {**notification, 'id': pending.get('id') or uuid.uuid4().hex}
+            current['status'], current['error'] = ('waiting' if current['state'].get('question') or current['state'].get('proposal') or cards else 'idle'), ''
         current['activity'] = time.time()
         store(conn, current)
 
