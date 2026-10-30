@@ -2,7 +2,7 @@
 
 ## 范围
 
-本方案只改 Hermes 网关 WS 执行路径（`engine/hermes_gateway*.py`、`engine/hermes_connections.py`），解决同一会话内 agent 每轮被重建的问题。子进程执行路径（`engine/wake.py` 的 subprocess 通道）不涉及本方案，保持原样。
+本方案主要改 Hermes 网关 WS 执行路径（`engine/hermes_gateway*.py`、`engine/hermes_connections.py`），并扩展共用模块的网关会话分支（`engine/wake.py` 分流点、`engine/auth.py`/`engine/access.py`/`mcp/server.py`），解决同一会话内 agent 每轮被重建的问题。子进程执行路径保持现有契约不变。
 
 ## 背景与根因
 
@@ -22,12 +22,36 @@
 
 把 MCP 配置、订阅与授权的清理时机，从「每轮完成」提升到「会话生命周期」。每轮仍保留独立的执行记录（调度、取消、记账的粒度），同一会话跨轮复用 agent、MCP 连接与订阅。
 
-### 会话生命周期
+### 会话身份
 
-1. **会话首次接入**：建立 gateway session、配置 MCP、绑定会话授权并保留订阅。
-2. **后续唤醒**：复用已有会话，只提交新消息；沿用现有 busy 检查（`hermes_gateway.py:123-133`）与同会话唯一非终态执行约束（`hermes_gateway_ledger.py` 唯一索引）保证串行，B 在 A 终态后才提交。
-3. **执行终态收尾**：只更新执行账本、消息处理进度并调度后续消息；不 `clear_mcp`、不撤销会话授权、不 detach。
-4. **会话关闭 / 撤销权限 / 资源回收**：走独立生命周期，此时才清理 MCP 配置、释放订阅与连接、回收 agent。
+- 复用现有会话绑定 `session_bindings` 表：键 `(project, bot_id, kind, thread_id)`，值为 `session_id` + `runtime` + `generation`。WS 路径沿用该绑定解析 Hermes 会话。
+- 稳定上下文字段：`profile`、`project`、`thread_id`、`session`，不含逐执行的 `wake_started_at`。
+- 服务端区分凭据类型：新增「会话凭据」（session_token，绑定上述会话字段、会话级固定），与子进程 `execution_token`（绑定 `wake_started_at` + `signing_generation`、逐执行）并存。校验时按凭据携带的类型字段走对应分支。
+- 失效：会话关闭、移除成员或撤销权限时，标记会话记录失效并撤销对应 session_token；此后携带该凭据的请求一律拒绝。
+
+### 消息/任务记账
+
+网关分支的 MCP 工具（`group_send`、`_task_call` 等）携带 session_token，不再携带逐执行的 `wake_started_at`。处理规则：
+
+1. 服务端先验会话授权（session_token 有效、会话归属与项目/话题权限匹配），再验业务执行条件。
+2. 定位唯一活跃执行：按 `(project, bot_id, kind, thread_id)` 查 `hermes_executions` 中该会话唯一非终态执行；命中则本次操作关联到该执行。
+3. 无活跃执行（会话空闲）时拒绝：空闲状态下 bot 不该调用工具，视为迟到或异常调用，不做「查当前执行补齐」。
+
+授权有效性（凭据 + 归属 + 权限）与业务操作条件（存在活跃执行 + 状态非终态）分层校验，终态或已停止执行拒绝写入。
+
+### 生命周期
+
+| 阶段 | 接口/动作 | 持久状态 |
+| --- | --- | --- |
+| 首次接入 | `session.create` + `editor_mcp` 配置 + 签发 session_token + 保留订阅 | 写入 `session_bindings`；签发会话凭据 |
+| 后续唤醒 | 复用会话，`prompt.submit` 提交新消息 | 新增一条 `hermes_executions` 执行记录 |
+| 普通终态 | 更新执行账本 + 消息处理进度，调度后续消息 | 执行终态；进度落库；不清理会话资源 |
+| 取消 | `session.interrupt` / `prompt.cancel` 打断当前回答 | 写 `cancel_reason`；会话授权保留、下一轮可继续 |
+| 空闲释放 | 连接池空闲回收（`hermes_connections.py` 600s）+ agent 缓存 TTL/LRU | 释放连接与 agent，会话记录保留、可 resume |
+| 显式关闭 | 撤销 session_token → `session.detach` → `release_editor_mcp` → agent 回收 | 会话失效、资源释放 |
+| 引擎重启 | `recover()` 恢复账本/回执 → 重新关联会话与订阅 → 旧凭据交接 | 账本/回执持久；凭据按代次轮换 |
+
+空闲释放与显式关闭分开：空闲释放只回收连接与 agent（会话记录保留，再次接入时重新建立订阅）；显式关闭才撤销授权（会话失效，不可 resume）。重启旧凭据交接点：旧签名代在全部关联旧执行终态后退役，正常消息往返不换证。
 
 ### 具体改动点
 
@@ -58,10 +82,10 @@ MCP 服务（`mcp/server.py`）配套改为识别稳定的会话身份，不再�
 
 **网关 WS 路径**：
 
-1. 同一会话连续两轮，agent 构建次数为 1（复用），第二轮不重建。
+1. 同一会话连续两轮，agent 构建次数为 1（复用），第二轮不重建；前提为同配置（model/reasoning/toolset 不变）且在 agent 缓存保留期内（未超 idle TTL / LRU cap）。
 2. MCP 进程启动次数不随轮次增加（连接复用）。
 3. 停止/取消：`session.interrupt`/`prompt.cancel` 打断当前回答，会话授权保留、下一轮可继续。
-4. 会话关闭、移除成员、撤销权限后，MCP 连接释放、agent 回收。
+4. 会话关闭、移除成员、撤销权限后：撤销 session_token、`session.detach` 释放 MCP 连接，agent 由 Hermes 缓存回收策略（idle TTL / LRU cap）回收。
 5. 引擎重启：旧凭据会话完成交接后退役，订阅与执行跟踪按账本/回执恢复。
 6. 串行：A 执行中 B 留在队列，A 终态后才提交 B。
 
