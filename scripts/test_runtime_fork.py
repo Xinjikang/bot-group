@@ -266,6 +266,7 @@ class RuntimeForkTests(unittest.TestCase):
                         or (isinstance(func, ast.Name) and func.id == '_cond_tool')):
                     registered.add(node.name)
         self.assertIn('req_update', registered)
+        self.assertIn('operation_get', registered)
         for chat in (False, True):
             with self.subTest(chat=chat):
                 config = tomlkit.parse(wake._codex_mcp_config('default', 'bot-group', chat=chat)[1])
@@ -273,6 +274,42 @@ class RuntimeForkTests(unittest.TestCase):
                 self.assertEqual(set(server['enabled_tools']), registered)
                 self.assertEqual(set(server['tools']), registered)
                 self.assertEqual(server['env']['HERMES_CHAT_MODE'], '1' if chat else '0')
+
+    def test_consecutive_codex_wakes_keep_rules_with_distinct_signals(self):
+        bot_id = self._register_bot()
+        self.conn.execute(
+            "INSERT INTO session_bindings(project, bot_id, profile, kind, thread_id, "
+            "session_id, runtime, generation, switching, title, updated_at) "
+            "VALUES('bot-group', ?, 'default', 'work', 0, 'stable-thread', 'codex', 0, 0, '', ?)",
+            (bot_id, db.now_iso()))
+        self.conn.commit()
+        captures = []
+        for signal in ('wake-one', 'wake-two'):
+            result, cap = self._spawn_capture(signal=signal)
+            self.assertTrue(result['ok'], result)
+            self._assert_developer_context(cap['cmd'], 'work')
+            self.assertEqual(cap['cmd'][-1], signal)
+            captures.append(cap)
+        values = [[arg for arg in cap['cmd'] if arg.startswith('developer_instructions=')]
+                  for cap in captures]
+        self.assertEqual(values[0], values[1])
+
+    def test_hermes_overlay_includes_operation_get_in_both_modes(self):
+        import importlib
+        mcp_runtime = importlib.import_module('engine.mcp_runtime')
+        self.conn.execute(
+            "INSERT INTO threads(id, project, title, status, turn_profile, creator, members, created_at, last_active_at) "
+            "VALUES(123, 'bot-group', 't', 'open', 'default', 'default', '[\"default\"]', ?, ?)",
+            (db.now_iso(), db.now_iso()))
+        self.conn.commit()
+        for kind in ('work', 'chat'):
+            with self.subTest(kind=kind), patch.object(mcp_runtime, 'hermes_overlay',
+                                                      wraps=mcp_runtime.hermes_overlay) as overlay:
+                result, _ = self._spawn_capture(kind=kind, thread_id=123 if kind == 'chat' else None)
+                self.assertTrue(result['ok'], result)
+                server = overlay.call_args.args[0]
+                self.assertIn('operation_get', server['tools']['include'])
+                self.assertEqual(server['tools']['include'], list(wake._MCP_TOOLS))
 
     # ---------- env 注入 ----------
 

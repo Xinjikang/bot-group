@@ -72,6 +72,8 @@ AGENTS.md、SOUL 和记忆通过用户主动 `/new` 刷新。v0.22.5 在同 sid 
 
 空闲会话通过新的 viewer 恢复时，profile 配置派生的 max_turns、checkpoints 和 terminal 字段重新计算；删除配置恢复原生默认值，显式选择的 cwd/workspace 保持。普通 CLI 会话的配置派生 toolsets 随配置刷新。editor MCP 会话的工具集随 editor manifest 冻结；引擎每轮通过 editor_mcp mutation 更新 MCP 工具描述和集合。
 
+固定配置的连续唤醒验证使用 `scripts/verify_wake_prefix.py`，保存模型实际请求中的 system/developer 文本、工具 schema 和 SHA-256。Hermes 延迟加载工具时额外记录完整 MCP manifest；配置与凭据的传输对象不作为 schema 哈希输入。共享 `_MCP_TOOLS` 包含只读对账工具 `operation_get`，Codex `enabled_tools` 和 Hermes 子进程 `tools.include` 同步使用该列表。验证边界见[前缀验证设计](../design/2026-10-30-wake-prefix-verification.md)。
+
 `verify_gateway_refresh_live.py` 在隔离 home 中通过公开协议执行配置刷新和模型调用。配置字段以只读的已提交 policy 回执核验；规则与工具描述以模型最终回答及实际 tool_search 结果核验。policy 回执证明派生值变化，max_turns 耗尽和 checkpoint 文件生成属于独立运行行为验证。
 
 ## 签名密钥与逐执行撤销

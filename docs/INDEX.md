@@ -12,6 +12,8 @@ Hermes WS 连接复用、业务空闲回收和顶栏全局状态见 [连接复�
 
 Hermes 系统层与用户层规则判重、admission 记账及旧会话补齐见 [提示词持久化判重](design/2026-10-30-hermes-prompt-dedup.md)。
 
+Codex 与 Hermes 连续唤醒的规则正文、原生系统文本和工具 schema 哈希验证见 [前缀验证设计](design/2026-10-30-wake-prefix-verification.md)。共享工具白名单包含 `operation_get`，同时覆盖 Codex 与 Hermes 子进程。
+
 网页授权卡片的范围、身份校验及双端处理规则见 [Hermes 授权卡片设计](design/2026-10-29-hermes-approvals.md)。
 
 Hermes 新旧会话接口、安装定位和兼容提示见 [Hermes 兼容性](engineering/HERMES-COMPATIBILITY.md) 与 [设计依据](design/2026-10-27-hermes-compatibility.md)。
