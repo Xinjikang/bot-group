@@ -1354,6 +1354,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 .tm-in  { background: var(--tint-ok); color: var(--ok); }
 .tm-out { background: var(--tint-gray); color: var(--fg-2); }
 .tm-row button { border: none; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; background: var(--card); color: var(--fg); border: 1px solid var(--border); }
+.tm-row button:disabled { opacity: .5; cursor: not-allowed; }
 /* hidden 属性对显式 display 元素失效（display:flex 覆盖）——统一硬规则 */
 [hidden]{display:none !important}
 /* 「全部项目」下拉窗行（切换/归档） */
@@ -3263,41 +3264,74 @@ $("#dlg-members-close").addEventListener("click", () => closeDialogAnchored($("#
 $("#dlg-tm-close").addEventListener("click", () => closeDialogAnchored($("#dlg-thread-members")));
 
 // 话题成员管理（需求1a：threads.members 增删——加 bot 立即唤醒看历史、删 bot 清 pending 由引擎做）
+let threadMembersRequest = 0;
+
 function openThreadMemberDlg(t, triggerEl) {
+  const dlg = $("#dlg-thread-members");
+  if (dlg.__outsideCloser) document.removeEventListener('click', dlg.__outsideCloser, true);
   $("#tm-thread-title").textContent = `话题「${t.title}」· ${safeJSON(t.members, []).length} 位成员`;
-  renderThreadMemberList(t);
-  openDialogAnchored($("#dlg-thread-members"), triggerEl);
+  openDialogAnchored(dlg, triggerEl);
+  loadThreadMemberList(t);
 }
 
-function renderThreadMemberList(t) {
+async function loadThreadMemberList(t) {
+  const request = ++threadMembersRequest;
+  const box = $("#thread-member-list");
+  box.textContent = '正在读取项目成员…';
+  try {
+    if (!t.project) throw new Error('话题缺少所属项目');
+    const data = await api(`/members?project=${encodeURIComponent(t.project)}&enrolled_only=true`, { cache: 'no-store' });
+    if (request !== threadMembersRequest || !$("#dlg-thread-members").open) return;
+    renderThreadMemberList(t, data.members || [], request);
+  } catch (err) {
+    if (request !== threadMembersRequest || !$("#dlg-thread-members").open) return;
+    box.textContent = `项目成员读取失败：${err.message} `;
+    const retry = document.createElement('button');
+    retry.textContent = '重试';
+    retry.addEventListener('click', () => loadThreadMemberList(t));
+    box.appendChild(retry);
+  }
+}
+
+function renderThreadMemberList(t, members, request) {
   const box = $("#thread-member-list");
   box.innerHTML = "";
   const inThread = new Set(safeJSON(t.members, []));
-  if (!S.members.length) {
-    box.innerHTML = '<div style="padding:20px;text-align:center;color:var(--fg-2)">花名册为空</div>';
+  const bots = members.filter(m => m.profile !== 'user');
+  if (!bots.length) {
+    box.innerHTML = '<div style="padding:20px;text-align:center;color:var(--fg-2)">本项目暂无 Bot 成员</div>';
     return;
   }
-  for (const m of S.members) {
-    if (m.profile === "user") continue; // 内置 user 具有所有话题的访问权限。
+  for (const m of bots) {
     const isMember = inThread.has(m.profile);
     const row = document.createElement("div");
     row.className = "tm-row";
     row.innerHTML = `
       <span class="tm-name">${esc(memberDisplayName(m))} <span class="m-profile">${esc(memberHostProfile(m))}</span></span>
-      <span class="tm-state ${isMember ? "tm-in" : "tm-out"}">${isMember ? "在话题" : "不在"}</span>
-      <button data-profile="${esc(m.profile)}" data-join="${isMember ? 0 : 1}">${isMember ? "移出" : "加入"}</button>`;
+      <span class="tm-state ${isMember ? "tm-in" : "tm-out"}">${isMember ? "在话题" : "不在"}${m.active ? '' : ' · 已停用'}</span>
+      <button data-profile="${esc(m.profile)}" data-join="${isMember ? 0 : 1}" ${!isMember && !m.active ? 'disabled title="请先在项目成员设置中启用"' : ''}>${isMember ? "移出" : "加入"}</button>`;
     row.querySelector("button").addEventListener("click", async (e) => {
       const p = e.target.dataset.profile;
       const join = e.target.dataset.join === "1";
       const verb = join ? "加入" : "移出";
       if (!join && !await showConfirm(`把 ${NAME_OF(p)} 移出话题？其 pending 私信将被清理。`)) return;
+      if (request !== threadMembersRequest || !$("#dlg-thread-members").open) return;
+      e.target.disabled = true;
       try {
         await api(`/thread/${t.id}/members`, { method: "POST", body: JSON.stringify({
           add: join ? [p] : [], remove: join ? [] : [p] }) });
         await loadThreads();
         const nt = S.threads.find(x => x.id === t.id);
-        if (nt) { $("#tm-thread-title").textContent = `话题「${nt.title}」· ${safeJSON(nt.members, []).length} 位成员`; renderThreadMemberList(nt); }
-      } catch (err) { showAlert(`${verb}失败: ${err.message}`); }
+        if (nt && request === threadMembersRequest && $("#dlg-thread-members").open) {
+          $("#tm-thread-title").textContent = `话题「${nt.title}」· ${safeJSON(nt.members, []).length} 位成员`;
+          await loadThreadMemberList(nt);
+        }
+      } catch (err) {
+        if (request === threadMembersRequest && $("#dlg-thread-members").open) {
+          e.target.disabled = false;
+          showAlert(`${verb}失败: ${err.message}`);
+        }
+      }
     });
     box.appendChild(row);
   }

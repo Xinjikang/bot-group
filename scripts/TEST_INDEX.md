@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+话题成员项目范围：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_member_identity scripts.test_member_disabled scripts.test_member_add_turn -q` 验证成员范围过滤、停用保留、移出后刷新、项目参数校验及既有话题增删。`python -X utf8 -B scripts/test_thread_members_browser.py --evidence <主目录报告目录>` 使用 Playwright/Chrome 和全拦截合成 API，覆盖话题所属项目、全局花名册隔离、停用按钮、加入/移出、空列表、读取失败重试、异步竞态、重开及 1280px/390px 深浅主题。无需业务服务或端口，退出关闭自身浏览器。
+
 HUD 多待办卡片：`scripts.test_project_hud` 验证 15 张卡片持久化、完整上下文、逐项回答和确认、独立字段连续保存、去重、越权校验及单项暂不处理。`test_hud_notifications_browser.py` 同时展示 9 张问题卡与 6 张提案卡，验证第 9 个问题和第 6 个提案可独立处理，其他卡片继续显示，正文仍最多两条。卡片数量不设上限，使用面板滚动查看。
 
 HUD 本轮消息：`test_hud_notifications_browser.py --evidence <主目录报告目录>` 额外验证最多两条、用户优先且字号 12px、旧消息与系统记录隐藏、新发送成功立即清除上一轮回复、新回复替换。复用隔离预览的 `test_project_hud_browser.py` 检查提问、确认与使用说明卡片保持完整交互。

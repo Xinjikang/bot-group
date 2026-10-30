@@ -890,9 +890,11 @@ def post_member(body: dict[str, Any]):
 
 @router_api.get("/members")
 def get_members(project: str = "", active_only: bool = False, role: str | None = None,
-                request: Request = None):
-    """花名册（纯身份）。带 project 时每个成员附该项目的启停状态（req#27）。"""
+                request: Request = None, enrolled_only: bool = False):
+    """身份花名册；project 附项目状态，enrolled_only 仅返回显式入组成员。"""
     project = project.strip()
+    if enrolled_only and not project:
+        raise HTTPException(400, "project is required when enrolled_only=true")
     if active_only and not project:
         raise HTTPException(400, "project is required when active_only=true")
     if role is not None and not project:
@@ -909,6 +911,8 @@ def get_members(project: str = "", active_only: bool = False, role: str | None =
                 for r in conn.execute("SELECT project, profile, active, role, role_id FROM project_members WHERE project=?", (project,))
             }
         for r in rows:
+            if enrolled_only and (project, r["profile"]) not in pm:
+                continue
             if request is not None and request.state.identity[1] == "bot":
                 if (project, r["profile"]) not in pm:
                     continue
