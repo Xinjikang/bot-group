@@ -1165,6 +1165,7 @@ class ProfileConfigEdit(BaseModel):
     model: str = Field(max_length=500)
     provider: str = Field(max_length=200)
     reasoning_effort: Optional[str] = Field(default=None, max_length=30)
+    auto_review: Optional[str] = Field(default=None, max_length=10)
     member_profile: Optional[str] = Field(default=None, max_length=200)
     config_path: Optional[str] = Field(default=None, max_length=4096)
     revision: str = Field(pattern=r"^[a-f0-9]{64}$")

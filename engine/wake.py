@@ -1076,10 +1076,20 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         except dsh_auth.AuthSyncError as exc:
             _shutil_rmtree(dsh_tmp)
             return {'ok': False, 'detail': str(exc)}
+        # req#137 task#268：Auto 审批启用时生成受控适配插件（session/created 切 auto，
+        # stderr 出证据行），随 overlay insert 一起注入。
+        from . import dsh_auto
+        dsh_auto_enabled = dsh_auto.read_enabled(bot)
+        dsh_auto_overlay = None
+        if dsh_auto_enabled:
+            dsh_adapter_path = Path(dsh_tmp) / dsh_auto.ADAPTER_FILE
+            dsh_adapter_path.write_text(dsh_auto.adapter_source(), encoding='utf-8')
+            dsh_auto_overlay = {'adapter_path': str(dsh_adapter_path)}
         dsh_overlay = native_runtime.dsh_overlay(
             bot, credentials_path=dsh_cred,
             mcp_entry=_dsh_mcp_entry(profile, context, workdir, chat=kind == 'chat'),
-            project_overrides=dsh_project_overrides)
+            project_overrides=dsh_project_overrides,
+            auto_review=dsh_auto_overlay)
         dsh_overlay_path = Path(dsh_tmp) / 'overlay.json'
         dsh_overlay_path.write_text(json.dumps(dsh_overlay, ensure_ascii=False), encoding='utf-8')
         try:
@@ -1213,6 +1223,8 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         dsh_err_tail = None
         dsh_had_final = [False]
         dsh_corrupt = [0]
+        dsh_tool_calls = [0]          # req#137 task#268：审查尝试数（auto 预设下每次工具调用一次审查）
+        dsh_completed = [0]          # 工具主体执行成功数（tool_result completed，allow 后执行）
         if runtime in ("codex", "dsh"):
             popen_kwargs["stdout"] = subprocess.PIPE
             popen_kwargs["text"] = True
@@ -1317,6 +1329,10 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                         continue
                     if ev.get("type") == "final":
                         dsh_had_final[0] = True
+                    if ev.get("type") == "tool_call":
+                        dsh_tool_calls[0] += 1
+                    elif ev.get("type") == "tool_result" and ev.get("status") == "completed":
+                        dsh_completed[0] += 1
                     if ev.get("type") == "session":
                         sid_val = ev.get("sessionId")
                         if sid_val:
@@ -1403,6 +1419,25 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                 if dsh_corrupt[0]:
                     logging.getLogger(__name__).warning(
                         'dsh output contained %d unparseable line(s) for %s', dsh_corrupt[0], profile)
+                # req#137 task#268：Auto 审批 fail-closed。已启用 Auto 的执行必须拿到
+                # 「session/created -> preset=auto」运行时证据，否则判能力失效——
+                # 阻止已启用审批的执行继续（插件卸载会把 Auto 会话迁移 Full access）。
+                if dsh_auto_enabled:
+                    auto_evidence = dsh_auto.preset_evidence(dsh_err_tail or [])
+                    if not auto_evidence['confirmed']:
+                        error = (dsh_auto.AUDIT_FAIL_TEXT + '; ' + (error or '')).strip()
+                    conn = db.get_connection()
+                    try:
+                        dsh_auto.audit(conn, session=session, wake_started_at=wake_started_at,
+                                       enabled=dsh_auto_enabled, evidence=auto_evidence,
+                                       tool_calls=dsh_tool_calls[0],
+                                       completed_results=dsh_completed[0], ts=db.now_iso())
+                        conn.commit()
+                    except Exception:
+                        logging.getLogger(__name__).exception(
+                            'Cannot persist DSH auto audit for %s', session)
+                    finally:
+                        conn.close()
                 _shutil_rmtree(dsh_tmp)
             if proc.returncode or bound_task is not None:
                 if runtime == "dsh":
@@ -1411,7 +1446,8 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                 else:
                     error = (error or f'process exit={proc.returncode}; task not handed off/completed') + (f'\n{tail}' if tail else '')
             ended_at = time.time()
-            if proc.returncode or error.startswith('execution timed out'):
+            if proc.returncode or error.startswith('execution timed out') \
+                    or error.startswith('auto review capability unavailable'):
                 _report_execution_error(profile, project, thread_id, session, f'{session}:{wake_started_at}',
                                         error, exit_code=proc.returncode, job_id=job_id,
                                         parent_id=trigger_msg_id or parent_id, env=env)

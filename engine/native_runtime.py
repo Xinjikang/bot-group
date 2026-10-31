@@ -74,12 +74,14 @@ def dsh(bot, *, overlay_path='', resume=None):
     return command, str(Path(bot['config_root']).resolve())
 
 
-def dsh_overlay(bot, *, credentials_path=None, mcp_entry=None, project_overrides=None) -> list:
-    """构建 DSH spawn 的完整 ``--patch`` overlay（req#137 task#266）。
+def dsh_overlay(bot, *, credentials_path=None, mcp_entry=None, project_overrides=None,
+                auto_review=None) -> list:
+    """构建 DSH spawn 的完整 ``--patch`` overlay（req#137 task#266/#268）。
 
     = bot profile ``cordis.patch.yml`` 全部条目（264 保存的 persona/model/provider/
     reasoning_effort 等）∪ dsh_auth 认证控制（同名条目覆盖启停与凭据路径）∪
-    项目级 model/provider/reasoning_effort 覆盖 ∪ MCP 客户端 insert。动态表达式
+    项目级 model/provider/reasoning_effort 覆盖 ∪ MCP 客户端 insert ∪ Auto 审批
+    （auto_review={adapter_path} 时插入 auto-review 插件 + 受控适配插件）。动态表达式
     （``!!js``）条目原样透传（DSH 原生求值），只做静态拼装。
     """
     import yaml as _yaml
@@ -114,6 +116,11 @@ def dsh_overlay(bot, *, credentials_path=None, mcp_entry=None, project_overrides
     out = list(merged.values())
     if mcp_entry:
         out.append({'insert': [mcp_entry]})
+    if auto_review:
+        # req#137 task#268：Auto 审批 insert（插件加载 + session/created 切 auto 的
+        # 受控适配插件）。插入层优先级最高，覆盖 profile patch 的 auto-review 条目。
+        from . import dsh_auto
+        out.extend(dsh_auto.overlay_inserts(str(auto_review['adapter_path'])))
     return out
 
 

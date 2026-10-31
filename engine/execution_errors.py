@@ -18,6 +18,7 @@ MESSAGES = {
     'rate_limit': '请求受限，请稍后重试或检查配额。',
     'capacity': '所选模型容量已满，请稍后重试或切换模型。',
     'incomplete': '本轮执行已结束，任务尚未完成或交接，请检查任务记录。',
+    'auto_unavailable': 'DSH Auto 审批能力不可用（会话未进入 auto 预设），已阻止执行继续。',
     'timeout': '请求超时，请稍后重试或检查超时设置。',
     'network': '连接失败，请检查网络设置。',
     'upstream': '服务暂时异常，请稍后重试。',
@@ -69,6 +70,8 @@ def classify(text):
     # 判读：初始化失败时归因 init（可行动因），缺 final 只是伴随症状。
     if re.search(r'missing_credential|missing credential|no api.?key for', text):
         return 'missing_credential'
+    if re.search(r'auto review capability unavailable|preset not confirmed', text):
+        return 'auto_unavailable'
     if re.search(r'initialization|initialize|load_failed|failed to load|failed to initialize'
                  r'|failed to parse (?:overlay|patch|profile|config)', text):
         return 'init'

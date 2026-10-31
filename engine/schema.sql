@@ -394,6 +394,20 @@ CREATE TABLE IF NOT EXISTS dsh_run_events (
 );
 CREATE INDEX IF NOT EXISTS idx_dsh_run_events ON dsh_run_events(session,wake_started_at,id);
 
+-- req#137 task#268：DSH Auto 审批每轮审计（审查尝试 vs 工具主体执行独立计数）。
+CREATE TABLE IF NOT EXISTS dsh_auto_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session TEXT NOT NULL,
+    wake_started_at REAL NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    preset_confirmed INTEGER NOT NULL DEFAULT 0,
+    review_count INTEGER NOT NULL DEFAULT 0,
+    executed_count INTEGER NOT NULL DEFAULT 0,
+    blocked_count INTEGER NOT NULL DEFAULT 0,
+    ts TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dsh_auto_audit ON dsh_auto_audit(session,wake_started_at);
+
 CREATE TABLE IF NOT EXISTS project_rule_copies (
     path TEXT PRIMARY KEY,
     project TEXT NOT NULL,
