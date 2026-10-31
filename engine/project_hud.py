@@ -364,6 +364,7 @@ def context(conn, item):
             'preparation': hud_knowledge.preparation(config, template, materials),
             'usage_knowledge': hud_knowledge.usage(history),
             'deferred_questions': state.get('deferred_questions', [])[-12:],
+            'pending_question': hud_context.project(state.get('question')),
             'pending_proposal': hud_context.project({'proposal': state.get('proposal')}).get('proposal'),
             'pending_cards': hud_context.project({'cards': state.get('cards', [])})['cards'],
             'decisions': state.get('decisions', [])[-60:], 'history': history,
@@ -371,8 +372,11 @@ def context(conn, item):
 
 
 def validate_response(value):
-    if not isinstance(value, dict) or set(value) - {'text', 'question', 'proposal', 'guide', 'notification', 'cards'}:
+    if not isinstance(value, dict) or set(value) - {'text', 'question', 'proposal', 'guide', 'notification', 'cards', 'resolved_todo_ids'}:
         raise ValueError('AI 返回格式无效，请重试')
+    resolved = value.get('resolved_todo_ids', [])
+    if not isinstance(resolved, list) or any(not isinstance(todo_id, str) or not todo_id.strip() or len(todo_id) > 128 for todo_id in resolved):
+        raise ValueError('AI 已解决待办标识无效')
     cards = value.get('cards', [])
     if not isinstance(cards, list):
         raise ValueError('AI 待办卡片格式无效')
@@ -496,6 +500,12 @@ def run_one(sid):
             response = respond(bot, payload)
         progress('stage', '正在整理检查结果')
         response = validate_response(response)
+        pending_ids = {value['id'] for container in [
+            {'question': payload['pending_question'], 'proposal': payload['pending_proposal']},
+            *payload['pending_cards']] for key in ('question', 'proposal')
+            if (value := container.get(key)) and value.get('id')}
+        if set(response.get('resolved_todo_ids', [])) - pending_ids:
+            raise ValueError('已解决待办不属于本轮待办，请重新核对')
         for result in [response, *response.get('cards', [])]:
             proposal = result.get('proposal')
             if proposal and set(proposal['changes']) - set(payload['allowed_changes']):
@@ -525,6 +535,12 @@ def run_one(sid):
             current['status'], current['error'] = 'error', error
         else:
             current['state'].pop('user_request', None)
+            resolved = set(response.get('resolved_todo_ids', []))
+            for key in ('question', 'proposal'):
+                if (current['state'].get(key) or {}).get('id') in resolved:
+                    current['state'].pop(key)
+            current['state']['cards'] = [card for card in current['state'].get('cards', [])
+                if not any((card.get(key) or {}).get('id') in resolved for key in ('question', 'proposal'))]
             for key in ('question', 'proposal'):
                 if response.get(key):
                     current['state'][key] = response[key]

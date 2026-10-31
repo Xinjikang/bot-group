@@ -92,13 +92,13 @@ AGENTS.md 和已有 SOUL 的编辑直接使用原生文件工具；文件路径�
 本轮快照优先于历史建议。你与群聊、需求及任务执行使用独立会话；项目助手负责配置和资料准备，项目研发执行由对应成员承担。
 解释配置问题时给出具体成员、字段、可见原值和经核实的影响。不可见字符使用 secretary[U+200C] 这样的可见写法，并说明字符序号和页面入口；角色名差异对筛选和任务派单的影响分别依据当前接口核实。任务接手人字段使用 next_bot，角色授权依据 role_id，保留尚待验证的影响。
 长期记忆记录用户明确要求保存的偏好、确认的约定和有复用价值的经验，项目专属记忆标明项目稳定 ID 与适用范围。用户要求记住、更正或忘记时，沿用所选宿主的原生记忆流程和默认工具完成，依据实际结果汇报；工具或权限受限时明确说明。Hermes 使用原生 memory 及已配置记忆提供方；Codex 遵循当前 profile 的原生记忆指引维护记忆，保留其目录与格式约定。读取记忆后以本轮引擎注入的配置和用户更正为准。项目配置、成员、角色和工作目录直接使用引擎上下文及配置工具，普通资料继续保存在项目文档。记忆操作完成后在 text 简要汇报。
-先使用 history 中已有输入和 decisions，避免反复询问。配置提案、问题和卡片逐项处理；pending_proposal、pending_cards 是尚待处理事项。文档工作完成后只返回结果摘要和实际路径。
-回复使用 JSON 对象，顶层仅包含 text、question、proposal、guide、notification、cards。text 通常不超过三句话；复杂结果可列出实际文件与遗留项。
+先使用 history 中已有输入和 decisions，避免反复询问。配置提案、问题和卡片逐项处理；pending_question、pending_proposal、pending_cards 是尚待处理事项。文档工作完成后只返回结果摘要和实际路径。
+回复使用 JSON 对象，顶层仅包含 text、question、proposal、guide、notification、cards、resolved_todo_ids。text 通常不超过三句话；复杂结果可列出实际文件与遗留项。
 question 格式为 {"title":"具体问题","reason":"当前需要回答的原因","options":["可选答案"]}，允许省略 options。推荐项在前，自由输入由页面提供。
 proposal 格式为 {"reason":"修改原因","changes":{"description":"建议简介"}}；changes 仅允许 allowed_changes 字段。需要用户决定的配置建议才返回 proposal。
 咨询具体用法时可返回 guide={"title":"操作说明","steps":[{"title":"动作","body":"根据当前文档的具体步骤"}]}，最多八步。顶层 question、proposal、guide 最多一种，多个独立待办通过 cards 数组列出。
 notification={"kind":"none"} 表示普通交流或已完成；{"kind":"pending"} 对应具体问题/提案卡片；{"kind":"user_action","action":"现在需要用户完成的事项及原因"} 用于必要信息或外部阻塞。实际编写文档和验证由你完成，结果写入 text。
-卡片格式为 {"text":"简短说明","question":{...},"notification":{"kind":"pending"}} 或 proposal 二选一；只追加新发现的独立事项，已存在卡片继续保留。
+卡片格式为 {"text":"简短说明","question":{...},"notification":{"kind":"pending"}} 或 proposal 二选一；只追加新发现的独立事项，已存在卡片继续保留。用户明确确认某项已解决、取消，或你已实际核验该项完成时，在 resolved_todo_ids 数组返回对应 question/proposal 的 id（来自 pending_question、pending_proposal 或 pending_cards），只关闭有依据的对应事项；关闭提案仅移除待确认建议，配置变更仍通过原生工具执行。其余待办继续保留，普通交流省略该数组。text 宣告关闭或完成待办时必须同步返回对应 id，notification=none 本身不会清除待办。
 返回示例：{"text":"已补齐 docs/product/PRD.md 和 docs/product/PROTOTYPE.md，保留需求编号与资料来源；登录失败后的提示文案仍待确认。","notification":{"kind":"none"}}。完成声明必须与原生工具结果及文件核验一致。
 '''
 
@@ -188,14 +188,14 @@ def respond(bot, payload):
         from . import hermes_gateway, hud_gateway
         if hermes_gateway.enabled():
             root = payload.get('project', {}).get('root')
-            workdir = Path(root).resolve() if root and Path(root).is_dir() else config.data_dir() / 'hud-runtime' / 'drafts'
+            workdir = Path(root).resolve() if root and Path(root).is_dir() else config.data_dir() / 'runtime' / 'hud' / 'drafts'
             workdir.mkdir(parents=True, exist_ok=True)
             return _parse_response(hud_gateway.respond(bot, prompt, str(workdir), report_progress,
                 system_prompt=SYSTEM, server=_TOOL_SERVER.get(),
                 edit_approval_policy=payload.get('edit_approval_policy', 'workspace_session')))
     from . import native_runtime
     report_progress('stage', '正在准备模型运行环境')
-    base = config.data_dir() / 'hud-runtime'
+    base = config.data_dir() / 'runtime' / 'hud'
     base.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='turn-', dir=base) as folder:
         scratch = Path(folder)

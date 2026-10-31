@@ -365,3 +365,5 @@ MCP 独立入口：`test_mcp_handshake.py`、`test_mcp_e2e.py`、`test_mcp_messa
 用户显示称呼：`test_user_display_name.py` 使用隔离 SQLite 和真实 API 验证持久化、旧值保留、身份隔离和输入校验；运行 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_user_display_name -q`。`test_user_display_name_browser.py` 使用已安装 Playwright 的 Python 和 Chrome，验证右上角设置、刷新及独立浏览器上下文、保存失败恢复和窄屏布局；运行 `python -X utf8 -B scripts/test_user_display_name_browser.py`，称呼读写转接隔离 API，其余页面接口使用测试数据。
 
 新增或重命名脚本时更新所属分类、运行条件与命令。用 `rg --files scripts -g 'test_*' -g 'verify_*' -g 'spike_*'` 核对当前文件集合。完整 unittest discovery 会收集可选环境用例，按任务范围执行相关集合即可。测试报告记录被测提交、实际命令、结果、跳过原因和遗留问题。
+
+HUD 运行目录与聊天关闭待办：使用 `.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录 reports/tests 下的新绝对目录> scripts.test_project_hud scripts.test_hud_gateway`。隔离数据目录和模拟运行时覆盖 `runtime/hud/drafts`、`runtime/hud/turn-*`、项目根目录保持与临时目录清理；验证聊天关闭指定问题/提案、其他待办保留、配置保持、历史记录、非法/越域 ID 原子拒绝，以及最后一项关闭后的 idle/none 和列表状态。浏览器复用 `test_hud_notifications_browser.py --evidence <报告目录>`，核对聊天后待办 1→0 和提醒消除。

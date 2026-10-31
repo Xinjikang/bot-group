@@ -124,6 +124,51 @@ class HudTests(unittest.TestCase):
         queued = hud.answer(item['id'], {'revision': result['revision'], 'text': '稍后处理', 'dismiss_proposal': first})
         self.assertEqual(len(queued['state']['cards']), 1)
 
+    def test_chat_resolution_retires_only_named_todos_and_preserves_history(self):
+        item = self.session('p')
+        result = self.infer(item, {'text': '两项待办', 'cards': [
+            {'text': '确认现状', 'question': {'title': '问题解决了吗？', 'reason': '等待确认'},
+             'notification': {'kind': 'user_action', 'action': '请确认问题是否已解决'}},
+            {'text': '改简介', 'proposal': {'changes': {'description': '待确认简介'}, 'facts': []}}]})
+        question_id = result['state']['cards'][0]['question']['id']
+        proposal_id = result['state']['cards'][1]['proposal']['id']
+        original = self.conn.execute("SELECT description FROM projects WHERE name='p'").fetchone()[0]
+        queued = hud.answer(item['id'], {'revision': result['revision'], 'text': '问题已经解决，简介稍后处理'})
+        self.assertEqual(len(queued['state']['cards']), 2)
+        result = self.infer(queued, {'text': '该问题已关闭', 'resolved_todo_ids': [question_id],
+                                    'notification': {'kind': 'none'}})
+        self.assertEqual([c['proposal']['id'] for c in result['state']['cards']], [proposal_id])
+        self.assertEqual(result['state']['notification']['kind'], 'pending')
+        queued = hud.answer(item['id'], {'revision': result['revision'], 'text': '简介也保持现状，关闭建议'})
+        result = self.infer(queued, {'text': '已关闭该建议，保持现状', 'resolved_todo_ids': [proposal_id]})
+        self.assertEqual(result['state']['cards'], [])
+        self.assertEqual(result['state']['notification']['kind'], 'none')
+        self.assertEqual(result['status'], 'idle')
+        self.assertEqual(self.conn.execute("SELECT description FROM projects WHERE name='p'").fetchone()[0], original)
+        listed = next(s for s in self.client.get('/hud').json()['sessions'] if s['id'] == item['id'])
+        self.assertEqual(listed['cards'], [])
+        self.assertEqual(listed['notification']['kind'], 'none')
+        self.assertTrue(any(e['content'].get('resolved_todo_ids') == [proposal_id] for e in result['entries']))
+
+    def test_resolution_is_explicit_scoped_and_atomic(self):
+        for invalid in ('all', None, [None], [''], [1], ['x'*129]):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                hud.validate_response({'text': '已解决', 'resolved_todo_ids': invalid})
+        item = self.session('p')
+        result = self.infer(item, {'text': '确认建议', 'proposal': {'changes': {'description': '建议'}, 'facts': []}})
+        proposal_id = result['state']['proposal']['id']
+        queued = hud.answer(item['id'], {'revision': result['revision'], 'text': '解释一下'})
+        result = self.infer(queued, {'text': '这是可选建议', 'notification': {'kind': 'none'}})
+        self.assertEqual(result['state']['proposal']['id'], proposal_id)
+        queued = hud.answer(item['id'], {'revision': result['revision'], 'text': '保持现状'})
+        result = self.infer(queued, {'text': '已关闭', 'resolved_todo_ids': [proposal_id, 'foreign-id']})
+        self.assertEqual(result['status'], 'error')
+        self.assertEqual(result['state']['proposal']['id'], proposal_id)
+        queued = hud.answer(item['id'], {'revision': result['revision'], 'text': '关闭这个建议'})
+        result = self.infer(queued, {'text': '已关闭', 'resolved_todo_ids': [proposal_id, proposal_id]})
+        self.assertNotIn('proposal', result['state'])
+        self.assertEqual(result['status'], 'idle')
+
     def test_draft_change_invalidates_only_proposal_cards(self):
         item = self.session()
         result = self.infer(item, {'text': '创建准备', 'cards': [
@@ -561,6 +606,7 @@ class HudTests(unittest.TestCase):
         captured = []
         def fake_run(command, prompt, env, cwd):
             captured.append(cwd)
+            self.assertEqual(Path(cwd).parent, self.root/'runtime'/'hud')
             self.assertEqual(env['CODEX_HOME'], str(home))
             self.assertNotIn('GROUP_DB', env)
             self.assertFalse((Path(cwd)/'config.toml').exists())
@@ -583,6 +629,7 @@ class HudTests(unittest.TestCase):
             shared.assert_called_once()
             sync.assert_called_once_with(str(home))
         self.assertFalse(Path(captured[0]).exists())
+        self.assertFalse((self.root/'hud-runtime').exists())
         self.assertEqual((home/'config.toml').read_text(encoding='utf-8'), original)
 
     def test_progress_is_live_revision_fenced_and_cleared_on_completion(self):
@@ -677,6 +724,7 @@ class HudTests(unittest.TestCase):
             self.assertEqual(command, ['hermes-fixture','-p','default','chat','-Q',
                                      '--toolsets','file,memory,mcp-project_config','--query-file','-'])
             self.assertEqual(env['HERMES_HOME'], str(home))
+            self.assertEqual(Path(cwd).parent, self.root/'runtime'/'hud')
             self.assertEqual(env['HERMES_EPHEMERAL_SYSTEM_PROMPT'], hud_runtime.SYSTEM)
             self.assertEqual(marker.read_text(encoding='utf-8'), 'native memory')
             overlay = Path(env['HERMES_MANAGED_DIR']); captured.append(overlay)
@@ -702,11 +750,16 @@ class HudTests(unittest.TestCase):
         from engine import hud_runtime
         from engine.hermes_gateway_client import GatewayTransportError
         bot={'runtime':'hermes','config_root':str(self.root),'profile':'default'}
-        with patch('engine.hermes_gateway.enabled',return_value=True), \
+        with patch('engine.hud_runtime.config.data_dir', return_value=self.root), \
+             patch('engine.hermes_gateway.enabled',return_value=True), \
              patch('engine.hud_gateway.respond',return_value='{"text":"gateway"}') as call, \
              patch('engine.hud_runtime._run') as legacy:
             self.assertEqual(hud_runtime.respond(bot,{}),{'text':'gateway'})
             self.assertEqual(call.call_args.kwargs['system_prompt'],hud_runtime.SYSTEM)
+            self.assertEqual(Path(call.call_args.args[2]), self.root/'runtime'/'hud'/'drafts')
+            self.assertFalse((self.root/'hud-runtime').exists())
+            hud_runtime.respond(bot, {'project': {'root': str(self.root)}})
+            self.assertEqual(Path(call.call_args.args[2]), self.root)
             self.assertNotIn(hud_runtime.SYSTEM,call.call_args.args[1])
             call.side_effect=GatewayTransportError('offline')
             with self.assertRaises(GatewayTransportError):

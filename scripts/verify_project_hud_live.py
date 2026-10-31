@@ -86,7 +86,7 @@ def main():
         with closing(db.get_connection()) as conn:
             assert all(conn.execute('SELECT count(*) FROM '+table).fetchone()[0]==0 for table in ('messages','threads','wake_jobs','session_bindings'))
         assert before==fingerprints(), 'Source Bot configuration must remain unchanged'
-        assert not list((root/'data/hud-runtime').glob('turn-*')), 'Disposable homes must be cleaned'
+        assert not list((root/'data/runtime/hud').glob('turn-*')), 'Disposable homes must be cleaned'
     result=json.loads(args.evidence.read_text(encoding='utf-8'))
     result.update(passed=True,group_state_untouched=True,temporary_homes_cleaned=True)
     args.evidence.write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')

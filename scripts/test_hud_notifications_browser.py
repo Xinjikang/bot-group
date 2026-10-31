@@ -95,6 +95,19 @@ def main():
                 for theme in ('dark', 'light'):
                     page.evaluate('theme=>document.documentElement.dataset.theme=theme', theme)
                     page.screenshot(path=str(args.evidence/f'pending-{width}-{theme}.png'))
+            update({'cards': [{'question': {'id': 'resolved-question', 'title': '问题解决了吗？', 'reason': '等待确认', 'options': []}}]}, 'waiting')
+            page.locator('#hud-toggle').click()
+            page.locator('#hud-chat-tab').click()
+            page.locator('#hud-input').fill('已经解决了')
+            page.locator('#hud-send').click()
+            page.wait_for_function("fixture.status==='queued'")
+            page.evaluate("fixture.entries.push({id:fixture.entries.at(-1).id+1,role:'assistant',content:{text:'已关闭该事项',resolved_todo_ids:['resolved-question']}})")
+            update({'cards': [], 'notification': {'kind': 'none'}}, 'idle')
+            assert page.locator('#hud-todos-tab').inner_text() == '待办事项'
+            assert page.locator('#hud-todos .hud-todo-card').count() == 0
+            assert '有待处理事项' not in page.locator('.hud-status').inner_text()
+            assert '已关闭该事项' in page.locator('#hud-content').inner_text()
+            page.screenshot(path=str(args.evidence/'resolved-todo.png'))
             update({'notification': {'id': 'n5', 'kind': 'user_action', 'action': '请授权资料访问，当前输入读取受阻。'}})
             assert opened()
             page.screenshot(path=str(args.evidence/'action-390.png'))
@@ -251,7 +264,7 @@ def main():
                 'passed': True, 'checks': ['member work never creates a badge or card; question/proposal stay collapsed',
                     'explicit action opens', 'collapse survives refresh', 'new action opens',
                     'preserve active reading', 'desktop/mobile', 'current project isolation and no global index requests', 'two tabs and per-card input', 'failed answer retained', 'legacy cards and empty state', 'scope switch resets tab',
-                    'latest user/reply only', '12px user text', 'new send clears previous reply',
+                    'chat resolution clears last todo count and attention', 'latest user/reply only', '12px user text', 'new send clears previous reply',
                     '15 cards all visible', 'answer ninth question preserves other cards',
                     'confirm sixth proposal preserves other cards', 'legacy documents show filenames without long text',
                     'native configuration updates synchronize untouched fields and preserve edited drafts',
