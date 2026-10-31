@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+Hermes 终态清理恢复：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录 reports/tests 下的新绝对目录> scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway_sessions scripts.test_hermes_connections scripts.test_hermes_prompt_state scripts.test_hermes_session_reuse scripts.test_stop_scope`。隔离 SQLite、合成会话与模拟 RPC，覆盖持续忙碌超过五次后恢复、持久化期限到期停止、错误重试上限与重启保留、显式停止重开清理预算、活跃 worker 保留预算、压缩停止位置保留历史和规则哈希、分类字段严格匹配、普通拒绝继续阻塞以及停止失败提示与项目/话题范围保护。无需真实网关或外部模型；运行器阻止访问业务资源。设计见[终态清理恢复](../docs/design/2026-10-31-terminal-cleanup-recovery.md)。
+
 项目助手的功能、配置一致性和隔离验收条款见[项目助手需求](../docs/requirements/2026-10-31-project-assistant.md)。项目助手返修回归组合覆盖 PA-C01～PA-C04，运行时隔离组合覆盖 PA-T01～PA-T03；真实产物验收入口覆盖 PA-01～PA-10、PA-T04，报告分别记录实际执行范围。
 
 运行时隔离与污染回归：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录 reports/tests 下的新绝对目录> scripts.test_runtime_isolation scripts.test_codex_driver_regressions scripts.test_hermes_connections scripts.test_hermes_session_reuse scripts.test_signing_keys`。先建立临时数据库、数据目录、Hermes/Codex home 与测试连接池，再导入用例；所有临时目录落入运行器沙箱。审计钩子在 SQLite 打开、文件写入、套接字连接和子进程创建前拦截资源越界；子进程显式环境补齐独立路径，真实网关连接默认关闭。工作区资源使用夹具持有的随机回环端口；隔离引擎端口须来自父进程分配并核验子进程实际监听归属，用例结束回收遗留测试子进程。共享数据库夹具与 Codex 驱动夹具独立持有连接池，退出先停止并 join 所有维护、清扫和事件线程，再恢复环境；超时直接终止测试进程并返回 70。用两套临时库复现工作区列表、环境恢复、维护中退出、异常清理和 resume 多池，逐项比对数据库内容、主文件及签名文件摘要；另验证未初始化签名拒绝持久授权写入、维护在开库前拒绝、未知签名代恢复仍失败。输出 isolation.json，记录后台错误、残留线程、拦截记录和测试结果。签名权限专项继续使用真实临时 DACL。整个回归使用合成资料与模拟 RPC。

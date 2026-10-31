@@ -24,9 +24,10 @@ class GatewayTransportError(RuntimeError):
 
 
 class GatewayRefusal(RuntimeError):
-    def __init__(self, reason, code=None):
+    def __init__(self, reason, code=None, *, compacted_target=False):
         super().__init__(reason)
         self.reason, self.code = reason, code
+        self.compacted_target = compacted_target
 
 
 class GatewayUnavailable(GatewayTransportError):
@@ -346,9 +347,13 @@ class GatewayClient:
                     raise GatewayTransportError('Hermes RPC outcome unknown; reconcile its receipt')
                 if 'error' in frame:
                     error = frame['error']
-                    reason = (error.get('data') or {}).get('reason') or error.get('message')
+                    data = error.get('data') or {}
+                    reason = data.get('reason') or error.get('message')
                     safe = reason if isinstance(reason, str) and re.fullmatch(r'[a-zA-Z0-9_]{1,80}', reason) else 'request_failed'
-                    raise GatewayRefusal(safe, error.get('code'))
+                    compacted = (safe == 'invalid_params' and data.get('field') == 'target_message_id'
+                                 and isinstance(data.get('detail'), str)
+                                 and data['detail'].startswith('compacted:'))
+                    raise GatewayRefusal(safe, error.get('code'), compacted_target=compacted)
                 return frame['result']
             except (OSError, ConnectionClosed) as exc:
                 raise GatewayTransportError('Hermes RPC outcome unknown; reconcile its receipt') from exc

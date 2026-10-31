@@ -191,9 +191,12 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
 
 def _finish(conn, row, client):
     from . import wake, browser_resources, heartbeat, events, steer_ledger
+    cleanup_detail = ''
     if client is not None:
         if row['cancel_reason'] == 'user' and row['kind'] == 'work' and row['outcome'] != 'not_submitted':
             snapshot = sessions.attach(client, row['session_id'])
+            if snapshot.get('running') or snapshot.get('pending'):
+                raise GatewayRefusal('session_busy')
             target = row['rewind_target']
             if target is None:
                 target = next((message['row_id'] for message in reversed(snapshot['messages'])
@@ -206,10 +209,18 @@ def _finish(conn, row, client):
                                  (target, row['execution_id']))
                     conn.commit()
             if target is not None:
-                sessions.mutate(client, snapshot, 'rewind', {'target_message_id': target},
-                                request_id='stop-' + row['execution_id'])
-                prompt_state.withdraw(conn, row['execution_id'], 'rewound')
-                conn.commit()
+                try:
+                    sessions.mutate(client, snapshot, 'rewind', {'target_message_id': target},
+                                    request_id='stop-' + row['execution_id'])
+                except GatewayRefusal as exc:
+                    if not exc.compacted_target:
+                        raise
+                    # Compaction retained the turn in its summary. Keep both the
+                    # transcript and its accepted rule hash when rewind is refused.
+                    cleanup_detail = 'rewind_target_compacted; transcript preserved'
+                else:
+                    prompt_state.withdraw(conn, row['execution_id'], 'rewound')
+                    conn.commit()
     elif row['outcome'] != 'not_submitted':
         return False
     code = 0 if row['outcome'] == 'completed' else 1
@@ -226,7 +237,7 @@ def _finish(conn, row, client):
             error=row['detail'] or row['outcome'])
     browser_resources.finish_run(row['session'], row['started_at'])
     steer_ledger.reconcile_targets(conn)
-    ledger.finish_cleanup(conn, row['execution_id'])
+    ledger.finish_cleanup(conn, row['execution_id'], detail=cleanup_detail)
     with wake._session_lock:
         wake._running_sessions.discard(row['session'])
         wake._running_wakes.pop(row['session'], None)
@@ -251,6 +262,20 @@ def _watch(execution_id):
                 time.sleep(0.1)
                 continue
             row = ledger.read(conn, execution_id)
+            if row['state'] == 'terminal':
+                if not row['cleanup_pending'] or (row['retry_count'] or 0) >= ledger.CLEANUP_MAX_ATTEMPTS:
+                    return
+                now = time.time()
+                if row['cleanup_deadline'] and now >= row['cleanup_deadline']:
+                    ledger.mark_cleanup_failed(conn, execution_id, 'cleanup deadline exceeded')
+                    return
+                delay = (row['next_retry_at'] or 0) - now
+                if delay > 0:
+                    time.sleep(min(delay, max(0, row['cleanup_deadline'] - now))
+                               if row['cleanup_deadline'] else delay)
+                    if wake._shutting_down.is_set() or (row['cleanup_deadline']
+                            and time.time() >= row['cleanup_deadline']):
+                        continue
             try:
                 if client is None:
                     client, _, _ = connection(row['profile'], home=row['home'], command=json.loads(row['python']))
@@ -294,17 +319,22 @@ def _watch(execution_id):
                         logger.error('Hermes cleanup deadline exceeded for execution %s; '
                                      'manual retry required: %s', execution_id, detail)
                         return
+                    if detail == 'session_busy' and row['cleanup_deadline']:
+                        # Native cancellation may acknowledge the admission before
+                        # its runner becomes idle. The absolute deadline bounds polling.
+                        conn.execute('UPDATE hermes_executions SET next_retry_at=?,detail=? WHERE execution_id=?',
+                                     (min(time.time() + 3, row['cleanup_deadline']), 'waiting_for_idle', execution_id))
+                        conn.commit()
+                        continue
                     attempts = ledger.register_cleanup_retry(conn, execution_id, detail)
                     if attempts >= ledger.CLEANUP_MAX_ATTEMPTS:
                         ledger.mark_cleanup_failed(conn, execution_id, detail)
                         logger.error('Hermes cleanup failed for execution %s after %d attempts; '
                                      'manual retry required: %s', execution_id, attempts, detail)
                         return
-                    delay = (ledger.read(conn, execution_id)['next_retry_at'] or 0) - time.time()
                     if client:
                         client.close()
                         client = None
-                    time.sleep(delay if delay > 0 else 0)
                     continue
                 ledger.uncertain(conn, execution_id, detail)
                 if client:
@@ -319,10 +349,16 @@ def _watch(execution_id):
             _workers.discard(execution_id)
 
 
-def _start_worker(execution_id):
+def _start_worker(execution_id, *, retry_cleanup=False):
     with _lock:
         if execution_id in _workers:
             return
+        if retry_cleanup:
+            conn = db.get_connection()
+            try:
+                ledger.retry_cleanup(conn, execution_id)
+            finally:
+                conn.close()
         _workers.add(execution_id)
     threading.Thread(target=_watch, args=(execution_id,), daemon=True, name='hermes-reconcile').start()
 
@@ -379,7 +415,11 @@ def cancel(session, *, reason='user', timeout=30):
             if not pending:
                 return None
             for row in pending:
-                if (row['retry_count'] or 0) < ledger.CLEANUP_MAX_ATTEMPTS:
+                exhausted = ((row['retry_count'] or 0) >= ledger.CLEANUP_MAX_ATTEMPTS
+                             or row['cleanup_deadline'] and time.time() >= row['cleanup_deadline'])
+                if exhausted and reason == 'user':
+                    _start_worker(row['execution_id'], retry_cleanup=True)
+                elif not exhausted:
                     _start_worker(row['execution_id'])
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:

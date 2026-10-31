@@ -257,8 +257,11 @@ def _stop_session(profile: str, project: str, thread_id: int | None) -> dict:
     dead = _wait_dead(profile, session) if gateway_stop is None else gateway_stop
     result["stopped"] = dead
     if not dead:
-        result['detail'] = ('Hermes 执行终态尚未确认，保留任务与队列占用' if gateway_stop is not None
-                            else '进程仍存活或无法确认退出，保留任务与队列占用')
+        if gateway_stop is not None and not hermes_gateway.active(session):
+            result['detail'] = 'Hermes 会话清理尚未完成，保留任务与队列；稍后再次停止可重试清理'
+        else:
+            result['detail'] = ('Hermes 执行终态尚未确认，保留任务与队列占用' if gateway_stop is not None
+                                else '进程仍存活或无法确认退出，保留任务与队列占用')
         result['soft_deleted'] = -1
         return result
 

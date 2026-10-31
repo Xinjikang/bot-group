@@ -12,6 +12,8 @@
 
 Hermes 网关版的官方接口、原生审批、临时 MCP、会话迁移与执行恢复见 [Hermes 网关执行适配](engineering/HERMES-GATEWAY.md)。
 
+Hermes 停止后的空闲等待、压缩历史保护与显式清理重试见 [终态清理恢复](design/2026-10-31-terminal-cleanup-recovery.md)。
+
 Hermes WS 连接复用、业务空闲回收和顶栏全局状态见 [连接复用与状态设计](design/2026-10-30-hermes-gateway-connections.md)。
 
 Hermes 网关会话级资源复用（agent 跨轮复用、消除每轮重建）见 [会话复用设计](design/2026-10-30-hermes-gateway-session-reuse.md)。

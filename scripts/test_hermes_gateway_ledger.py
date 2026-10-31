@@ -32,6 +32,38 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(self.row['execution_deadline'], 3700)
         self.assertFalse(self.conn.in_transaction)
 
+    def test_retry_cleanup_renews_only_exhausted_terminal_budget(self):
+        before = dict(ledger.read(self.conn, self.eid))
+        ledger.retry_cleanup(self.conn, self.eid, now=500)
+        self.assertEqual(dict(ledger.read(self.conn, self.eid)), before)
+        ledger.cancel(self.conn, self.eid, 'shutdown', now=105)
+        self.accept('terminal')
+        before = dict(ledger.read(self.conn, self.eid))
+        ledger.retry_cleanup(self.conn, self.eid, now=150)
+        self.assertEqual(dict(ledger.read(self.conn, self.eid)), before)
+        self.conn.execute('UPDATE hermes_executions SET retry_count=5 WHERE execution_id=?', (self.eid,))
+        self.conn.commit()
+        ledger.retry_cleanup(self.conn, self.eid, now=150)
+        row = ledger.read(self.conn, self.eid)
+        self.assertEqual(row['cleanup_deadline'], 450)
+        self.assertEqual(row['retry_count'], 0)
+        for key in ('session', 'state', 'cancel_reason', 'admission_id', 'submission_id', 'generation', 'ended_at'):
+            self.assertEqual(row[key], before[key])
+        ledger.retry_cleanup(self.conn, self.eid, now=155)
+        self.assertEqual(ledger.read(self.conn, self.eid)['cleanup_deadline'], 450)
+        ledger.finish_cleanup(self.conn, self.eid)
+        before = dict(ledger.read(self.conn, self.eid))
+        ledger.retry_cleanup(self.conn, self.eid, now=900)
+        self.assertEqual(dict(ledger.read(self.conn, self.eid)), before)
+
+    def test_retry_cleanup_reopens_expired_wait_without_error_attempts(self):
+        self.accept('terminal')
+        ledger.retry_cleanup(self.conn, self.eid, now=411)
+        row = ledger.read(self.conn, self.eid)
+        self.assertEqual(row['cleanup_deadline'], 711)
+        self.assertEqual(row['retry_count'], 0)
+        self.assertEqual(row['cleanup_pending'], 1)
+
     def test_foreign_receipt_cannot_change_identity(self):
         self.accept()
         for change in ({'admission_id': 'foreign'}, {'ref': {'session_id': 'other', 'profile_id': 'pid'}},
