@@ -25,9 +25,9 @@ dsh 官方提供 headless 一次性执行：`dsh --profile headless "任务"`，
 
 ## 认证与配置
 
-- 接入方式由用户选择（账号登录或 API key），引擎保存用户选择并按所选方式启动，不写死某一种。账号路由使用 DSH 保存的账号授权；API-key 路由支持 `DSH_HOME/.env` 的 `DEEPSEEK_API_KEY` 和界面保存的原生凭据。两类路由分别核验。引擎设置中保存宿主定位及配置引用，凭据继续由 DSH 管理。
+- 接入方式以用户在所选 DSH 原生 profile 中的配置为依据，支持账号登录和 API key。引擎保存宿主定位及 profile/config 引用，启动时解析本次提供商选择；凭据继续由 DSH 管理。账号路由使用 DSH 保存的账号授权；API-key 路由支持 `DSH_HOME/.env` 的 `DEEPSEEK_API_KEY` 和界面保存的原生凭据。两类路由分别核验，认证失败保持所选路由并明确报错，禁止自动切换认证方式。
 - 继承所选原生 profile 的 provider、model 及相关服务配置，由 DSH 原生适配器处理目标地址与认证。`deepseek-account / deepseek-flash` 为本次通过的验证组合，具体值从配置读取。
-- 账号路由需通过启动 overlay 恢复 `credentials`、`authorization`、`deepseek-account` 三项（headless 默认关闭这些服务）；API-key 路由仅需凭据来源，不恢复 `deepseek-account`。仅提供凭据而遗漏提供商选择会改变实际路由。
+- 账号路由需通过启动 overlay 恢复 `credentials`、`authorization`、`deepseek-account` 三项（headless 默认关闭这些服务）。API-key 路由通过 DSH 原生加载规则读取 `.env`；采用界面保存的 API key 时显式恢复 `credentials` 服务。API-key 路由保持 `deepseek-account` 关闭。提供商、模型及相关服务配置和凭据来源必须一起解析。
 - 启动器显式选择已确认的 home；Bot 会话、工作目录和 MCP 执行上下文分别隔离。凭据和原生配置的归属保持明确，验证产生的临时副本限制为当前用户可访问并在退出时清理；原配置保持原值。
 
 ## 已验证能力与实施边界
@@ -41,6 +41,8 @@ dsh 官方提供 headless 一次性执行：`dsh --profile headless "任务"`，
 
 客户端级实验同时覆盖工具错误、初始化失败以及工具注销和子进程清理。生产引擎的注册、执行凭据、权限、消息已读和任务状态链属于后续实现与验收范围。
 
+API-key 路由曾向其官方接口发起请求并收到 HTTP 401，账号路由的模型调用与续跑已通过。提供商与桌面选择存在差异是测试配置事实；401 的具体成因仍待核验。API-key 路由的成功调用和两种接入方式之间的切换均列入验收。
+
 方法与现场证据保存在项目主目录 `reports/research/dsh-integration/`。技术依据为 [headless](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/bundle/headless/README.md) 和 [MCP 客户端](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md)；上游文档更新时以实装版本验证结果约束解析契约。
 
 ## 模块改动范围
@@ -53,7 +55,7 @@ dsh 官方提供 headless 一次性执行：`dsh --profile headless "任务"`，
 | --- | --- |
 | 入口与版本 | 升级后定位、版本不兼容提示 |
 | MCP | 完整 headless overlay 与引擎 MCP 身份；必需工具失败终止、超时与 /stop |
-| 认证 | 实际迁移目录、凭据归属、登录有效性与模型路由 |
+| 认证 | 账号登录、界面保存 API key、`.env` API key 分别调用成功；两种接入方式切换后实际路由一致；认证失败保持原选择；凭据归属、原配置完整性与日志脱敏 |
 | 会话 | 两轮续跑、引擎重启恢复、/new 与迟到事件 |
 | 业务闭环 | 合成项目 group_send、已读确认与 task 权限 |
 | 隔离 | 双 Bot、双项目、work/chat 交叉与工作区资源 |
