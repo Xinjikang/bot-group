@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import json
 import re
+import shutil
 import sqlite3
 import sys
 import tomllib
@@ -195,6 +196,23 @@ def _dsh_patch(path: Path) -> bool:
         return False
 
 
+def _dsh_entry() -> str:
+    """DSH 执行入口：DSH_BIN 优先，PATH 的 dsh/dsh.cmd 次之，未发现返回空。"""
+    configured = (os.environ.get("DSH_BIN") or "").strip()
+    if configured:
+        return configured
+    for name in ("dsh", "dsh.cmd", "dsh.exe"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return ""
+
+
+def _dsh_entry_available(entry: str) -> bool:
+    """DSH 入口可用：非空且文件存在（可执行性由 spawn 启动路径核验）。"""
+    return bool(entry) and _has_file(Path(entry))
+
+
 def _scan_dsh() -> list[dict]:
     """Discover DSH named profiles under DSH_HOME/profiles/<name>/."""
     root = _dsh_root()
@@ -212,18 +230,19 @@ def _scan_dsh() -> list[dict]:
     return out
 
 
-def validate_dsh_home(config_root: str, profile: str = "") -> dict:
+def validate_dsh_home(config_root: str, profile: str = "", entry: str | None = None) -> dict:
     """DSH 目录/配置复核（手动路径创建前校验，req#137 task#263）。
 
     逐项校验并保留失败项（不自动绑定到另一套账号/profile）：
     - config_root 必填、目录存在、可访问；
-    - profile 名称合法；
-    - profile 可用且配置可解析（profiles/<name>/cordis.patch.yml 存在并可解析）。
-    返回 {ok, errors, config_root, profile}。执行入口可用性由启动路径单独检查。
+    - profile 名称合法、目录存在、patch 可解析；
+    - 执行入口可用（缺失/不可访问明确拒绝；entry=None 时自动发现 DSH_BIN/PATH）。
+    返回 {ok, errors, config_root, profile, entry}。spawn 显式传 DSH_HOME 由 266 验收。
     """
     errors: list[str] = []
     root_raw = (config_root or "").strip()
     profile = (profile or "").strip()
+    resolved_entry = (entry or "").strip() if entry is not None else _dsh_entry()
     if not profile:
         errors.append("profile 必填")
     elif not _PROFILE_RE.match(profile) or db.is_builtin_user(profile):
@@ -244,7 +263,12 @@ def validate_dsh_home(config_root: str, profile: str = "") -> dict:
                 errors.append("profile 目录不存在")
             elif not _dsh_patch(home / "cordis.patch.yml"):
                 errors.append("profile patch 不可解析（cordis.patch.yml）")
-    return {"ok": not errors, "errors": errors, "config_root": root_raw, "profile": profile}
+    if not resolved_entry:
+        errors.append("执行入口未发现（设置 DSH_BIN 或加入 PATH）")
+    elif not _dsh_entry_available(resolved_entry):
+        errors.append("执行入口不可用")
+    return {"ok": not errors, "errors": errors, "config_root": root_raw, "profile": profile,
+            "entry": resolved_entry}
 
 
 def scan_candidates(conn: sqlite3.Connection, project: str = '') -> list[dict]:
@@ -284,11 +308,13 @@ def scan_candidates(conn: sqlite3.Connection, project: str = '') -> list[dict]:
 
 
 def register_bot(conn: sqlite3.Connection, host_type: str, profile: str,
-                 config_root: str, display_name: str = "") -> dict:
+                 config_root: str, display_name: str = "", entry: str | None = None) -> dict:
     """Bot 注册/复用（req#87 task#150：已绑定复用，未绑定注册新 Bot）。
 
     返回 {bot_id, created}。created=False 表示复用既有 Bot，保留统一显示名。
     项目角色与权限由项目成员配置单独管理。
+    dsh 分支在写入/复用前执行权威目录/profile/patch/入口复核（防 TOCTOU），
+    失败抛 ValueError 且不新增 Bot；复用成功时更新入口绑定。
     🔴 兼容异构 bots 表（真库带 created_at NOT NULL）：按列集分叉写入。
     """
     host_type = (host_type or "").strip()
@@ -302,19 +328,36 @@ def register_bot(conn: sqlite3.Connection, host_type: str, profile: str,
         hermes_profile_names.validate(profile)
     if not config_root:
         raise ValueError("config_root is required")
+    entry = (entry or "").strip() if entry is not None else ""
+    if host_type == 'dsh':
+        # 权威复核：写入/复用前复核目录/profile/patch/入口，失败不新增 Bot/成员/项目绑定
+        resolved_entry = entry or _dsh_entry()
+        check = validate_dsh_home(config_root, profile, resolved_entry)
+        if not check["ok"]:
+            raise ValueError("；".join(check["errors"]))
+        entry = check["entry"]
     row = conn.execute(
         "SELECT id FROM bots WHERE host_type=? AND config_root=? AND profile=?",
         (host_type, config_root, profile),
     ).fetchone()
     if row is not None:
+        # 复用：更新入口绑定（列存在时），保留统一显示名
+        if entry:
+            bot_cols = {r["name"] for r in conn.execute("PRAGMA table_info(bots)")}
+            if "runtime_entry" in bot_cols:
+                conn.execute("UPDATE bots SET runtime_entry=? WHERE id=?", (entry, row["id"]))
         return {"bot_id": row["id"], "created": False}
     bot_cols = {r["name"] for r in conn.execute("PRAGMA table_info(bots)")}
-    created = ", created_at" if "created_at" in bot_cols else ""
+    cols = ["host_type", "profile", "config_root", "runtime", "display_name"]
+    vals: list = [host_type, profile, config_root, host_type, display_name]
+    if "runtime_entry" in bot_cols:
+        cols.append("runtime_entry")
+        vals.append(entry)
+    if "created_at" in bot_cols:
+        cols.append("created_at")
+        vals.append(db.now_iso())
     cur = conn.execute(
-        "INSERT INTO bots (host_type, profile, config_root, runtime, display_name"
-        f"{created}) VALUES (?, ?, ?, ?, ?{', ?' if created else ''})",
-        (host_type, profile, config_root, host_type, display_name,
-          db.now_iso()) if created
-        else (host_type, profile, config_root, host_type, display_name),
+        f"INSERT INTO bots ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+        vals,
     )
     return {"bot_id": cur.lastrowid, "created": True}

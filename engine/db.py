@@ -96,6 +96,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _migrate_add_column(conn, "tasks", "prerequisites", "TEXT NOT NULL DEFAULT '[]'")
     _migrate_add_column(conn, "tasks", "briefing_status", "TEXT NOT NULL DEFAULT 'needs_details'")
     _migrate_add_column(conn, "attachments", "position", "INTEGER NOT NULL DEFAULT 0")
+    _migrate_add_column(conn, "bots", "runtime_entry", "TEXT NOT NULL DEFAULT ''")
     # 迁移：已有库补列（SQLite ALTER ADD COLUMN 幂等判断）
     _migrate_add_column(conn, "wake_jobs", "chat_context_until", "TEXT")
     _migrate_add_column(conn, "wake_jobs", "project", "TEXT NOT NULL DEFAULT 'xjk'")

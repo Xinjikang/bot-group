@@ -771,7 +771,8 @@ def post_register_bot(body: dict[str, Any], identity=Depends(_resolve_identity))
     conn = _conn()
     try:
         try:
-            reg = discovery.register_bot(conn, host_type, profile, config_root, display_name)
+            reg = discovery.register_bot(conn, host_type, profile, config_root, display_name,
+                                         (body.get("entry") or "").strip() or None)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         if project:
@@ -803,7 +804,8 @@ def post_validate_dsh(body: dict[str, Any], identity=Depends(_resolve_identity))
     _admin_only(identity, '仅管理员可校验宿主目录')
     return discovery.validate_dsh_home(
         (body.get("config_root") or "").strip(),
-        (body.get("profile") or "").strip())
+        (body.get("profile") or "").strip(),
+        (body.get("entry") or "").strip() or None)
 
 
 class ProfileSource(BaseModel):

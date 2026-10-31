@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS bots (
     profile      TEXT NOT NULL,
     config_root  TEXT NOT NULL,
     runtime      TEXT NOT NULL DEFAULT 'hermes',
+    runtime_entry TEXT NOT NULL DEFAULT '', -- dsh 执行入口绑定（dsh.cmd 等），hermes/codex 为空
     display_name TEXT NOT NULL,
     role         TEXT NOT NULL DEFAULT '', -- 旧版全局角色，仅保留用于存量迁移
     UNIQUE(host_type, config_root, profile)

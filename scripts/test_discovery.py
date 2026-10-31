@@ -44,12 +44,16 @@ class DiscoveryTests(unittest.TestCase):
         (self.droot / "profiles" / "desktop").mkdir(parents=True)
         (self.droot / "profiles" / "desktop" / "cordis.patch.yml").write_text("plugins: []\n")
         (self.droot / "profiles" / "empty-shell").mkdir(parents=True)  # 无 patch → 不发现
+        # 假 DSH 执行入口（DSH_BIN 指向，供入口可用性/绑定校验）
+        self.dentry = Path(self.tmp.name) / "dsh.cmd"
+        self.dentry.write_text("@echo off\n")
         self._envs = {}
-        for k in ("HERMES_HOME", "CODEX_HOME", "DSH_HOME", "GROUP_DB"):
+        for k in ("HERMES_HOME", "CODEX_HOME", "DSH_HOME", "DSH_BIN", "GROUP_DB"):
             self._envs[k] = os.environ.get(k)
         os.environ["HERMES_HOME"] = str(self.hroot)
         os.environ["CODEX_HOME"] = str(self.croot)
         os.environ["DSH_HOME"] = str(self.droot)
+        os.environ["DSH_BIN"] = str(self.dentry)
         self.dbfile = str(Path(self.tmp.name) / "group.db")
         os.environ["GROUP_DB"] = self.dbfile
         conn = db.get_connection()
@@ -384,6 +388,64 @@ class DiscoveryTests(unittest.TestCase):
             self.assertIn("config_root 必填", body["errors"])
         finally:
             os.chdir(old)
+
+    def test_register_dsh_authoritative_revalidation(self):
+        # 直接 register 不存在/损坏目录 → 400，不新增 Bot（写入前权威复核）
+        conn = db.get_connection()
+        before = conn.execute("SELECT COUNT(*) c FROM bots").fetchone()["c"]
+        conn.close()
+        r = self.client.post("/bots/register", json={
+            "host_type": "dsh", "profile": "desktop",
+            "config_root": str(Path(self.tmp.name) / "nope")})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("目录不存在", r.text)
+        corrupt = Path(self.tmp.name) / "corrupt-dsh"
+        (corrupt / "profiles" / "desktop").mkdir(parents=True)
+        (corrupt / "profiles" / "desktop" / "cordis.patch.yml").write_text("plugins: [\n")
+        r = self.client.post("/bots/register", json={
+            "host_type": "dsh", "profile": "desktop", "config_root": str(corrupt)})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("profile patch 不可解析", r.text)
+        conn = db.get_connection()
+        after = conn.execute("SELECT COUNT(*) c FROM bots").fetchone()["c"]
+        conn.close()
+        self.assertEqual(before, after, "失败注册不得新增 Bot")
+
+    def test_register_dsh_validate_then_delete(self):
+        # 预校验成功后删除 patch，再 register → 写入前复核拒绝（防 TOCTOU）
+        self.assertTrue(discovery.validate_dsh_home(str(self.droot), "desktop")["ok"])
+        (self.droot / "profiles" / "desktop" / "cordis.patch.yml").unlink()
+        r = self.client.post("/bots/register", json={
+            "host_type": "dsh", "profile": "desktop", "config_root": str(self.droot)})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("profile patch 不可解析", r.text)
+
+    def test_register_dsh_entry_missing_or_unavailable(self):
+        # 入口缺失/不可用 → validate 与 register 均拒绝
+        missing = str(Path(self.tmp.name) / "missing.cmd")
+        r = self.client.post("/bots/validate-dsh", json={
+            "config_root": str(self.droot), "profile": "desktop", "entry": missing})
+        self.assertFalse(r.json()["ok"])
+        self.assertTrue(any("执行入口" in e for e in r.json()["errors"]))
+        r = self.client.post("/bots/register", json={
+            "host_type": "dsh", "profile": "desktop", "config_root": str(self.droot),
+            "entry": missing})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("执行入口", r.text)
+
+    def test_register_dsh_entry_binding_stored(self):
+        # 注册成功保存可追溯入口绑定（runtime_entry 列）
+        reg = self.client.post("/bots/register", json={
+            "host_type": "dsh", "profile": "desktop", "config_root": str(self.droot),
+            "entry": str(self.dentry)})
+        self.assertEqual(reg.status_code, 200, reg.text)
+        bot_id = reg.json()["bot_id"]
+        conn = db.get_connection()
+        try:
+            row = conn.execute("SELECT runtime_entry FROM bots WHERE id=?", (bot_id,)).fetchone()
+            self.assertEqual(row["runtime_entry"], str(self.dentry))
+        finally:
+            conn.close()
 
     def test_dsh_candidate_available_after_delete(self):
         # 注册后删除 profile patch → candidate_available 判失效（保留成员和历史）
