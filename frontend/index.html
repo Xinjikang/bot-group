@@ -3491,8 +3491,8 @@ function renderProfilePlugins(editor, data) {
       if (!pluginUnavailable(state)) continue;
       disabled.add(field);
       const label = profileFieldLabel(editor.runtime, field);
-      const plugin = state.plugin ? `插件 ${state.plugin}：` : '';
       const reason = state.reason || state.message || '插件不可用';
+      const plugin = state.plugin && !String(reason).includes(state.plugin) ? `插件 ${state.plugin}：` : '';
       const path = state.path ? `（${state.path}）` : '';
       lines.push(`${label}：${plugin}${reason}${path}`);
     }
