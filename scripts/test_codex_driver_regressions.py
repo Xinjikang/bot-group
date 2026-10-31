@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from engine import api, bot_identity, codex_reasoning, commands, db, discovery, session_adapter, stop, wake
+from scripts.runtime_test_support import isolated_runtime
 
 
 class CodexDriverRegressions(unittest.TestCase):
@@ -20,11 +21,9 @@ class CodexDriverRegressions(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.home = self.root / 'codex'
         self.home.mkdir()
-        env = patch.dict(os.environ, {'GROUP_DB': str(self.root / 'group.db'),
-                                     'HERMES_HOME': str(self.root / 'hermes'),
-                                     'CODEX_HOME': str(self.home)})
-        env.start()
-        self.addCleanup(env.stop)
+        runtime = isolated_runtime(self.root)
+        runtime.__enter__()
+        self.addCleanup(runtime.__exit__, None, None, None)
         adapter = patch.object(session_adapter, 'available', return_value=False)
         adapter.start()
         self.addCleanup(adapter.stop)

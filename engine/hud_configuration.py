@@ -55,6 +55,29 @@ def _role(roles, role_id):
 
 
 def execute(sid, token, action='read', section='all', operation='update', changes=None, expected_version=''):
+    if action != 'update' or section not in ('roles', 'members', 'permissions'):
+        return _execute(sid, token, action, section, operation, changes, expected_version)
+    from .operation_transaction import Transaction, current
+    if current.get() is not None:
+        return _execute(sid, token, action, section, operation, changes, expected_version)
+    with hud._LOCK, hud.connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        transaction = Transaction(conn)
+        marker = current.set(transaction)
+        try:
+            result = _execute(sid, token, action, section, operation, changes, expected_version)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            current.reset(marker)
+        for kind, data in transaction.events:
+            hud.events.bus.publish(kind, data)
+        return result
+
+
+def _execute(sid, token, action='read', section='all', operation='update', changes=None, expected_version=''):
     from . import api
     with hud._LOCK:
         with hud.connection() as conn:
@@ -183,11 +206,11 @@ def _draft(item, section, operation, changes, current):
             if role is None or not isinstance(changes['permissions'], list) or any(not isinstance(p, str) or p not in PERMISSIONS for p in changes['permissions']):
                 raise HTTPException(400, '请提供有效角色与权限 key')
             role['permissions'] = changes['permissions']
-    before = copy.deepcopy(item['state']['draft'].get('wizard', {}))
-    wizard = item['state']['draft'].setdefault('wizard', {})
+    draft = item['state'].setdefault('draft', {})
+    before = copy.deepcopy(draft.get('wizard', {}))
+    wizard = draft.setdefault('wizard', {})
     wizard.update(roles=roles, members=members)
-    item['state']['config_update'] = {'id': secrets.token_hex(12), 'changes': {'wizard': wizard},
-                                     'before': {'wizard': before}, 'draft': True}
+    hud_tools.record_update(item, {'wizard': wizard}, {'wizard': before}, draft=True)
     with hud.connection() as conn:
         conn.execute('UPDATE hud_sessions SET state=? WHERE id=?', (hud.encode(item['state']), item['id']))
     _record(item, section, operation, changes)

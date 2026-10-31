@@ -50,7 +50,7 @@ def respond(bot, prompt, workdir, progress, *, system_prompt='', server=None, ed
     digest = hashlib.sha256((system_prompt + '\0' + prompt).encode('utf-8')).hexdigest()
     binding = hashlib.sha256(json.dumps([
         _OWNER.get(), _GENERATION.get(), bot.get('id'), bot['profile'], str(home), workdir,
-        system_prompt, 'native-file-memory-v2', bool(server),
+        system_prompt, 'native-file-memory-v3', bool(server),
     ], ensure_ascii=False).encode('utf-8')).hexdigest()
     record = _saved()
     text = ''

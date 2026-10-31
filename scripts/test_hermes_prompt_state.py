@@ -4,7 +4,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
-from engine import db, hermes_gateway as gateway, hermes_gateway_ledger as ledger
+from engine import auth, db, hermes_gateway as gateway, hermes_gateway_ledger as ledger
 from engine import hermes_prompt_state as prompts, session_adapter, wake
 from engine.hermes_connections import Pool
 from engine.hermes_gateway_client import GatewayTransportError
@@ -147,9 +147,11 @@ class WakePromptTests(unittest.TestCase):
         self.remote.rpc.side_effect = self.rpc
         self.pool = Pool(opener=lambda *a, **kw: self.remote,
                          revision=lambda: ('fixture', 'sha'), pinned=lambda _: False)
+        self.addCleanup(self.pool.join)
         self.addCleanup(self.pool.stop)
         self.created, self.sent, self.prompt, self.lost = [], [], 'A', False
-        patches = [patch.object(gateway, 'connection', side_effect=lambda *a, **kw:
+        patches = [patch.object(auth, 'signing_keys', return_value=(1, {1: b'isolated-prompt-key'})),
+                   patch.object(gateway, 'connection', side_effect=lambda *a, **kw:
                         (self.pool.acquire(self.home, ['fixture']), self.home, ['fixture'])),
                    patch.object(wake, 'wake_system_prompt', side_effect=lambda *a: self.prompt),
                    patch.object(wake, '_mcp_server_config', return_value={'command':'fixture','args':[],'env':{}}),
@@ -238,6 +240,25 @@ class WakePromptTests(unittest.TestCase):
         row = self.conn.execute("SELECT * FROM hermes_prompt_state WHERE session_id='migrated'").fetchone()
         self.assertIsNone(row['system_hash'])
         self.assertEqual(row['user_hash'], prompts.digest('A'))
+
+    def test_legacy_shared_note_system_is_replaced_by_explicit_new_lifecycle(self):
+        self.prompt = 'old-project-system LEGACY-SENTINEL'
+        self.assertTrue(self.spawn()['ok'])
+        old_system = self.created[0]['client_env']['HERMES_EPHEMERAL_SYSTEM_PROMPT']
+        old_session = self.sent[-1]['session_id']
+        self.prompt = 'current-project-system-with-eight-fields'
+        self.assertTrue(self.spawn()['ok'])
+        self.assertEqual(len(self.created), 1)
+        self.assertIn('LEGACY-SENTINEL', old_system)
+        with patch.object(gateway, 'enabled', return_value=True), patch.object(wake, '_workdir_for', return_value='/w'):
+            result = session_adapter.switch_session(self.conn, 'alpha', 'default', 'work', None, 'clean-context-title',
+                                                    busy_check=lambda *args: False)
+        self.assertTrue(result['ok'], result)
+        self.assertNotEqual(result['session_id'], old_session)
+        self.assertNotIn('LEGACY-SENTINEL', self.created[-1]['client_env']['HERMES_EPHEMERAL_SYSTEM_PROMPT'])
+        self.assertTrue(self.spawn()['ok'])
+        self.assertEqual(self.sent[-1]['session_id'], result['session_id'])
+        self.assertEqual(self.sent[-1]['text'], 'event')
 
     def test_new_command_creates_fresh_system_rules(self):
         self.spawn(); self.prompt = 'B'

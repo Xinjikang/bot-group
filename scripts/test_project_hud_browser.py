@@ -96,7 +96,7 @@ def main():
         page.locator('#hud-chat-tab').click()
         assert '已有完整文档' in page.locator('.hud-message-user').last.inner_text()
         assert 'specs-v2' in page.locator('.hud-message-user').last.inner_text()
-        assert '刚说明的资料位置' in page.locator('.hud-message-assistant').last.inner_text()
+        assert '项目简介中登记本次资料说明' in page.locator('.hud-message-assistant').last.inner_text()
         assert page.locator('#hud-input').input_value()==''
         for selector in ('.hud-message-user .hud-message-text','.hud-message-assistant .hud-message-text'):
             assert page.locator(selector).last.evaluate("e=>{const a=e.getBoundingClientRect(),b=document.querySelector('.hud-scroll').getBoundingClientRect();return a.top>=b.top&&a.bottom<=b.bottom}")
@@ -110,13 +110,12 @@ def main():
         assert '以下建议尚未保存' in page.locator('.hud-proposal').inner_text()
         assert '当前内容' in page.locator('.hud-proposal').inner_text()
         assert '建议改为' in page.locator('.hud-proposal').inner_text()
-        assert '保存位置：项目备注' in page.locator('.hud-proposal').inner_text()
-        page.get_by_role('button',name='确认保存项目备注',exact=True).click()
+        assert '修改位置：项目设置' in page.locator('.hud-proposal').inner_text()
+        page.get_by_role('button',name='确认修改项目设置',exact=True).click()
         page.wait_for_function("!document.querySelector('.hud-proposal')",timeout=20000)
-        page.locator('#hud-more').click()
-        page.locator('#hud-history-toggle').click()
-        assert 'specs-v2' in page.locator('#hud-history').inner_text()
-        page.locator('#hud-back').click()
+        projects=page.request.get(args.url.rstrip('/')+'/projects').json()
+        project=next(item for item in projects['projects'] if item['name']=='hud-preview')
+        assert 'specs-v2' in project['description']
         page.locator('#hud-chat-tab').click()
         page.wait_for_function("document.querySelector('#project-hud').dataset.scene==='chat'")
         assert 'specs-v2' in page.locator('.hud-message-user').last.inner_text()
@@ -126,7 +125,7 @@ def main():
         page.wait_for_selector('.hud-proposal',timeout=20000)
         proposal_text=page.locator('.hud-proposal').inner_text()
         assert '修改位置：项目设置' in proposal_text
-        assert '本地验证数据；此预览使用固定响应' in proposal_text
+        assert 'specs-v2' in proposal_text
         assert '用于测试的简介' in proposal_text
         page.screenshot(path=str(args.evidence/'hud-change-comparison.png'))
         page.set_viewport_size({'width':390,'height':844})

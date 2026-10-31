@@ -131,7 +131,7 @@ class RulesTests(unittest.TestCase):
         for prompt in (work, chat):
             self.assertNotIn('项目文档存放规则', prompt)
             self.assertNotIn('docs/', prompt)
-            self.assertNotIn('reports', prompt)
+            self.assertNotIn('reports', prompt.split('## 当前项目\n', 1)[0])
             self.assertNotIn('报告目录', prompt)
             self.assertNotIn('内部资料目录', prompt)
             self.assertNotIn('代码与版本化文档在当前工作目录操作', prompt)

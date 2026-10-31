@@ -116,8 +116,17 @@ def resolve(conn, scope):
     return {**scope, 'wake_started_at': row['started_at']}
 
 
+def _signing_generation():
+    from .signing_keys import RecoveryError
+    generation = auth.signing_keys()[0]
+    if type(generation) is not int or generation <= 0:
+        raise RecoveryError('Persistent session credentials require initialized signing keys')
+    return generation
+
+
 def grant(conn, *, project, profile, bot_id, kind, thread_id, session, home, command, workdir, model_args):
     """Create a fresh binding generation after revocation; retain old rows for detach."""
+    signing_generation = _signing_generation()
     binding = conn.execute('SELECT * FROM session_bindings WHERE project=? AND bot_id=? AND kind=? AND thread_id=?',
                            (project, bot_id, kind, thread_id or 0)).fetchone()
     old = conn.execute('SELECT * FROM hermes_session_grants WHERE ' + WHERE, key(binding)).fetchone()
@@ -136,7 +145,7 @@ def grant(conn, *, project, profile, bot_id, kind, thread_id, session, home, com
                  'ON CONFLICT(project,bot_id,kind,thread_id,generation) DO UPDATE SET '
                  'home=excluded.home,command=excluded.command,workdir=excluded.workdir,model_args=excluded.model_args',
                  (project, bot_id, profile, kind, thread_id or 0, session, binding['session_id'], binding['generation'],
-                  auth.signing_keys()[0], str(home), json.dumps(command), workdir, json.dumps(model_args)))
+                  signing_generation, str(home), json.dumps(command), workdir, json.dumps(model_args)))
     conn.commit()
     return conn.execute('SELECT * FROM hermes_session_grants WHERE ' + WHERE, key(binding)).fetchone()
 
@@ -155,7 +164,7 @@ def server(row, generation):
 
 def configure(conn, row, client, snapshot):
     from . import hermes_gateway_sessions as sessions, signing_keys
-    current = auth.signing_keys()[0]
+    current = _signing_generation()
     if snapshot['running'] or snapshot['pending']:
         raise HTTPException(409, 'Session credential handoff requires idle session')
     if current != row['signing_generation']:
@@ -198,9 +207,9 @@ def maintain():
     from . import hermes_gateway, hermes_gateway_ledger as ledger, signing_keys, wake
     if wake._shutting_down.is_set():
         return
+    current = _signing_generation()
     conn = db.get_connection()
     try:
-        current = auth.signing_keys()[0]
         rows = conn.execute('SELECT * FROM hermes_session_grants WHERE (revoked=1 AND detached=0) OR '
                             '(revoked=0 AND (signing_generation<>? OR pending_generation IS NOT NULL))', (current,)).fetchall()
         for row in rows:

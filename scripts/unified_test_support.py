@@ -6,9 +6,9 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import patch
 
 from engine import db
+from scripts.runtime_test_support import isolated_runtime
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def isolated_database():
     with tempfile.TemporaryDirectory(prefix='unified_mcp_') as directory:
         path = str(Path(directory) / 'group.db')
-        with patch.dict(os.environ, {'GROUP_DB': path}):
+        with isolated_runtime(directory):
             conn = db.get_connection()
             try:
                 db.init_schema(conn)

@@ -86,19 +86,18 @@
     el('send').disabled=busy||!current?.bot||current?.status==='running'||!(selected||el('input').value.trim());
     host.querySelectorAll('#hud-todos button').forEach(button=>button.disabled=busy||!current?.bot||['running','queued'].includes(current?.status));
   }
-  function setData(data) {
-    const changed=current?.id!==data.id;
-    if(changed) remember();
-    current=data;
+  function applyConfigUpdates(data) {
     const update=data.state.config_update;
-    if(update&&appliedConfigUpdates.get(data.id)!==update.id){
-      appliedConfigUpdates.set(data.id,update.id);
-      if(draftMode&&update.draft)onApply?.(update.changes,update.before);
+    if(!update||appliedConfigUpdates.get(data.id)===update.id)return;
+    const steps=update.steps||[update];
+    const previous=steps.findIndex(step=>step.id===appliedConfigUpdates.get(data.id));
+    for(const step of steps.slice(previous+1)){
+      if(draftMode&&step.draft)onApply?.(step.changes,step.before);
       else if(document.querySelector('#pj-detail-form')?.dataset.origName===data.project){
         const ids={display_name:'name',description:'desc',root:'root',directory_mode:'mode',worktree_root:'worktree'};
-        for(const [key,value] of Object.entries(update.changes)){
+        for(const [key,value] of Object.entries(step.changes)){
           const input=document.querySelector('#pj-d-'+ids[key]);
-          if(input&&input.value===(update.before[key]??'')){
+          if(input&&input.value===(step.before[key]??'')){
             input.value=value;
             if(key==='directory_mode'){
               document.querySelectorAll('[name="project-directory-mode"]').forEach(radio=>radio.checked=radio.value===value);
@@ -107,7 +106,14 @@
           }
         }
       }
+      appliedConfigUpdates.set(data.id,step.id);
     }
+  }
+  function setData(data) {
+    const changed=current?.id!==data.id;
+    if(changed) remember();
+    current=data;
+    applyConfigUpdates(data);
     if(changed){
       let saved=''; try {saved=sessionStorage.getItem('hud-input:'+data.id)||'';}catch{}
       el('input').value=inputs.get(data.id)??saved;
@@ -430,7 +436,7 @@
     try{
       const data=await api('/hud/'+sid);
       if(stamp!==version)return;
-      if(data.revision>=current.revision&&(data.revision!==current.revision||data.status!==current.status||data.state.config_update?.id!==current.state.config_update?.id||data.state.settings_update?.id!==current.state.settings_update?.id||data.state.navigation?.id!==current.state.navigation?.id))setData(data);
+      if(data.revision>=current.revision&&(data.revision!==current.revision||data.status!==current.status||data.state.legacy_note_revision!==current.state.legacy_note_revision||data.state.config_update?.id!==current.state.config_update?.id||data.state.settings_update?.id!==current.state.settings_update?.id||data.state.navigation?.id!==current.state.navigation?.id))setData(data);
       else if(data.revision===current.revision){current.state.progress=data.state.progress;renderProgress();}
     }catch(e){if(stamp===version){errorText='维护连接暂时中断，输入已保留。'+e.message;render();}}
     finally{refreshing=false;}

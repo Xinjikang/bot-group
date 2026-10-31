@@ -118,7 +118,7 @@ class HudTests(unittest.TestCase):
         self.assertFalse(result['state'].get('cards'))
         queued = hud.answer(item['id'], {'revision': result['revision'], 'text': '继续检查'})
         result = self.infer(queued, {'text': '两个建议', 'cards': [
-            {'text': f'备注 {i}', 'proposal': {'changes': {}, 'facts': [{'label': str(i), 'value': '资料位置'}]}}
+            {'text': f'简介建议 {i}', 'proposal': {'changes': {'description': f'建议简介{i}'}, 'facts': []}}
             for i in range(2)]})
         first = result['state']['cards'][0]['proposal']['id']
         queued = hud.answer(item['id'], {'revision': result['revision'], 'text': '稍后处理', 'dismiss_proposal': first})
@@ -157,14 +157,13 @@ class HudTests(unittest.TestCase):
         self.assertEqual(payload['template']['id'],'algorithm')
         self.assertTrue(Path(payload['template_root']).is_dir())
         self.assertNotIn('contents',payload['template'])
-        result=self.infer(item,{'text':'建议登记资料位置','proposal':{'changes':{'description':'模型评测'},'facts':[
-            {'label':'原始资料','value':'specifications，用户提供的需求文档目录'}]}})
+        result=self.infer(item,{'text':'建议更新简介','proposal':{'changes':{'description':'模型评测'},'facts':[]}})
         self.assertNotIn('description',result['state']['draft'])
         saved=self.client.post('/hud/'+item['id']+'/accept',json={'revision':result['revision'],
             'proposal_id':result['state']['proposal']['id']})
         self.assertEqual(saved.status_code,200,saved.text)
         self.assertEqual(saved.json()['state']['draft']['description'],'模型评测')
-        self.assertEqual(saved.json()['state']['facts'][0]['label'],'原始资料')
+        self.assertFalse(saved.json()['state'].get('facts'))
 
     def test_stale_inference_cannot_overwrite_new_draft(self):
         item=self.session()
@@ -205,17 +204,22 @@ class HudTests(unittest.TestCase):
                     'config_version', 'history', 'decisions', 'allowed_changes'):
             self.assertIn(key, payload)
 
-    def test_accept_legacy_notes_preserves_other_settings(self):
+    def test_retired_legacy_notes_preserve_other_settings(self):
         item = self.session('p')
         original = '[{"label":"历史共享备注","value":"kept-in-storage"}]'
         self.conn.execute("INSERT INTO settings(key,project,value,updated_at) VALUES('maintenance_facts','p',?,?)",
                           (original, 'fixture'))
         self.conn.commit()
-        result = self.infer(item, {'text': '历史提案', 'proposal': {'changes': {}, 'facts': [
-            {'label': '旧版备注', 'value': 'local-history-only'}]}})
-        saved = self.client.post('/hud/'+item['id']+'/accept', json={'revision': result['revision'],
-            'proposal_id': result['state']['proposal']['id']})
-        self.assertEqual(saved.status_code, 200, saved.text)
+        proposal = {'id': 'legacy-proposal', 'changes': {}, 'facts': [{'label': '旧版备注', 'value': 'local-history-only'}]}
+        with hud.connection() as conn:
+            item['state']['proposal'] = proposal
+            hud.add_entry(conn, item, 'assistant', {'text': '历史提案', 'proposal': proposal})
+            conn.execute('UPDATE hud_sessions SET state=? WHERE id=?', (hud.encode(item['state']), item['id']))
+        saved = self.client.post('/hud/'+item['id']+'/accept', json={'revision': item['revision'], 'proposal_id': proposal['id']})
+        self.assertEqual(saved.status_code, 409, saved.text)
+        current = hud.view(item['id'])
+        self.assertNotIn('proposal', current['state'])
+        self.assertTrue(current['state']['legacy_note_proposals'])
         self.assertEqual(self.conn.execute(
             "SELECT value FROM settings WHERE project='p' AND key='maintenance_facts'").fetchone()[0], original)
 
@@ -346,8 +350,8 @@ class HudTests(unittest.TestCase):
 
     def test_pending_proposal_survives_timeout_followup_and_history_limit(self):
         item = self.session('p')
-        result = self.infer(item, {'text': '逐项核对建议', 'proposal': {'changes': {}, 'facts': [
-            {'label': f'第{i}项', 'value': f'待讨论内容{i}'} for i in range(1, 9)]}})
+        description = '\n'.join(f'第{i}项待讨论内容' for i in range(1, 9))
+        result = self.infer(item, {'text': '逐项核对建议', 'proposal': {'changes': {'description': description}, 'facts': []}})
         proposal = result['state']['proposal']
         with hud.connection() as conn:
             for i in range(18):
@@ -365,8 +369,8 @@ class HudTests(unittest.TestCase):
         with hud.connection() as conn:
             conn.execute('UPDATE hud_sessions SET activity=? WHERE id=?', (time.time()-3600, item['id']))
         def explain(bot, payload):
-            self.assertEqual(payload['pending_proposal'], proposal)
-            self.assertEqual(len(payload['pending_proposal']['facts']), 8)
+            self.assertEqual(payload['pending_proposal']['changes']['description'], description)
+            self.assertNotIn('facts', payload['pending_proposal'])
             self.assertFalse(any(entry.get('proposal') for entry in payload['history']))
             self.assertEqual(payload['history'][-1]['text'], '这8条我们一条一条谈')
             return {'text': '先看第一项的来源。', 'proposal': None}

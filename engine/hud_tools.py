@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import hmac
 import json
@@ -98,8 +99,7 @@ def update(sid, token, changes, expected_version):
             item['state'].setdefault('draft', {}).update(changed)
         item['state'].pop('proposal', None)
         item['state']['cards'] = [card for card in item['state'].get('cards', []) if not card.get('proposal')]
-        item['state']['config_update'] = {'id': secrets.token_hex(12), 'changes': changed,
-                                         'before': before, 'draft': not bool(item['project'])}
+        record_update(item, changed, before, draft=not bool(item['project']))
         hud.add_entry(conn, item, 'system', {'text': '已更新创建草稿' if not item['project'] else '已更新项目设置',
                                            'changes': changed})
         conn.execute('UPDATE hud_sessions SET state=?,updated=? WHERE id=?',
@@ -114,6 +114,14 @@ def update(sid, token, changes, expected_version):
         hud.events.bus.publish('hud.changed', {'session': sid, 'project': item['project']})
         hud.events.bus.publish('project.updated', {'project': item['project']})
         return {'saved': True, 'changes': changed, 'configuration': after, 'config_version': version(after)}
+
+
+def record_update(item, changes, before, *, draft):
+    previous = item['state'].get('config_update')
+    steps = copy.deepcopy(previous.get('steps', [previous])) if previous else []
+    step = {'id': secrets.token_hex(12), 'changes': copy.deepcopy(changes),
+            'before': copy.deepcopy(before), 'draft': draft}
+    item['state']['config_update'] = {**step, 'steps': [*steps, step]}
 
 
 def open_page(sid, token, page):

@@ -186,16 +186,20 @@ class Pool:
         self.stopped = False
         self.stop_event = threading.Event()
         self.worker = None
+        self.threads = []
         self.events = queue.Queue(maxsize=512)
 
     def start(self):
         with self.lock:
-            if self.worker is None:
+            if not self.stopped and self.worker is None:
                 self.worker = threading.Thread(target=self._run, daemon=True, name='hermes-connections')
-                self.worker.start()
-                threading.Thread(target=self._events, daemon=True, name='hermes-connection-events').start()
+                self.threads = [self.worker, threading.Thread(
+                    target=self._events, daemon=True, name='hermes-connection-events')]
                 if self.maintenance:
-                    threading.Thread(target=self._maintain, daemon=True, name='hermes-session-resources').start()
+                    self.threads.append(threading.Thread(
+                        target=self._maintain, daemon=True, name='hermes-session-resources'))
+                for thread in self.threads:
+                    thread.start()
 
     def _event(self, entry, generation, frame):
         try:
@@ -376,6 +380,17 @@ class Pool:
         with self.lock:
             self.stopped = True
             self.stop_event.set()
+
+    def join(self, timeout=10):
+        """Wait for all pool workers before their owning runtime is released."""
+        deadline = time.monotonic() + timeout
+        with self.lock:
+            threads = list(self.threads)
+        for thread in threads:
+            if thread is not threading.current_thread():
+                thread.join(max(0, deadline - time.monotonic()))
+        if any(thread.is_alive() for thread in threads):
+            raise TimeoutError('Hermes connection pool workers are still running')
 
 
 def _maintain_sessions():

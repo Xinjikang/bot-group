@@ -21,6 +21,9 @@ class SessionReuseTests(unittest.TestCase):
         self.addCleanup(fixture.__exit__, None, None, None)
         self.conn = db.get_connection()
         self.addCleanup(self.conn.close)
+        keys = patch.object(auth, 'signing_keys', return_value=(1, {1: b'isolated-session-key'}))
+        keys.start()
+        self.addCleanup(keys.stop)
         self.bot = db._ensure_hermes_bot(self.conn, 'default')
         self.session = wake.session_name('default', 'work', None, 'alpha')
         self.conn.execute("INSERT INTO session_bindings(project,bot_id,profile,kind,thread_id,session_id,runtime,generation,title,updated_at) "
@@ -182,7 +185,7 @@ class SessionReuseTests(unittest.TestCase):
 
     def test_recovery_waits_for_active_execution_before_handoff(self):
         self.run_turn()
-        with patch.object(auth, 'signing_keys', return_value=(1, {0: b'old', 1: b'new'})), \
+        with patch.object(auth, 'signing_keys', return_value=(2, {1: b'old', 2: b'new'})), \
              patch.object(gateway, 'connection') as connect:
             grants.maintain()
         connect.assert_not_called()

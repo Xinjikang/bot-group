@@ -41,6 +41,7 @@ class PoolTests(unittest.TestCase):
         self.opener = Mock(side_effect=self.open)
         self.pinned = Mock(return_value=False)
         self.pool = connections.Pool(self.opener, lambda: self.revision, self.pinned, lambda: self.now)
+        self.addCleanup(self.pool.join)
         self.addCleanup(self.pool.stop)
 
     def open(self, home, command, callback, **options):

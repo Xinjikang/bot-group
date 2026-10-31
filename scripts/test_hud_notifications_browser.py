@@ -24,7 +24,7 @@ def main():
                 window.fixture={id:'session',project:'fixture',revision:1,status:'idle',
                     bot:{display_name:'测试助手'},state:{notification:{id:'n1',kind:'pending'}},
                     entries:[{id:1,role:'assistant',content:{text:'测试脚本由执行成员收尾。'}}]};
-                window.others=[];window.calls=[];window.failNext=false;
+                window.others=[];window.calls=[];window.failNext=false;window.loadProjects=async()=>{};
                 window.api=async (path,options)=>{
                     window.calls.push({path,method:options?.method||'GET'});
                     window.lastAction={path,body:options?.body?JSON.parse(options.body):null};
@@ -136,8 +136,8 @@ def main():
             assert page.locator('.hud-message').count() == 2
             questions = [{'text': f'待办说明 {i}', 'question': {'id': f'q{i}', 'title': f'待办问题 {i}',
                          'reason': '登记输入', 'options': ['已准备']}} for i in range(9)]
-            proposals = [{'text': f'备注说明 {i}', 'proposal': {'id': f'p{i}', 'changes': {},
-                          'facts': [{'label': f'资料 {i}', 'value': '登记位置'}]}} for i in range(6)]
+            proposals = [{'text': f'简介建议 {i}', 'proposal': {'id': f'p{i}', 'changes': {'description': f'建议简介{i}'},
+                          'facts': []}} for i in range(6)]
             update({'cards': questions + proposals}, 'waiting')
             assert page.locator('#hud-chat-tab').get_attribute('aria-selected') == 'true'
             assert page.locator('#hud-content .hud-todo-card').count() == 0
@@ -216,11 +216,30 @@ def main():
                 const input=document.createElement('textarea');input.id='pj-d-desc';input.value='原简介';
                 form.append(input);document.body.append(form);
             }''')
+            batch=[{'id':'batch-a','draft':False,'before':{'description':'原简介'},'changes':{'description':'中间简介'}},
+                   {'id':'batch-b','draft':False,'before':{'description':'中间简介'},'changes':{'description':'连续更新后的简介'}}]
+            update({'config_update':{**batch[-1],'steps':batch}})
+            assert page.locator('#pj-d-desc').input_value()=='连续更新后的简介'
+            page.locator('#pj-d-desc').fill('原简介')
             update({'config_update':{'id':'config-1','draft':False,'before':{'description':'原简介'},'changes':{'description':'助手已保存的简介'}}})
             assert page.locator('#pj-d-desc').input_value()=='助手已保存的简介'
             page.locator('#pj-d-desc').fill('用户正在编辑的草稿')
             update({'config_update':{'id':'config-2','draft':False,'before':{'description':'助手已保存的简介'},'changes':{'description':'第二次已保存的简介'}}})
             assert page.locator('#pj-d-desc').input_value()=='用户正在编辑的草稿'
+            legacy={'text':'旧备注','proposal':{'id':'legacy-note','changes':{},'facts':[{'label':'old','value':'LEGACY-SENTINEL'}]}}
+            question={'question':{'id':'retained-question','title':'保留的问题','reason':'需要回答','options':[]}}
+            update({'cards':[legacy,question]},'waiting')
+            page.locator('#hud-todos-tab').click()
+            assert 'LEGACY-SENTINEL' in page.locator('#hud-todos').inner_text()
+            page.locator('[data-card="retained-question"] .hud-card-answer').fill('未发送回答')
+            page.evaluate('''()=>{
+                fixture.state={cards:[{question:{id:'retained-question',title:'保留的问题',reason:'需要回答',options:[]}}],legacy_note_revision:1};
+                ProjectHUD.changed();
+            }''')
+            page.wait_for_function("!document.querySelector('#hud-todos').textContent.includes('LEGACY-SENTINEL')")
+            assert page.locator('#hud-todos .hud-todo-card').count()==1
+            assert page.locator('[data-card="retained-question"] .hud-card-answer').input_value()=='未发送回答'
+            update({})
             page.locator('#pj-detail-form').evaluate('(form)=>form.remove()')
             page.evaluate("fixture.id='second-session';fixture.project='second-project';S.currentProject='second-project';S.projects=[{name:'second-project',display_name:'second-project'}];fixture.entries=[];fixture.revision++;ProjectHUD.changed()")
             page.wait_for_function("document.querySelector('#hud-context').textContent.includes('second-project')")

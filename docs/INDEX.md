@@ -67,6 +67,8 @@ Profile 凭证继承与异常可见性见 [设计依据](design/2026-10-25-profi
 
 ## 工程与运行
 
+数据库、签名、宿主 home、连接池后台线程和受控测试入口见 [运行时测试隔离](engineering/TEST-RUNTIME-ISOLATION.md)。
+
 | 文档 | 内容 |
 | --- | --- |
 | [工程说明](engineering/ENGINEERING.md) | 子系统、身份、数据、接口、调度、授权和生命周期 |

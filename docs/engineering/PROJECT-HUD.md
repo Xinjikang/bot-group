@@ -109,3 +109,13 @@ API：`POST /hud` 创建/取得会话；`GET /hud` 待办与草稿；`GET/PATCH 
 导航请求限于当前项目配置的 basic、agents、members、roles、permissions 标签。前端复用 `openProjectDetail` 和 `selectProjectTab`，保持当前项目未保存输入；同一导航 ID 在当前标签页去重，超过两分钟的请求保持静默。Hermes 的 tool.start/tool.complete 和 Codex 的命令/文件/MCP 事件更新 HUD 当前阶段，省略参数与结果正文。配置保存后刷新当前项目的成员、角色或权限视图，权限编辑已有本地修改时保留选择并提示服务端已更新。
 
 成员角色字符检查提供可见转义值、从 1 起的字符位置、Unicode 码点和 role_id；名称精确筛选与当前 next_bot/role_id 派单及授权契约分别核对。
+
+## 配置同步与旧备注上下文边界
+
+配置工具通过 config_update.steps 保存有序更新，每步包含独立 ID、修改前值、修改值和草稿标识。前端按已应用 ID 继续处理后续步骤；同一轮多次修改、轮询跳过中间状态及重复返回均保留顺序，逐步比较修改前值以保护用户未保存的输入。
+
+角色、成员与角色权限修改在 BEGIN IMMEDIATE 写事务内完成执行凭据校验、版本读取、业务 API、审计和 HUD 记录。业务 API 的独立连接使用现有 operation_transaction 租约共享该事务，局部 commit 只释放保存点；操作成功后统一提交并发布事件，异常统一回滚。基础字段继续使用原有原子配置写入路径。
+
+旧备注从 history、pending_proposal、pending_cards 的模型投影中剥离，关联说明同步清理。纯备注待办归档；混合待办保留配置及文档部分，原始提案和历史正文用于展示与审计。迁移使用状态条件更新并产生 legacy_note_revision，前端在配置修订未变化时仍刷新待办。模型新增非空 proposal.facts 返回格式错误；空列表仅用于旧调用格式兼容。
+
+助手 Hermes 会话绑定策略为 native-file-memory-v3；旧会话终态后新建 SID，未确认执行先按既有 admission 回执对账，再创建当前策略会话。组员会话的初始 system prompt 仍受原生生命周期管理；曾加载旧共享备注的会话通过现有 /new 或工作会话重置流程换代，源码与页面刷新只更新后续生成内容。发布核验分别记录助手换代、组员重置以及模型验证范围。

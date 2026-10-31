@@ -139,11 +139,14 @@
   }
   function applyHud(draft, before) {
     if(!draft || !dialog.open) return;
+    const ordered=value=>Array.isArray(value)?value.map(ordered):value&&typeof value==='object'
+      ?Object.fromEntries(Object.keys(value).sort().map(key=>[key,ordered(value[key])])):value;
+    const same=(left,right)=>JSON.stringify(ordered(left))===JSON.stringify(ordered(right));
     if(draft.wizard){
-      if(!before?.wizard||JSON.stringify(roles)===JSON.stringify(before.wizard.roles||[])){
+      if(!before?.wizard||same(roles,before.wizard.roles||[])){
         roles=draft.wizard.roles||roles;if(preview)renderRoles();invalidateRules();
       }
-      if(!before?.wizard||JSON.stringify([...members.values()])===JSON.stringify(before.wizard.members||[])){
+      if(!before?.wizard||same([...members.values()],before.wizard.members||[])){
         members=new Map((draft.wizard.members||[...members.values()]).map(member=>[member.bot_id,member]));
       }
       if(preview){

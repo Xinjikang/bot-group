@@ -23,6 +23,9 @@ def encode(value):
 
 
 def schema(conn):
+    from .operation_transaction import Lease
+    if isinstance(conn, Lease):
+        return
     conn.executescript('''
     CREATE TABLE IF NOT EXISTS hud_sessions (
         id TEXT PRIMARY KEY, project TEXT UNIQUE, bot_id INTEGER,
@@ -50,12 +53,20 @@ def connection():
 
 
 def row(conn, sid):
-    value = conn.execute('SELECT * FROM hud_sessions WHERE id=?', (sid,)).fetchone()
-    if not value:
-        raise HTTPException(404, '维护会话不存在')
-    result = dict(value)
-    result['state'] = json.loads(result['state'])
-    return result
+    from . import hud_context
+    for _ in range(3):
+        value = conn.execute('SELECT * FROM hud_sessions WHERE id=?', (sid,)).fetchone()
+        if not value:
+            raise HTTPException(404, '维护会话不存在')
+        result = dict(value)
+        result['state'] = json.loads(result['state'])
+        if not hud_context.retire(result):
+            return result
+        changed = conn.execute('UPDATE hud_sessions SET state=?,status=? WHERE id=? AND state=? AND status=?',
+            (encode(result['state']), result['status'], sid, value['state'], value['status']))
+        if changed.rowcount:
+            return result
+    raise HTTPException(409, '助手状态已变化，请刷新后重试')
 
 
 def default_bot(conn):
@@ -262,15 +273,9 @@ def accept(sid, body):
                 raise HTTPException(400, '显示名不能为空')
         else:
             item['state'].setdefault('draft', {}).update(changes)
-        facts = item['state'].setdefault('facts', [])
-        for fact in proposal['facts']:
-            facts[:] = [f for f in facts if f['label'] != fact['label']]
-            facts.append({**fact, 'confirmed_at': db.now_iso()})
         saved_text = ('已更新项目设置' if item['project'] else '已更新向导草稿') if changes else ''
         if proposal.get('documents'):
             saved_text += ('，' if saved_text else '') + '已保存项目文档'
-        if proposal['facts']:
-            saved_text += ('，并保存项目备注' if saved_text else '已保存项目备注')
         add_entry(conn, item, 'system', {'text': saved_text, 'proposal': proposal})
         if card:
             item['state']['cards'].remove(card)
@@ -335,7 +340,7 @@ def document_context(root, *, include_contents=True, preferred=()):
 
 
 def context(conn, item):
-    from . import hud_tools, edit_policy
+    from . import hud_tools, edit_policy, hud_context
     state = item['state']
     config = project_snapshot(conn, item['project']) if item['project'] else state.get('draft', {})
     selected = config.get('template', 'blank')
@@ -344,6 +349,7 @@ def context(conn, item):
     template = project_templates.load(selected) if selected != 'blank' else {'id': 'blank', 'description': '空项目：从目标、输入和产出建立约定'}
     history = [json.loads(r[0]) for r in conn.execute('SELECT content FROM hud_entries WHERE session=? '
                'AND generation=? ORDER BY id DESC LIMIT 16', (item['id'], item['generation']))][::-1]
+    history = [cleaned for entry in history if (cleaned := hud_context.project(entry))]
     preferred = [d['path'] for d in hud_knowledge.guidance(template)['documents']]
     preferred += ['doc/' + p[5:] for p in preferred if p.startswith('docs/')]
     materials = document_context(config.get('root'), include_contents=False, preferred=preferred)
@@ -358,8 +364,8 @@ def context(conn, item):
             'preparation': hud_knowledge.preparation(config, template, materials),
             'usage_knowledge': hud_knowledge.usage(history),
             'deferred_questions': state.get('deferred_questions', [])[-12:],
-            'pending_proposal': state.get('proposal'),
-            'pending_cards': state.get('cards', []),
+            'pending_proposal': hud_context.project({'proposal': state.get('proposal')}).get('proposal'),
+            'pending_cards': hud_context.project({'cards': state.get('cards', [])})['cards'],
             'decisions': state.get('decisions', [])[-60:], 'history': history,
             'allowed_changes': sorted(PROJECT_FIELDS if item['project'] else DRAFT_FIELDS)}
 
@@ -426,11 +432,8 @@ def validate_response(value):
             raise ValueError('协作方式无效')
         if 'template' in changes and changes['template'] not in ('blank', 'software', 'research', 'writing', 'product-prototype', 'algorithm', 'testing'):
             raise ValueError('模板无效')
-        if not isinstance(facts, list) or len(facts) > 12:
-            raise ValueError('AI 维护资料过多')
-        for fact in facts:
-            if not isinstance(fact, dict) or set(fact) != {'label', 'value'} or any(not isinstance(v, str) or not 1 <= len(v) <= 4000 for v in fact.values()):
-                raise ValueError('AI 维护资料格式无效')
+        if not isinstance(facts, list) or facts:
+            raise ValueError('项目备注已转入历史；长期记忆请使用所选宿主的原生记忆流程')
         proposal.update(id=uuid.uuid4().hex, changes=changes, facts=facts)
         # A configuration decision occupies the current interaction; the next
         # question is generated after confirmation against the updated facts.
@@ -504,13 +507,10 @@ def run_one(sid):
                 hud_documents.prepare(proposal, payload['project'], payload['materials'])
                 before = {key: payload['project'].get(key) or '' for key in proposal['changes']}
                 proposal['changes'] = {key: value for key, value in proposal['changes'].items() if value != before[key]}
-                previous_facts = {fact['label']: fact['value'] for fact in item['state'].get('facts', [])}
-                proposal['facts'] = [fact for fact in proposal['facts'] if previous_facts.get(fact['label']) != fact['value']]
                 proposal['before'] = before
-                proposal['before_facts'] = previous_facts
-                if not proposal['changes'] and not proposal['facts'] and not proposal.get('documents'):
+                if not proposal['changes'] and not proposal.get('documents'):
                     result['proposal'] = proposal = None
-                    result['text'] = '这些内容与当前配置和项目备注一致，已核对完成。'
+                    result['text'] = '这些内容与当前配置一致，已核对完成。'
             if proposal and item['project']:
                 proposal['base_project'] = {k: payload['project'][k] for k in PROJECT_FIELDS}
         error = ''
@@ -534,7 +534,7 @@ def run_one(sid):
             cards = current['state'].setdefault('cards', [])
             def card_key(card):
                 value = card.get('question') or card.get('proposal') or {}
-                return encode({k: v for k, v in value.items() if k in ('title', 'reason', 'options', 'changes', 'facts', 'documents')})
+                return encode({k: v for k, v in value.items() if k in ('title', 'reason', 'options', 'changes', 'documents')})
             existing = {card_key(card) for card in cards}
             for card in response.get('cards', []):
                 if (card.get('question') or card.get('proposal')) and card_key(card) not in existing:

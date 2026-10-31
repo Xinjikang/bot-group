@@ -1,5 +1,6 @@
 """Public gateway dispatch, admission recovery and HUD isolation."""
 import copy
+import hashlib
 import json
 import tempfile
 import unittest
@@ -79,6 +80,35 @@ class HudGatewayTests(unittest.TestCase):
     def run_prompt(self, prompt='synthetic prompt', system='Dedicated guidance', workdir=None):
         return bridge.respond(self.bot, prompt, str(workdir or self.root),
                               lambda *args: self.updates.append(args), system_prompt=system)
+
+    def old_note_context_binding(self):
+        return hashlib.sha256(json.dumps([None, None, self.bot.get('id'), self.bot['profile'],
+            str(self.root.resolve()), str(self.root.resolve()), 'Dedicated guidance',
+            'native-file-memory-v2', False], ensure_ascii=False).encode('utf-8')).hexdigest()
+
+    def test_old_note_context_terminal_session_is_replaced(self):
+        self.run_prompt()
+        old_id = self.saved['session_id']
+        self.saved['binding'] = self.old_note_context_binding()
+        self.run_prompt()
+        self.assertNotEqual(self.saved['session_id'], old_id)
+        self.assertEqual(self.client.created, 2)
+
+    def test_old_note_context_pending_receipt_is_reconciled_before_replacement(self):
+        self.client.fail_receipt = True
+        with self.assertRaises(RuntimeError):
+            self.run_prompt()
+        old_id = self.saved['session_id']
+        self.saved['binding'] = self.old_note_context_binding()
+        self.client.fail_receipt = False
+        self.client.receipts = [
+            {'status': 'terminal', 'outcome': 'completed', 'result': {'final_response': '{"text":"OLD-LEGACY-SENTINEL"}'}},
+            {'status': 'terminal', 'outcome': 'completed', 'result': {'final_response': '{"text":"clean-context"}'}}]
+        result = json.loads(self.run_prompt())
+        self.assertEqual(result, {'text': 'clean-context'})
+        self.assertNotEqual(self.saved['session_id'], old_id)
+        self.assertEqual(self.client.created, 2)
+        self.assertEqual(sum(method == 'prompt.submit' for method, _ in self.client.calls), 2)
 
     def test_completed_turns_reuse_session_with_fresh_admissions(self):
         self.run_prompt()
