@@ -49,6 +49,11 @@ class ImportTests(unittest.TestCase):
         self.ids = []
         (self.base / 'codex').mkdir()
         (self.base / 'codex' / 'author.config.toml').write_text('default_permissions=":workspace"\n', encoding='utf-8')
+        # The synthetic Hermes Bot participates in member-picker/wizard regressions;
+        # give it a discoverable named profile so candidate_available matches a real host.
+        (self.base / 'hermes' / 'profiles' / 'author').mkdir(parents=True)
+        (self.base / 'hermes' / 'profiles' / 'author' / 'config.yaml').write_text(
+            'model:\n  default: test-model\n', encoding='utf-8')
         for runtime, profile in [('hermes', 'author'), ('codex', 'author')]:
             bot_id = self.conn.execute('INSERT INTO bots(host_type,config_root,profile,display_name,runtime) VALUES(?,?,?,?,?)',
                  (runtime, str(self.base / runtime), profile, runtime + ' author', runtime)).lastrowid
