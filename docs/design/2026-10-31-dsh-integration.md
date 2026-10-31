@@ -114,10 +114,20 @@ API-key 路由曾向其官方接口发起请求并收到 HTTP 401，账号路由
 | 指令加载 | `dsh-agent-instructions`（maxBytes 65536）+ `dsh-skill`/`dsh-skill-filesystem`/`dsh-tool-skill` | 指令与 skill 入口存在；AGENTS.md 等价文件的加载路径与顺序待实测确认 |
 | 推理参数 | `dsh-agent-default-model` 仅 provider/model | 无 reasoning_effort 字段，推理强度档位调节能力缺失，需明确产品处理（不展示或标注不支持） |
 | 沙箱/文件访问 | `dsh-sandbox-policy`：`mode = DSH_PERMISSION_MODE ?? 'workspace-write'`，`workspaceRoot = process.cwd()`；三级 read-only/workspace-write/danger-full-access | 工作区文件访问由 `DSH_PERMISSION_MODE` 环境变量 + cwd（workspaceRoot）控制，非固定 workspace-write |
-| 智能审批 | `dsh-user-approval` policy 由 `DSH_PERMISSION_MODE` 决定（workspace-write→'ask'，danger-full-access→'never'）+ `dsh-permission-presets` 三级预设；`dsh-authorization` 默认 disabled | 默认 workspace-write 即危险命令审批开启；headless 无人值守下 'ask' 的交互呈现与网页审批卡片等价物待验证 |
+| 智能审批 | 实装 `dsh-experimental-auto-review` 的工具执行前审查与 `permissionPresets.registerAuto`；`dsh-user-approval` 提供 ask/never 请求策略 | 接入要求启用 Auto review 插件并为执行会话选择 auto。ask 将请求交给人工或机器处理方；缺少处理方返回 unavailable。never 自动拒绝进入审批服务的请求。headless 的会话启用与拒绝后的处理链待隔离验证 |
 | 模型/认证切换续跑 | 待实测 | 切换 provider/model/认证后 `--session-id` 续跑的行为需隔离实验确认 |
 
 宿主候选发现需区分四个状态：目录存在、配置可解析、入口可执行、认证就绪，各保留独立诊断。
+
+### 智能审批接入要求
+
+DSH 执行须启用模型审查工具操作的 Auto review。实装 `0.2.1-rc.5` 包 `@deepseek-ai/dsh-experimental-auto-review` 默认关闭；其 patch 插入 `auto-review` 服务，服务在 `tools/pre-execute` 检查当前会话的 `auto` 预设。仅加载插件仍需完成会话选择；`auto` 为专用会话模式，原生预设服务禁止将其配置为普通默认预设。
+
+原生 Auto 使用当前 agent 的 provider/model 逐次审查工具调用，允许后按 Full access 执行；预设组合为 `sandbox=danger-full-access`、`approval=ask`。模型拒绝后进入审批请求链，处理方缺失或异常时动作失败关闭。该模式的文件访问边界与 workspace-write 预设分别记录。每次支持的工具调用增加一次审查模型请求。
+
+接入必须在首个工具执行前确认插件与会话 Auto 状态，续跑恢复时再次核验。审查失败、插件缺失、拒绝或取消均保留明确结果和审计关联。实装插件卸载会将存量 Auto 会话迁移至 Full access；引擎需阻止审批能力失效后继续执行，验证重载和退出时序。
+
+方案阶段完成 headless 的插件加载、会话 Auto 选择入口及拒绝处理路径验证。验收覆盖允许、拒绝、审查异常、无人响应、取消、续跑及插件失效，检查未获准动作的工具主体保持未执行。人工接管的通道、超时和取消契约在设计中明确后再实施。现场源码证据见项目主目录 `reports/research/dsh-integration/approval-review.md`。
 
 ### 待完成的设计核验
 
@@ -131,6 +141,7 @@ API-key 路由曾向其官方接口发起请求并收到 HTTP 401，账号路由
 | Profile 编辑 | 字段映射、人格实际加载、项目/全局范围、清空覆盖、并发冲突、未知字段保留、备份恢复、部分保存提示及生效时机 |
 | 命令与交互 | `/new`、`/stop`、`/help` 的实际闭环；`/steer` 明确能力提示；菜单/帮助一致、参数错误与作用域隔离 |
 | MCP | 完整 headless overlay 与引擎 MCP 身份；必需工具失败终止、超时与 /stop |
+| 智能审批 | Auto 插件和会话预设均生效；允许/拒绝/异常/取消、无人响应、续跑及插件失效闭环；拒绝动作保持未执行，审计关联当前执行 |
 | 认证 | 账号登录、界面保存 API key、`.env` API key 分别调用成功；两种接入方式切换后实际路由一致；认证失败保持原选择；凭据归属、原配置完整性与日志脱敏 |
 | 会话 | 两轮续跑、引擎重启恢复、/new 与迟到事件 |
 | 业务闭环 | 合成项目 group_send、已读确认与 task 权限 |
