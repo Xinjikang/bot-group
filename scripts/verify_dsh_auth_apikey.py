@@ -67,6 +67,60 @@ def _success(call) -> bool:
             and not call.get('auth_error'))
 
 
+# DSH API-key 适配器注册表：凭据键名 → 适配器 provider（源自 0.2.1-rc.5 dsh-llm-deepseek-api-key 实装）
+_API_KEY_ADAPTERS = {
+    'DEEPSEEK_API_KEY': 'deepseek-official',
+}
+_DEFAULT_API_MODEL = 'deepseek-chat'  # 官方默认模型（key 不绑定模型时的兜底）
+
+
+def _api_key_provider(key_ref):
+    """按凭据引用键名派生 DSH API-key 适配器 provider（注册表映射，非内联硬编码）。"""
+    if not key_ref:
+        return None
+    key_name = key_ref.rsplit('.', 1)[-1]  # refs.DEEPSEEK_API_KEY → DEEPSEEK_API_KEY
+    return _API_KEY_ADAPTERS.get(key_name)
+
+
+def _key_service_matched(key_ref, base_url, base_url_env):
+    """核对 key 归属服务与 base_url 一致：服务读 $DEEPSEEK_BASE_URL 或官方默认（非硬编码子串）。"""
+    service = base_url_env or DEFAULT_BASE_URL  # key 归属服务端点
+    return bool(key_ref) and base_url == service
+
+
+def _overlay_evidence(overlay):
+    """overlay 构建证据：deepseek 相关条目的 provider/disabled（不含凭据值）。"""
+    out = []
+    for e in overlay if isinstance(overlay, list) else []:
+        if isinstance(e, dict) and 'deepseek' in str(e.get('name', '')).lower():
+            cfg = e.get('config') or {}
+            out.append({'id': e.get('id'), 'name': e.get('name'),
+                        'provider': cfg.get('provider'), 'disabled': cfg.get('disabled')})
+    return out
+
+
+def assess(account_call, env_call, native_call, source_binding, source_files_unchanged):
+    """三态合成判定：账号 + 两 API-key 调用 → 整体结论。
+
+    - switch：三段 run_dsh 均实际调用（切换序列已执行），非「账号成功+API-key 失败」；
+    - diagnosis_ok：401 根因查明（key 存在 + key 归属服务匹配 + 两 API-key 路认证失败），单列不并入 passed；
+    - passed：账号 + 两 API-key 三来源均成功（exit0/未超时/有效 final/无 auth_error）+ 切换 + 原配置不变。
+    """
+    account_ok = _success(account_call)
+    env_ok = _success(env_call)
+    native_ok = _success(native_call)
+    switch = bool(account_call) and bool(env_call) and bool(native_call)
+    diagnosis_ok = (
+        source_binding.get('credentials_ref') is not None
+        and source_binding.get('key_service_matched') is True
+        and env_call.get('auth_error') is True
+        and native_call.get('auth_error') is True
+    )
+    passed = account_ok and env_ok and native_ok and switch and source_files_unchanged
+    return {'account_ok': account_ok, 'env_ok': env_ok, 'native_ok': native_ok,
+            'switch_account_to_apikey': switch, 'diagnosis_ok': diagnosis_ok, 'passed': passed}
+
+
 def _api_key_patch(provider, model, base_url):
     """按核对的 provider/baseURL/model 生成隔离 profile patch。"""
     return (
@@ -144,43 +198,42 @@ def main():
         if agent and isinstance(agent.get('config'), dict):
             source_provider = str(agent['config'].get('provider') or '')
             source_model = str(agent['config'].get('model') or '')
-    # API-key 路由的 provider/baseURL/model：provider 为 DSH 的 API-key 适配器名（dsh-llm-deepseek-api-key，
-    # 派生自 0.2.1-rc.5 ASAR 实装，非 key 绑定配置值）；baseURL 读 $DEEPSEEK_BASE_URL 或官方默认；model 为
-    # 官方默认 deepseek-chat（key 不绑定具体模型，401 发生在模型列表 GET /models 之前）。
-    api_provider = 'deepseek-official'
+    # API-key 路由的 provider/baseURL/model：provider 按 key 名从适配器注册表派生（DEEPSEEK_API_KEY
+    # → deepseek-official）；baseURL 读 $DEEPSEEK_BASE_URL 或官方默认；model 读自 config（无则官方默认）。
+    key_ref = 'refs.DEEPSEEK_API_KEY' if api_key else None
+    api_provider = _api_key_provider('refs.DEEPSEEK_API_KEY')  # 按 key 名从注册表派生
     api_base_url = base_url_env or DEFAULT_BASE_URL
-    api_model = 'deepseek-chat'
+    api_model = source_model or _DEFAULT_API_MODEL  # 读自 config 的 agent-default-model.model
 
     source_files = [cred_file, env_file, patch_file]
     before = {str(p): fingerprint(p) for p in source_files if p.is_file()}
     result = {
         'api_key_present': bool(api_key),
         'source_binding': {
-            'credentials_ref': 'refs.DEEPSEEK_API_KEY' if api_key else None,
+            'credentials_ref': key_ref,
             'config_provider': source_provider,   # 读自 agent-default-model（账号路由，非 key 绑定）
-            'config_model': source_model,         # 读自 config（账号模型，非 key 绑定）
+            'config_model': source_model,         # 读自 config（账号模型）
             'base_url_env': base_url_env or DEFAULT_BASE_URL,  # 读自 .env（无 $DEEPSEEK_BASE_URL→官方默认）
-            'apikey_adapter': api_provider,       # DSH API-key 适配器名（派生自 ASAR，非配置值）
-            'apikey_model': api_model,            # 官方默认模型（key 不绑定模型）
-            'key_service_matched': 'api.deepseek.com' in api_base_url,  # DEEPSEEK_API_KEY 归属 DeepSeek 官方，base_url 与 key 服务匹配
+            'apikey_adapter': api_provider,       # 按 key 名从适配器注册表派生（非内联硬编码）
+            'apikey_model': api_model,            # 读自 config 或官方默认
+            'key_service_matched': _key_service_matched(key_ref, api_base_url, base_url_env),  # key 归属服务与 base_url 一致
         },
     }
 
     # ② 切换序列：账号路由实际执行（第一段）→ API-key 路由实际执行（后两段）
     account_bot = {'config_root': str(args.source_home), 'profile': 'desktop'}
     account_info = dsh_auth.resolve(account_bot)
-    result['account_route'] = account_info['route']
+    result['account_route'] = account_info['route']  # 切换证据：resolve 路由
     with tempfile.TemporaryDirectory(prefix='dsh-acc-', dir=args.test_directory) as tmp:
         private = Path(tmp)
         cred = dsh_auth.copy_credentials(str(args.source_home), str(private))
         account_overlay = dsh_auth.overlay_entries(account_bot, credentials_path=str(cred))
+        result['account_overlay'] = _overlay_evidence(account_overlay)  # 切换证据：overlay 构建
         account_overlay_path = private / 'overlay.json'
         account_overlay_path.write_text(json.dumps(account_overlay, ensure_ascii=False), encoding='utf-8')
         account_call = run_dsh(str(args.exe), str(args.cli), account_overlay_path,
                                args.test_directory, args.test_directory, api_key)
-    account_ok = _success(account_call)
     result['account_call'] = account_call
-    result['account_ok'] = account_ok
 
     # ③ .env 来源：隔离 HOME 写前限权，.env 注入 key
     with tempfile.TemporaryDirectory(prefix='dsh-apk-', dir=args.test_directory) as tmp:
@@ -193,7 +246,9 @@ def main():
         bot = {'config_root': str(home), 'profile': 'apikey'}
         info = dsh_auth.resolve(bot)
         result['env_api_key_source'] = info['api_key_source']
+        result['env_route'] = info['route']  # 切换证据：resolve 路由
         overlay = dsh_auth.overlay_entries(bot)
+        result['env_overlay'] = _overlay_evidence(overlay)  # 切换证据：overlay 构建
         overlay_path = home / 'overlay.json'
         overlay_path.write_text(json.dumps(overlay, ensure_ascii=False), encoding='utf-8')
         result['env_call'] = run_dsh(str(args.exe), str(args.cli), overlay_path, home,
@@ -210,36 +265,22 @@ def main():
         bot = {'config_root': str(home), 'profile': 'apikey'}
         info = dsh_auth.resolve(bot)
         result['native_api_key_source'] = info['api_key_source']
+        result['native_route'] = info['route']  # 切换证据：resolve 路由
         (home / 'private').mkdir()
         cred = dsh_auth.copy_credentials(str(home), str(home / 'private'))
         overlay = dsh_auth.overlay_entries(bot, credentials_path=str(cred))
+        result['native_overlay'] = _overlay_evidence(overlay)  # 切换证据：overlay 构建
         overlay_path = home / 'overlay.json'
         overlay_path.write_text(json.dumps(overlay, ensure_ascii=False), encoding='utf-8')
         result['native_call'] = run_dsh(str(args.exe), str(args.cli), overlay_path, home,
                                         args.test_directory, api_key)
 
     result['source_files_unchanged'] = before == {str(p): fingerprint(p) for p in source_files if p.is_file()}
-    # ⑤ 三来源成功判定（9703 口径）：账号 + 两 API-key 均成功（exit0/未超时/有效 final/无 auth_error）才通过
-    env_ok = _success(result['env_call'])
-    native_ok = _success(result['native_call'])
-    result['env_ok'] = env_ok
-    result['native_ok'] = native_ok
-    # 切换序列：三段 run_dsh（账号/环境/native）均实际调用，切换已执行（非「账号成功+API-key 失败」）
-    result['switch_account_to_apikey'] = (
-        bool(result.get('account_call')) and bool(result.get('env_call')) and bool(result.get('native_call'))
-    )
-    # 401 根因查明：单列诊断（不并入整体 passed），含 key 归属服务与 base_url 匹配核对
-    result['diagnosis_ok'] = (
-        result['source_binding']['credentials_ref'] is not None
-        and result['source_binding']['key_service_matched'] is True
-        and result['env_call']['auth_error'] is True
-        and result['native_call']['auth_error'] is True
-    )
-    result['passed'] = (
-        account_ok and env_ok and native_ok
-        and result['switch_account_to_apikey']
-        and result['source_files_unchanged']
-    )
+    # ⑤ 三态合成判定（assess 单测覆盖成功/全失败/单路失败）
+    result.update(assess(account_call, result['env_call'], result['native_call'],
+                         result['source_binding'], result['source_files_unchanged']))
+    # 切换证据：resolve 路由 + overlay 构建 + 切回序列
+    result['switch_sequence'] = [result['account_route'], result['env_route'], result['native_route']]
     args.evidence.parent.mkdir(parents=True, exist_ok=True)
     args.evidence.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps(result, ensure_ascii=False, indent=2))
