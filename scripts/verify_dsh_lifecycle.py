@@ -118,11 +118,14 @@ def main() -> int:
         bot_id = cur.lastrowid
         conn.execute("UPDATE project_members SET bot_id=? WHERE project='bot-group' AND profile='dsh-bot'",
                      (bot_id,))
-        # 任务权限闭环：dsh-bot 名下一条待领任务
+        # 任务权限闭环：dsh-bot 名下一条待领任务（briefing ready，可领取）
         conn.execute("INSERT INTO requirements(id,project,title,status,created_at,updated_at) "
                      "VALUES(1,'bot-group','r267','open',?,?)", (db.now_iso(), db.now_iso()))
-        conn.execute("INSERT INTO tasks(project,requirement_id,title,status,next_bot,created_at) "
-                     "VALUES('bot-group',1,'t267-probe','pending','dsh-bot',?)", (db.now_iso(),))
+        conn.execute(
+            "INSERT INTO tasks(project,requirement_id,title,status,next_bot,created_at,"
+            "description,design_basis,acceptance_criteria,prerequisites,briefing_status) "
+            "VALUES('bot-group',1,'t267-probe','pending','dsh-bot',?,"
+            "'probe task','design','accept','[]','ready')", (db.now_iso(),))
         conn.commit()
     finally:
         conn.close()
@@ -179,8 +182,8 @@ def main() -> int:
             parsed = [json.loads(r["payload"]) for r in events]
             types = [p.get("type") for p in parsed]
             tool_calls = [p for p in parsed if p.get("type") == "tool_call"]
-            reply_ids = [p.get("result", {}).get("reply_message_id")
-                         if isinstance(p.get("result"), dict) else None
+            from engine import dsh_reasoning
+            reply_ids = [dsh_reasoning._message_id(p.get("result"))
                          for p in parsed if p.get("type") == "tool_result"]
             sent = _db_query(
                 "SELECT id, content, sender FROM messages WHERE content LIKE ? ORDER BY id DESC",
@@ -253,7 +256,8 @@ def main() -> int:
             "WHERE project='bot-group' AND profile='dsh-bot' ORDER BY id DESC")]
 
         # 7. 项目指令：新会话召回 AGENTS.md 标记（/new 后新 session 可用性一并验证）
-        post_message("@dsh-bot 你工作区 AGENTS.md 里的 THE_PROJECT_MARKER_267 值是什么？只回复该值。")
+        post_message("@dsh-bot 阅读你工作区的 AGENTS.md 文件，把 THE_PROJECT_MARKER_267 的值"
+                     "作为最终回复内容。不要调用任何工具，直接回复该值。")
         run3 = wait_run(240)
         if run3 is not None:
             events3 = _db_query(
@@ -273,8 +277,8 @@ def main() -> int:
 
         # 8. 工具权限闭环：task_claim（任务权限）+ group_mark_seen（已读确认）
         post_message("@dsh-bot 依次执行：1) 调用 task_queue 的 task_claim 领取你的待办任务；"
-                     "2) 调用 task_list 确认任务状态；3) 调用 group_read_inbox 读收件箱并对其中 "
-                     "pending 消息调用 group_mark_seen；最后只回复 DSH_TOOLS_OK。")
+                     "2) 调用 group_read_inbox 读收件箱并对其中 pending 消息调用 group_mark_seen；"
+                     "3) 最终回复 DSH_TOOLS_OK，不要调用 group_send。")
         run4 = wait_run(240)
         if run4 is not None:
             events4 = _db_query(
@@ -294,34 +298,56 @@ def main() -> int:
         else:
             result["tools_turn"] = {"run_done": False}
 
+        # 运行诊断（失败归因）：final/error 事件 + execution_errors 脱敏摘要
+        for key, run in (("run1", run1), ("run3", run3), ("run4", run4)):
+            if run is None:
+                continue
+            rows = _db_query("SELECT payload FROM dsh_run_events WHERE session=? ORDER BY id",
+                             (run["session"],))
+            parsed = [json.loads(r["payload"]) for r in rows]
+            diag = {
+                "finals": [p.get("text", "")[:120] for p in parsed if p.get("type") == "final"],
+                "errors": [str(p.get("error") or p)[:160] for p in parsed if p.get("type") == "error"],
+            }
+            err_rows = _db_query(
+                "SELECT category, diagnostic FROM execution_errors WHERE attempt LIKE ?",
+                (f"%{run['session']}%",))
+            diag["execution_errors"] = [{"category": r["category"],
+                                          "diagnostic": (r["diagnostic"] or "")[:160]}
+                                         for r in err_rows]
+            result.setdefault("run_diagnostics", {})[key] = diag
+
         result["source_files_unchanged"] = before == {str(p): fingerprint(p)
                                                       for p in source_files if p.is_file()}
+        ok = (
+            result.get("business_loop", {}).get("sent_rows") >= 1
+            and result["business_loop"].get("sent_by_bot")
+            and result["business_loop"].get("group_send_called")
+            and bool(result["business_loop"].get("reply_message_id"))
+            and result.get("stop_proc_gone")
+            and result.get("steer_command", {}).get("status") == 200
+            and "不支持" in json.dumps(result.get("steer_command", {}).get("body", {}),
+                                       ensure_ascii=False)
+            and result.get("steer_no_ledger") and result.get("steer_command_audited")
+            and result.get("new_command", {}).get("status") == 200
+            and result.get("new_switch_ops")
+            and result.get("instructions_turn", {}).get("marker_recalled")
+            and result.get("tools_turn", {}).get("task_claimed")
+            and any("group_mark_seen" in t
+                    for t in result.get("tools_turn", {}).get("tools_called", []))
+            and result.get("source_files_unchanged")
+        )
+        result["passed"] = ok
     finally:
         server.should_exit = True
         thread.join(timeout=15)
-        shutil.rmtree(data_dir, ignore_errors=True)
+        if result.get("passed") is True:
+            shutil.rmtree(data_dir, ignore_errors=True)
 
-    ok = (
-        result.get("business_loop", {}).get("sent_rows") == 1
-        and result["business_loop"].get("sent_by_bot")
-        and result["business_loop"].get("group_send_called")
-        and bool(result["business_loop"].get("reply_message_id"))
-        and result.get("stop_proc_gone")
-        and result.get("steer_command", {}).get("status") == 200
-        and "不支持" in json.dumps(result.get("steer_command", {}).get("body", {}), ensure_ascii=False)
-        and result.get("steer_no_ledger") and result.get("steer_command_audited")
-        and result.get("new_command", {}).get("status") == 200
-        and result.get("new_switch_ops")
-        and result.get("instructions_turn", {}).get("marker_recalled")
-        and result.get("tools_turn", {}).get("task_claimed")
-        and any("group_mark_seen" in t for t in result.get("tools_turn", {}).get("tools_called", []))
-        and result.get("source_files_unchanged")
-    )
-    result["passed"] = ok
     args.evidence.parent.mkdir(parents=True, exist_ok=True)
     args.evidence.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0 if ok else 1
+    return 0 if result.get("passed") else 1
 
 
 if __name__ == "__main__":
