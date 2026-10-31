@@ -1,4 +1,10 @@
-"""Capture the real DSH plugin-status payload for the member editor integration test."""
+"""Capture the DSH plugin-status payload for the member editor integration test.
+
+区分证据层级：本脚本用**合成配置**（临时 DSH_HOME 的 cordis.patch.yml）+ **真实读取接口**
+（dsh_profile_config.read）得到静态 plugins 载荷，供前端浏览器用例驱动。它**不是原生加载
+证据**——bundle 插件在 asar 内、真实运行时加载失败由 266 启动探测补足，此处只验证编辑时
+可用能力的判定（disabled/load_failed/继承 ok）。
+"""
 import argparse
 import json
 import sys
@@ -15,7 +21,7 @@ PATCH = """\
   config:
     personaPrefix: "探针人格"
 - id: agent-default-model
-  name: "@deepseek-ai/dsh-agent-default-model"
+  name: "@deepseek-ai/custom-not-installed"
   config:
     model: deepseek-flash
     provider: deepseek-account
@@ -40,6 +46,7 @@ def main():
         evidence = Path(args.evidence)
         evidence.parent.mkdir(parents=True, exist_ok=True)
         evidence.write_text(json.dumps({
+            'kind': 'synthetic-config + real read interface (not native load evidence)',
             'profile': profile,
             'home': str(home),
             'plugins': view['plugins'],
@@ -47,10 +54,10 @@ def main():
         }, ensure_ascii=False, indent=2), encoding='utf-8')
         states = {field: state['state'] for field, state in view['plugins'].items()}
         assert states['persona'] == 'disabled', states
-        assert states['instructions'] == 'missing', states
+        assert states['instructions'] == 'ok', states  # 未覆盖 → 继承 bundle 默认
         assert states['model'] == states['provider'] == states['reasoning_effort'] == 'load_failed', states
         assert states['description'] == states['env'] == 'ok', states
-        print(f'PASS: real dsh plugin status {states}; evidence={evidence.resolve()}')
+        print(f'PASS: dsh plugin status {states}; evidence={evidence.resolve()}')
 
 
 if __name__ == '__main__':

@@ -107,7 +107,7 @@ class DshProfileConfigTests(unittest.TestCase):
         self.assertEqual(plugins["persona"]["state"], "ok")
         self.assertEqual(plugins["persona"]["plugin"], "system-prompt")
         self.assertEqual(plugins["model"]["state"], "ok")
-        self.assertEqual(plugins["instructions"]["state"], "missing")  # 条目未配置
+        self.assertEqual(plugins["instructions"]["state"], "ok")  # 继承 bundle 默认，不再误判 missing
         self.assertEqual(plugins["instructions"]["plugin"], "dsh-agent-instructions")
         self.assertEqual(plugins["description"]["state"], "ok")
         self.assertIsNone(plugins["description"]["plugin"])
@@ -121,12 +121,31 @@ class DshProfileConfigTests(unittest.TestCase):
         self.assertEqual(self._read()["plugins"]["persona"]["state"], "disabled")
 
     def test_plugins_status_load_failed(self):
+        # 用户显式指定非 bundle 包名且该包未安装 → load_failed
+        self.patch.write_text(
+            "- id: agent-default-model\n"
+            "  name: '@deepseek-ai/custom-not-installed'\n"
+            "  config:\n    provider: deepseek-account\n    model: deepseek-flash\n",
+            encoding="utf-8")
+        self.assertEqual(self._read()["plugins"]["model"]["state"], "load_failed")
+
+    def test_pkg_installed_scoped(self):
+        # scoped 包名保留 @：真实包目录存在即判定已安装（修复 lstrip('@') 丢 @ 误判）
+        pkg = self.droot / "profiles" / "desktop" / "node_modules" / "@deepseek-ai" / "dsh-agent-default-model"
+        pkg.mkdir(parents=True)
+        self.assertTrue(dsh_profile_config._pkg_installed(
+            self.droot, "desktop", "@deepseek-ai/dsh-agent-default-model"))
+
+    def test_plugins_status_scoped_package_installed(self):
+        # bundle 包名真实存在 → ok（不再因 node_modules 不可见误判 load_failed）
+        pkg = self.droot / "profiles" / "desktop" / "node_modules" / "@deepseek-ai" / "dsh-agent-default-model"
+        pkg.mkdir(parents=True)
         self.patch.write_text(
             "- id: agent-default-model\n"
             "  name: '@deepseek-ai/dsh-agent-default-model'\n"
             "  config:\n    provider: deepseek-account\n    model: deepseek-flash\n",
             encoding="utf-8")
-        self.assertEqual(self._read()["plugins"]["model"]["state"], "load_failed")
+        self.assertEqual(self._read()["plugins"]["model"]["state"], "ok")
 
     def test_save_only_changes_target_and_preserves_unknown(self):
         self._save({"model": "deepseek-reasoner", "persona": "新人格"})

@@ -73,8 +73,12 @@ _PLUGIN_BACKING = {
 
 
 def _pkg_installed(home: Path, profile: str, pkg_name: str) -> bool:
-    """插件包目录存在性（profile/home 的 node_modules），bundle 内插件视为已安装。"""
-    parts = pkg_name.lstrip('@').split('/')
+    """插件包目录存在性（profile/home 的 node_modules）。
+
+    scoped 包名保留 ``@``（``@scope/name`` → ``node_modules/@scope/name``），bundle 内
+    插件（asar 内、node_modules 不可见）不在此判定范围，由调用方按继承语义处理。
+    """
+    parts = pkg_name.split('/')
     for base in (home / 'profiles' / profile / 'node_modules', home / 'node_modules'):
         if base.joinpath(*parts).is_dir():
             return True
@@ -84,8 +88,12 @@ def _pkg_installed(home: Path, profile: str, pkg_name: str) -> bool:
 def _plugin_status(home: Path, profile: str, seq: list, patch: Path) -> dict:
     """按字段返回插件状态（state/plugin/reason/path）。
 
-    来源 cordis.patch.yml 已知条目存在性 + disabled + 包目录加载探测；真实运行时加载失败
-    （bundle 插件在 asar 内，包目录不可见）由 266 启动探测补足。
+    依据有效继承（bundle→profile→home→CLI，编辑点为用户 patch 层）与包解析结果判定：
+    - 用户 patch 未覆盖该条目 → 继承 bundle 默认插件，视为可用（ok），不再误判 missing；
+    - 用户覆盖 disabled → disabled；
+    - 用户显式指定非 bundle 包名且该包未安装 → load_failed；
+    - bundle 默认包（asar 内 node_modules 不可见）或包已安装 → ok。
+    真实运行时加载失败（bundle 插件在 asar 内）由 266 启动探测补足。
     """
     out: dict[str, dict] = {}
     for field, (plugin_id, pkg_name) in _PLUGIN_BACKING.items():
@@ -95,10 +103,10 @@ def _plugin_status(home: Path, profile: str, seq: list, patch: Path) -> dict:
             continue
         entry = next((e for e in seq if isinstance(e, dict) and str(e.get('id') or '') == plugin_id), None)
         if entry is None:
-            out[field] = dict(base, state='missing', reason=f'{plugin_id} 插件未配置')
+            out[field] = dict(base, state='ok', reason='')
         elif entry.get('disabled'):
             out[field] = dict(base, state='disabled', reason=f'{plugin_id} 插件已禁用')
-        elif entry.get('name') and not _pkg_installed(home, profile, entry['name']):
+        elif entry.get('name') and entry['name'] != pkg_name and not _pkg_installed(home, profile, entry['name']):
             out[field] = dict(base, state='load_failed', reason=f'{entry["name"]} 未安装或加载失败')
         else:
             out[field] = dict(base, state='ok', reason='')
