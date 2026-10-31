@@ -99,9 +99,9 @@ async def verify(base, provider):
                 assert counts[2]['session_id'] == counts[3]['session_id'] != counts[0]['session_id']
                 assert len({r['admission_id'] for r in counts}) == 4
                 assert methods.count('session.create') == 2, methods
-                assert tool_counts == [4] * 8, tool_counts
+                assert tool_counts == [5] * 8, tool_counts
                 assert len(provider.requests) == 4, provider.requests
-                native = {'read_file', 'write_file', 'patch', 'search_files'}
+                native = {'read_file', 'write_file', 'patch', 'search_files', 'memory'}
                 assert all({tool['function']['name'] for tool in request.get('tools', [])} == native
                            for request in provider.requests)
                 for request in provider.requests:

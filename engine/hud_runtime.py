@@ -5,7 +5,6 @@ import json
 import logging
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 import threading
@@ -92,11 +91,11 @@ AGENTS.md 和已有 SOUL 的编辑直接使用原生文件工具；文件路径�
 文件修改通过原生工具完成。项目配置和引擎数据库通过专用业务接口更新。仅操作当前项目及本次授权范围；密钥、密码、认证文件通过宿主专用入口管理。目录用途、端口与工具状态结合实际证据判断。
 本轮快照优先于历史建议。你与群聊、需求及任务执行使用独立会话；项目助手负责配置和资料准备，项目研发执行由对应成员承担。
 解释配置问题时给出具体成员、字段、可见原值和经核实的影响。不可见字符使用 secretary[U+200C] 这样的可见写法，并说明字符序号和页面入口；角色名差异对筛选和任务派单的影响分别依据当前接口核实。任务接手人字段使用 next_bot，角色授权依据 role_id，保留尚待验证的影响。
-已有资料直接用于工作。需要记住用户新约定时可提出项目备注 proposal.facts，说明用途；普通解释保持 text。每条备注包含来源和必要的版本信息。
+长期记忆记录用户明确要求保存的偏好、确认的约定和有复用价值的经验，项目专属记忆标明项目稳定 ID 与适用范围。用户要求记住、更正或忘记时，沿用所选宿主的原生记忆流程和默认工具完成，依据实际结果汇报；工具或权限受限时明确说明。Hermes 使用原生 memory 及已配置记忆提供方；Codex 遵循当前 profile 的原生记忆指引维护记忆，保留其目录与格式约定。读取记忆后以本轮引擎注入的配置和用户更正为准。项目配置、成员、角色和工作目录直接使用引擎上下文及配置工具，普通资料继续保存在项目文档。记忆操作完成后在 text 简要汇报。
 先使用 history 中已有输入和 decisions，避免反复询问。配置提案、问题和卡片逐项处理；pending_proposal、pending_cards 是尚待处理事项。文档工作完成后只返回结果摘要和实际路径。
 回复使用 JSON 对象，顶层仅包含 text、question、proposal、guide、notification、cards。text 通常不超过三句话；复杂结果可列出实际文件与遗留项。
 question 格式为 {"title":"具体问题","reason":"当前需要回答的原因","options":["可选答案"]}，允许省略 options。推荐项在前，自由输入由页面提供。
-proposal 格式为 {"reason":"修改原因","changes":{"description":"建议简介"},"facts":[]}；changes 仅允许 allowed_changes 字段。facts 项为 {"label":"项目备注名","value":"来源与约定"}。需要用户决定的建议才返回 proposal。
+proposal 格式为 {"reason":"修改原因","changes":{"description":"建议简介"}}；changes 仅允许 allowed_changes 字段。需要用户决定的配置建议才返回 proposal。
 咨询具体用法时可返回 guide={"title":"操作说明","steps":[{"title":"动作","body":"根据当前文档的具体步骤"}]}，最多八步。顶层 question、proposal、guide 最多一种，多个独立待办通过 cards 数组列出。
 notification={"kind":"none"} 表示普通交流或已完成；{"kind":"pending"} 对应具体问题/提案卡片；{"kind":"user_action","action":"现在需要用户完成的事项及原因"} 用于必要信息或外部阻塞。实际编写文档和验证由你完成，结果写入 text。
 卡片格式为 {"text":"简短说明","question":{...},"notification":{"kind":"pending"}} 或 proposal 二选一；只追加新发现的独立事项，已存在卡片继续保留。
@@ -105,12 +104,8 @@ notification={"kind":"none"} 表示普通交流或已完成；{"kind":"pending"}
 
 
 def _env():
-    # Python launchers must resolve the selected host's environment independently.
-    inherited_python = {'__PYVENV_LAUNCHER__', 'PYTHONHOME', 'PYTHONPATH', 'VIRTUAL_ENV'}
-    env = {k: v for k, v in os.environ.items() if k not in inherited_python
-           and not k.startswith(('GROUP_', 'XDG_GROUP_', 'HERMES_', 'CODEX_'))}
-    env.update(PYTHONIOENCODING='utf-8', PYTHONUTF8='1')
-    return env
+    from .native_runtime import environment
+    return environment()
 
 
 def _run(command, prompt, env, cwd):
@@ -198,8 +193,7 @@ def respond(bot, payload):
             return _parse_response(hud_gateway.respond(bot, prompt, str(workdir), report_progress,
                 system_prompt=SYSTEM, server=_TOOL_SERVER.get(),
                 edit_approval_policy=payload.get('edit_approval_policy', 'workspace_session')))
-    from .wake import _codex_bin
-    import tomlkit
+    from . import native_runtime
     report_progress('stage', '正在准备模型运行环境')
     base = config.data_dir() / 'hud-runtime'
     base.mkdir(parents=True, exist_ok=True)
@@ -210,73 +204,37 @@ def respond(bot, payload):
         server = _TOOL_SERVER.get()
         env = _env()
         if bot['runtime'] == 'codex':
-            home, profile = bot_identity.codex_settings(bot)
-            home = Path(home)
-            source = home / (f'{profile}.config.toml' if profile and (home / f'{profile}.config.toml').exists() else 'config.toml')
-            original = tomlkit.parse(source.read_text(encoding='utf-8')) if source.exists() else {}
-            selected = dict(original)
-            if profile:
-                selected.update(original.get('profiles', {}).get(profile, {}))
-            allowed = ('model', 'model_provider', 'model_providers', 'model_reasoning_effort', 'model_context_window')
-            clean = {key: selected[key] for key in allowed if key in selected}
-            original_instructions = selected.get('developer_instructions', '')
-            clean.update(approval_policy='never', default_permissions=':workspace', web_search='disabled',
-                         developer_instructions=(original_instructions + '\n\n' + SYSTEM).strip(),
-                         model_reasoning_summary='concise',
-                         features={'shell_tool': True, 'apps': False, 'plugins': False,
-                                   'remote_plugin': False, 'memories': False})
-            if selected.get('windows'):
-                clean['windows'] = dict(selected['windows'])
+            config_args = []
             if server:
-                clean['mcp_servers'] = {'project_config': {**server, 'enabled_tools': ['project_config', 'open_project_page'],
-                                                         'tools': {name: {'approval_mode': 'approve'} for name in ('project_config', 'open_project_page')},
-                                                         'required': True, 'startup_timeout_sec': 60}}
-            (scratch / 'config.toml').write_text(tomlkit.dumps(clean), encoding='utf-8')
-            env['CODEX_HOME'] = str(home)
+                private = {**server, 'enabled_tools': ['project_config', 'open_project_page'],
+                           'tools': {name: {'approval_mode': 'approve'} for name in ('project_config', 'open_project_page')},
+                           'required': True, 'startup_timeout_sec': 60}
+                config_args += ['-c', 'mcp_servers.project_config=' + native_runtime.toml_value(private)]
+            command, home = native_runtime.codex(bot, config_args=config_args, system_prompt=SYSTEM, excluded_mcp=('task_queue',))
+            env['CODEX_HOME'] = home
             output = scratch / 'answer.json'
-            report_progress('stage', '正在等待模型响应')
-            def toml_value(value):
-                if isinstance(value, dict):
-                    return '{' + ','.join(json.dumps(key) + '=' + toml_value(val) for key, val in value.items()) + '}'
-                return json.dumps(value, ensure_ascii=False)
-            command = [_codex_bin(), 'exec', '--json', '--ephemeral', '--skip-git-repo-check',
-                       '--sandbox', 'workspace-write']
-            if profile:
-                command += ['--profile', profile]
-            overrides = {'approval_policy': 'never', 'web_search': 'disabled',
-                         'developer_instructions': clean['developer_instructions']}
-            overrides.update({'features.' + key: value for key, value in clean['features'].items()})
-            overrides.update({'mcp_servers.' + name + '.enabled': False for name in selected.get('mcp_servers', {})
-                              if name != 'project_config'})
-            if server:
-                overrides['mcp_servers.project_config'] = clean['mcp_servers']['project_config']
-            for key, value in overrides.items():
-                command += ['-c', key + '=' + toml_value(value)]
             command += ['--output-last-message', str(output), '-']
+            report_progress('stage', '正在等待模型响应')
             _run(command, prompt, env, workdir)
             raw = output.read_text(encoding='utf-8')
         elif bot['runtime'] == 'hermes':
-            from .hermes_runtime import command
-            root = Path(bot['config_root'])
-            home = root if bot['profile'] == 'default' else root / 'profiles' / bot['profile']
-            import yaml
-            original = yaml.safe_load((home / 'config.yaml').read_text(encoding='utf-8')) or {}
-            # Credentials and provider routing are copied into a disposable home.
-            clean = {k: original[k] for k in ('model', 'custom_providers', 'providers', 'reasoning', 'inference') if k in original}
-            clean.update(mcp_servers={'project_config': server} if server else {},
-                         memory={'memory_enabled': False, 'user_profile_enabled': False})
-            clean.update(platform_toolsets={'cli': ['file', 'mcp-project_config'] if server else ['file']},
-                         checkpoints={'enabled': False}, agent={'max_turns': 24})
-            (scratch / 'config.yaml').write_text(yaml.safe_dump(clean, allow_unicode=True), encoding='utf-8')
-            for name in ('.env', 'auth.json', 'SOUL.md'):
-                if (home / name).is_file():
-                    shutil.copyfile(home / name, scratch / name)
-            env['HERMES_HOME'] = str(scratch)
-            # Keep the selected CLI runtime when using a disposable data home.
-            env['HERMES_DISABLE_LAZY_INSTALLS'] = '1'
+            from .mcp_runtime import cleanup_overlay, hermes_overlay
+            env['HERMES_HOME'] = bot['config_root']
             env['HERMES_EPHEMERAL_SYSTEM_PROMPT'] = SYSTEM
-            report_progress('stage', '正在通过旧版 Hermes CLI 检查项目')
-            raw = _run(command() + ['chat', '-Q', '--query-file', '-'], prompt, env, workdir)
+            overlay = None
+            try:
+                toolsets = ['file', 'memory', 'no_mcp']
+                if server:
+                    private = {**server, 'tools': {'include': ['project_config', 'open_project_page']}}
+                    overlay = hermes_overlay(private, env, profile_home=bot_identity.hermes_profile_home(bot),
+                                             name='project_config')
+                    toolsets = ['file', 'memory', 'mcp-project_config']
+                command = native_runtime.hermes_chat(bot['profile']) + [
+                    '-Q', '--toolsets', ','.join(toolsets), '--query-file', '-']
+                report_progress('stage', '正在通过 Hermes CLI 检查项目')
+                raw = _run(command, prompt, env, workdir)
+            finally:
+                cleanup_overlay(overlay)
         else:
             raise RuntimeError('所选 Bot 的运行方式尚不支持项目维护')
         return _parse_response(raw)

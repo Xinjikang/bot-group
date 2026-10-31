@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+项目助手原生记忆：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_native_runtime scripts.test_project_hud scripts.test_hud_gateway scripts.test_project_rules.RulesTests.test_project_prompt_scoped_fresh_and_same_for_both_modes -q`。隔离数据库验证 file/memory 工具集、原生记忆开关、持久执行，以及旧备注停止共享、历史记录与其他项目上下文保留。真实验收运行 `python -X utf8 -B scripts/verify_hud_memory_native.py --live --home <已授权 Hermes 根目录> --profile <来源profile> --evidence <主目录报告下的新绝对目录>`。沿用来源模型，在该安装 profiles 下创建唯一测试 profile，通过公开 serve-profile/unserve-profile 临时服务该 profile；实际写入 MEMORY.md、新会话召回和忘记并核对文件，源 profile 配置与记忆指纹保持原值，结束清理测试凭据，保留其他隔离证据。需要已运行且支持 profile 热服务的 Hermes 网关和测试 profile 的目录权限。Codex 与群聊 Bot 共用原生启动及认证入口，模型、权限和记忆设置直接继承；test_codex_driver_regressions、test_project_models、test_codex_auth、test_mcp_runtime 覆盖共享调用契约。原生记忆只读召回与 Hermes 实际记忆产物分别记录，自动整理遵循宿主触发周期。
+
 角色文本字符校验：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_roles scripts.test_project_import scripts.test_hud_native_tools scripts.test_role_entity scripts.test_permission_roles -q`。临时 SQLite、宿主配置和项目目录，真实进程内 HTTP API；覆盖三个写入入口的零宽/控制/代理项/未分配码点/Unicode 行段分隔符、首尾字符校验与错误位置、类型及长度边界、合法 Unicode 精确筛选、失败时角色/成员/审计和导入文件保持原值、助手已建项目与创建草稿，以及存量异常角色读取和改名后 ID/权限关联保留。无需业务服务或模型调用，退出清理自身临时资源。
 
 项目助手数据库配置与导航返修：HUD 核心回归加 `scripts.test_profile_create`、`scripts.test_hud_inspection`，覆盖角色新增/改名/删除、启停、角色分配、角色权限隔离、profile 创建后的实际说明校验和 Unicode 位置证据。`python -X utf8 -B scripts/test_project_settings_browser.py --permissions-only` 验证助手保存后保留未提交的权限选择、保存/冲突及 390px；实际导航由 `verify_hud_native_artifacts.py --scenario settings --browser-python <Playwright Python>` 启动 `test_hud_navigation_browser.py` 验证完整页面。
@@ -10,7 +12,7 @@
 
 项目助手 agent 复用：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_gateway scripts.test_project_hud scripts.test_hermes_connections scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway scripts.test_hermes_compatibility -q`。覆盖与群聊共用版本分流、低版本隔离子进程、高版本连续复用会话且逐轮独立回执、Bot/profile/工作目录/系统指令/对话代次变化、旧记录升级、断线对账、提交未知防重、取消后新轮次、忙碌与工具隔离检查。使用隔离数据库及模拟 RPC，无外部模型调用。
 
-项目助手原生复用验收：使用安装 Hermes 与项目依赖的解释器执行 `python -X utf8 -B scripts/verify_hud_session_reuse_native.py --hermes-source <Hermes源码绝对目录> --evidence <主目录报告下的新目录>`。真实 GatewayRunner、WS admission、AIAgent 和 HUD 持久化，临时 home/SQLite 与随机回环模型、合成 ticket；两轮构建计数为 1，HUD 换代后两轮计数为 2，四轮仅加载四个原生文件工具且各有独立回执，空闲 600 秒 detach 并关闭连接。保留模型原始请求、逐轮耗时与 RPC 类型，结束关闭自身连接、agent 和模型服务。配置 MCP 的实际保存以原生产物验收为准。
+项目助手原生复用验收：使用安装 Hermes 与项目依赖的解释器执行 `python -X utf8 -B scripts/verify_hud_session_reuse_native.py --hermes-source <Hermes源码绝对目录> --evidence <主目录报告下的新目录>`。真实 GatewayRunner、WS admission、AIAgent 和 HUD 持久化，临时 home/SQLite 与随机回环模型、合成 ticket；两轮构建计数为 1，HUD 换代后两轮计数为 2，四轮加载四个原生文件工具和 memory且各有独立回执，空闲 600 秒 detach 并关闭连接。保留模型原始请求、逐轮耗时与 RPC 类型，结束关闭自身连接、agent 和模型服务。配置 MCP 的实际保存以原生产物验收为准。
 
 Hermes 会话级复用：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_session_reuse scripts.test_hermes_gateway scripts.test_hermes_gateway_sessions scripts.test_hermes_connections scripts.test_hermes_prompt_state scripts.test_signing_keys scripts.test_task_api scripts.test_access_contract scripts.test_mcp_operations scripts.test_message_execution -q`。隔离 SQLite、模拟 RPC 与真实 MCP HTTP 转发覆盖跨轮凭据、逐执行消息来源、取消后续轮、空闲拒写、事务撤权、关闭/重开、权限撤销、订阅释放重试、旧代引用与换证失败、原子交接和子进程鉴权。Windows 签名权限用例使用独立 PowerShell 模块搜索环境与临时 DACL。
 
@@ -18,7 +20,7 @@ Hermes 会话级复用：`.venv\Scripts\python.exe -X utf8 -B -m unittest script
 
 话题成员项目范围：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_member_identity scripts.test_member_disabled scripts.test_member_add_turn -q` 验证成员范围过滤、停用保留、移出后刷新、项目参数校验及既有话题增删。`python -X utf8 -B scripts/test_thread_members_browser.py --evidence <主目录报告目录>` 使用 Playwright/Chrome 和全拦截合成 API，覆盖话题所属项目、全局花名册隔离、停用按钮、加入/移出、空列表、读取失败重试、异步竞态、重开及 1280px/390px 深浅主题。无需业务服务或端口，退出关闭自身浏览器。
 
-HUD 双标签与项目隔离：`python -X utf8 -B scripts/test_hud_notifications_browser.py --evidence <主目录报告目录>` 验证对话/待办标签、卡片数量、旧单问题/提案兼容、空状态、逐项操作及失败保留、切换标签保留输入、键盘导航、切换项目重置视图。断言项目轮询从不读取全局会话索引，其他项目提醒和草稿不会出现，更多菜单仅保留备注和设置；截图覆盖 1440px/390px 深浅主题。合成 API，无业务服务或模型调用。
+HUD 双标签与项目隔离：`python -X utf8 -B scripts/test_hud_notifications_browser.py --evidence <主目录报告目录>` 验证对话/待办标签、卡片数量、旧单问题/提案兼容、空状态、逐项操作及失败保留、切换标签保留输入、键盘导航、切换项目重置视图。断言项目轮询从不读取全局会话索引，其他项目提醒和草稿不会出现，更多菜单提供设置，已有旧备注时提供历史入口；截图覆盖 1440px/390px 深浅主题。合成 API，无业务服务或模型调用。
 
 HUD 待办误报回归：`scripts.test_project_hud` 验证执行成员工作即使被模型标为 pending，服务端也按实际卡片归一为 none；仍保留原始对话。浏览器用例另注入旧 pending 状态，验证无徽标、无虚构卡片、用户打开的面板保持原状；真实问题和提案继续显示待办数量。
 
@@ -60,7 +62,7 @@ Hermes 连接池与顶栏状态：`.venv\Scripts\python.exe -X utf8 -B -m unitte
 
 HUD 普通回复兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud scripts.test_hud_gateway -q`。隔离数据库验证普通中文回复保存为对话且保持项目配置与共享资料原值；同时覆盖 JSON/围栏提案解析、空输出、损坏结构、越权字段和超长正文校验，复用提案确认回归。
 
-HUD 更多菜单仅保留“项目备注”和“设置”。复用 `test_project_hud_browser.py` 的隔离浏览器回归，向导草稿检查保留输入与模板状态，移除通过项目切换入口恢复草稿的步骤。
+HUD 更多菜单提供“设置”，存在旧备注时附加“历史备注”。复用 `test_project_hud_browser.py` 的隔离浏览器回归，向导草稿检查保留输入与模板状态，移除通过项目切换入口恢复草稿的步骤。
 
 HUD 网关分流：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud scripts.test_hud_gateway scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway -q`。覆盖群聊共用运行时判定、新版网关错误保持网关路径、旧版公开 CLI、原生文件工具及私有配置 MCP、推理事件过滤、断线复用 admission、提交回执未知时停止重复提交、超时按 generation 中断及终态核对。使用隔离数据库和模拟公开 RPC。
 

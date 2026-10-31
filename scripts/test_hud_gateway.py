@@ -16,7 +16,7 @@ class Client:
         self.callback = None
         self.fail_submit = False
         self.fail_receipt = False
-        self.tools = [{'name': name} for name in ('read_file', 'write_file', 'patch', 'search_files')]
+        self.tools = [{'name': name} for name in ('read_file', 'write_file', 'patch', 'search_files', 'memory', 'native_provider_recall')]
         self.created = 0
         self.busy = False
         self.events = []
@@ -101,9 +101,9 @@ class HudGatewayTests(unittest.TestCase):
                            lambda *args: None, system_prompt='Dedicated guidance', server=server)
         self.assertEqual(self.client.created, 1)
         create = next(p for m, p in self.client.calls if m == 'session.create')
-        self.assertEqual(create['toolsets'], ['file', 'no_mcp'])
+        self.assertEqual(create['toolsets'], ['file', 'memory', 'no_mcp'])
         self.assertTrue(create['verbose'])
-        self.assertFalse(create['ignore_rules'])
+        self.assertNotIn('ignore_rules', create)
         self.assertEqual([s['name'] for s in create['editor']['mcp_servers']], ['project_config'])
         self.assertFalse(any(m == 'tools.show' for m, _ in self.client.calls))
         bindings = [p['payload'] for m, p in self.client.calls
@@ -163,7 +163,7 @@ class HudGatewayTests(unittest.TestCase):
         self.client.tools = [{'name': 'terminal'}]
         with self.assertRaisesRegex(RuntimeError, '工具清单'):
             self.run_prompt('next question')
-        self.client.tools = [{'name': name} for name in ('read_file', 'write_file', 'patch', 'search_files')]
+        self.client.tools = [{'name': name} for name in ('read_file', 'write_file', 'patch', 'search_files', 'memory', 'native_provider_recall')]
         self.client.busy = True
         with self.assertRaisesRegex(RuntimeError, '仍有执行'):
             self.run_prompt('next question')
@@ -208,16 +208,18 @@ class HudGatewayTests(unittest.TestCase):
         self.assertEqual(json.loads(self.run_prompt()),{'text':'ready'})
         create=next(p for m,p in self.client.calls if m=='session.create')
         self.assertEqual(create['source'],'acp')
-        self.assertEqual(create['toolsets'],['file','no_mcp'])
+        self.assertEqual(create['toolsets'],['file','memory','no_mcp'])
         self.assertEqual(create['editor'],{'mcp_servers':[]})
-        self.assertFalse(create['ignore_rules'])
-        self.assertFalse(create['accept_hooks'])
+        self.assertNotIn('ignore_rules', create)
+        self.assertNotIn('accept_hooks', create)
         self.assertEqual(create['client_env']['HERMES_EPHEMERAL_SYSTEM_PROMPT'],'Dedicated guidance')
         submitted=next(p for m,p in self.client.calls if m=='prompt.submit')
         self.assertEqual(submitted['text'],'synthetic prompt')
         self.assertIn(('reasoning','核对项目目标'),self.updates)
         self.assertNotIn(('reasoning','unrelated'),self.updates)
         self.assertTrue(self.saved['terminal'])
+        self.assertIn('memory', self.saved['tools'])
+        self.assertIn('native_provider_recall', self.saved['tools'])
 
     def test_cancelled_turn_gets_fresh_deadline_and_submission(self):
         self.client.receipts = [{'status': 'terminal', 'outcome': 'cancelled'}]

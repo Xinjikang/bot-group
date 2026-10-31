@@ -49,6 +49,10 @@ def hermes_home(member, fallback):
         return fallback if member == 'default' else fallback / 'profiles' / member
     if bot['runtime'] != 'hermes':
         raise ValueError('Hermes state is unavailable for this runtime')
+    return hermes_profile_home(bot)
+
+
+def hermes_profile_home(bot):
     root = Path(bot['config_root'])
     return root if bot['profile'] == 'default' else root / 'profiles' / bot['profile']
 

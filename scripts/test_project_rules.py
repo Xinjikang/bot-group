@@ -106,6 +106,8 @@ class RulesTests(unittest.TestCase):
                           ('中文项目', '项目描述\n第二行', 'worktree', 'p'))
         self.conn.execute('INSERT INTO projects(name,root,display_name,created_at) VALUES(?,?,?,?)',
                           ('q', str(self.base), 'Other project', db.now_iso()))
+        self.conn.execute("INSERT INTO settings(key,project,value,updated_at) VALUES('maintenance_facts','p',?,?)",
+                          ('[{"label":"旧备注","value":"LEGACY-SHARED-SENTINEL"}]', db.now_iso()))
         self.conn.commit()
         work = wake.wake_system_prompt('work', 'p', str(self.work))
         chat = wake.wake_system_prompt('chat', 'p', str(self.work))
@@ -113,6 +115,15 @@ class RulesTests(unittest.TestCase):
         self.assertTrue(chat.startswith(wake.system_prompt_for('chat')))
         context = work.split('## 当前项目\n')[1]
         self.assertEqual(context, chat.split('## 当前项目\n')[1])
+        injected = json.loads(context.split('\n群聊和任务工具的 project 参数')[0])
+        self.assertEqual(set(injected), {'项目稳定 ID', '项目显示名', '项目描述', '项目负责人',
+                                        '项目主目录', '目录模式', '当前工作目录', '工作区配置'})
+        self.assertEqual(injected['项目稳定 ID'], 'p')
+        self.assertEqual(injected['项目描述'], '项目描述\n第二行')
+        for prompt in (work, chat):
+            self.assertIn('群聊和任务工具的 project 参数使用项目稳定 ID。', prompt)
+            self.assertNotIn('LEGACY-SHARED-SENTINEL', prompt)
+            self.assertNotIn('用户确认的项目维护资料', prompt)
         self.assertIn('中文项目', context)
         self.assertIn('独立 worktree', context)
         self.assertIn(json.dumps(str(self.work)), context)

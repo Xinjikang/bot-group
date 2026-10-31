@@ -105,7 +105,7 @@ def main():
             assert page.evaluate("calls.every(c=>c.path!=='/hud'||c.method==='POST')"), 'Project HUD must never fetch the global session index'
             page.locator('#hud-toggle').click()
             page.locator('#hud-more').click()
-            assert page.locator('#hud-tools button').all_text_contents() == ['项目备注', '设置']
+            assert page.locator('#hud-tools button:visible').all_text_contents() == ['设置']
             assert 'proj-7' not in page.locator('#project-hud').inner_text()
             assert '其他项目操作' not in page.locator('#project-hud').inner_text()
             page.locator('#hud-more').click()

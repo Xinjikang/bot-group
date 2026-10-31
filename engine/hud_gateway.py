@@ -44,14 +44,13 @@ def _save(value):
 
 
 def respond(bot, prompt, workdir, progress, *, system_prompt='', server=None, edit_approval_policy='workspace_session'):
-    root = Path(bot['config_root'])
-    home = root if bot['profile'] == 'default' else root / 'profiles' / bot['profile']
-    home = home.resolve()
+    from .bot_identity import hermes_profile_home
+    home = hermes_profile_home(bot).resolve()
     workdir = str(Path(workdir).resolve())
     digest = hashlib.sha256((system_prompt + '\0' + prompt).encode('utf-8')).hexdigest()
     binding = hashlib.sha256(json.dumps([
         _OWNER.get(), _GENERATION.get(), bot.get('id'), bot['profile'], str(home), workdir,
-        system_prompt, 'native-file-v1', bool(server),
+        system_prompt, 'native-file-memory-v2', bool(server),
     ], ensure_ascii=False).encode('utf-8')).hexdigest()
     record = _saved()
     text = ''
@@ -71,7 +70,7 @@ def respond(bot, prompt, workdir, progress, *, system_prompt='', server=None, ed
             text = ''
             name = payload.get('name') or payload.get('tool_name')
             labels = {'read_file': '读取文件', 'search_files': '查找资料', 'write_file': '写入文档',
-                      'patch': '修改文档', 'tool_search': '查找可用工具',
+                      'patch': '修改文档', 'memory': '更新记忆', 'tool_search': '查找可用工具',
                       'tool_describe': '读取工具说明', 'tool_call': '调用工具'}
             label = ('更新项目配置' if isinstance(name, str) and name.endswith('update_project_config') else
                      '处理项目配置' if isinstance(name, str) and name.endswith('project_config') else
@@ -134,10 +133,10 @@ def respond(bot, prompt, workdir, progress, *, system_prompt='', server=None, ed
             snapshot = sessions.new(client, title='项目助手 · ' + record['request_id'][:12],
                                     workdir=record['workdir'], system_prompt=system_prompt, model_args=[],
                                     request_id=record['request_id'], editor=editor, launch_options={
-                                        'toolsets': ['file', 'no_mcp'], 'ignore_rules': False, 'max_turns': 24,
+                                        'toolsets': ['file', 'memory', 'no_mcp'],
                                         # Native inventory caches definitions outside the editor scope;
                                         # verbose construction resolves tools in the execution scope.
-                                        'checkpoints': False, 'accept_hooks': False, 'verbose': True})
+                                        'verbose': True})
             record['session_id'] = snapshot['session_id']
             _save(record)
             if server:
@@ -153,11 +152,11 @@ def respond(bot, prompt, workdir, progress, *, system_prompt='', server=None, ed
         tool_view = client.rpc('tools.show', session_id=record['session_id']) if not server else {}
         names = {tool.get('name') if isinstance(tool, dict) else tool
                  for section in tool_view.get('sections', []) for tool in section.get('tools', [])}
+        # Memory providers add their own native tools when the agent is built.
+        # Session launch toolsets remain the authority for the permitted tools.
         native = {'search_files', 'read_file', 'write_file', 'patch'}
-        custom = {name for name in names if name and name.endswith('update_project_config')}
-        # Before an agent is constructed, tools.show omits private editor MCPs.
-        if not server and (not native.issubset(names) or names - native - custom or custom):
-            raise RuntimeError('项目助手工具清单与文件工具及配置工具约定不一致，已停止提交')
+        if not server and not native.issubset(names):
+            raise RuntimeError('项目助手工具清单缺少原生文件工具，已停止提交')
         if snapshot.get('info', {}).get('edit_approval_policy') != edit_approval_policy:
             sessions.mutate(client, snapshot, 'edit_policy', {'policy': edit_approval_policy})
             if server:

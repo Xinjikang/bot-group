@@ -6,7 +6,7 @@
     <button class="hud-toggle" id="hud-toggle" aria-expanded="false" aria-controls="hud-panel"><span class="hud-light" aria-hidden="true"></span><span class="hud-caption"><span class="hud-name">项目助手</span><span class="hud-status"> · 准备就绪</span></span><span class="hud-chevron">展开</span></button>
     <div class="hud-panel" id="hud-panel" hidden>
       <div class="hud-context"><span id="hud-context"></span><nav aria-label="维护工具"><button class="hud-link hud-more" id="hud-more" aria-label="更多维护工具" aria-expanded="false">···</button></nav></div>
-      <nav class="hud-tools" id="hud-tools" aria-label="更多维护工具" hidden><button class="hud-link" id="hud-history-toggle">项目备注</button><button class="hud-link" id="hud-settings-toggle">设置</button></nav>
+      <nav class="hud-tools" id="hud-tools" aria-label="更多维护工具" hidden><button class="hud-link" id="hud-history-toggle" hidden>历史备注</button><button class="hud-link" id="hud-settings-toggle">设置</button></nav>
       <button class="hud-link hud-back" id="hud-back" hidden>← 返回助手</button>
       <div class="hud-tabs" id="hud-tabs" role="tablist" aria-label="助手内容">
         <button id="hud-chat-tab" role="tab" aria-controls="hud-content" aria-selected="true">对话消息</button>
@@ -250,7 +250,7 @@
         }
       }
       if(facts.length){
-        box.append(node('p','保存位置：项目备注。本项目助手和成员 Bot 后续会参考这些约定，项目文件保持原样。','hud-muted'));
+        box.append(node('p','保存位置：项目备注。保留在本助手的旧版记录中。','hud-muted'));
         for(const fact of facts){
           const before=proposal.before_facts?.[fact.label]??item.state.facts?.find(f=>f.label===fact.label)?.value??'';
           box.append(compare(fact.label,before,fact.value,'尚未保存这条备注'));
@@ -299,7 +299,8 @@
     el('hint').textContent=busy?'正在发送…':state==='running'?'正在回复，输入会为你保留':'Ctrl + Enter 发送';
     el('input').disabled=!item?.bot;
     const history=el('history');history.replaceChildren();
-    history.append(node('h3','项目备注'),node('p','已保存的约定供本项目助手和成员 Bot 参考。','hud-muted'));
+    el('history-toggle').hidden=!item?.state.facts?.length;
+    history.append(node('h3','历史备注'),node('p','旧版记录仅供查看。长期记忆通过当前助手的记忆工具管理。','hud-muted'));
     for(const fact of item?.state.facts||[]){const p=node('article');p.append(node('strong',fact.label),node('p',fact.value,'hud-text'));history.append(p);}
     if(!item?.state.facts?.length)history.append(node('p','目前还没有保存项目备注。','hud-muted'));
     updateSend();

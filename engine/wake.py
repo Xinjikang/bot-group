@@ -371,7 +371,6 @@ def wake_system_prompt(kind: str, project: str, workdir: str) -> str:
     try:
         row = get_project(conn, project)
         owner = project_owner(conn, project)
-        maintenance = conn.execute("SELECT value FROM settings WHERE project=? AND key='maintenance_facts'", (project,)).fetchone()
         with LOCK:
             resources = workspace_resources.prompt_config(conn, project, workdir)
     finally:
@@ -385,7 +384,6 @@ def wake_system_prompt(kind: str, project: str, workdir: str) -> str:
         '目录模式': '共用项目主目录' if Path(workdir).resolve() == Path(row['root']).resolve() else '独立 worktree',
         '当前工作目录': workdir,
         '工作区配置': resources,
-        '用户确认的项目维护资料': json.loads(maintenance['value']) if maintenance else [],
     }
     return (system_prompt_for(kind) + '\n\n' + workspace_resources.RULE + '\n\n## 当前项目\n'
             + json.dumps(context, ensure_ascii=False, indent=2)
@@ -938,32 +936,20 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         wake_started_at = time.time()
         context = {'profile': profile, 'project': project, 'thread_id': thread_id,
                    'session': session, 'wake_started_at': wake_started_at}
-        codex_home, config_profile = bot_identity.codex_settings(bot)
-        from . import codex_auth
+        from . import codex_auth, native_runtime
         try:
-            codex_auth.sync(codex_home)
+            cmd_without_q, codex_home = native_runtime.codex(bot,
+                config_args=_codex_mcp_config(profile, project, context=context, chat=kind == 'chat'),
+                model_args=model_args, system_prompt=wake_system_prompt(kind, project, workdir),
+                resume=codex_thread_id)
         except codex_auth.AuthSyncError as exc:
             return {'ok': False, 'detail': str(exc)}
-        cmd_without_q = [
-            _codex_bin(), "exec", "--json",
-            "--skip-git-repo-check",
-        ] + _codex_mcp_config(profile, project, context=context, chat=kind == 'chat')
-        if config_profile:
-            cmd_without_q += ['--profile', config_profile]
-        cmd_without_q += model_args
-        # Keep stable collaboration/project context in the developer layer.
-        import json
-        cmd_without_q += ['-c', 'developer_instructions=' + json.dumps(
-            wake_system_prompt(kind, project, workdir), ensure_ascii=False)]
-        if codex_thread_id:
-            cmd_without_q += ["resume", codex_thread_id]
         # wake_runs.runtime_session_id：codex 行 spawn 前存 NULL（#148 契约），
         # 首建 thread_id 执行后才可知，由 #153 的 thread.started 回填写入。
         sid_for_run = None if not codex_thread_id else codex_thread_id
     else:
-        from . import hermes_runtime
-        cmd_without_q = hermes_runtime.command(_hermes_bin()) + [
-            "-p", bot['profile'] if bot else profile, "chat",
+        from . import native_runtime
+        cmd_without_q = native_runtime.hermes_chat(bot['profile'] if bot else profile, entry=_hermes_bin()) + [
             "--in", workdir, "-c", sid, "-Q",
         ] + model_args
         if not use_binding:
@@ -976,7 +962,8 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         signal += _TASK_SUFFIX.format(task_id=bound_task)
     # codex 的 prompt 是末位裸参数（无 -q 包装）；hermes 仍是 -q。
     cmd = cmd_without_q + (["-q", signal] if runtime != "codex" else [signal])
-    env = os.environ.copy()
+    from . import native_runtime
+    env = native_runtime.environment()
     # Database configuration belongs to the engine process.
     for key in ("GROUP_DB", "GROUP_DATA_DIR", "DATA_DIR", "GROUP_ATTACHMENTS_DIR"):
         env.pop(key, None)

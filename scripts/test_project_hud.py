@@ -178,7 +178,7 @@ class HudTests(unittest.TestCase):
         self.assertEqual(saved['status'],'queued')
         self.assertFalse(saved['entries'])
 
-    def test_bind_receipt_idempotent_and_shared_facts(self):
+    def test_bind_receipt_preserves_legacy_notes_without_sharing(self):
         item=self.session()
         with hud.connection() as conn:
             self.assertFalse(item['project'])
@@ -189,8 +189,35 @@ class HudTests(unittest.TestCase):
         result=hud.bind(item['id'],'receipt')
         self.assertEqual(result['project'],'p')
         self.assertEqual(hud.bind(item['id'],'receipt')['id'],item['id'])
-        facts=self.conn.execute("SELECT value FROM settings WHERE project='p' AND key='maintenance_facts'").fetchone()[0]
-        self.assertIn('requirements-v2',facts)
+        self.assertEqual(result['state']['facts'], state['facts'])
+        self.assertIsNone(self.conn.execute(
+            "SELECT value FROM settings WHERE project='p' AND key='maintenance_facts'").fetchone())
+
+    def test_legacy_notes_stay_out_of_current_assistant_context(self):
+        item = self.session('p')
+        item['state']['facts'] = [{'label': '旧版备注', 'value': 'LEGACY-NOTE-SENTINEL'}]
+        with hud.connection() as conn:
+            payload = hud.context(conn, item)
+        self.assertNotIn('facts', payload)
+        self.assertNotIn('LEGACY-NOTE-SENTINEL', json.dumps(payload))
+        self.assertEqual(payload['project'], hud.project_snapshot(self.conn, 'p'))
+        for key in ('template', 'template_root', 'installation_root', 'materials', 'preparation',
+                    'config_version', 'history', 'decisions', 'allowed_changes'):
+            self.assertIn(key, payload)
+
+    def test_accept_legacy_notes_preserves_other_settings(self):
+        item = self.session('p')
+        original = '[{"label":"历史共享备注","value":"kept-in-storage"}]'
+        self.conn.execute("INSERT INTO settings(key,project,value,updated_at) VALUES('maintenance_facts','p',?,?)",
+                          (original, 'fixture'))
+        self.conn.commit()
+        result = self.infer(item, {'text': '历史提案', 'proposal': {'changes': {}, 'facts': [
+            {'label': '旧版备注', 'value': 'local-history-only'}]}})
+        saved = self.client.post('/hud/'+item['id']+'/accept', json={'revision': result['revision'],
+            'proposal_id': result['state']['proposal']['id']})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(self.conn.execute(
+            "SELECT value FROM settings WHERE project='p' AND key='maintenance_facts'").fetchone()[0], original)
 
     def test_error_retry_authorization_and_project_scope(self):
         item=self.session('p')
@@ -522,31 +549,37 @@ class HudTests(unittest.TestCase):
                          (json.dumps({'project':'p'}),time.time()))
         self.assertEqual(hud.bind(item['id'],'paused-receipt')['status'],'paused')
 
-    def test_codex_adapter_uses_disposable_tool_restricted_configuration(self):
-        from engine import hud_runtime
-        import tomlkit
-        home=self.root/'runtime-source';home.mkdir()
-        (home/'config.toml').write_text('model="test-model"\n[mcp_servers.production]\ncommand="unused"\n',encoding='utf-8')
-        (home/'auth.json').write_text('{"fixture":true}',encoding='utf-8')
-        captured=[]
-        def fake_run(command,prompt,env,cwd):
+    def test_codex_adapter_preserves_native_profile_and_memory_settings(self):
+        from engine import hud_runtime, native_runtime
+        home = self.root/'runtime-source'; home.mkdir()
+        original = 'model="test-model"\napproval_policy="on-request"\n[features]\nmemories=true\n[memories]\nuse_memories=true\ngenerate_memories=true\n'
+        (home/'config.toml').write_text(original, encoding='utf-8')
+        captured = []
+        def fake_run(command, prompt, env, cwd):
             captured.append(cwd)
-            settings=tomlkit.parse((Path(cwd)/'config.toml').read_text(encoding='utf-8'))
-            self.assertNotIn('mcp_servers',settings)
-            self.assertTrue(settings['features']['shell_tool'])
-            self.assertFalse(settings['features']['apps'])
-            self.assertEqual(settings['default_permissions'], ':workspace')
-            self.assertEqual(settings['developer_instructions'], hud_runtime.SYSTEM.strip())
+            self.assertEqual(env['CODEX_HOME'], str(home))
+            self.assertNotIn('GROUP_DB', env)
+            self.assertFalse((Path(cwd)/'config.toml').exists())
+            self.assertNotIn('--ephemeral', command)
+            self.assertNotIn('--sandbox', command)
+            for arg in command:
+                self.assertFalse(arg.startswith(('features.', 'memories.', 'approval_policy=', 'default_permissions=')), arg)
+            self.assertFalse(any(arg.startswith('mcp_servers.task_queue') for arg in command))
+            self.assertIn('developer_instructions='+json.dumps(hud_runtime.SYSTEM, ensure_ascii=False), command)
             self.assertNotIn(hud_runtime.SYSTEM, prompt)
-            self.assertEqual(env['CODEX_HOME'],str(home))
-            self.assertNotIn('GROUP_DB',env)
-            Path(command[command.index('--output-last-message')+1]).write_text('{"text":"ready"}',encoding='utf-8')
+            Path(command[command.index('--output-last-message')+1]).write_text('{"text":"ready"}', encoding='utf-8')
             return ''
-        bot={'runtime':'codex','config_root':str(home),'profile':'default'}
-        with patch('engine.hud_runtime.config.data_dir',return_value=self.root),patch('engine.wake._codex_bin',return_value='codex'),patch('engine.hud_runtime._run',side_effect=fake_run):
-            self.assertEqual(hud_runtime.respond(bot,{}),{'text':'ready'})
+        bot = {'runtime':'codex','config_root':str(home),'profile':'default'}
+        with patch('engine.hud_runtime.config.data_dir', return_value=self.root), \
+             patch('engine.wake._codex_bin', return_value='codex'), \
+             patch('engine.codex_auth.sync') as sync, \
+             patch.object(native_runtime, 'codex', wraps=native_runtime.codex) as shared, \
+             patch('engine.hud_runtime._run', side_effect=fake_run):
+            self.assertEqual(hud_runtime.respond(bot, {}), {'text':'ready'})
+            shared.assert_called_once()
+            sync.assert_called_once_with(str(home))
         self.assertFalse(Path(captured[0]).exists())
-        self.assertIn('mcp_servers.production',(home/'config.toml').read_text(encoding='utf-8'))
+        self.assertEqual((home/'config.toml').read_text(encoding='utf-8'), original)
 
     def test_progress_is_live_revision_fenced_and_cleared_on_completion(self):
         from engine import hud_runtime
@@ -627,30 +660,39 @@ class HudTests(unittest.TestCase):
                 hud_runtime._run([sys.executable, '-c', 'import time; time.sleep(30)'], '', hud_runtime._env(), str(self.root))
         self.assertFalse(hud_runtime._PROCESSES)
 
-    def test_legacy_hermes_uses_public_cli_with_isolated_configuration(self):
-        from engine import hud_runtime
-        import yaml
-        home=self.root/'legacy-home';home.mkdir()
-        (home/'config.yaml').write_text('model: fixture\nmcp_servers: {production: {command: unused}}', encoding='utf-8')
-        bot={'runtime':'hermes','config_root':str(home),'profile':'default'}
-        captured=[]
-        def cli(command,prompt,env,cwd):
-            captured.append(cwd)
-            self.assertEqual(command,['hermes-fixture','chat','-Q','--query-file','-'])
-            self.assertEqual(env['HERMES_HOME'],cwd)
-            self.assertEqual(env['HERMES_DISABLE_LAZY_INSTALLS'],'1')
-            self.assertEqual(env['HERMES_EPHEMERAL_SYSTEM_PROMPT'],hud_runtime.SYSTEM)
-            self.assertNotIn(hud_runtime.SYSTEM,prompt)
-            config=yaml.safe_load((Path(cwd)/'config.yaml').read_text(encoding='utf-8'))
-            self.assertEqual(config['platform_toolsets']['cli'],['file'])
-            self.assertEqual(config['mcp_servers'],{})
+    def test_legacy_hermes_reuses_native_home_and_managed_overlay(self):
+        from engine import hud_runtime, native_runtime
+        home = self.root/'legacy-home'; home.mkdir()
+        (home/'config.yaml').write_text('model: fixture\nmemory: {memory_enabled: true}', encoding='utf-8')
+        (home/'memories').mkdir()
+        marker = home/'memories/MEMORY.md'
+        marker.write_text('native memory', encoding='utf-8')
+        bot = {'runtime':'hermes','config_root':str(home),'profile':'default'}
+        captured = []
+        def cli(command, prompt, env, cwd):
+            self.assertEqual(command, ['hermes-fixture','-p','default','chat','-Q',
+                                     '--toolsets','file,memory,mcp-project_config','--query-file','-'])
+            self.assertEqual(env['HERMES_HOME'], str(home))
+            self.assertEqual(env['HERMES_EPHEMERAL_SYSTEM_PROMPT'], hud_runtime.SYSTEM)
+            self.assertEqual(marker.read_text(encoding='utf-8'), 'native memory')
+            overlay = Path(env['HERMES_MANAGED_DIR']); captured.append(overlay)
+            settings = json.loads((overlay/'config.yaml').read_text(encoding='utf-8'))
+            self.assertIn('project_config', settings['mcp_servers'])
+            self.assertNotIn('task_queue', settings['mcp_servers'])
+            self.assertEqual(settings['mcp_servers']['project_config']['tools']['include'], ['project_config', 'open_project_page'])
+            self.assertFalse((Path(cwd)/'config.yaml').exists())
             return '{"text":"ready"}'
-        with patch('engine.hermes_gateway.enabled',return_value=False), \
-             patch('engine.hermes_runtime.command',return_value=['hermes-fixture']), \
-             patch('engine.hud_runtime.config.data_dir',return_value=self.root), \
-             patch('engine.hud_runtime._run',side_effect=cli):
-            self.assertEqual(hud_runtime.respond(bot,{}),{'text':'ready'})
-        self.assertFalse(Path(captured[0]).exists())
+        server = {'command':'python','args':[str(self.root/'hud_server.py')],'env':{}}
+        with patch('engine.hermes_gateway.enabled', return_value=False), \
+             patch('engine.hermes_runtime.command', return_value=['hermes-fixture']), \
+             patch('engine.hud_runtime.config.data_dir', return_value=self.root), \
+             hud_runtime.tool_server(server), \
+             patch.object(native_runtime, 'hermes_chat', wraps=native_runtime.hermes_chat) as shared, \
+             patch('engine.hud_runtime._run', side_effect=cli):
+            self.assertEqual(hud_runtime.respond(bot, {}), {'text':'ready'})
+            shared.assert_called_once_with('default')
+        self.assertFalse(captured[0].exists())
+        self.assertEqual(marker.read_text(encoding='utf-8'), 'native memory')
 
     def test_gateway_dispatch_never_falls_back_to_subprocess(self):
         from engine import hud_runtime

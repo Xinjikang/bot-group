@@ -69,11 +69,10 @@ def main():
                 assert result['durable_admission'], 'Gateway lacks durable admissions'
                 snapshot=hermes_gateway_sessions.new(client,title='HUD 接口验证 · '+uuid.uuid4().hex,
                     workdir=str(args.evidence.parent),
-                    system_prompt=hud_runtime.SYSTEM,model_args=[],launch_options={'toolsets':['file','no_mcp'], 'ignore_rules':False,
-                        'max_turns':2,'checkpoints':False,'accept_hooks':False})
+                    system_prompt=hud_runtime.SYSTEM,model_args=[],launch_options={'toolsets':['file','memory','no_mcp'], 'verbose':True})
                 view=client.rpc('tools.show',session_id=snapshot['session_id'])
                 result['reasoning_display']=client.rpc('config.set',session_id=snapshot['session_id'],key='show_reasoning',value='1')
-                assert view.get('total')==4,view
+                assert view.get('total', 0)>=5,view
                 assert 'prompt.submit' not in result['calls']
                 result['passed']=True
                 print(json.dumps({'passed':True,'mode':'inspect-only','tools_total':view['total']},ensure_ascii=False))
@@ -107,7 +106,7 @@ def main():
             assert not result['response'].get('proposal'), 'Explanations must not create configuration changes or notes'
         if args.scenario=='conflict':
             assert not any(word in result['response']['text'] for word in ('不能开始开发','无法开始开发','不能开始：')), 'Delivery checks must not become an invented development blocker'
-        assert result.get('tools_total')==4,result
+        assert result.get('tools_total', 0)>=5,result
         assert result.get('dedicated_instructions'),result
         assert result['calls'].count('prompt.submit')==1,result
         assert result['execution'].get('terminal'),result

@@ -236,15 +236,7 @@ def bind(sid, request_id):
         item['project'], item['stage'] = project, 'maintenance'
         item['state'].pop('proposal', None)
         item['state']['cards'] = [c for c in item['state'].get('cards', []) if not c.get('proposal')]
-        share_facts(conn, item)
         return store(conn, item, queue=bool(item['bot_id']))
-
-
-def share_facts(conn, item):
-    if item['project']:
-        conn.execute("INSERT INTO settings(key,project,value,updated_at) VALUES('maintenance_facts',?,?,?) "
-                     'ON CONFLICT(key,project) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',
-                     (item['project'], encode(item['state'].get('facts', [])), db.now_iso()))
 
 
 def accept(sid, body):
@@ -291,7 +283,6 @@ def accept(sid, body):
                     conn.execute(f'UPDATE projects SET {key}=? WHERE name=?', (value, item['project']))
                 ws.audit(conn, item['project'], 'project-assistant', 'project.update',
                          {'before': actual, 'after': {**actual, **changes}})
-            share_facts(conn, item)
             result = store(conn, item, queue=True, commit=False)
             if item['project'] and any(key in changes and changes[key] != actual[key]
                                       for key in ('root', 'directory_mode', 'worktree_root')):
@@ -363,7 +354,7 @@ def context(conn, item):
             'config_version': hud_tools.version(hud_tools.configuration(conn, item)),
             'user_request': state.get('user_request', ''),
             'edit_approval_policy': edit_policy.read(conn),
-            'materials': materials, 'inspection': hud_inspection.inspect(config, materials), 'facts': state.get('facts', []),
+            'materials': materials, 'inspection': hud_inspection.inspect(config, materials),
             'preparation': hud_knowledge.preparation(config, template, materials),
             'usage_knowledge': hud_knowledge.usage(history),
             'deferred_questions': state.get('deferred_questions', [])[-12:],
@@ -513,7 +504,7 @@ def run_one(sid):
                 hud_documents.prepare(proposal, payload['project'], payload['materials'])
                 before = {key: payload['project'].get(key) or '' for key in proposal['changes']}
                 proposal['changes'] = {key: value for key, value in proposal['changes'].items() if value != before[key]}
-                previous_facts = {fact['label']: fact['value'] for fact in payload['facts']}
+                previous_facts = {fact['label']: fact['value'] for fact in item['state'].get('facts', [])}
                 proposal['facts'] = [fact for fact in proposal['facts'] if previous_facts.get(fact['label']) != fact['value']]
                 proposal['before'] = before
                 proposal['before_facts'] = previous_facts

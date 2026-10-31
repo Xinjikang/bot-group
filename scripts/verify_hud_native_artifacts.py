@@ -114,12 +114,16 @@ def main():
     def observed_run(*values, **options):
         command, prompt, env, cwd = values
         if args.runtime == 'codex':
-            clean = tomlkit.parse((Path(command[command.index('--output-last-message')+1]).parent / 'config.toml').read_text(encoding='utf-8'))
+            clean = dict(source)
+            if profile:
+                clean.update(source.get('profiles', {}).get(profile, {}))
             (base / f'native-launch-{len(records)}.json').write_text(json.dumps({
                 'command': [arg if not arg.startswith(('mcp_servers.project_config=', 'developer_instructions=')) else arg.split('=',1)[0]+'=<session override>' for arg in command],
                 'cwd': cwd, 'sandbox_mode': clean.get('sandbox_mode'),
                 'default_permissions': clean.get('default_permissions'), 'windows': dict(clean.get('windows', {})),
-                'features': dict(clean.get('features', {})), 'mcp_servers': list(clean.get('mcp_servers', {}))},
+                'features': dict(clean.get('features', {})), 'memories': dict(clean.get('memories', {})),
+                'mcp_servers': list(clean.get('mcp_servers', {})), 'configuration_source': str(config_path),
+                'native_settings_inherited': '--sandbox' not in command and '--ephemeral' not in command},
                 ensure_ascii=False, indent=2), encoding='utf-8')
         try:
             result = original_run(*values, **options)
