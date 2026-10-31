@@ -62,15 +62,21 @@ HUD 展开时读取详情边界，将自身放在详情右侧并与其同高；�
 
 `hud_runtime.py` 复用群聊的 `hermes_gateway.enabled()` 判定：具备新版网关布局的 Hermes（0.22.x 路线）通过现有 `hermes_gateway.connection()` 连接公开 `/api/ws`；旧版通过公开 `hermes chat -Q --ignore-rules --query-file -` 子进程调用。判定依据与群聊一致，由已安装入口对应的源码布局识别，连接错误继续报告网关错误。项目助手调用链仅使用公开 CLI 和 RPC。
 
-`hud_gateway.py` 复用群聊的会话创建、恢复与传输接口，使用唯一标题的 ACP 维护会话。会话沿用所选 profile 的模型配置，通过公开 `toolsets: [no_mcp]` 排除全局 MCP，空 editor MCP 清单、`ignore_rules`、关闭 checkpoints/hooks 保持原有维护权限边界。提交前查询 `tools.show`，工具数为零才继续。工具白名单、文档写入与提案确认属于独立能力边界。
+`hud_gateway.py` 复用群聊的会话创建、恢复与传输接口。同一 HUD 会话和对话代次内，Bot、profile home、工作目录及专用系统指令保持一致时，后续轮次通过 `session.resume` 使用原 ACP 会话，保留原生 agent 缓存；每轮分别生成 submission/admission 和超时记录。首次创建使用唯一标题，HUD 空闲重置、切换 Bot、工作目录或专用指令变化后重新创建。旧格式执行记录先核对原回执，后续新轮次创建带绑定摘要的会话。
+
+会话沿用所选 profile 的模型配置，通过公开 `toolsets: [no_mcp]` 排除全局 MCP，空 editor MCP 清单、`ignore_rules`、关闭 checkpoints/hooks 保持原有维护权限边界。每次提交前检查会话空闲并查询 `tools.show`，工具数为零才继续。每轮输入包含最新项目快照，系统指令要求配置、检测和待处理提案以当前快照为准。工具白名单、文档写入与提案确认属于独立能力边界。
+
+轮次结束释放调用租约，订阅及连接沿用群聊连接池的生命周期。profile 无活跃租约、无未决执行且空闲 600 秒后 detach 并关闭连接；再次对话恢复持久会话，agent 由原生缓存状态决定复用或重建。助手对话代次的空闲重置时间仍由 HUD 设置决定。
 
 会话级 `config.set show_reasoning=1` 开启公开推理事件，按 session_id 过滤 `reasoning.delta`，通过现有 HUD 进度回调显示最新一行。模型与宿主决定事件是否提供；等待期间保留阶段与耗时显示。
 
-`hud_sessions.state.gateway` 保存 request/submission/admission ID、原 profile home、提示摘要和截止时间。断线或引擎重启后，显式重试先核对原 admission 回执；提交确认丢失时保留会话标识并报告待核对，防止重复发起未知执行。检查预算为 180 秒，届满对排队输入执行 `prompt.cancel`，运行输入按原 generation 执行 `session.interrupt`，再核对终态，最多等待 30 秒。未确认终态继续保留原执行记录。
+`hud_sessions.state.gateway` 保存 request/submission/admission ID、原 profile/home、绑定摘要、提示摘要和截止时间。断线或引擎重启后，显式重试先在原 profile 核对原 admission 回执；相同输入返回原结果，新输入在对账完成后继续提交。提交确认丢失时保留会话标识并报告待核对，防止重复发起未知执行。检查预算为 180 秒，届满对排队输入执行 `prompt.cancel`，运行输入按原 generation 执行 `session.interrupt`，再核对终态，最多等待 30 秒。未确认终态继续保留原执行记录，已终止轮次之后的提交使用新的截止时间。
 
 旧版 Hermes 与 Codex 使用临时配置和认证副本，完成后清理。Hermes 临时配置关闭 CLI 工具、MCP、记忆和 checkpoints；Codex 使用隔离 CODEX_HOME、只读沙箱和关闭 shell 工具的 exec。子进程按 UTF-8 消费输出，独立线程发送输入、读取输出和排空错误，超时终止进程树。清除继承的 Python 环境标记；Codex JSON 事件继续支持已有进度显示。
 
 `scripts/verify_hud_gateway.py --inspect-only` 使用独立会话核验公开创建、工具清单与推理显示配置，全程省略模型提交。`--live` 在明确模型、服务商、域名及合成资料发送范围后验证单次提交与完成回执。验证记录包含会话标识，宿主配置保持原值；测试命令及参数见 `scripts/TEST_INDEX.md`。
+
+`scripts/verify_hud_session_reuse_native.py` 使用真实 Hermes 网关、WS、AIAgent 和隔离 HUD 数据库，模型连接本地合成服务。验证连续两轮只构建一个 agent，对话换代后两轮再共用一个新 agent，四个独立 admission、零工具、专用系统指令，以及连接池空闲释放。
 
 `scripts/preview_project_hud.py` 提供独立 SQLite 和固定响应的本地交互验证服务，明确标记“本地验证”，不连接模型。其测试重置接口只存在于该脚本的预览实例。生产入口为 `python -m engine.main`。
 

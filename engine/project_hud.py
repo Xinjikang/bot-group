@@ -459,7 +459,7 @@ def run_one(sid):
                 snapshot = {**payload['project'], 'documents': payload['materials']['signatures'], 'inspection': payload['inspection']}
                 conn.execute('UPDATE hud_sessions SET digest=? WHERE id=? AND revision=?',
                              (hashlib.sha256(encode(snapshot).encode()).hexdigest(), sid, revision))
-        with progress_sink(progress), owner(sid):
+        with progress_sink(progress), owner(sid, item['generation']):
             response = respond(bot, payload)
         progress('stage', '正在整理检查结果')
         response = validate_response(response)

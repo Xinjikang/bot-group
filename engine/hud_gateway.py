@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 import hashlib
+import json
 from pathlib import Path
 import time
 import uuid
@@ -10,15 +11,18 @@ from . import hermes_gateway as gateway, hermes_gateway_sessions as sessions
 from .hermes_gateway_client import GatewayTransportError
 
 _OWNER = ContextVar('hud_gateway_owner', default=None)
+_GENERATION = ContextVar('hud_gateway_generation', default=None)
 
 
 @contextmanager
-def owner(sid):
+def owner(sid, generation=None):
     token = _OWNER.set(sid)
+    generation_token = _GENERATION.set(generation)
     try:
         yield
     finally:
         _OWNER.reset(token)
+        _GENERATION.reset(generation_token)
 
 
 def _saved():
@@ -42,7 +46,13 @@ def _save(value):
 def respond(bot, prompt, workdir, progress, *, system_prompt=''):
     root = Path(bot['config_root'])
     home = root if bot['profile'] == 'default' else root / 'profiles' / bot['profile']
+    home = home.resolve()
+    workdir = str(Path(workdir).resolve())
     digest = hashlib.sha256((system_prompt + '\0' + prompt).encode('utf-8')).hexdigest()
+    binding = hashlib.sha256(json.dumps([
+        _OWNER.get(), _GENERATION.get(), bot.get('id'), bot['profile'], str(home), workdir,
+        system_prompt,
+    ], ensure_ascii=False).encode('utf-8')).hexdigest()
     record = _saved()
     text = ''
 
@@ -61,7 +71,8 @@ def respond(bot, prompt, workdir, progress, *, system_prompt=''):
     # A previous admission belongs to its original profile even after the HUD bot changes.
     previous_pending = record and not record.get('terminal')
     target_home = Path(record['home']) if previous_pending else home
-    client, _, _ = gateway.connection(bot['profile'], home=target_home, on_event=event)
+    target_profile = record.get('profile', bot['profile']) if previous_pending else bot['profile']
+    client, _, _ = gateway.connection(target_profile, home=target_home, on_event=event)
     try:
         description = client.rpc('runtime.describe')
         if 'durable-admission-v1' not in description.get('capabilities', []):
@@ -73,23 +84,36 @@ def respond(bot, prompt, workdir, progress, *, system_prompt=''):
                 sessions.attach(client, record['session_id'])
                 client.rpc('config.set', session_id=record['session_id'], key='show_reasoning', value='1')
                 result = _wait(client, record, progress)
-                if record['digest'] == digest and record['home'] == str(home):
+                same_binding = record.get('binding') == binding
+                if 'binding' not in record:
+                    same_binding = (target_home == home and target_profile == bot['profile']
+                                    and record.get('workdir') == workdir)
+                if record['digest'] == digest and same_binding:
                     return result
-            if target_home != home:
+            if target_home != home or target_profile != bot['profile']:
                 client.close()
                 client, _, _ = gateway.connection(bot['profile'], home=home, on_event=event)
         if not record or record.get('terminal') or (not record.get('attempted') and (
-                record.get('digest') != digest or record.get('home') != str(home))):
+                record.get('digest') != digest or record.get('binding') != binding)):
+            session_id = record.get('session_id') if record.get('binding') == binding else None
             record = {'request_id': uuid.uuid4().hex, 'submission_id': uuid.uuid4().hex,
-                      'home': str(home), 'digest': digest, 'deadline': time.time()+180, 'workdir': workdir}
+                      'home': str(home), 'profile': bot['profile'], 'binding': binding,
+                      'digest': digest, 'deadline': time.time()+180, 'workdir': workdir}
+            if session_id:
+                record['session_id'] = session_id
             _save(record)
-        snapshot = sessions.new(client, title='项目助手 · ' + record['request_id'][:12],
-                                workdir=record['workdir'], system_prompt=system_prompt, model_args=[],
-                                request_id=record['request_id'], launch_options={
-                                    'toolsets': ['no_mcp'], 'ignore_rules': True, 'max_turns': 2,
-                                    'checkpoints': False, 'accept_hooks': False})
+        if record.get('session_id'):
+            snapshot = sessions.attach(client, record['session_id'])
+        else:
+            snapshot = sessions.new(client, title='项目助手 · ' + record['request_id'][:12],
+                                    workdir=record['workdir'], system_prompt=system_prompt, model_args=[],
+                                    request_id=record['request_id'], launch_options={
+                                        'toolsets': ['no_mcp'], 'ignore_rules': True, 'max_turns': 2,
+                                        'checkpoints': False, 'accept_hooks': False})
         record['session_id'] = snapshot['session_id']
         _save(record)
+        if snapshot.get('running') or snapshot.get('pending'):
+            raise RuntimeError('项目助手会话仍有执行待完成，请稍后重试')
         tool_view = client.rpc('tools.show', session_id=record['session_id'])
         if tool_view.get('total') or any(section.get('tools') for section in tool_view.get('sections', [])):
             raise RuntimeError('维护会话的工具隔离未生效，已停止提交')

@@ -1,5 +1,9 @@
 # 测试脚本索引
 
+项目助手 agent 复用：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_gateway scripts.test_project_hud scripts.test_hermes_connections scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway scripts.test_hermes_compatibility -q`。覆盖与群聊共用版本分流、低版本隔离子进程、高版本连续复用会话且逐轮独立回执、Bot/profile/工作目录/系统指令/对话代次变化、旧记录升级、断线对账、提交未知防重、取消后新轮次、忙碌与工具隔离检查。使用隔离数据库及模拟 RPC，无外部模型调用。
+
+项目助手原生复用验收：使用安装 Hermes 与项目依赖的解释器执行 `python -X utf8 -B scripts/verify_hud_session_reuse_native.py --hermes-source <Hermes源码绝对目录> --evidence <主目录报告下的新目录>`。真实 GatewayRunner、WS admission、AIAgent 和 HUD 持久化，临时 home/SQLite 与随机回环模型、合成 ticket；两轮构建计数为 1，HUD 换代后两轮计数为 2，四轮均无工具且各有独立回执，空闲 600 秒 detach 并关闭连接。保留模型原始请求、逐轮耗时与 RPC 类型，结束关闭自身连接、agent 和模型服务。
+
 Hermes 会话级复用：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_session_reuse scripts.test_hermes_gateway scripts.test_hermes_gateway_sessions scripts.test_hermes_connections scripts.test_hermes_prompt_state scripts.test_signing_keys scripts.test_task_api scripts.test_access_contract scripts.test_mcp_operations scripts.test_message_execution -q`。隔离 SQLite、模拟 RPC 与真实 MCP HTTP 转发覆盖跨轮凭据、逐执行消息来源、取消后续轮、空闲拒写、事务撤权、关闭/重开、权限撤销、订阅释放重试、旧代引用与换证失败、原子交接和子进程鉴权。Windows 签名权限用例使用独立 PowerShell 模块搜索环境与临时 DACL。
 
 原生复用验收：使用同时安装 Hermes/ACP 与引擎依赖的解释器执行 `python -X utf8 -B scripts/verify_hermes_session_reuse_native.py --hermes-source <Hermes源码绝对目录> --mcp-python <MCP解释器绝对路径> --evidence <主目录报告下的新目录>`。真实 GatewayRunner、WS admission、AIAgent、stdio MCP 与引擎 HTTP API；隔离 home/SQLite、随机回环模型、合成 ticket。验证两轮构建/进程计数均为 1，密钥轮换交接后连续两轮计数均为 2，以及空闲 600 秒释放；输出逐轮耗时和 RPC 类型，零外部模型请求，结束关闭自身连接、MCP 和模型服务。

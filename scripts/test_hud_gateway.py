@@ -17,6 +17,8 @@ class Client:
         self.fail_submit = False
         self.fail_receipt = False
         self.tools = []
+        self.created = 0
+        self.busy = False
         self.receipts = [{'status': 'terminal', 'outcome': 'completed',
                           'result': {'final_response': '{"text":"ready"}'}}]
 
@@ -25,7 +27,10 @@ class Client:
         if method == 'runtime.describe':
             return {'capabilities': ['durable-admission-v1']}
         if method in ('session.create', 'session.resume'):
-            return {'session_id': 'hud-session'}
+            if method == 'session.create':
+                self.created += 1
+            sid = params.get('session_id') or ('hud-session' if self.created == 1 else f'hud-session-{self.created}')
+            return {'session_id': sid, 'running': self.busy, 'pending': []}
         if method == 'tools.show':
             return {'sections': [{'tools': self.tools}]}
         if method == 'prompt.submit':
@@ -33,9 +38,9 @@ class Client:
                 raise GatewayTransportError('lost acknowledgement')
             self.callback({'method': 'event', 'params': {'session_id': 'other-session',
                           'type': 'reasoning.delta', 'payload': {'text': 'unrelated'}}})
-            self.callback({'method': 'event', 'params': {'session_id': 'hud-session',
+            self.callback({'method': 'event', 'params': {'session_id': params['session_id'],
                           'type': 'reasoning.delta', 'payload': {'text': '核对项目目标'}}})
-            return {'admission_id': 'admission'}
+            return {'admission_id': params['submission_id']}
         if method == 'prompt.receipt':
             if self.fail_receipt:
                 raise GatewayTransportError('disconnected')
@@ -55,19 +60,105 @@ class HudGatewayTests(unittest.TestCase):
         self.saved = {}
         self.client = Client()
         self.updates = []
+        self.connections = []
         def save(value):
             self.saved = copy.deepcopy(value)
         def connect(profile, **kwargs):
             self.client.callback = kwargs['on_event']
-            self.assertEqual(Path(kwargs['home']), self.root)
+            self.connections.append((profile, Path(kwargs['home'])))
             return self.client, self.root, ['hermes']
         for target, replacement in (('_saved', lambda: copy.deepcopy(self.saved)), ('_save', save)):
             p=patch.object(bridge,target,replacement);p.start();self.addCleanup(p.stop)
         p=patch.object(bridge.gateway,'connection',side_effect=connect);p.start();self.addCleanup(p.stop)
         p=patch.object(bridge.time,'sleep');p.start();self.addCleanup(p.stop)
 
-    def run_prompt(self):
-        return bridge.respond(self.bot,'synthetic prompt',str(self.root),lambda *args:self.updates.append(args),system_prompt='Dedicated guidance')
+    def run_prompt(self, prompt='synthetic prompt', system='Dedicated guidance', workdir=None):
+        return bridge.respond(self.bot, prompt, str(workdir or self.root),
+                              lambda *args: self.updates.append(args), system_prompt=system)
+
+    def test_completed_turns_reuse_session_with_fresh_admissions(self):
+        self.run_prompt()
+        first = copy.deepcopy(self.saved)
+        self.saved = json.loads(json.dumps(self.saved))
+        self.run_prompt('updated project snapshot')
+        self.assertEqual(self.client.created, 1)
+        self.assertEqual(self.saved['session_id'], first['session_id'])
+        self.assertNotEqual(self.saved['admission_id'], first['admission_id'])
+        submits = [p for m, p in self.client.calls if m == 'prompt.submit']
+        self.assertEqual([p['text'] for p in submits], ['synthetic prompt', 'updated project snapshot'])
+        self.assertEqual(sum(m == 'tools.show' for m, _ in self.client.calls), 2)
+        self.assertFalse(any(m in ('session.detach', 'session.mutate') for m, _ in self.client.calls))
+
+    def test_binding_changes_start_separate_sessions(self):
+        self.run_prompt()
+        self.bot['id'] = 2
+        self.run_prompt()
+        self.assertEqual(self.client.created, 2)
+        self.run_prompt(system='Updated guidance')
+        self.assertEqual(self.client.created, 3)
+        self.run_prompt(system='Updated guidance', workdir=self.root / 'other')
+        self.assertEqual(self.client.created, 4)
+        self.bot['profile'] = 'other'
+        self.run_prompt(system='Updated guidance', workdir=self.root / 'other')
+        self.assertEqual(self.client.created, 5)
+        self.assertEqual(self.connections[-1], ('other', self.root / 'profiles' / 'other'))
+
+    def test_hud_generation_reset_starts_new_session(self):
+        with bridge.owner('project-a', 1):
+            self.run_prompt()
+            self.run_prompt('next question')
+        self.assertEqual(self.client.created, 1)
+        with bridge.owner('project-a', 2):
+            self.run_prompt()
+        with bridge.owner('project-b', 2):
+            self.run_prompt()
+        self.assertEqual(self.client.created, 3)
+
+    def test_resume_checks_tool_isolation_and_busy_state(self):
+        self.run_prompt()
+        self.client.tools = [{'name': 'terminal'}]
+        with self.assertRaisesRegex(RuntimeError, '工具隔离'):
+            self.run_prompt('next question')
+        self.client.tools = []
+        self.client.busy = True
+        with self.assertRaisesRegex(RuntimeError, '仍有执行'):
+            self.run_prompt('next question')
+        self.assertEqual(sum(m == 'prompt.submit' for m, _ in self.client.calls), 1)
+        self.client.busy = False
+        self.run_prompt('next question')
+        self.assertEqual(self.client.created, 1)
+
+    def test_changed_input_reconciles_previous_then_reuses_session(self):
+        self.client.fail_receipt = True
+        with self.assertRaises(RuntimeError):
+            self.run_prompt()
+        self.client.fail_receipt = False
+        self.run_prompt('new question')
+        self.assertEqual(self.client.created, 1)
+        self.assertEqual(sum(m == 'prompt.submit' for m, _ in self.client.calls), 2)
+
+    def test_profile_switch_reconciles_on_original_connection(self):
+        self.client.fail_receipt = True
+        with self.assertRaises(RuntimeError):
+            self.run_prompt()
+        self.bot['profile'] = 'other'
+        self.client.fail_receipt = False
+        self.run_prompt()
+        self.assertEqual(self.connections[-2:], [('default', self.root), ('other', self.root / 'profiles' / 'other')])
+        self.assertEqual(self.client.created, 2)
+
+    def test_legacy_record_recovers_before_first_session_binding(self):
+        self.client.fail_receipt = True
+        with self.assertRaises(RuntimeError):
+            self.run_prompt()
+        self.saved.pop('binding')
+        self.saved.pop('profile')
+        self.client.fail_receipt = False
+        self.run_prompt()
+        self.assertEqual(sum(m == 'prompt.submit' for m, _ in self.client.calls), 1)
+        self.run_prompt('next question')
+        self.run_prompt('another question')
+        self.assertEqual(self.client.created, 2)
 
     def test_public_session_and_stream(self):
         self.assertEqual(json.loads(self.run_prompt()),{'text':'ready'})
@@ -83,6 +174,20 @@ class HudGatewayTests(unittest.TestCase):
         self.assertIn(('reasoning','核对项目目标'),self.updates)
         self.assertNotIn(('reasoning','unrelated'),self.updates)
         self.assertTrue(self.saved['terminal'])
+
+    def test_cancelled_turn_gets_fresh_deadline_and_submission(self):
+        self.client.receipts = [{'status': 'terminal', 'outcome': 'cancelled'}]
+        with self.assertRaisesRegex(RuntimeError, 'cancelled'):
+            self.run_prompt()
+        first = copy.deepcopy(self.saved)
+        self.saved.update(deadline=0, cancel_deadline=0)
+        self.client.receipts = [{'status': 'terminal', 'outcome': 'completed',
+                                 'result': {'final_response': '{"text":"ready"}'}}]
+        self.run_prompt('next question')
+        self.assertEqual(self.client.created, 1)
+        self.assertNotEqual(self.saved['submission_id'], first['submission_id'])
+        self.assertGreater(self.saved['deadline'], 0)
+        self.assertNotIn('cancel_deadline', self.saved)
 
     def test_reconnect_resumes_original_admission(self):
         self.client.fail_receipt=True
@@ -101,6 +206,20 @@ class HudGatewayTests(unittest.TestCase):
         self.client.fail_submit=False
         with self.assertRaisesRegex(RuntimeError,'回执未知'):self.run_prompt()
         self.assertEqual(sum(m=='prompt.submit' for m,_ in self.client.calls),1)
+
+    def test_reused_session_unknown_submit_does_not_recover_previous_turn(self):
+        self.run_prompt()
+        first = self.saved['admission_id']
+        self.client.fail_submit = True
+        with self.assertRaisesRegex(RuntimeError, '连接中断'):
+            self.run_prompt()
+        self.assertNotIn('admission_id', self.saved)
+        self.assertNotEqual(self.saved['submission_id'], first)
+        self.client.fail_submit = False
+        with self.assertRaisesRegex(RuntimeError, '回执未知'):
+            self.run_prompt('changed input')
+        self.assertEqual(self.client.created, 1)
+        self.assertEqual(sum(m == 'prompt.submit' for m, _ in self.client.calls), 2)
 
     def test_tool_isolation_checked_before_submit(self):
         self.client.tools=[{'name':'terminal'}]
