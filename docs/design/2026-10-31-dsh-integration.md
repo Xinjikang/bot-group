@@ -155,7 +155,7 @@ Auto review 缺失属于可选能力缺失，显示状态即可。执行沿用 D
 
 现有 `frontend/project_settings.js::renderMemberAdd` 固定列出 Hermes/Codex，`loadMemberCreateSources` 另行扫描配置来源；宿主名称展示尚未按扫描结果过滤。接入需将可选宿主与扫描状态关联，并在后端复核，按上述创建契约验收。已创建 Bot 的目录后续被移动、删除或失去权限时，在原 Bot 上显示绑定资源失效，保留成员与历史。
 
-`DSH_HOME`、`HERMES_HOME`、`CODEX_HOME` 均为可选的定位来源。已注册成员优先使用已保存的 `config_root` 与 profile 绑定；发现新宿主时按用户显式指定目录、引擎启动环境中的对应 HOME、宿主原生默认目录的顺序定位。发现、编辑与启动须使用同一解析结果，并显示实际目录及来源。
+`DSH_HOME`、`HERMES_HOME`、`CODEX_HOME` 均为可选的定位来源。已注册成员优先使用已保存的 `config_root` 与 profile 绑定；发现新宿主时按用户显式指定目录、引擎启动环境中的对应 HOME、宿主原生默认目录的顺序定位。环境 HOME 需同时读进程环境（`os.environ`）与 Windows 用户级环境（`HKCU\Environment` 注册表）——现有 `discovery` 仅读 `os.environ`，新设的用户级 HOME 在引擎进程重启前不可见，会误回退到默认目录。发现、编辑与启动须使用同一解析结果，并显示实际目录及来源。
 
 | 宿主 | HOME 缺省时的发现位置 |
 | --- | --- |
