@@ -110,22 +110,41 @@ def _verify_private_acl(path: Path, current_sid: str) -> None:
         raise AuthSyncError('当前用户无读取权限，已中止')
 
 
+def _ref_kind(value) -> str:
+    """分类凭据引用值：reference（UUID 引用 ID）/ literal（字面 API key）/ unknown。"""
+    if not isinstance(value, str) or not value.strip():
+        return 'unknown'
+    v = value.strip()
+    if v.lower().startswith(('sk-', 'sk_')):  # 字面 API key（常见 sk- 前缀）
+        return 'literal'
+    if len(v) == 36 and v.count('-') == 4:  # UUID 8-4-4-4-12 引用 ID
+        return 'reference'
+    return 'unknown'
+
+
 def credential_sources(home: str) -> dict:
     """只读核验凭据来源存在性（仅报告存在/缺失 + 配置引用，不输出凭据值）。
 
-    返回 ``{account_credentials, api_key_entry, api_key_refs, env_api_key,
-    process_env_api_key}``；``api_key_refs`` 为 ``.credentials.yaml`` 内 API-key
-    类型条目的键路径（如 ``refs.DEEPSEEK_API_KEY``），仅键名不含值。
+    返回 ``{account_credentials, api_key_entry, api_key_refs, api_key_ref_kind,
+    env_api_key, process_env_api_key}``；``api_key_refs`` 为 ``.credentials.yaml``
+    内 API-key 类型条目的键路径（如 ``refs.DEEPSEEK_API_KEY``），仅键名不含值；
+    ``api_key_ref_kind`` 为 refs.DEEPSEEK_API_KEY 引用值的类型（reference=UUID 引用
+    ID / literal=字面 key / unknown），不含值。
     """
     home = Path(home).resolve()
     credentials = home / '.credentials.yaml'
     account = credentials.is_file()
     api_key_refs: list[str] = []
+    api_key_ref_kind = 'unknown'
     if account:
         try:
             raw = credentials.read_text(encoding='utf-8-sig')
             if _yaml is not None:
-                api_key_refs = _api_key_paths(_yaml.safe_load(raw))
+                data = _yaml.safe_load(raw)
+                api_key_refs = _api_key_paths(data)
+                refs = data.get('refs') if isinstance(data, dict) else None
+                if isinstance(refs, dict):
+                    api_key_ref_kind = _ref_kind(refs.get('DEEPSEEK_API_KEY'))
             if not api_key_refs:
                 api_key_refs = [m.group(1).strip() for m in re.finditer(
                     r'(?i)^\s*([^#\n]*\b(?:api[_-]?key|DEEPSEEK_API_KEY)\b[^#\n]*)\s*:',
@@ -133,7 +152,7 @@ def credential_sources(home: str) -> dict:
         except Exception:  # 解析失败/无权限读：只报告存在性，不中断
             pass
     return {'account_credentials': account, 'api_key_entry': bool(api_key_refs),
-            'api_key_refs': api_key_refs,
+            'api_key_refs': api_key_refs, 'api_key_ref_kind': api_key_ref_kind,
             'env_api_key': bool(_env_key(home)),
             'process_env_api_key': 'DEEPSEEK_API_KEY' in os.environ}
 

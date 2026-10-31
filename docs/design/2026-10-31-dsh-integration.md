@@ -42,7 +42,7 @@ dsh 官方提供 headless 一次性执行：`dsh --profile headless "任务"`，
 
 客户端级实验同时覆盖工具错误、初始化失败以及工具注销和子进程清理。生产引擎的注册、执行凭据、权限、消息已读和任务状态链属于后续实现与验收范围。
 
-API-key 路由曾向其官方接口发起请求并收到 HTTP 401，账号路由的模型调用与续跑已通过。401 成因已核验：`refs.DEEPSEEK_API_KEY` 是 UUID 引用 ID（非 key 正文），验证脚本误把引用当 key 发送，非 key 本身无效。API-key 路由的成功调用须经 DSH 原生解析（`credentials.resolve(ref)`）或另行提供有效 key；两种接入方式的切换均列入验收。
+API-key 路由曾向其官方接口发起请求并收到 HTTP 401，账号路由的模型调用与续跑已通过。401 成因已核验：`refs.DEEPSEEK_API_KEY` 是 UUID 引用 ID（非 key 正文），实际 key 存于保护凭据存储；headless 下 DSH 原生 `credentials.resolve(ref)` 返回引用值（非实际 key），适配器把引用当 key 发送 → 401，非 key 本身无效。API-key 路由的成功调用须经 DSH 原生解析链实际解析到 key（headless 若解析缺失则报精确后端/引用状态）或另行提供有效字面 key；两种接入方式的切换均列入验收。
 
 方法与现场证据保存在项目主目录 `reports/research/dsh-integration/`。技术依据为 [headless](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/bundle/headless/README.md) 和 [MCP 客户端](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md)；上游文档更新时以实装版本验证结果约束解析契约。
 

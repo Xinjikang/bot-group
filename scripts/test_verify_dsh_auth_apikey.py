@@ -31,7 +31,8 @@ class AssessSynthesisTest(unittest.TestCase):
         return {'answer': '[unexpected]', 'exit_code': 1, 'timed_out': False, 'auth_error': True}
 
     def _binding(self):
-        return {'credentials_ref': 'refs.DEEPSEEK_API_KEY', 'key_service_matched': True}
+        return {'credentials_ref': 'refs.DEEPSEEK_API_KEY', 'key_service_matched': True,
+                'api_key_ref_kind': 'reference'}
 
     def test_success_all_three(self):
         r = V.assess(self._ok(), self._ok(), self._ok(), self._ok(), self._binding(), True, ROUTES_OK)
@@ -40,17 +41,18 @@ class AssessSynthesisTest(unittest.TestCase):
         self.assertTrue(r['account_back_ok'])      # 切回 account 成功
         self.assertFalse(r['diagnosis_ok'])        # 无 401 → 无诊断
 
-    def test_all_failure_401(self):
-        # API-key 401（账号成功 + 两 API-key 路 401）→ 非 passed + 401 诊断
+    def test_ref_sent_as_key(self):
+        # refs 是 UUID 引用（非字面 key）：env 无字面 key + native 401（引用被当 key）→ 非 passed + 401 诊断
         r = V.assess(self._ok(), self._fail(), self._fail(), self._ok(), self._binding(), True, ROUTES_OK)
-        self.assertFalse(r['passed'])              # 全失败 → 非 passed
+        self.assertFalse(r['passed'])              # 非 passed
         self.assertTrue(r['switch_account_to_apikey'])
-        self.assertTrue(r['diagnosis_ok'])         # 全 401 → 401 根因诊断通过
+        self.assertTrue(r['diagnosis_ok'])         # native 401 = 引用被当 key 发送的根因诊断
 
     def test_single_failure(self):
-        r = V.assess(self._ok(), self._ok(), self._fail(), self._ok(), self._binding(), True, ROUTES_OK)
+        # 单路失败（env 字面 key 无效 + native ok）→ 非 passed + 无引用被当 key 诊断
+        r = V.assess(self._ok(), self._fail(), self._ok(), self._ok(), self._binding(), True, ROUTES_OK)
         self.assertFalse(r['passed'])              # 单路失败 → 非 passed
-        self.assertFalse(r['diagnosis_ok'])        # 非全 401 → 无诊断
+        self.assertFalse(r['diagnosis_ok'])        # native 未 401 → 无引用被当 key 诊断
 
     def test_route_error_switch_fails(self):
         # 路由错：account 路由解析为 apikey → switch 不通过
