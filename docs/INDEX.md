@@ -8,6 +8,8 @@
 
 项目助手的新建与详情配置、按类型检查资料、测试 PRD/原型整理和使用问答见 [准备能力设计](design/2026-10-31-project-assistant-preparation.md) 与 [工程契约](engineering/PROJECT-HUD.md)。
 
+项目助手使用所选 Hermes/Codex 的原生文件能力、单一配置工具及一小时后台检查，执行与产物验收见 [原生工具设计](design/2026-10-31-project-assistant-native-tools.md)。
+
 Hermes 网关版的官方接口、原生审批、临时 MCP、会话迁移与执行恢复见 [Hermes 网关执行适配](engineering/HERMES-GATEWAY.md)。
 
 Hermes WS 连接复用、业务空闲回收和顶栏全局状态见 [连接复用与状态设计](design/2026-10-30-hermes-gateway-connections.md)。

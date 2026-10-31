@@ -56,6 +56,13 @@ def resolve_identity(
                 request.state.execution_scope = auth.execution_scope(profile, key, ring[1])
         return profile, "bot"
     if isinstance(authorization, str):
+        if (request is not None and request.method == 'POST'
+                and request.scope['route'].path == '/hud/{sid}/tool-config'
+                and authorization.startswith('Bearer hud.')):
+            from . import hud_tools, project_hud
+            with project_hud.connection() as conn:
+                item = hud_tools.authorize(authorization[7:], request.path_params['sid'], conn)
+            return item['id'], 'hud'
         if authorization.startswith("Bearer ") and auth.verify_token(authorization[7:].strip()):
             return "user", "user"
         raise HTTPException(401, "Invalid administrator credential")
@@ -111,6 +118,13 @@ async def authorize(request: Request, identity=Depends(resolve_identity)):
         return
     request.state.identity = identity
     profile, kind = identity
+    if kind == 'hud':
+        if route != ('POST', '/hud/{sid}/tool-config'):
+            raise HTTPException(403, '助手配置凭据仅用于当前配置工具')
+        from . import wake
+        if wake._shutting_down.is_set():
+            raise HTTPException(503, '引擎正在停止，请稍后重试')
+        return
     if kind != "bot":
         return
     if route not in BOT_ROUTES:

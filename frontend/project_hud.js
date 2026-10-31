@@ -35,6 +35,7 @@
   let auxiliary = '', renderedKey = '', followNext = false;
   let activeTab='chat';
   const inputs = new Map(), silenced = new Set();
+  const appliedConfigUpdates = new Map();
   const notificationKey = item => item?.state.notification?.id||item?.state.question?.id||item?.state.proposal?.id;
   function isSilenced(key) {
     if(!key)return false;
@@ -87,6 +88,24 @@
     const changed=current?.id!==data.id;
     if(changed) remember();
     current=data;
+    const update=data.state.config_update;
+    if(update&&appliedConfigUpdates.get(data.id)!==update.id){
+      appliedConfigUpdates.set(data.id,update.id);
+      if(draftMode&&update.draft)onApply?.(update.changes,update.before);
+      else if(document.querySelector('#pj-detail-form')?.dataset.origName===data.project){
+        const ids={display_name:'name',description:'desc',root:'root',directory_mode:'mode',worktree_root:'worktree'};
+        for(const [key,value] of Object.entries(update.changes)){
+          const input=document.querySelector('#pj-d-'+ids[key]);
+          if(input&&input.value===(update.before[key]??'')){
+            input.value=value;
+            if(key==='directory_mode'){
+              document.querySelectorAll('[name="project-directory-mode"]').forEach(radio=>radio.checked=radio.value===value);
+              document.querySelector('#pj-worktree-options').hidden=value!=='worktree';
+            }
+          }
+        }
+      }
+    }
     if(changed){
       let saved=''; try {saved=sessionStorage.getItem('hud-input:'+data.id)||'';}catch{}
       el('input').value=inputs.get(data.id)??saved;
@@ -214,13 +233,9 @@
         }
       }
       if(documents.length){
-        box.append(node('p','保存位置：当前项目文档。确认后写入以下文件。','hud-muted'));
+        box.append(node('p','旧版文档建议保留以下文件记录。后续修改可直接告诉助手，完成后在对话页查看结果。','hud-muted'));
         for(const document of documents){
-          const details=node('details',null,'hud-document-preview');
-          details.append(node('summary',document.path));
-          details.append(node('p','资料来源：'+document.sources.join('；'),'hud-muted'));
-          details.append(compare(document.path,document.before===null?'文件尚未创建':document.before,document.content,'空文档'));
-          box.append(details);
+          box.append(node('p',document.path,'hud-muted'));
         }
       }
       const count=changes.length+facts.length+documents.length;
@@ -390,7 +405,7 @@
     try{
       const data=await api('/hud/'+sid);
       if(stamp!==version)return;
-      if(data.revision>=current.revision&&(data.revision!==current.revision||data.status!==current.status))setData(data);
+      if(data.revision>=current.revision&&(data.revision!==current.revision||data.status!==current.status||data.state.config_update?.id!==current.state.config_update?.id))setData(data);
       else if(data.revision===current.revision){current.state.progress=data.state.progress;renderProgress();}
     }catch(e){if(stamp===version){errorText='维护连接暂时中断，输入已保留。'+e.message;render();}}
     finally{refreshing=false;}

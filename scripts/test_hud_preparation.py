@@ -14,7 +14,16 @@ class PreparationTests(unittest.TestCase):
     setUp = test_project_hud.HudTests.setUp
     join = test_project_hud.HudTests.join
     session = test_project_hud.HudTests.session
-    infer = test_project_hud.HudTests.infer
+    def infer(self, item, response):
+        # Historical document proposals originate from a complete-content snapshot.
+        if response.get('proposal', {}).get('documents'):
+            original = hud.document_context
+            def complete(root, **kwargs):
+                kwargs['include_contents'] = True
+                return original(root, **kwargs)
+            with patch.object(hud, 'document_context', side_effect=complete):
+                return test_project_hud.HudTests.infer(self, item, response)
+        return test_project_hud.HudTests.infer(self, item, response)
 
     def select_template(self, template_id):
         self.conn.execute("INSERT INTO project_config_events(project,actor,action,detail,created_at) VALUES('p','fixture','project.import',?,?)",
@@ -45,8 +54,8 @@ class PreparationTests(unittest.TestCase):
         with hud.connection() as conn:
             context = hud.context(conn, item)
         found = {d['path']: d for d in context['preparation']['documents']}
-        self.assertEqual(found['docs/product/PRD.md']['status'], 'incomplete')
-        self.assertTrue(found['docs/product/PRD.md']['pending'])
+        self.assertEqual(found['docs/product/PRD.md']['status'], 'unknown')
+        self.assertEqual(context['materials']['documents'], {})
         self.assertEqual(found['docs/product/PROTOTYPE.md']['status'], 'missing')
         self.assertIn('normalization', context['preparation']['guidance'])
         self.assertTrue(context['usage_knowledge']['documents'])
@@ -223,7 +232,7 @@ class PreparationTests(unittest.TestCase):
             'title': '来源在哪里？', 'reason': '整理需求需要来源'}})
         (self.root / 'README.md').write_text('需求来源已补充。', encoding='utf-8')
         with hud.connection() as conn:
-            conn.execute('UPDATE hud_sessions SET checked=? WHERE id=?', (time.time()-120, result['id']))
+            conn.execute('UPDATE hud_sessions SET checked=? WHERE id=?', (time.time()-3700, result['id']))
         hud.scan()
         self.assertEqual(hud.view(result['id'])['status'], 'queued')
 

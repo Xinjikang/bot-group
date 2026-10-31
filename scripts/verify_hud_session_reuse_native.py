@@ -99,15 +99,18 @@ async def verify(base, provider):
                 assert counts[2]['session_id'] == counts[3]['session_id'] != counts[0]['session_id']
                 assert len({r['admission_id'] for r in counts}) == 4
                 assert methods.count('session.create') == 2, methods
-                assert tool_counts == [0, 0, 0, 0], tool_counts
+                assert tool_counts == [4] * 8, tool_counts
                 assert len(provider.requests) == 4, provider.requests
-                assert all(not request.get('tools') for request in provider.requests)
+                native = {'read_file', 'write_file', 'patch', 'search_files'}
+                assert all({tool['function']['name'] for tool in request.get('tools', [])} == native
+                           for request in provider.requests)
                 for request in provider.requests:
                     system = '\n'.join(m['content'] for m in request['messages']
                                        if m['role'] == 'system' and isinstance(m['content'], str))
                     assert hud_runtime.SYSTEM.strip() in system, 'Dedicated instructions missing from system layer'
                 assert 'Synthetic snapshot 2' in json.dumps(provider.requests[1])
-                assert not any(m in ('session.mutate', 'session.detach') for m in methods)
+                assert methods.count('session.mutate') == 2, methods
+                assert 'session.detach' not in methods
                 now[0] = 600
                 await asyncio.to_thread(pool.sweep)
                 assert methods.count('session.detach') == 2, methods

@@ -1,10 +1,12 @@
 # 测试脚本索引
 
-项目助手配置与资料准备：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_preparation scripts.test_project_hud scripts.test_hud_inspection scripts.test_hud_gateway scripts.test_codex_project_access scripts.test_project_workspaces scripts.test_project_templates scripts.test_testing_template scripts.test_product_prototype_template scripts.test_algorithm_template -q`。使用隔离 SQLite、宿主和项目目录，覆盖六类模板准备要求、新建/详情字段知识、默认骨架和缺失文件、doc 兼容、截断状态、安装文档问答依据、PRD/原型双文件确认、原文预览、并发修改/根目录变化、路径保护、失败回滚、目录授权同步、创建后自动检查及等待状态资料变化。模板资源清单同时核验助手元数据与生成文件的归属。无外部模型调用。浏览器复用 `python -X utf8 -B scripts/test_hud_notifications_browser.py --evidence <主目录报告绝对路径>`，验证文档预览的来源、原文和建议全文、确认提交、1440px/390px 深浅主题及长内容换行。
+项目助手原生工具与配置：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_native_tools scripts.test_project_hud scripts.test_hud_gateway scripts.test_hud_preparation scripts.test_access_contract scripts.test_hermes_gateway_sessions -q`。隔离 SQLite、API 和模拟 RPC 覆盖唯一配置 MCP、执行凭据、创建草稿/详情保存及审计、并发冲突、归档与过期拒写、用户授权按轮清理、一小时间隔内跳过扫描、元数据上下文、原生工具及 Windows Codex home 复用、Hermes 私有工具作用域与跨轮换证。六类模板和历史文档提案兼容继续由 `test_hud_preparation` 覆盖。浏览器运行 `python -X utf8 -B scripts/test_hud_notifications_browser.py --evidence <主目录报告绝对路径>`，验证文件摘要、直接配置同步及未保存字段保护，截图覆盖 1440px/390px 深浅主题。
+
+项目助手实际产物验收：`python -X utf8 -B scripts/verify_hud_native_artifacts.py --live --runtime hermes|codex --home <所选宿主绝对目录> --profile <profile> --scenario all --evidence <主目录报告下的新绝对目录>`。须已授权所选模型调用；脚本先输出实际模型路由，仅发送隔离合成资料，使用随机回环 API 和独立 SQLite。通过原生 agent 实际生成六类模板启动文档，逐份检查正文、来源和既有内容保留，核对创建草稿与已建项目实际配置、使用问答的文档依据及重启说明；记录文件摘要、耗时、HUD 回复和原配置指纹。可用 `testing|software|research|writing|algorithm|product-prototype|usage|draft` 单项，`remaining` 为后四类模板与使用问答。验收直接连接用户所选安装，保留原生执行与工具调用记录。
 
 项目助手 agent 复用：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_gateway scripts.test_project_hud scripts.test_hermes_connections scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway scripts.test_hermes_compatibility -q`。覆盖与群聊共用版本分流、低版本隔离子进程、高版本连续复用会话且逐轮独立回执、Bot/profile/工作目录/系统指令/对话代次变化、旧记录升级、断线对账、提交未知防重、取消后新轮次、忙碌与工具隔离检查。使用隔离数据库及模拟 RPC，无外部模型调用。
 
-项目助手原生复用验收：使用安装 Hermes 与项目依赖的解释器执行 `python -X utf8 -B scripts/verify_hud_session_reuse_native.py --hermes-source <Hermes源码绝对目录> --evidence <主目录报告下的新目录>`。真实 GatewayRunner、WS admission、AIAgent 和 HUD 持久化，临时 home/SQLite 与随机回环模型、合成 ticket；两轮构建计数为 1，HUD 换代后两轮计数为 2，四轮均无工具且各有独立回执，空闲 600 秒 detach 并关闭连接。保留模型原始请求、逐轮耗时与 RPC 类型，结束关闭自身连接、agent 和模型服务。
+项目助手原生复用验收：使用安装 Hermes 与项目依赖的解释器执行 `python -X utf8 -B scripts/verify_hud_session_reuse_native.py --hermes-source <Hermes源码绝对目录> --evidence <主目录报告下的新目录>`。真实 GatewayRunner、WS admission、AIAgent 和 HUD 持久化，临时 home/SQLite 与随机回环模型、合成 ticket；两轮构建计数为 1，HUD 换代后两轮计数为 2，四轮仅加载四个原生文件工具且各有独立回执，空闲 600 秒 detach 并关闭连接。保留模型原始请求、逐轮耗时与 RPC 类型，结束关闭自身连接、agent 和模型服务。配置 MCP 的实际保存以原生产物验收为准。
 
 Hermes 会话级复用：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_session_reuse scripts.test_hermes_gateway scripts.test_hermes_gateway_sessions scripts.test_hermes_connections scripts.test_hermes_prompt_state scripts.test_signing_keys scripts.test_task_api scripts.test_access_contract scripts.test_mcp_operations scripts.test_message_execution -q`。隔离 SQLite、模拟 RPC 与真实 MCP HTTP 转发覆盖跨轮凭据、逐执行消息来源、取消后续轮、空闲拒写、事务撤权、关闭/重开、权限撤销、订阅释放重试、旧代引用与换证失败、原子交接和子进程鉴权。Windows 签名权限用例使用独立 PowerShell 模块搜索环境与临时 DACL。
 
@@ -50,15 +52,15 @@ Hermes 连接池与顶栏状态：`.venv\Scripts\python.exe -X utf8 -B -m unitte
 
 提案浏览器续接：先用 `scripts/preview_project_hud.py --data-dir <隔离目录> --port <分配端口>` 启动固定响应预览，再运行 `node scripts/test_hud_proposal_browser.cjs --url <隔离预览地址> --evidence <主目录报告目录>`。Node 须可解析 `playwright`，可通过 `NODE_PATH` 注入现有依赖路径，或设置 `PLAYWRIGHT_MODULE` 为已有 Playwright 模块目录，并已安装 Chrome。覆盖待办标签中的提案追问、刷新恢复、桌面/390px 展示、暂不处理传入当前 ID 及提案解除。脚本仅访问该预览，退出关闭本次浏览器；预览由启动者停止。
 
-真实引导回复：在下述 `verify_hud_gateway.py --live` 命令追加 `--scenario explain|conflict|change`，分别验证解释资料位置时直接回答、文档声明与 Git/CodeGraph 检测冲突时保留缺口、用户明确修改简介时返回待确认提案。每次使用新的 evidence 文件，只发送合成项目资料；同时校验会话专用系统指令、零工具、单次提交及结果格式，实际措辞另行审阅。
+真实引导回复：在下述 `verify_hud_gateway.py --live` 命令追加 `--scenario explain|conflict`，验证解释资料位置时直接回答、文档声明与 Git/CodeGraph 检测冲突时保留缺口。每次使用新的 evidence 文件，只发送合成项目资料；同时校验会话专用系统指令、四个原生文件工具、单次提交及结果格式，实际措辞另行审阅。明确修改配置的实际保存使用 `verify_hud_native_artifacts.py`。
 
 HUD 普通回复兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud scripts.test_hud_gateway -q`。隔离数据库验证普通中文回复保存为对话且保持项目配置与共享资料原值；同时覆盖 JSON/围栏提案解析、空输出、损坏结构、越权字段和超长正文校验，复用提案确认回归。
 
 HUD 更多菜单仅保留“项目备注”和“设置”。复用 `test_project_hud_browser.py` 的隔离浏览器回归，向导草稿检查保留输入与模板状态，移除通过项目切换入口恢复草稿的步骤。
 
-HUD 网关分流：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud scripts.test_hud_gateway scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway -q`。覆盖群聊共用运行时判定、新版网关错误保持网关路径、旧版公开 CLI、空工具会话、推理事件过滤、断线复用 admission、提交回执未知时停止重复提交、超时按 generation 中断及终态核对。使用隔离数据库和模拟公开 RPC。
+HUD 网关分流：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud scripts.test_hud_gateway scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway -q`。覆盖群聊共用运行时判定、新版网关错误保持网关路径、旧版公开 CLI、原生文件工具及私有配置 MCP、推理事件过滤、断线复用 admission、提交回执未知时停止重复提交、超时按 generation 中断及终态核对。使用隔离数据库和模拟公开 RPC。
 
-HUD 真实网关验证：`.venv\Scripts\python.exe -X utf8 -B scripts/verify_hud_gateway.py --live --home <已授权宿主绝对目录> --profile <profile> --expected-model <模型> --expected-provider <服务商> --expected-host <服务域名> --evidence <新的绝对JSON路径>`。核对配置路由后复用群聊网关连接，在独立维护会话中发送一次合成项目说明，验证公开 tools.show 返回零工具、单次提交、完成回执，并记录推理事件数。宿主配置保持原状，验证会话作为证据保留；须先明确模型服务与合成发送范围。将 `--live` 替换为 `--inspect-only` 时只核验本机公开会话接口和工具隔离，省略模型提交；每次使用唯一会话标题，避免复用上次创建参数。
+HUD 真实网关验证：`.venv\Scripts\python.exe -X utf8 -B scripts/verify_hud_gateway.py --live --home <已授权宿主绝对目录> --profile <profile> --expected-model <模型> --expected-provider <服务商> --expected-host <服务域名> --evidence <新的绝对JSON路径>`。核对配置路由后复用群聊网关连接，在独立维护会话中发送一次合成项目说明，验证四个原生文件工具、单次提交、完成回执，并记录推理事件数。宿主配置保持原状，验证会话作为证据保留；须已授权模型服务与合成发送范围。将 `--live` 替换为 `--inspect-only` 时只核验本机公开会话接口和文件工具，省略模型提交；每次使用唯一会话标题。私有配置 MCP 使用单独的实际产物脚本验收。
 
 HUD 实时进度：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_hud -q` 覆盖 Codex 子进程退出前推理回调、虚拟环境变量隔离、进度更新不改变配置修订、旧调用隔离与结束清理。`test_project_hud_browser.py --url <隔离预览地址> --evidence <主目录报告路径>` 增加同修订号最新摘要更新、单行末尾定位、秒数变化、刷新恢复、390px 深浅主题及错误后停止更新；截图 `hud-progress-mobile-*.png` 和 `hud-progress-error.png`。推理内容使用合成回调，真实模型流式能力单独核验。
 

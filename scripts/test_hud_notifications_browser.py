@@ -198,24 +198,30 @@ def main():
                      'sources':['用户本轮提供的需求说明']},
                     {'path':'docs/product/PROTOTYPE.md','before':None,
                      'content':'# 原型\n页面和状态待用户确认。','sources':['用户提供的原型地址']}]}}]}, 'waiting')
-            assert page.locator('.hud-document-preview').count() == 2
-            assert page.locator('.hud-document-preview').first.locator('summary').inner_text() == 'docs/product/PRD.md'
-            page.locator('.hud-document-preview').first.locator('summary').click()
-            assert '原始需求' in page.locator('.hud-document-preview').first.inner_text()
-            assert '用户本轮提供的需求说明' in page.locator('.hud-document-preview').first.inner_text()
-            page.locator('.hud-document-preview').last.locator('summary').click()
-            assert '文件尚未创建' in page.locator('.hud-document-preview').last.inner_text()
+            assert page.locator('.hud-document-preview').count() == 0
+            assert 'docs/product/PRD.md' in page.locator('[data-card="document-proposal"]').inner_text()
+            assert '长内容测试' not in page.locator('[data-card="document-proposal"]').inner_text()
             for width in (1440,390):
                 page.set_viewport_size({'width':width,'height':844})
                 for theme in ('dark','light'):
                     page.evaluate('theme=>document.documentElement.dataset.theme=theme',theme)
                     box=page.locator('#project-hud').bounding_box()
                     assert box['x']>=0 and box['x']+box['width']<=width+.5
-                    assert page.locator('.hud-document-preview').first.locator('dd').last.evaluate('(e)=>e.scrollWidth<=e.clientWidth+1')
-                    page.screenshot(path=str(args.evidence/f'documents-{width}-{theme}.png'))
+                    page.screenshot(path=str(args.evidence/f'document-summary-{width}-{theme}.png'))
             page.locator('[data-card="document-proposal"] .hud-primary').click()
             assert page.evaluate('lastAction.body.proposal_id') == 'document-proposal'
             assert page.locator('.hud-document-preview').count() == 0
+            page.evaluate('''()=>{
+                const form=document.createElement('form');form.id='pj-detail-form';form.dataset.origName='fixture';
+                const input=document.createElement('textarea');input.id='pj-d-desc';input.value='原简介';
+                form.append(input);document.body.append(form);
+            }''')
+            update({'config_update':{'id':'config-1','draft':False,'before':{'description':'原简介'},'changes':{'description':'助手已保存的简介'}}})
+            assert page.locator('#pj-d-desc').input_value()=='助手已保存的简介'
+            page.locator('#pj-d-desc').fill('用户正在编辑的草稿')
+            update({'config_update':{'id':'config-2','draft':False,'before':{'description':'助手已保存的简介'},'changes':{'description':'第二次已保存的简介'}}})
+            assert page.locator('#pj-d-desc').input_value()=='用户正在编辑的草稿'
+            page.locator('#pj-detail-form').evaluate('(form)=>form.remove()')
             page.evaluate("fixture.id='second-session';fixture.project='second-project';S.currentProject='second-project';S.projects=[{name:'second-project',display_name:'second-project'}];fixture.entries=[];fixture.revision++;ProjectHUD.changed()")
             page.wait_for_function("document.querySelector('#hud-context').textContent.includes('second-project')")
             assert page.locator('#hud-chat-tab').get_attribute('aria-selected') == 'true'
@@ -228,8 +234,9 @@ def main():
                     'preserve active reading', 'desktop/mobile', 'current project isolation and no global index requests', 'two tabs and per-card input', 'failed answer retained', 'legacy cards and empty state', 'scope switch resets tab',
                     'latest user/reply only', '12px user text', 'new send clears previous reply',
                     '15 cards all visible', 'answer ninth question preserves other cards',
-                    'confirm sixth proposal preserves other cards', 'document previews include source/current/proposed text',
-                    'document confirmation and 1440/390 dark/light wrapping'],
+                    'confirm sixth proposal preserves other cards', 'legacy documents show filenames without long text',
+                    'native configuration updates synchronize untouched fields and preserve edited drafts',
+                    '1440/390 dark/light document summary'],
                 'errors': errors}, ensure_ascii=False, indent=2), encoding='utf-8')
         finally:
             browser.close()

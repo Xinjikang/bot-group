@@ -18,13 +18,13 @@ def attach(client, session_id):
     return client.rpc('session.resume', session_id=session_id)
 
 
-def new(client, *, title, workdir, system_prompt, model_args, request_id=None, launch_options=None):
+def new(client, *, title, workdir, system_prompt, model_args, request_id=None, launch_options=None, editor=None):
     options = dict(zip(model_args[::2], model_args[1::2]))
     params = {key.lstrip('-'): value for key, value in options.items()
               if key in ('--model', '--provider', '--reasoning')}
     params.update(launch_options or {})
     return client.rpc('session.create', request_id=request_id or uuid.uuid4().hex,
-        title=title, source='acp', cwd=workdir, editor={'mcp_servers': []},
+        title=title, source='acp', cwd=workdir, editor=editor if editor is not None else {'mcp_servers': []},
         client_env={'HERMES_EPHEMERAL_SYSTEM_PROMPT': system_prompt}, **params)
 
 

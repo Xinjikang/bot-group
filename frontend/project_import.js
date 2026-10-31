@@ -137,10 +137,10 @@
   function saveHud() {
     if(hudReady && dialog.open) return window.ProjectHUD?.saveDraft(hudSnapshot(),hudStages[step]);
   }
-  function applyHud(draft) {
+  function applyHud(draft, before) {
     if(!draft || !dialog.open) return;
     for(const [field,id] of Object.entries({display_name:'name',description:'description',root:'root',template:'template',directory_mode:'mode',worktree_root:'worktree'})) {
-      if(typeof draft[field]==='string') el(id).value=draft[field];
+      if(typeof draft[field]==='string'&&(!before||el(id).value===(before[field]??''))) el(id).value=draft[field];
     }
     nameEdited=!!el('name').value;templateExplicit=true;updateModeHelp();
     if(preview) { preview=null;payload=null;showStep(0);status('HUD 已更新草稿，请重新检查目录和配置。'); }

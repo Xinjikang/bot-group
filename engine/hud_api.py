@@ -1,5 +1,5 @@
 """Administrator-only HUD API with optimistic writes and durable receipts."""
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 from pydantic import BaseModel, Field
 from . import project_hud as hud
 
@@ -34,15 +34,25 @@ class Bind(BaseModel):
     request_id: str = Field(min_length=1, max_length=100)
 
 
+class ToolConfig(BaseModel):
+    changes: dict[str, str]
+    expected_version: str = Field(min_length=64, max_length=64)
+
+
 def router(identity, admin):
-    routes = APIRouter(prefix='/hud')
+    routes = APIRouter()
 
     def allowed(who=Depends(identity)):
         admin(who, '项目维护 HUD 仅限管理员使用')
 
-    routes.dependencies.append(Depends(allowed))
+    protected = APIRouter(prefix='/hud', dependencies=[Depends(allowed)])
 
-    @routes.get('')
+    @routes.post('/hud/{sid}/tool-config')
+    def tool_config(sid: str, body: ToolConfig, authorization: str = Header(default='')):
+        from . import hud_tools
+        return hud_tools.update(sid, authorization.removeprefix('Bearer '), body.changes, body.expected_version)
+
+    @protected.get('')
     def index():
         with hud.connection() as conn:
             sessions = [dict(r) for r in conn.execute('SELECT id,project,bot_id,status,state,updated FROM hud_sessions ORDER BY updated DESC')]
@@ -55,34 +65,35 @@ def router(identity, admin):
                 session['title'] = state.get('draft', {}).get('display_name', '创建项目草稿')
             return {'sessions': sessions, 'default_bot_id': hud.default_bot(conn)}
 
-    @routes.post('')
+    @protected.post('')
     def create(body: Create):
         return hud.create(body.project)
 
-    @routes.get('/{sid}')
+    @protected.get('/{sid}')
     def get(sid: str):
         return hud.view(sid)
 
-    @routes.patch('/{sid}')
+    @protected.patch('/{sid}')
     def update(sid: str, body: Update):
         return hud.update(sid, body.model_dump(exclude_unset=True))
 
-    @routes.post('/{sid}/answer')
+    @protected.post('/{sid}/answer')
     def answer(sid: str, body: Answer):
         return hud.answer(sid, body.model_dump())
 
-    @routes.post('/{sid}/accept')
+    @protected.post('/{sid}/accept')
     def accept(sid: str, body: Proposal):
         return hud.accept(sid, body.model_dump())
 
-    @routes.post('/{sid}/retry')
+    @protected.post('/{sid}/retry')
     def retry(sid: str, body: Revision):
         with hud._LOCK, hud.connection() as conn:
             item = hud.checked(conn, sid, body.revision)
             return hud.store(conn, item, queue=True)
 
-    @routes.post('/{sid}/bind')
+    @protected.post('/{sid}/bind')
     def bind(sid: str, body: Bind):
         return hud.bind(sid, body.request_id)
 
+    routes.include_router(protected)
     return routes

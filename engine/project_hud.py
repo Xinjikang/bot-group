@@ -15,6 +15,7 @@ _LOCK = threading.RLock()
 DRAFT_FIELDS = {'display_name', 'description', 'root', 'template', 'directory_mode', 'worktree_root'}
 PROJECT_FIELDS = DRAFT_FIELDS - {'template'}
 STAGES = ('purpose', 'collaboration', 'roles', 'rules', 'members', 'resources', 'review', 'maintenance')
+BACKGROUND_CHECK_SECONDS = 3600
 
 
 def encode(value):
@@ -208,6 +209,7 @@ def answer(sid, body):
                 item['state'].pop('question')
         advance_generation(item)
         add_entry(conn, item, 'user', {'text': text})
+        item['state']['user_request'] = text
         return store(conn, item, queue=True)
 
 
@@ -341,6 +343,7 @@ def document_context(root, *, include_contents=True, preferred=()):
 
 
 def context(conn, item):
+    from . import hud_tools, edit_policy
     state = item['state']
     config = project_snapshot(conn, item['project']) if item['project'] else state.get('draft', {})
     selected = config.get('template', 'blank')
@@ -351,8 +354,14 @@ def context(conn, item):
                'AND generation=? ORDER BY id DESC LIMIT 16', (item['id'], item['generation']))][::-1]
     preferred = [d['path'] for d in hud_knowledge.guidance(template)['documents']]
     preferred += ['doc/' + p[5:] for p in preferred if p.startswith('docs/')]
-    materials = document_context(config.get('root'), preferred=preferred)
-    return {'stage': item['stage'], 'project_created': bool(item['project']), 'project': config, 'template': template,
+    materials = document_context(config.get('root'), include_contents=False, preferred=preferred)
+    return {'stage': item['stage'], 'project_created': bool(item['project']), 'project': config,
+            'template': {key: value for key, value in template.items() if key not in ('contents', 'references')},
+            'template_root': str(project_templates.TEMPLATE_ROOT / selected),
+            'installation_root': str(project_templates.TEMPLATE_ROOT.parents[1]),
+            'config_version': hud_tools.version(hud_tools.configuration(conn, item)),
+            'user_request': state.get('user_request', ''),
+            'edit_approval_policy': edit_policy.read(conn),
             'materials': materials, 'inspection': hud_inspection.inspect(config, materials), 'facts': state.get('facts', []),
             'preparation': hud_knowledge.preparation(config, template, materials),
             'usage_knowledge': hud_knowledge.usage(history),
@@ -440,7 +449,8 @@ def validate_response(value):
 
 
 def run_one(sid):
-    from .hud_runtime import respond, progress_sink
+    from .hud_runtime import respond, progress_sink, tool_server
+    from . import hud_tools
     from .hud_gateway import owner
     with _LOCK, connection() as conn:
         item = row(conn, sid)
@@ -487,7 +497,7 @@ def run_one(sid):
                             'inspection': payload['inspection'], 'preparation': payload['preparation']}
                 conn.execute('UPDATE hud_sessions SET digest=? WHERE id=? AND revision=?',
                              (hashlib.sha256(encode(snapshot).encode()).hexdigest(), sid, revision))
-        with progress_sink(progress), owner(sid, item['generation']):
+        with progress_sink(progress), owner(sid, item['generation']), tool_server(hud_tools.server(item)):
             response = respond(bot, payload)
         progress('stage', '正在整理检查结果')
         response = validate_response(response)
@@ -522,6 +532,7 @@ def run_one(sid):
         if error:
             current['status'], current['error'] = 'error', error
         else:
+            current['state'].pop('user_request', None)
             for key in ('question', 'proposal'):
                 if response.get(key):
                     current['state'][key] = response[key]
@@ -560,7 +571,7 @@ def scan():
             item = row(conn, sid)
             if item['status'] not in ('idle', 'waiting'):
                 continue
-            if not item['bot_id'] or time.time() - item['checked'] < 60:
+            if not item['bot_id'] or time.time() - item['checked'] < BACKGROUND_CHECK_SECONDS:
                 continue
             if not conn.execute('SELECT 1 FROM projects WHERE name=? AND removed=0 AND archived=0', (item['project'],)).fetchone():
                 continue
@@ -569,7 +580,7 @@ def scan():
         template = project_templates.load(selected) if selected != 'blank' else {'id': 'blank'}
         preferred = [d['path'] for d in hud_knowledge.guidance(template)['documents']]
         preferred += ['doc/' + p[5:] for p in preferred if p.startswith('docs/')]
-        materials = document_context(project['root'], preferred=preferred)
+        materials = document_context(project['root'], include_contents=False, preferred=preferred)
         snapshot = {**project, 'documents': materials['signatures'], 'inspection': hud_inspection.inspect(project, materials),
                     'preparation': hud_knowledge.preparation(project, template, materials)}
         digest = hashlib.sha256(encode(snapshot).encode()).hexdigest()

@@ -43,7 +43,7 @@ def _save(value):
         conn.execute('UPDATE hud_sessions SET state=? WHERE id=?', (hud.encode(item['state']), item['id']))
 
 
-def respond(bot, prompt, workdir, progress, *, system_prompt=''):
+def respond(bot, prompt, workdir, progress, *, system_prompt='', server=None, edit_approval_policy='workspace_session'):
     root = Path(bot['config_root'])
     home = root if bot['profile'] == 'default' else root / 'profiles' / bot['profile']
     home = home.resolve()
@@ -51,7 +51,7 @@ def respond(bot, prompt, workdir, progress, *, system_prompt=''):
     digest = hashlib.sha256((system_prompt + '\0' + prompt).encode('utf-8')).hexdigest()
     binding = hashlib.sha256(json.dumps([
         _OWNER.get(), _GENERATION.get(), bot.get('id'), bot['profile'], str(home), workdir,
-        system_prompt,
+        system_prompt, 'native-file-v1', bool(server),
     ], ensure_ascii=False).encode('utf-8')).hexdigest()
     record = _saved()
     text = ''
@@ -96,27 +96,60 @@ def respond(bot, prompt, workdir, progress, *, system_prompt=''):
         if not record or record.get('terminal') or (not record.get('attempted') and (
                 record.get('digest') != digest or record.get('binding') != binding)):
             session_id = record.get('session_id') if record.get('binding') == binding else None
+            prior_mcp = record.get('mcp_fingerprint')
             record = {'request_id': uuid.uuid4().hex, 'submission_id': uuid.uuid4().hex,
                       'home': str(home), 'profile': bot['profile'], 'binding': binding,
-                      'digest': digest, 'deadline': time.time()+180, 'workdir': workdir}
+                      'digest': digest, 'deadline': time.time()+600, 'workdir': workdir}
             if session_id:
                 record['session_id'] = session_id
+                record['mcp_fingerprint'] = prior_mcp
             _save(record)
+        spec = ({'name': 'project_config', 'command': server['command'], 'args': server['args'],
+                 'env': [{'name': key, 'value': value} for key, value in sorted(server['env'].items())]}
+                if server else None)
+        editor = {'mcp_servers': [spec] if spec else []}
+        fingerprint = hashlib.sha256(json.dumps(editor, sort_keys=True).encode()).hexdigest()
         if record.get('session_id'):
             snapshot = sessions.attach(client, record['session_id'])
+            if record.get('mcp_fingerprint') != fingerprint:
+                sessions.mutate(client, snapshot, 'editor_mcp', editor)
+                snapshot = sessions.attach(client, record['session_id'])
+            else:
+                snapshot = client.rpc('session.resume', session_id=record['session_id'], editor=editor)
         else:
             snapshot = sessions.new(client, title='项目助手 · ' + record['request_id'][:12],
                                     workdir=record['workdir'], system_prompt=system_prompt, model_args=[],
-                                    request_id=record['request_id'], launch_options={
-                                        'toolsets': ['no_mcp'], 'ignore_rules': True, 'max_turns': 2,
-                                        'checkpoints': False, 'accept_hooks': False})
+                                    request_id=record['request_id'], editor=editor, launch_options={
+                                        'toolsets': ['file', 'no_mcp'], 'ignore_rules': False, 'max_turns': 24,
+                                        # Native inventory caches definitions outside the editor scope;
+                                        # verbose construction resolves tools in the execution scope.
+                                        'checkpoints': False, 'accept_hooks': False, 'verbose': True})
+            record['session_id'] = snapshot['session_id']
+            _save(record)
+            if server:
+                sessions.mutate(client, snapshot, 'editor_mcp', editor)
+                snapshot = sessions.attach(client, record['session_id'])
         record['session_id'] = snapshot['session_id']
+        record['mcp_fingerprint'] = fingerprint
         _save(record)
         if snapshot.get('running') or snapshot.get('pending'):
             raise RuntimeError('项目助手会话仍有执行待完成，请稍后重试')
-        tool_view = client.rpc('tools.show', session_id=record['session_id'])
-        if tool_view.get('total') or any(section.get('tools') for section in tool_view.get('sections', [])):
-            raise RuntimeError('维护会话的工具隔离未生效，已停止提交')
+        # The host's definition cache omits session-tool scope from its key.
+        # Querying private tools outside execution can cache an incomplete list.
+        tool_view = client.rpc('tools.show', session_id=record['session_id']) if not server else {}
+        names = {tool.get('name') if isinstance(tool, dict) else tool
+                 for section in tool_view.get('sections', []) for tool in section.get('tools', [])}
+        native = {'search_files', 'read_file', 'write_file', 'patch'}
+        custom = {name for name in names if name and name.endswith('update_project_config')}
+        # Before an agent is constructed, tools.show omits private editor MCPs.
+        if not server and (not native.issubset(names) or names - native - custom or custom):
+            raise RuntimeError('项目助手工具清单与文件工具及配置工具约定不一致，已停止提交')
+        if snapshot.get('info', {}).get('edit_approval_policy') != edit_approval_policy:
+            sessions.mutate(client, snapshot, 'edit_policy', {'policy': edit_approval_policy})
+            if server:
+                snapshot = sessions.attach(client, record['session_id'])
+                sessions.mutate(client, snapshot, 'editor_mcp', editor)
+                client.rpc('session.resume', session_id=record['session_id'], editor=editor)
         client.rpc('config.set', session_id=record['session_id'], key='show_reasoning', value='1')
         record['attempted'] = True
         _save(record)
@@ -125,7 +158,12 @@ def respond(bot, prompt, workdir, progress, *, system_prompt=''):
                              submission_id=record['submission_id'], text=prompt)
         record['admission_id'] = receipt['admission_id']
         _save(record)
-        return _wait(client, record, progress)
+        result = _wait(client, record, progress)
+        after = client.rpc('tools.show', session_id=record['session_id']) if not server else {}
+        record['tools'] = [tool.get('name') if isinstance(tool, dict) else tool
+                          for section in after.get('sections', []) for tool in section.get('tools', [])]
+        _save(record)
+        return result
     except GatewayTransportError as exc:
         raise RuntimeError('Hermes 网关连接中断，原执行信息已保留；重新检查将核对原回执') from exc
     finally:

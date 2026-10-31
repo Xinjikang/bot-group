@@ -155,7 +155,8 @@ class HudTests(unittest.TestCase):
         with hud.connection() as conn:
             payload=hud.context(conn,item)
         self.assertEqual(payload['template']['id'],'algorithm')
-        self.assertIn('contents',payload['template'])
+        self.assertTrue(Path(payload['template_root']).is_dir())
+        self.assertNotIn('contents',payload['template'])
         result=self.infer(item,{'text':'建议登记资料位置','proposal':{'changes':{'description':'模型评测'},'facts':[
             {'label':'原始资料','value':'specifications，用户提供的需求文档目录'}]}})
         self.assertNotIn('description',result['state']['draft'])
@@ -532,10 +533,12 @@ class HudTests(unittest.TestCase):
             captured.append(cwd)
             settings=tomlkit.parse((Path(cwd)/'config.toml').read_text(encoding='utf-8'))
             self.assertNotIn('mcp_servers',settings)
-            self.assertFalse(settings['features']['shell_tool'])
-            self.assertEqual(settings['developer_instructions'], hud_runtime.SYSTEM)
+            self.assertTrue(settings['features']['shell_tool'])
+            self.assertFalse(settings['features']['apps'])
+            self.assertEqual(settings['default_permissions'], ':workspace')
+            self.assertEqual(settings['developer_instructions'], hud_runtime.SYSTEM.strip())
             self.assertNotIn(hud_runtime.SYSTEM, prompt)
-            self.assertEqual(env['CODEX_HOME'],cwd)
+            self.assertEqual(env['CODEX_HOME'],str(home))
             self.assertNotIn('GROUP_DB',env)
             Path(command[command.index('--output-last-message')+1]).write_text('{"text":"ready"}',encoding='utf-8')
             return ''
@@ -613,9 +616,9 @@ class HudTests(unittest.TestCase):
         from engine import hud_runtime
         original_wait = subprocess.Popen.wait
         def short_wait(proc, timeout=None):
-            return original_wait(proc, timeout=0.1 if timeout == 180 else timeout)
+            return original_wait(proc, timeout=0.1 if timeout == 600 else timeout)
         with patch.object(subprocess.Popen, 'wait', short_wait):
-            with self.assertRaisesRegex(RuntimeError, '超过 180 秒'):
+            with self.assertRaisesRegex(RuntimeError, '超过 600 秒'):
                 hud_runtime._run([sys.executable, '-c', 'import time; time.sleep(30)'], '', hud_runtime._env(), str(self.root))
         self.assertFalse(hud_runtime._PROCESSES)
 
@@ -628,13 +631,13 @@ class HudTests(unittest.TestCase):
         captured=[]
         def cli(command,prompt,env,cwd):
             captured.append(cwd)
-            self.assertEqual(command,['hermes-fixture','chat','-Q','--ignore-rules','--query-file','-'])
+            self.assertEqual(command,['hermes-fixture','chat','-Q','--query-file','-'])
             self.assertEqual(env['HERMES_HOME'],cwd)
             self.assertEqual(env['HERMES_DISABLE_LAZY_INSTALLS'],'1')
             self.assertEqual(env['HERMES_EPHEMERAL_SYSTEM_PROMPT'],hud_runtime.SYSTEM)
             self.assertNotIn(hud_runtime.SYSTEM,prompt)
             config=yaml.safe_load((Path(cwd)/'config.yaml').read_text(encoding='utf-8'))
-            self.assertEqual(config['platform_toolsets']['cli'],[])
+            self.assertEqual(config['platform_toolsets']['cli'],['file'])
             self.assertEqual(config['mcp_servers'],{})
             return '{"text":"ready"}'
         with patch('engine.hermes_gateway.enabled',return_value=False), \

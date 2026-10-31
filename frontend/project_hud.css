@@ -107,7 +107,3 @@
 #project-hud.hud-compact #hud-input{height:36px;min-height:36px;max-height:60px;padding:5px 8px}
 #project-hud.hud-compact .hud-actions{margin-top:3px}
 #project-hud.hud-compact .hud-primary{padding:3px 12px}
-/* Document proposals use ordinary text and retain readable wrapping in narrow panels. */
-.hud-document-preview { margin-block: 10px; }
-.hud-document-preview summary { cursor: pointer; overflow-wrap: anywhere; }
-.hud-document-preview dd { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow: auto; }

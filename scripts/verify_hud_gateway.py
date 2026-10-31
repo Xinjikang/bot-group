@@ -18,7 +18,7 @@ def main():
     parser.add_argument('--expected-provider',required=True)
     parser.add_argument('--expected-host',required=True)
     parser.add_argument('--evidence',type=Path,required=True)
-    parser.add_argument('--scenario',choices=['receipt','explain','conflict','change'],default='receipt')
+    parser.add_argument('--scenario',choices=['receipt','explain','conflict'],default='receipt')
     mode=parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--live',action='store_true')
     mode.add_argument('--inspect-only',action='store_true')
@@ -69,11 +69,11 @@ def main():
                 assert result['durable_admission'], 'Gateway lacks durable admissions'
                 snapshot=hermes_gateway_sessions.new(client,title='HUD 接口验证 · '+uuid.uuid4().hex,
                     workdir=str(args.evidence.parent),
-                    system_prompt=hud_runtime.SYSTEM,model_args=[],launch_options={'toolsets':['no_mcp'], 'ignore_rules':True,
+                    system_prompt=hud_runtime.SYSTEM,model_args=[],launch_options={'toolsets':['file','no_mcp'], 'ignore_rules':False,
                         'max_turns':2,'checkpoints':False,'accept_hooks':False})
                 view=client.rpc('tools.show',session_id=snapshot['session_id'])
                 result['reasoning_display']=client.rpc('config.set',session_id=snapshot['session_id'],key='show_reasoning',value='1')
-                assert view.get('total')==0,view
+                assert view.get('total')==4,view
                 assert 'prompt.submit' not in result['calls']
                 result['passed']=True
                 print(json.dumps({'passed':True,'mode':'inspect-only','tools_total':view['total']},ensure_ascii=False))
@@ -94,8 +94,6 @@ def main():
                 'docs/ENGINEERING.md':{'text':'项目约定：允许先在本地编写和测试代码；提交到远程前配置远程仓库地址；启用 CodeGraph，交付前建立并更新索引。'}}
             payload['inspection']['checks']=[{'key':'git_remote','status':'missing','summary':'尚未配置代码远程仓库','evidence':{'remotes':[]}},
                 {'key':'codegraph','status':'missing','summary':'CodeGraph 可用，此项目尚未建立代码索引','evidence':{}}]
-        elif args.scenario=='change':
-            payload['history']=[{'text':'请把项目简介改成“帮助团队管理测试任务”。'}]
         with patch.object(hermes_gateway,'connection',side_effect=connect), \
              patch.object(hud_gateway,'_save',side_effect=saved), \
              patch.object(hud_runtime,'_run',side_effect=AssertionError('Unexpected legacy subprocess')), \
@@ -109,9 +107,7 @@ def main():
             assert not result['response'].get('proposal'), 'Explanations must not create configuration changes or notes'
         if args.scenario=='conflict':
             assert not any(word in result['response']['text'] for word in ('不能开始开发','无法开始开发','不能开始：')), 'Delivery checks must not become an invented development blocker'
-        if args.scenario=='change':
-            assert result['response']['proposal']['changes']=={'description':'帮助团队管理测试任务'}
-        assert result.get('tools_total')==0,result
+        assert result.get('tools_total')==4,result
         assert result.get('dedicated_instructions'),result
         assert result['calls'].count('prompt.submit')==1,result
         assert result['execution'].get('terminal'),result

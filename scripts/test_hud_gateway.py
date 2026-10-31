@@ -16,7 +16,7 @@ class Client:
         self.callback = None
         self.fail_submit = False
         self.fail_receipt = False
-        self.tools = []
+        self.tools = [{'name': name} for name in ('read_file', 'write_file', 'patch', 'search_files')]
         self.created = 0
         self.busy = False
         self.receipts = [{'status': 'terminal', 'outcome': 'completed',
@@ -30,7 +30,8 @@ class Client:
             if method == 'session.create':
                 self.created += 1
             sid = params.get('session_id') or ('hud-session' if self.created == 1 else f'hud-session-{self.created}')
-            return {'session_id': sid, 'running': self.busy, 'pending': []}
+            return {'session_id': sid, 'running': self.busy, 'pending': [], 'revision': 1,
+                    'execution_generation': 0, 'info': {'edit_approval_policy': 'workspace_session'}}
         if method == 'tools.show':
             return {'sections': [{'tools': self.tools}]}
         if method == 'prompt.submit':
@@ -86,8 +87,27 @@ class HudGatewayTests(unittest.TestCase):
         self.assertNotEqual(self.saved['admission_id'], first['admission_id'])
         submits = [p for m, p in self.client.calls if m == 'prompt.submit']
         self.assertEqual([p['text'] for p in submits], ['synthetic prompt', 'updated project snapshot'])
-        self.assertEqual(sum(m == 'tools.show' for m, _ in self.client.calls), 2)
+        self.assertEqual(sum(m == 'tools.show' for m, _ in self.client.calls), 4)
         self.assertFalse(any(m in ('session.detach', 'session.mutate') for m, _ in self.client.calls))
+
+    def test_private_config_tool_uses_native_execution_scoped_definitions(self):
+        server = {'command': 'python', 'args': ['hud_server.py'], 'env': {'HUD_TOOL_TOKEN': 'first'}}
+        for token in ('first', 'next'):
+            server['env']['HUD_TOOL_TOKEN'] = token
+            bridge.respond(self.bot, 'save requested configuration ' + token, str(self.root),
+                           lambda *args: None, system_prompt='Dedicated guidance', server=server)
+        self.assertEqual(self.client.created, 1)
+        create = next(p for m, p in self.client.calls if m == 'session.create')
+        self.assertEqual(create['toolsets'], ['file', 'no_mcp'])
+        self.assertTrue(create['verbose'])
+        self.assertFalse(create['ignore_rules'])
+        self.assertEqual([s['name'] for s in create['editor']['mcp_servers']], ['project_config'])
+        self.assertFalse(any(m == 'tools.show' for m, _ in self.client.calls))
+        bindings = [p['payload'] for m, p in self.client.calls
+                    if m == 'session.mutate' and p['operation'] == 'editor_mcp']
+        self.assertEqual(len(bindings), 2)
+        self.assertEqual(bindings[-1]['mcp_servers'][0]['env'], [{'name': 'HUD_TOOL_TOKEN', 'value': 'next'}])
+        self.assertEqual(sum(m == 'prompt.submit' for m, _ in self.client.calls), 2)
 
     def test_binding_changes_start_separate_sessions(self):
         self.run_prompt()
@@ -117,9 +137,9 @@ class HudGatewayTests(unittest.TestCase):
     def test_resume_checks_tool_isolation_and_busy_state(self):
         self.run_prompt()
         self.client.tools = [{'name': 'terminal'}]
-        with self.assertRaisesRegex(RuntimeError, '工具隔离'):
+        with self.assertRaisesRegex(RuntimeError, '工具清单'):
             self.run_prompt('next question')
-        self.client.tools = []
+        self.client.tools = [{'name': name} for name in ('read_file', 'write_file', 'patch', 'search_files')]
         self.client.busy = True
         with self.assertRaisesRegex(RuntimeError, '仍有执行'):
             self.run_prompt('next question')
@@ -164,9 +184,9 @@ class HudGatewayTests(unittest.TestCase):
         self.assertEqual(json.loads(self.run_prompt()),{'text':'ready'})
         create=next(p for m,p in self.client.calls if m=='session.create')
         self.assertEqual(create['source'],'acp')
-        self.assertEqual(create['toolsets'],['no_mcp'])
+        self.assertEqual(create['toolsets'],['file','no_mcp'])
         self.assertEqual(create['editor'],{'mcp_servers':[]})
-        self.assertTrue(create['ignore_rules'])
+        self.assertFalse(create['ignore_rules'])
         self.assertFalse(create['accept_hooks'])
         self.assertEqual(create['client_env']['HERMES_EPHEMERAL_SYSTEM_PROMPT'],'Dedicated guidance')
         submitted=next(p for m,p in self.client.calls if m=='prompt.submit')
@@ -223,7 +243,7 @@ class HudGatewayTests(unittest.TestCase):
 
     def test_tool_isolation_checked_before_submit(self):
         self.client.tools=[{'name':'terminal'}]
-        with self.assertRaisesRegex(RuntimeError,'工具隔离'):self.run_prompt()
+        with self.assertRaisesRegex(RuntimeError,'工具清单'):self.run_prompt()
         self.assertFalse(any(m=='prompt.submit' for m,_ in self.client.calls))
 
     def test_timeout_interrupts_exact_execution_and_waits_for_terminal(self):
