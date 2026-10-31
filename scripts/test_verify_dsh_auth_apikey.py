@@ -1,15 +1,17 @@
 """req#137 task#265：verify_dsh_auth_apikey 三态合成判定回归。
 
-覆盖 assess 的成功 / 全失败 / 单路失败 / 路由错漏四态，及 provider 派生 / key 归属服务独立核对
-（非硬编码、非自比较）/ overlay 三服务按 id 取 + disabled 顶层：
+覆盖 assess 的成功 / 全失败 / 单路失败 / 路由错漏 / 漏切回五态，及 provider 从主 profile 配置
+确认（非注册表硬套）/ overlay 三服务按 id 取 + disabled 顶层：
 - 三来源均成功（exit0/DSH_NATIVE_OK/无 auth_error）+ 路由正确 → passed=true；
-- 三来源全失败（401）→ passed=false + diagnosis_ok=true（401 根因单列）；
+- 三来源全失败（401）→ passed=false + diagnosis_ok=true（service 已确认时 401 根因单列）；
+- service 未确认（provider/baseURL 未从配置确认）→ 两源 401 也不诊断（不归因 key-invalid）；
 - 单路失败（native 401）→ passed=false + diagnosis_ok=false（非全 401）；
 - 路由错/漏切回 → switch=false（不通过）。
 
 运行：python -B -m unittest scripts.test_verify_dsh_auth_apikey -v
 """
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -31,7 +33,7 @@ class AssessSynthesisTest(unittest.TestCase):
         return {'answer': '[unexpected]', 'exit_code': 1, 'timed_out': False, 'auth_error': True}
 
     def _binding(self):
-        return {'credentials_ref': 'refs.DEEPSEEK_API_KEY', 'key_service_matched': True}
+        return {'credentials_ref': 'refs.DEEPSEEK_API_KEY', 'service_confirmed': True}
 
     def test_success_all_three(self):
         r = V.assess(self._ok(), self._ok(), self._ok(), self._ok(), self._binding(), True, ROUTES_OK)
@@ -41,11 +43,18 @@ class AssessSynthesisTest(unittest.TestCase):
         self.assertFalse(r['diagnosis_ok'])        # 无 401 → 无诊断
 
     def test_all_failure_401(self):
-        # 两 API-key 源 401（key 对该端点无效）→ 非 passed + 401 根因诊断
+        # 两 API-key 源 401（key 对已确认端点无效）→ 非 passed + 401 根因诊断
         r = V.assess(self._ok(), self._fail(), self._fail(), self._ok(), self._binding(), True, ROUTES_OK)
         self.assertFalse(r['passed'])              # 非 passed
         self.assertTrue(r['switch_account_to_apikey'])
-        self.assertTrue(r['diagnosis_ok'])         # 两 API-key 源 401 = key 对该端点无效
+        self.assertTrue(r['diagnosis_ok'])         # 两 API-key 源 401 = key 对已确认端点无效
+
+    def test_service_not_confirmed(self):
+        # 未从配置确认 provider/baseURL → 两源 401 也不诊断（不得归因 key-invalid）
+        b = {'credentials_ref': 'refs.DEEPSEEK_API_KEY', 'service_confirmed': False}
+        r = V.assess(self._ok(), self._fail(), self._fail(), self._ok(), b, True, ROUTES_OK)
+        self.assertFalse(r['passed'])
+        self.assertFalse(r['diagnosis_ok'])        # service 未确认 → 不诊断 key-invalid
 
     def test_single_failure(self):
         # 单路失败（env 401 + native ok）→ 非 passed + 无诊断（非全 401）
@@ -83,24 +92,35 @@ class AssessSynthesisTest(unittest.TestCase):
 
 
 class DerivationTest(unittest.TestCase):
-    """provider 派生 + key 归属服务独立核对（非硬编码、非自比较）。"""
+    """provider 从主 profile 配置确认（非注册表硬套）+ 配置读取。"""
 
-    def test_provider_derived_from_key(self):
-        self.assertEqual(V._api_key_provider('refs.DEEPSEEK_API_KEY'), 'deepseek-official')
+    def test_provider_from_profile_config(self):
+        # 官方 API-key 路由 provider → 确认
+        self.assertEqual(V._api_key_provider('deepseek-official'), 'deepseek-official')
+        # 账号路由 provider → API-key 未选中 → None（unknown）
+        self.assertIsNone(V._api_key_provider('deepseek-account'))
+        # 缺省/未知 → None
+        self.assertIsNone(V._api_key_provider(''))
         self.assertIsNone(V._api_key_provider(None))
 
-    def test_key_service_status(self):
-        # 官方端点（无 $DEEPSEEK_BASE_URL）→ 主机含 key 服务 → True
-        self.assertTrue(V._key_service_status('refs.DEEPSEEK_API_KEY',
-                                             'https://api.deepseek.com/anthropic', ''))
-        # 自定义端点（代理）→ 缺独立依据 → None（unknown）
-        self.assertIsNone(V._key_service_status('refs.DEEPSEEK_API_KEY',
-                                                'https://proxy.example.com/v1', 'https://proxy.example.com/v1'))
-        # 未知 key 服务 → None
-        self.assertIsNone(V._key_service_status('refs.OPENAI_API_KEY',
-                                               'https://api.deepseek.com/anthropic', ''))
-        # 无 key 引用 → None
-        self.assertIsNone(V._key_service_status(None, 'https://api.deepseek.com/anthropic', ''))
+    def test_read_profile_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            prof = home / 'profiles' / 'desktop'
+            prof.mkdir(parents=True)
+            (prof / 'cordis.patch.yml').write_text(
+                "- id: agent-default-model\n"
+                "  config:\n"
+                "    provider: deepseek-account\n"
+                "    model: deepseek-flash\n"
+                "- id: llm-deepseek\n"
+                "  config:\n"
+                "    baseURL: https://gateway.internal/anthropic/v1\n",
+                encoding='utf-8')
+            provider, model, baseurl = V._read_profile_config(home)
+            self.assertEqual(provider, 'deepseek-account')
+            self.assertEqual(model, 'deepseek-flash')
+            self.assertEqual(baseurl, 'https://gateway.internal/anthropic/v1')
 
 
 class OverlayEvidenceTest(unittest.TestCase):

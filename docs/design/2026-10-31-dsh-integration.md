@@ -26,7 +26,7 @@ dsh 官方提供 headless 一次性执行：`dsh --profile headless "任务"`，
 ## 认证与配置
 
 - 接入方式以用户在所选 DSH 原生 profile 中的配置为依据，支持账号登录和 API key。引擎保存宿主定位及 profile/config 引用，启动时解析本次提供商选择；凭据继续由 DSH 管理。账号路由使用 DSH 保存的账号授权；API-key 路由支持 `DSH_HOME/.env` 的 `DEEPSEEK_API_KEY` 和界面保存的原生凭据。两类路由分别核验，认证失败保持所选路由并明确报错，禁止自动切换认证方式。
-- 继承所选原生 profile 的 provider、model 及相关服务配置，由 DSH 原生适配器处理目标地址与认证。`deepseek-account / deepseek-flash` 为账号路由通过的验证组合；API-key 路由 provider 为 `deepseek-official`（`dsh-llm-deepseek` 传输 + `dsh-llm-deepseek-api-key` 鉴权，请求带 `x-api-key`，官方端点 `https://api.deepseek.com/anthropic`）。具体值从配置读取。
+- 继承所选原生 profile 的 provider、model 及相关服务配置，由 DSH 原生适配器处理目标地址与认证。`deepseek-account / deepseek-flash` 为账号路由通过的验证组合；API-key 路由 provider 为 `deepseek-official`（0.2.1-rc.5 实装 `OWNER_PACKAGES`：`deepseek-official`→`dsh-llm-deepseek-api-key` 鉴权、`deepseek-account`→`dsh-llm-deepseek-account`）。API-key 路由的 provider/baseURL 从主 profile 实际配置解析，不硬套官方默认端点。
 - 账号路由需通过启动 overlay 恢复 `credentials`、`authorization`、`deepseek-account` 三项（headless 默认关闭这些服务）。API-key 路由通过 DSH 原生加载规则读取 `.env`；采用界面保存的 API key 时显式恢复 `credentials` 服务。API-key 路由保持 `deepseek-account` 关闭。提供商、模型及相关服务配置和凭据来源必须一起解析。
 - `.credentials.yaml` 结构为 `version` + `records`（grant 类记录）+ `refs`（环境变量名 → 非空字符串 key 值，any text）。`dsh-credentials-local` 为纯 fs/YAML 实现（无 WASM/保护存储）：`refs` 直接存 key 正文，`resolve(ref)` 返回 `this.values.get(ref)` 的存储原值（`source:file`），回退继承环境/`.env`（`source:env`）；`dsh-llm-*` 适配器的 `resolveApiKey` 取 `credentials.resolve(apiKeyEnv)?.value`。refs 值即被当 `x-api-key` 直发的 key 正文，不可据外形（UUID 等）判为引用。
 - 启动器显式选择已确认的 home；Bot 会话、工作目录和 MCP 执行上下文分别隔离。凭据和原生配置的归属保持明确，验证产生的临时副本限制为当前用户可访问并在退出时清理；原配置保持原值。
@@ -42,7 +42,7 @@ dsh 官方提供 headless 一次性执行：`dsh --profile headless "任务"`，
 
 客户端级实验同时覆盖工具错误、初始化失败以及工具注销和子进程清理。生产引擎的注册、执行凭据、权限、消息已读和任务状态链属于后续实现与验收范围。
 
-API-key 路由曾向其官方接口发起请求并收到 HTTP 401，账号路由的模型调用与续跑已通过。401 成因：`refs.DEEPSEEK_API_KEY` 的值即字面 key（非引用），被 `dsh-llm-deepseek-api-key` 当 `x-api-key` 直发到 `https://api.deepseek.com/anthropic` 收到 401（auth_attribution=key-invalid）——该值对该端点无效或对应其他服务，实际 provider/baseURL/key 来源待按用户 9669 所说「主 profile」（可能为 Hermes/Codex 主配置）核对。两种接入方式的切换均列入验收。
+账号路由的模型调用与续跑已通过。API-key 路由的 provider/baseURL 未能从主 profile 实际配置确认：主 profile `agent-default-model.provider=deepseek-account`（账号路由，非 API-key 路由 `deepseek-official`），且未设置 `config.baseURL`/`$DEEPSEEK_BASE_URL`。因此 API-key 路由 provider/baseURL 记 unknown，验证脚本停止请求、不重复 401（auth_attribution=unknown），不将 `refs.DEEPSEEK_API_KEY`（36 字符字面 key 值）对官方默认端点的 401 归因 key-invalid。三来源成功验收依赖实际 provider/baseURL/key 来源（用户 9669 所述「主 profile」，可能为 Hermes/Codex 主配置）确认后补做；两种接入方式的切换均列入验收。
 
 方法与现场证据保存在项目主目录 `reports/research/dsh-integration/`。技术依据为 [headless](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/bundle/headless/README.md) 和 [MCP 客户端](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md)；上游文档更新时以实装版本验证结果约束解析契约。
 
