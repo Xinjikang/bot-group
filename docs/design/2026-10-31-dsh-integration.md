@@ -51,14 +51,69 @@ API-key 路由曾向其官方接口发起请求并收到 HTTP 401，账号路由
 
 ## 宿主能力对齐
 
-- **Profile 编辑**：现有编辑入口按宿主分叉（hermes 走 profile.yaml/SOUL.md/.env/config.yaml 四文件，codex 走独立配置）。dsh 新增独立配置读写分支，对齐编辑入口与模型、提供商、认证方式字段；dsh 的 profile 为 `DSH_HOME/profiles/<name>/` 下的 cordis patch 层，不复用 hermes 文件格式。
-- **斜杠命令**：命令分发在引擎层（commands.py），按目标 bot runtime 分叉。/new、/stop、/help 对 dsh 有效（/new 重置会话绑定、/stop 走进程树清理、/help 通用）；/steer 不支持——运行中纠偏依赖 hermes gateway 的 session.steer，dsh headless 与 codex 子进程均无此通道。
+以下为接入目标和验收契约。当前 DSH 生产适配尚待实现，已完成的实验范围见上一节。
+
+### 项目详情 Profile 编辑
+
+复用项目详情的成员编辑入口、交互与权限。现有字段见 `frontend/index.html` 的 `profileFields`、`openProfileEditor` 和保存处理；配置落盘及并发保护见 `engine/profile_config.py`、`engine/codex_profile_config.py`；项目覆盖见 `engine/project_models.py`。DSH 的原生 profile 使用 `DSH_HOME/profiles/<name>/` 下的 cordis patch，需增加对应读写适配。
+
+| 能力 | DSH 接入契约 |
+| --- | --- |
+| 配置定位 | 展示所编辑成员、宿主 home、原生 profile 及实际配置来源，校验读取和保存的目标一致。保留成员路由标识与宿主 profile 的既有含义。 |
+| 描述、人格与指令 | 对齐现有描述和人格编辑用途；DSH 的描述存储、人格文件引用和加载优先级须核验后确定。验收包含保存回读与下一次执行实际采用指令。 |
+| 环境变量与凭据 | `.env` 编辑指向所选 DSH home；界面保存凭据由 DSH 原生服务管理。认证来源与账号/API-key 选择保持一致，保存普通配置时保留既有凭据。 |
+| 模型与提供商 | 显示实际生效值与来源；全局修改写入所选原生 profile，项目覆盖由本次执行 overlay 应用。有效 provider 决定本次认证路由，目标地址由原生配置解析。 |
+| 推理强度 | 根据所选 provider/model 的实际能力显示可用值；DSH 字段与档位映射待核验，原有未知值保留并提示。 |
+| 保存作用域 | 对齐“仅当前项目／应用到全局”：项目覆盖仅作用于当前项目和成员，清空覆盖后继承原生 profile；全局保存保留其他项目的独立覆盖。描述、人格和 `.env` 的作用域明确显示。 |
+| 保存可靠性 | 对齐 revision 冲突检测、仅写变更字段、备份和失败恢复；保留未知插件配置及引用。动态表达式或歧义节点进入明确的只读/报错流程，阻止覆盖损坏。 |
+| 生效时机 | 保存回执注明下一次启动生效；运行中执行保持本次快照。续跑会话采用新模型/认证的行为须实测，确需新会话时明确提示使用 `/new`。 |
+
+全局配置和项目覆盖分两步保存时，沿用现有部分成功提示，明确已保存范围及失败范围。凭据错误和配置冲突消息应脱敏。
+
+### 斜杠命令
+
+当前引擎注册表为 `engine/commands.py` 的 `/new`、`/stop`、`/steer`、`/help`。群聊命令由引擎分发，DSH 交互终端中的其他命令单独核验能力；本期仅承诺下表。
+
+| 命令 | DSH 首期行为与验收 |
+| --- | --- |
+| `/new @成员` | 新建会话绑定，保留旧会话记录；话题内作用于该话题 chat，话题外作用于本项目 work。忙碌时按现有策略拒绝；检查 generation、迟到事件及下一次唤醒新 ID。 |
+| `/stop @成员` | 限定当前项目和当前 work/chat 执行，终止执行及 MCP 子进程树；按现有停止流程处理队列、任务状态和凭据清理，以实际退出证据反馈停止结果。 |
+| `/help` | 命令菜单、说明和后端拒绝行为一致；明确标注运行中纠偏的宿主能力边界。 |
+| `/steer @成员 内容` | 首期 DSH headless 返回明确的能力不支持提示，保留命令审计；在进入 Hermes 执行查询及投递前完成能力判断。现有实现的运行中纠偏通道为 Hermes gateway `session.steer`。 |
+
+命令验收还包括缺失目标、多目标、未知命令、空闲与忙碌状态、跨项目和跨话题隔离。输入框补全和帮助内容应与后端能力判断保持一致。
+
+### 成员与宿主生命周期盘点
+
+对照 codex 子进程接入（`discovery`/`codex_profile_config`/`codex_auth`/`codex_reasoning`/`codex_sandbox_notice`/`stop`），dsh 需要覆盖的能力如下：
+
+| 能力 | codex 参照实现 | DSH 接入契约 |
+| --- | --- | --- |
+| 宿主发现 | `discovery._scan_codex`（config.toml/auth.json/命名 config/独立 home） | `_scan_dsh` 扫 `DSH_HOME/profiles/<name>/`；`register_bot` 的 host_type 白名单加 `dsh` |
+| 候选可用性 | `candidate_available` 按 host_type 分叉 | dsh 分支校验 profile 目录与有效 patch 存在 |
+| Profile 读写 | `codex_profile_config`（TOML + revision 冲突 + 备份恢复） | `dsh_profile_config`（cordis patch yaml + 同款 revision/备份）；描述、人格、推理字段映射待实装 |
+| 认证同步 | `codex_auth.sync`（auth.json 复制 + JWT 过期 + 账户一致） | dsh 无 auth.json 同步；账号路由走 credentials overlay，API-key 走 `.env`/界面凭据 |
+| 认证失败识别 | `codex_auth.is_auth_error`（401/token_revoked） | dsh 识别 MISSING_CREDENTIAL/AUTH 事件，保持所选路由不切换 |
+| 推理/思考读取 | `codex_reasoning`（--json 事件流） | dsh --json 事件流含 thinking/tool_call/tool_result，实现 `dsh_reasoning` |
+| 沙箱提示 | `codex_sandbox_notice` | dsh headless 沙箱语义待验证 |
+| 会话绑定 | `session_bindings` runtime='codex' 存 thread_id | runtime='dsh' 存 --session-id，generation 守卫一致 |
+| 停止清理 | `stop_profile` 进程树 | 复用进程树 + MCP/overlay/临时数据清理 |
+| 工作区授权 | codex cwd = 项目目录 | dsh cwd = 项目目录，复用工作区授权与目录报告 |
+| 重试恢复 | task_retry 按 runtime | 续跑 --session-id 已验证，重试恢复复用 |
+| 项目指令加载 | hermes 走 `--in` 原生加载 AGENTS.md；codex 走 `-c developer_instructions` 注入 | dsh 的系统提示词/AGENTS.md 等价注入机制待验证 |
+| 成员启停/卸载 | active 0/1 与 home 清理通用 | 复用，不依赖 runtime 分叉；dsh home 清理按配置归属处理 |
+
+### 待完成的设计核验
+
+描述/人格加载映射、推理参数映射、原生 profile 继承及动态表达式写入边界、模型/认证变更后的续跑语义，均需以实装版本补充证据后收敛。另需逐项盘点成员创建/注册、启停/移除、模板与项目指令加载、工作区授权、运行状态/思考与工具展示、重试恢复及卸载清理，形成支持、限制和验收对应表。上述项属于方案完整性核验；通过 headless 模型实验仅证明已列出的实验能力。
 
 ## 验收标准
 
 | 项目 | 验收 |
 | --- | --- |
 | 入口与版本 | 升级后定位、版本不兼容提示 |
+| Profile 编辑 | 字段映射、人格实际加载、项目/全局范围、清空覆盖、并发冲突、未知字段保留、备份恢复、部分保存提示及生效时机 |
+| 命令与交互 | `/new`、`/stop`、`/help` 的实际闭环；`/steer` 明确能力提示；菜单/帮助一致、参数错误与作用域隔离 |
 | MCP | 完整 headless overlay 与引擎 MCP 身份；必需工具失败终止、超时与 /stop |
 | 认证 | 账号登录、界面保存 API key、`.env` API key 分别调用成功；两种接入方式切换后实际路由一致；认证失败保持原选择；凭据归属、原配置完整性与日志脱敏 |
 | 会话 | 两轮续跑、引擎重启恢复、/new 与迟到事件 |
