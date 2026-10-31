@@ -57,6 +57,12 @@ def _failure_text(detail):
 
 
 def classify(text):
+    # req#137 task#268：Auto 审批 fail-closed 标记是引擎作者文本，须在 _failure_text
+    # 的「最后一个 JSON 错误事件优先」提取之前判定——否则被 'adapter broken' 之类
+    # 终端错误事件吞掉，落 unknown。
+    raw = str(text).lower()
+    if 'auto review capability unavailable' in raw or 'preset not confirmed' in raw:
+        return 'auto_unavailable'
     text = _failure_text(text).lower()
     if hermes_profile_names.failure_message(text) or '被 hermes 保留' in text:
         return 'configuration'
@@ -70,8 +76,6 @@ def classify(text):
     # 判读：初始化失败时归因 init（可行动因），缺 final 只是伴随症状。
     if re.search(r'missing_credential|missing credential|no api.?key for', text):
         return 'missing_credential'
-    if re.search(r'auto review capability unavailable|preset not confirmed', text):
-        return 'auto_unavailable'
     if re.search(r'initialization|initialize|load_failed|failed to load|failed to initialize'
                  r'|failed to parse (?:overlay|patch|profile|config)', text):
         return 'init'

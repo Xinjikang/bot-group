@@ -172,6 +172,28 @@ class EngineFixture:
             shutil.rmtree(self.data_dir, ignore_errors=True)
             shutil.rmtree(self.bot_home, ignore_errors=True)
 
+    def restart(self):
+        """引擎重启（同数据目录、同端口）：模拟重启恢复 + 续跑再核验。"""
+        from engine import dsh_auto
+        dsh_auto.adapter_source = self._orig_adapter  # 恢复正常适配插件源码
+        self.server.should_exit = True
+        self.thread.join(timeout=15)
+        import uvicorn
+        from engine.main import app as engine_app
+        config = uvicorn.Config(engine_app, host="127.0.0.1", port=self.port,
+                                log_level="warning", lifespan="on")
+        self.server = uvicorn.Server(config)
+        self.thread = threading.Thread(target=self.server.run, daemon=True,
+                                       name=f"engine-268-{self.segment}-restart")
+        self.thread.start()
+        for _ in range(200):
+            if self.server.started:
+                break
+            time.sleep(0.05)
+        if not self.server.started:
+            raise RuntimeError("engine failed to restart")
+        # 重启期间 dsh_bot_home 的 side file 与数据目录原样保留（续跑凭据）。
+
 
 def _turn_evidence(fx: EngineFixture, run) -> dict:
     """单轮证据：Auto 审计行 + 事件流工具计数。"""
@@ -213,7 +235,8 @@ def _segment_fail(fx: EngineFixture) -> dict:
         return {"ok": False, "detail": "run did not finish in time"}
     ev = _turn_evidence(fx, run)
     errors = [dict(r) for r in fx.q(
-        "SELECT category, diagnostic FROM execution_errors ORDER BY id DESC LIMIT 2")]
+        "SELECT category, diagnostic FROM execution_errors "
+        "WHERE project='bot-group' ORDER BY message_id DESC LIMIT 2")]
     return dict(ev, **{
         "errors": errors,
         "blocked_as_auto_unavailable": any(
@@ -227,20 +250,27 @@ def _segment_resume(fx: EngineFixture) -> dict:
     if run1 is None:
         return {"ok": False, "detail": "turn1 did not finish in time"}
     ev1 = _turn_evidence(fx, run1)
-    fx.post_msg("@dsh-bot 回忆上一轮你收到的成员列表数量，把它写进回复 DSH_AUTO_TURN2。"
+    bindings1 = [dict(r) for r in fx.q(
+        "SELECT session_id, generation FROM session_bindings "
+        "WHERE project='bot-group' AND profile='dsh-bot' AND kind='work'")]
+    # 引擎重启（模拟重启恢复）：续跑走持久化绑定 --session-id，再核验 Auto 预设。
+    fx.restart()
+    fx.post_msg("@dsh-bot 回忆上一轮你收到的成员列表数量，把该数量写进回复 DSH_AUTO_TURN2，"
                 "不要调用任何工具。")
     run2 = fx.wait_run()
     if run2 is None:
         return {"ok": False, "detail": "turn2 did not finish in time"}
     ev2 = _turn_evidence(fx, run2)
-    bindings = [dict(r) for r in fx.q(
+    bindings2 = [dict(r) for r in fx.q(
         "SELECT session_id, generation FROM session_bindings "
         "WHERE project='bot-group' AND profile='dsh-bot' AND kind='work'")]
     return {
-        "turn1": ev1, "turn2": ev2, "bindings": bindings,
+        "turn1": ev1, "turn2": ev2,
+        "binding_before": bindings1, "binding_after": bindings2,
         "turn1_preset_confirmed": bool(ev1["audits"]) and bool(ev1["audits"][0]["preset_confirmed"]),
         "turn2_preset_confirmed": bool(ev2["audits"]) and bool(ev2["audits"][0]["preset_confirmed"]),
-        "same_session": bool(bindings) and bool(run1.get("session_id") or True),
+        "same_session_after_restart": bool(bindings1) and bool(bindings2)
+        and bindings1[0]["session_id"] == bindings2[0]["session_id"],
         "two_audit_rows": len(ev1["audits"]) >= 1 and len(ev2["audits"]) >= 1,
     }
 
@@ -266,11 +296,11 @@ def _run_segment(args, segment: str) -> dict:
             "fail": lambda d: bool(d.get("blocked_as_auto_unavailable")
                                    and d.get("audit_row")
                                    and not d.get("preset_confirmed")),
-            # resume：两轮都重新确认 auto + 审计逐轮落库 + 续跑召回
+            # resume：重启后同会话续跑 + 两轮都重新确认 auto + 审计逐轮落库
             "resume": lambda d: bool(d.get("turn1_preset_confirmed")
                                      and d.get("turn2_preset_confirmed")
                                      and d.get("two_audit_rows")
-                                     and "DSH_AUTO_TURN2" in "".join(d["turn2"]["finals"])),
+                                     and d.get("same_session_after_restart")),
         }[segment](r)
         return result
     finally:
