@@ -29,6 +29,27 @@ _CREDENTIAL = re.compile(
 _ACCOUNT_PROVIDER = 'deepseek-account'
 # provider/model/服务配置条目，随 overlay 一并透传（desktop 实测 id 集合）。
 _PROVIDER_IDS = ('agent-default-model', 'llm-deepseek', 'llm-pi-ai', 'deepseek-account')
+# 宽泛 ACE（Everyone/Users/Authenticated Users），凭据副本目录不得残留。
+_BROAD_ACE = re.compile(r'(?i)\b(Everyone|BUILTIN\\Users|NT AUTHORITY\\Authenticated Users)\b')
+
+
+class AuthSyncError(ValueError):
+    """凭据操作失败，不泄露凭据内容。"""
+
+
+def _windows_identity() -> str:
+    domain = os.environ.get('USERDOMAIN', '')
+    user = os.environ.get('USERNAME', '')
+    if domain and user:
+        return f'{domain}\\{user}'
+    return user
+
+
+def _read_acl(path: Path) -> str:
+    r = subprocess.run(['icacls', str(path)], stdout=subprocess.PIPE,
+                       stderr=subprocess.DEVNULL, text=True,
+                       encoding='utf-8', errors='replace', timeout=30, check=False)
+    return r.stdout or ''
 
 
 def sanitize(message: str) -> str:
@@ -96,52 +117,83 @@ def resolve(bot) -> dict:
 def overlay_entries(bot, *, credentials_path: str | None = None) -> list:
     """构建启动 overlay 的认证相关条目（供 266 以 ``--patch`` 注入）。
 
-    账号路由恢复 credentials/authorization/deepseek-account；API-key 路由保持
-    deepseek-account 关闭，界面保存凭据时显式恢复 credentials 服务，.env 键由 DSH
-    原生加载。遥测与会话日志默认关闭；provider/model 选择随 overlay 透传。
+    按 ``id`` 合并：账号路由最终 ``deepseek-account`` 为 ``disabled=False``，API-key 路由
+    最终为 ``disabled=True``；所选 provider/model/服务 config（accountId 等）保留，同一
+    ``id`` 只输出唯一条目（控制条目的启停状态优先，不依赖 cordis 重复覆盖语义）。
+    遥测与会话日志默认关闭；.env 键由 DSH 原生加载，界面保存凭据显式恢复 credentials。
     """
     info = resolve(bot)
-    entries: list = []
+    controls: list[dict] = []
     if info['route'] == 'account':
         path = credentials_path or info['credentials_file']
-        entries.append({'id': 'credentials', 'disabled': False,
-                        'config': {'path': path, 'watch': False}})
-        entries.append({'id': 'authorization', 'disabled': False})
-        entries.append({'id': 'deepseek-account', 'disabled': False})
+        controls += [
+            {'id': 'credentials', 'disabled': False, 'config': {'path': path, 'watch': False}},
+            {'id': 'authorization', 'disabled': False},
+            {'id': 'deepseek-account', 'disabled': False},
+        ]
     else:
-        entries.append({'id': 'deepseek-account', 'disabled': True})
+        controls.append({'id': 'deepseek-account', 'disabled': True})
         if info['api_key_source'] == 'native':
             path = credentials_path or info['credentials_file']
-            entries.append({'id': 'credentials', 'disabled': False,
-                            'config': {'path': path, 'watch': False}})
+            controls.append({'id': 'credentials', 'disabled': False,
+                             'config': {'path': path, 'watch': False}})
         # .env 路由：DSH 原生加载 .env 的 DEEPSEEK_API_KEY，无需 credentials 服务。
-    entries.append({'id': 'session-log-deepseek', 'disabled': True})
-    entries.append({'id': 'session-telemetry-otel', 'disabled': True})
-    entries.extend(info['selected'])
-    return entries
+    controls += [
+        {'id': 'session-log-deepseek', 'disabled': True},
+        {'id': 'session-telemetry-otel', 'disabled': True},
+    ]
+    merged: dict[str, dict] = {e['id']: dict(e) for e in controls}
+    for entry in info['selected']:
+        if not isinstance(entry, dict) or not entry.get('id'):
+            continue
+        eid = entry['id']
+        if eid in merged:
+            target = merged[eid]
+            for key, value in entry.items():
+                if key == 'id':
+                    continue
+                # 控制条目的 disabled 等既有字段优先，selected 仅补缺失的 config/name/未知字段
+                if key not in target:
+                    target[key] = value
+        else:
+            merged[eid] = dict(entry)
+    return list(merged.values())
 
 
 def copy_credentials(home: str, private_dir: str) -> str | None:
-    """复制原生凭据到隔离目录并限制当前用户可访问；返回副本路径或 None。
+    """复制原生凭据到隔离目录并核验私有 ACL；任何限制失败中止并清理。
 
-    原 ``.credentials.yaml`` 保持原值；副本目录取消继承权限后仅授予当前用户。
-    调用方（spawn）负责在退出时删除 ``private_dir``。
+    先建立/核验本次独占私有目录权限，再写敏感字节；icacls 失败、异常、超时或身份缺失
+    均中止并显式报错（不返回可用副本、不回退读取原始凭据）。失败清理本次副本并报告。
+    核验最终 DACL 无宽泛 ACE；原 ``.credentials.yaml`` 保持原值。
     """
     source = Path(home).resolve() / '.credentials.yaml'
     if not source.is_file():
         return None
     private = Path(private_dir).resolve()
     dest = private / 'credentials.yaml'
-    dest.write_bytes(source.read_bytes())
     if sys.platform == 'win32':
-        domain = os.environ.get('USERDOMAIN', '')
-        user = os.environ.get('USERNAME', '')
-        identity = f'{domain}\\{user}' if domain and user else user
-        if identity:
-            subprocess.run(
+        identity = _windows_identity()
+        if not identity:
+            raise AuthSyncError('无法解析当前用户身份，中止凭据副本')
+        try:
+            r = subprocess.run(
                 ['icacls', str(private), '/inheritance:r', '/grant:r',
                  identity + ':(OI)(CI)F'],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                check=False, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AuthSyncError('无法限制凭据副本目录权限，已中止') from exc
+        if r.returncode != 0:
+            raise AuthSyncError(f'无法限制凭据副本目录权限，已中止（icacls 返回 {r.returncode}）')
+        acl = _read_acl(private)
+        if _BROAD_ACE.search(acl):
+            raise AuthSyncError('凭据副本目录仍存在宽泛访问权限，已中止')
+    try:
+        dest.write_bytes(source.read_bytes())
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise AuthSyncError('无法写入凭据副本，已中止') from None
     return dest
 
 

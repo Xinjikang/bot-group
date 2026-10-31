@@ -30,6 +30,7 @@ ACCOUNT_PATCH = """\
   config:
     baseUrl: https://api.deepseek.com
 - id: deepseek-account
+  disabled: true
   config:
     accountId: test-account
 """
@@ -98,9 +99,27 @@ class DshAuthTests(unittest.TestCase):
         self.assertIn({'id': 'credentials', 'disabled': False,
                        'config': {'path': str(self.credfile), 'watch': False}}, entries)
         self.assertIn({'id': 'authorization', 'disabled': False}, entries)
-        self.assertIn({'id': 'deepseek-account', 'disabled': False}, entries)
+        # deepseek-account 按 id 合并为唯一条目：最终 disabled=False + 保留 accountId
+        dsa = [e for e in entries if isinstance(e, dict) and e.get('id') == 'deepseek-account']
+        self.assertEqual(len(dsa), 1)
+        self.assertFalse(dsa[0]['disabled'])
+        self.assertEqual(dsa[0]['config']['accountId'], 'test-account')
         self.assertTrue(any(e.get('id') == 'agent-default-model'
                             for e in entries if isinstance(e, dict)))
+
+    def test_overlay_apikey_merges_conflicting_disabled(self):
+        # 原配置 deepseek-account disabled:false + apikey 路由 → 最终 disabled=True、accountId 保留
+        self.patch.write_text(
+            "- id: agent-default-model\n  config:\n    provider: deepseek-official\n"
+            "    model: deepseek-chat\n"
+            "- id: deepseek-account\n  disabled: false\n  config:\n    accountId: test-account\n",
+            encoding="utf-8")
+        self.envfile.write_text("DEEPSEEK_API_KEY=sk-test123456\n", encoding="utf-8")
+        entries = dsh_auth.overlay_entries(self.bot)
+        dsa = [e for e in entries if isinstance(e, dict) and e.get('id') == 'deepseek-account']
+        self.assertEqual(len(dsa), 1)
+        self.assertTrue(dsa[0]['disabled'])
+        self.assertEqual(dsa[0]['config']['accountId'], 'test-account')
 
     def test_overlay_apikey_env_keeps_account_disabled(self):
         self._apikey(env_key="sk-test123456")
@@ -123,20 +142,54 @@ class DshAuthTests(unittest.TestCase):
         self.assertIn({'id': 'session-log-deepseek', 'disabled': True}, entries)
         self.assertIn({'id': 'session-telemetry-otel', 'disabled': True}, entries)
 
+    def _fake_run(self, restrict_rc=0, acl_stdout='DOMAIN\\user:(OI)(CI)F\n'):
+        def run(args, **kwargs):
+            if '/inheritance:r' in args:
+                return type('R', (), {'returncode': restrict_rc, 'stdout': '', 'stderr': ''})()
+            return type('R', (), {'returncode': 0, 'stdout': acl_stdout, 'stderr': ''})()
+        return run
+
     def test_copy_credentials_byte_identical_and_original_kept(self):
         self._account()
         original = self.credfile.read_bytes()
         private = Path(self.tmp.name) / "private"
         private.mkdir()
-        with patch.object(dsh_auth.subprocess, "run") as run:
+        with patch.object(dsh_auth, '_windows_identity', return_value='DOMAIN\\user'), \
+             patch.object(dsh_auth.subprocess, 'run', side_effect=self._fake_run()):
             dest = dsh_auth.copy_credentials(str(self.droot), str(private))
         self.assertIsNotNone(dest)
         self.assertEqual(Path(dest).read_bytes(), original)
         self.assertEqual(self.credfile.read_bytes(), original)  # 原文件保持原值
-        if sys.platform == "win32":
-            self.assertTrue(run.called)
-            args = run.call_args.args[0]
-            self.assertEqual(args[:3], ["icacls", str(private.resolve()), "/inheritance:r"])
+
+    def test_copy_credentials_icacls_failure_aborts(self):
+        self._account()
+        private = Path(self.tmp.name) / "private"
+        private.mkdir()
+        with patch.object(dsh_auth, '_windows_identity', return_value='DOMAIN\\user'), \
+             patch.object(dsh_auth.subprocess, 'run', side_effect=self._fake_run(restrict_rc=1)):
+            with self.assertRaises(dsh_auth.AuthSyncError):
+                dsh_auth.copy_credentials(str(self.droot), str(private))
+        self.assertFalse((private / 'credentials.yaml').exists())  # 无副本残留
+
+    def test_copy_credentials_missing_identity_aborts(self):
+        self._account()
+        private = Path(self.tmp.name) / "private"
+        private.mkdir()
+        with patch.object(dsh_auth, '_windows_identity', return_value=''):
+            with self.assertRaises(dsh_auth.AuthSyncError):
+                dsh_auth.copy_credentials(str(self.droot), str(private))
+        self.assertFalse((private / 'credentials.yaml').exists())
+
+    def test_copy_credentials_broad_ace_aborts(self):
+        self._account()
+        private = Path(self.tmp.name) / "private"
+        private.mkdir()
+        with patch.object(dsh_auth, '_windows_identity', return_value='DOMAIN\\user'), \
+             patch.object(dsh_auth.subprocess, 'run',
+                          side_effect=self._fake_run(acl_stdout='BUILTIN\\Users:(OI)(CI)(RX)\n')):
+            with self.assertRaises(dsh_auth.AuthSyncError):
+                dsh_auth.copy_credentials(str(self.droot), str(private))
+        self.assertFalse((private / 'credentials.yaml').exists())
 
     def test_copy_credentials_missing_returns_none(self):
         private = Path(self.tmp.name) / "private"
