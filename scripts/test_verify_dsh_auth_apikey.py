@@ -18,11 +18,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts import verify_dsh_auth_apikey as V  # noqa: E402
 
 
-ROUTES_OK = ('account', 'apikey', 'apikey')
+ROUTES_OK = ('account', 'apikey', 'apikey', 'account')
 
 
 class AssessSynthesisTest(unittest.TestCase):
-    """成功 / 全失败 / 单路失败 / 路由错漏合成回归。"""
+    """成功 / 全失败 / 单路失败 / 路由错漏 / 漏切回合成回归。"""
 
     def _ok(self):
         return {'answer': 'DSH_NATIVE_OK', 'exit_code': 0, 'timed_out': False, 'auth_error': False}
@@ -34,33 +34,48 @@ class AssessSynthesisTest(unittest.TestCase):
         return {'credentials_ref': 'refs.DEEPSEEK_API_KEY', 'key_service_matched': True}
 
     def test_success_all_three(self):
-        r = V.assess(self._ok(), self._ok(), self._ok(), self._binding(), True, ROUTES_OK)
+        r = V.assess(self._ok(), self._ok(), self._ok(), self._ok(), self._binding(), True, ROUTES_OK)
         self.assertTrue(r['passed'])               # 三来源成功 → passed
         self.assertTrue(r['switch_account_to_apikey'])
+        self.assertTrue(r['account_back_ok'])      # 切回 account 成功
         self.assertFalse(r['diagnosis_ok'])        # 无 401 → 无诊断
 
     def test_all_failure_401(self):
-        r = V.assess(self._fail(), self._fail(), self._fail(), self._binding(), True, ROUTES_OK)
+        # API-key 401（账号成功 + 两 API-key 路 401）→ 非 passed + 401 诊断
+        r = V.assess(self._ok(), self._fail(), self._fail(), self._ok(), self._binding(), True, ROUTES_OK)
         self.assertFalse(r['passed'])              # 全失败 → 非 passed
         self.assertTrue(r['switch_account_to_apikey'])
         self.assertTrue(r['diagnosis_ok'])         # 全 401 → 401 根因诊断通过
 
     def test_single_failure(self):
-        r = V.assess(self._ok(), self._ok(), self._fail(), self._binding(), True, ROUTES_OK)
+        r = V.assess(self._ok(), self._ok(), self._fail(), self._ok(), self._binding(), True, ROUTES_OK)
         self.assertFalse(r['passed'])              # 单路失败 → 非 passed
         self.assertFalse(r['diagnosis_ok'])        # 非全 401 → 无诊断
 
     def test_route_error_switch_fails(self):
         # 路由错：account 路由解析为 apikey → switch 不通过
-        r = V.assess(self._ok(), self._ok(), self._ok(), self._binding(), True,
-                     ('apikey', 'apikey', 'apikey'))
+        r = V.assess(self._ok(), self._ok(), self._ok(), self._ok(), self._binding(), True,
+                     ('apikey', 'apikey', 'apikey', 'account'))
         self.assertFalse(r['switch_account_to_apikey'])
         self.assertFalse(r['passed'])
 
     def test_route_missing_switchback(self):
         # 漏切回：env 路由仍 account → switch 不通过
-        r = V.assess(self._ok(), self._ok(), self._ok(), self._binding(), True,
-                     ('account', 'account', 'apikey'))
+        r = V.assess(self._ok(), self._ok(), self._ok(), self._ok(), self._binding(), True,
+                     ('account', 'account', 'apikey', 'account'))
+        self.assertFalse(r['switch_account_to_apikey'])
+        self.assertFalse(r['passed'])
+
+    def test_missing_switchback_account(self):
+        # 漏切回 account 第四段（末段仍 apikey）→ switch 不通过
+        r = V.assess(self._ok(), self._ok(), self._ok(), self._ok(), self._binding(), True,
+                     ('account', 'apikey', 'apikey', 'apikey'))
+        self.assertFalse(r['switch_account_to_apikey'])
+        self.assertFalse(r['passed'])
+
+    def test_switchback_account_fails(self):
+        # 切回 account 第四段调用失败 → switch 不通过
+        r = V.assess(self._ok(), self._ok(), self._ok(), self._fail(), self._binding(), True, ROUTES_OK)
         self.assertFalse(r['switch_account_to_apikey'])
         self.assertFalse(r['passed'])
 

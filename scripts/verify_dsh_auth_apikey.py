@@ -119,19 +119,22 @@ def _overlay_evidence(overlay):
     return out
 
 
-def assess(account_call, env_call, native_call, source_binding, source_files_unchanged, routes):
-    """三态合成判定：账号 + 两 API-key 调用 → 整体结论。
+def assess(account_call, env_call, native_call, account_back_call, source_binding, source_files_unchanged, routes):
+    """四态合成判定：账号 + 两 API-key + 切回账号调用 → 整体结论。
 
-    - switch：resolve 路由正确（account→apikey→apikey，无错/漏切回）+ 三段 run_dsh 均实际调用；
+    - switch：resolve 路由正确（account→apikey→apikey→account，含切回）+ 四段 run_dsh 均实际调用 + 切回 account 成功；
     - diagnosis_ok：401 根因查明（key 存在 + key 归属服务独立确认 + 两 API-key 路认证失败），单列不并入 passed；
     - passed：账号 + 两 API-key 三来源均成功（exit0/未超时/有效 final/无 auth_error）+ 切换 + 原配置不变。
     """
-    account_route, env_route, native_route = routes
+    account_route, env_route, native_route, account_back_route = routes
     account_ok = _success(account_call)
     env_ok = _success(env_call)
     native_ok = _success(native_call)
+    account_back_ok = _success(account_back_call)
     switch = (account_route == 'account' and env_route == 'apikey' and native_route == 'apikey'
-              and bool(account_call) and bool(env_call) and bool(native_call))
+              and account_back_route == 'account'
+              and bool(account_call) and bool(env_call) and bool(native_call)
+              and account_back_ok)  # 切回 account 成功
     diagnosis_ok = (
         source_binding.get('credentials_ref') is not None
         and source_binding.get('key_service_matched') is True
@@ -140,6 +143,7 @@ def assess(account_call, env_call, native_call, source_binding, source_files_unc
     )
     passed = account_ok and env_ok and native_ok and switch and source_files_unchanged
     return {'account_ok': account_ok, 'env_ok': env_ok, 'native_ok': native_ok,
+            'account_back_ok': account_back_ok,
             'switch_account_to_apikey': switch, 'diagnosis_ok': diagnosis_ok, 'passed': passed}
 
 
@@ -189,6 +193,23 @@ def run_dsh(exe, cli, overlay_path, home, test_dir, secret):
             'answer': answer if answer == 'DSH_NATIVE_OK' else '[unexpected]',
             'auth_error': auth_error,
             'stderr_tail': sanitize(err[-600:], secret)}
+
+
+def _run_account(exe, cli, source_home, test_directory, secret):
+    """账号路由实际执行（resolve + copy_credentials + overlay_entries + run_dsh）。
+
+    返回 (route, overlay_evidence, call)，供切换序列的首段与切回段复用。
+    """
+    bot = {'config_root': str(source_home), 'profile': 'desktop'}
+    info = dsh_auth.resolve(bot)
+    with tempfile.TemporaryDirectory(prefix='dsh-acc-', dir=test_directory) as tmp:
+        private = Path(tmp)
+        cred = dsh_auth.copy_credentials(str(source_home), str(private))
+        overlay = dsh_auth.overlay_entries(bot, credentials_path=str(cred))
+        overlay_path = private / 'overlay.json'
+        overlay_path.write_text(json.dumps(overlay, ensure_ascii=False), encoding='utf-8')
+        call = run_dsh(str(exe), str(cli), overlay_path, test_directory, test_directory, secret)
+    return info['route'], _overlay_evidence(overlay), call
 
 
 def main():
@@ -253,19 +274,11 @@ def main():
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 1
 
-    # ② 切换序列：账号路由实际执行（第一段）→ API-key 路由实际执行（后两段）
-    account_bot = {'config_root': str(args.source_home), 'profile': 'desktop'}
-    account_info = dsh_auth.resolve(account_bot)
-    result['account_route'] = account_info['route']  # 切换证据：resolve 路由
-    with tempfile.TemporaryDirectory(prefix='dsh-acc-', dir=args.test_directory) as tmp:
-        private = Path(tmp)
-        cred = dsh_auth.copy_credentials(str(args.source_home), str(private))
-        account_overlay = dsh_auth.overlay_entries(account_bot, credentials_path=str(cred))
-        result['account_overlay'] = _overlay_evidence(account_overlay)  # 切换证据：overlay 构建
-        account_overlay_path = private / 'overlay.json'
-        account_overlay_path.write_text(json.dumps(account_overlay, ensure_ascii=False), encoding='utf-8')
-        account_call = run_dsh(str(args.exe), str(args.cli), account_overlay_path,
-                               args.test_directory, args.test_directory, api_key)
+    # ② 切换序列：账号路由（首段）→ API-key 路由（env/native）→ 账号路由切回（末段）
+    account_route, account_overlay_ev, account_call = _run_account(
+        args.exe, args.cli, args.source_home, args.test_directory, api_key)
+    result['account_route'] = account_route  # 切换证据：resolve 路由
+    result['account_overlay'] = account_overlay_ev  # 切换证据：overlay 构建
     result['account_call'] = account_call
 
     # ③ .env 来源：隔离 HOME 写前限权，.env 注入 key
@@ -308,11 +321,19 @@ def main():
         result['native_call'] = run_dsh(str(args.exe), str(args.cli), overlay_path, home,
                                         args.test_directory, api_key)
 
+    # ⑤ 切回账号路由（末段）：API-key 验证后切回 account，纳入 switch
+    account_back_route, account_back_overlay_ev, account_back_call = _run_account(
+        args.exe, args.cli, args.source_home, args.test_directory, api_key)
+    result['account_back_route'] = account_back_route
+    result['account_back_overlay'] = account_back_overlay_ev
+    result['account_back_call'] = account_back_call
+
     result['source_files_unchanged'] = before == {str(p): fingerprint(p) for p in source_files if p.is_file()}
-    # 切换证据：resolve 路由 + overlay 构建 + 切回序列
-    result['switch_sequence'] = [result['account_route'], result['env_route'], result['native_route']]
-    # ⑤ 三态合成判定（assess 单测覆盖成功/全失败/单路失败/路由错漏）
-    result.update(assess(account_call, result['env_call'], result['native_call'],
+    # 切换证据：resolve 路由 + overlay 构建 + 切回序列（account→apikey→apikey→account）
+    result['switch_sequence'] = [result['account_route'], result['env_route'],
+                                 result['native_route'], result['account_back_route']]
+    # ⑥ 四态合成判定（assess 单测覆盖成功/全失败/单路失败/路由错漏/漏切回）
+    result.update(assess(account_call, result['env_call'], result['native_call'], account_back_call,
                          result['source_binding'], result['source_files_unchanged'],
                          result['switch_sequence']))
     args.evidence.parent.mkdir(parents=True, exist_ok=True)
