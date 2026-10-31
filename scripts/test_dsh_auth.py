@@ -266,18 +266,6 @@ class DshAuthTests(unittest.TestCase):
         src = dsh_auth.credential_sources(str(self.droot))
         self.assertTrue(src['api_key_entry'])
         self.assertEqual(src['api_key_refs'], ['apiKey'])
-        # refs.DEEPSEEK_API_KEY 引用值分类：UUID 引用 ID → reference；sk- 字面 key → literal
-        self.credfile.write_text("refs:\n  DEEPSEEK_API_KEY: 123e4567-e89b-12d3-a456-426614174000\n", encoding="utf-8")
-        self.assertEqual(dsh_auth.credential_sources(str(self.droot))['api_key_ref_kind'], 'reference')
-        self.credfile.write_text("refs:\n  DEEPSEEK_API_KEY: sk-abc123\n", encoding="utf-8")
-        self.assertEqual(dsh_auth.credential_sources(str(self.droot))['api_key_ref_kind'], 'literal')
-
-    def test_ref_kind(self):
-        self.assertEqual(dsh_auth._ref_kind('123e4567-e89b-12d3-a456-426614174000'), 'reference')
-        self.assertEqual(dsh_auth._ref_kind('sk-abc123'), 'literal')
-        self.assertEqual(dsh_auth._ref_kind(''), 'unknown')
-        self.assertEqual(dsh_auth._ref_kind(None), 'unknown')
-        self.assertEqual(dsh_auth._ref_kind('not-a-key'), 'unknown')
 
     def test_is_auth_error(self):
         self.assertTrue(dsh_auth.is_auth_error({"type": "MISSING_CREDENTIAL"}))

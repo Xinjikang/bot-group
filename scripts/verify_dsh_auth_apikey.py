@@ -133,14 +133,13 @@ def assess(account_call, env_call, native_call, account_back_call, source_bindin
     account_back_ok = _success(account_back_call)
     switch = (account_route == 'account' and env_route == 'apikey' and native_route == 'apikey'
               and account_back_route == 'account'
-              and bool(account_call) and bool(native_call)
-              and env_call.get('skipped') is not True  # .env 占位跳过不计 switch
+              and bool(account_call) and bool(env_call) and bool(native_call)
               and account_back_ok)  # 切回 account 成功
     diagnosis_ok = (
         source_binding.get('credentials_ref') is not None
-        and source_binding.get('api_key_ref_kind') == 'reference'  # 401 根因：refs 是 UUID 引用非字面 key
         and source_binding.get('key_service_matched') is True
-        and native_call.get('auth_error') is True  # native 源 401 = resolve 缺失（引用当 key），非 key 本身无效
+        and env_call.get('auth_error') is True
+        and native_call.get('auth_error') is True  # 两 API-key 源 401 = key 对该端点无效
     )
     passed = account_ok and env_ok and native_ok and switch and source_files_unchanged
     return {'account_ok': account_ok, 'env_ok': env_ok, 'native_ok': native_ok,
@@ -234,8 +233,6 @@ def main():
     patch_file = args.source_home / 'profiles' / 'desktop' / 'cordis.patch.yml'
     cred = yaml.safe_load(cred_file.read_text(encoding='utf-8-sig')) if cred_file.is_file() else {}
     api_key = (cred.get('refs', {}) or {}).get('DEEPSEEK_API_KEY', '')
-    api_key_ref_kind = dsh_auth._ref_kind(api_key)  # reference(UUID 引用 ID)/literal(字面 key)/unknown
-    env_literal_key = _read_env_key(env_file, 'DEEPSEEK_API_KEY')  # 源 .env 的字面 key（可能为空）
     base_url_env = _read_env_key(env_file, 'DEEPSEEK_BASE_URL')
     source_provider = source_model = ''
     if patch_file.is_file():
@@ -258,8 +255,6 @@ def main():
         'api_key_present': bool(api_key),
         'source_binding': {
             'credentials_ref': key_ref,
-            'api_key_ref_kind': api_key_ref_kind,  # refs 是 UUID 引用 ID 还是字面 key
-            'env_literal_key': bool(env_literal_key),  # 源 .env 是否有字面 key（非 refs 引用）
             'config_provider': source_provider,   # 读自 agent-default-model（账号路由，非 key 绑定）
             'config_model': source_model,         # 读自 config（账号模型）
             'base_url_env': base_url_env or DEFAULT_BASE_URL,  # 读自 .env（无 $DEEPSEEK_BASE_URL→官方默认）
@@ -286,32 +281,24 @@ def main():
     result['account_overlay'] = account_overlay_ev  # 切换证据：overlay 构建
     result['account_call'] = account_call
 
-    # ③ .env 来源：隔离 HOME 写前限权，注入字面 key（源 .env 有字面 key 才可注入；否则源用 refs UUID 引用，无字面 key）
-    if env_literal_key:
-        with tempfile.TemporaryDirectory(prefix='dsh-apk-', dir=args.test_directory) as tmp:
-            home = Path(tmp)
-            dsh_auth.restrict_dir(str(home))  # 写敏感内容前限权
-            prof = home / 'profiles' / 'apikey'
-            prof.mkdir(parents=True)
-            (prof / 'cordis.patch.yml').write_text(_api_key_patch(api_provider, api_model, api_base_url), encoding='utf-8')
-            (home / '.env').write_text(f'DEEPSEEK_API_KEY={env_literal_key}\n', encoding='utf-8')
-            bot = {'config_root': str(home), 'profile': 'apikey'}
-            info = dsh_auth.resolve(bot)
-            result['env_api_key_source'] = info['api_key_source']
-            result['env_route'] = info['route']  # 切换证据：resolve 路由
-            overlay = dsh_auth.overlay_entries(bot)
-            result['env_overlay'] = _overlay_evidence(overlay)  # 切换证据：overlay 构建
-            overlay_path = home / 'overlay.json'
-            overlay_path.write_text(json.dumps(overlay, ensure_ascii=False), encoding='utf-8')
-            result['env_call'] = run_dsh(str(args.exe), str(args.cli), overlay_path, home,
-                                         args.test_directory, env_literal_key)
-    else:
-        # 源 .env 无字面 key（源用 refs UUID 引用），.env 来源无法用真实字面 key 验证
-        result['env_api_key_source'] = 'absent'
-        result['env_route'] = 'apikey'  # provider 仍是 API-key 路由，仅缺字面 key
-        result['env_call'] = {'answer': '[unexpected]', 'exit_code': 1, 'timed_out': False,
-                              'auth_error': False, 'skipped': True,
-                              'stderr_tail': 'no literal DEEPSEEK_API_KEY in source .env (source uses refs UUID reference)'}
+    # ③ .env 来源：隔离 HOME 写前限权，.env 注入 key（refs 值即字面 key，直接注入）
+    with tempfile.TemporaryDirectory(prefix='dsh-apk-', dir=args.test_directory) as tmp:
+        home = Path(tmp)
+        dsh_auth.restrict_dir(str(home))  # 写敏感内容前限权
+        prof = home / 'profiles' / 'apikey'
+        prof.mkdir(parents=True)
+        (prof / 'cordis.patch.yml').write_text(_api_key_patch(api_provider, api_model, api_base_url), encoding='utf-8')
+        (home / '.env').write_text(f'DEEPSEEK_API_KEY={api_key}\n', encoding='utf-8')
+        bot = {'config_root': str(home), 'profile': 'apikey'}
+        info = dsh_auth.resolve(bot)
+        result['env_api_key_source'] = info['api_key_source']
+        result['env_route'] = info['route']  # 切换证据：resolve 路由
+        overlay = dsh_auth.overlay_entries(bot)
+        result['env_overlay'] = _overlay_evidence(overlay)  # 切换证据：overlay 构建
+        overlay_path = home / 'overlay.json'
+        overlay_path.write_text(json.dumps(overlay, ensure_ascii=False), encoding='utf-8')
+        result['env_call'] = run_dsh(str(args.exe), str(args.cli), overlay_path, home,
+                                     args.test_directory, api_key)
 
     # ④ 界面保存凭据来源：copy_credentials 私有副本 + native 路由
     with tempfile.TemporaryDirectory(prefix='dsh-apk-', dir=args.test_directory) as tmp:
@@ -349,16 +336,11 @@ def main():
     result.update(assess(account_call, result['env_call'], result['native_call'], account_back_call,
                          result['source_binding'], result['source_files_unchanged'],
                          result['switch_sequence']))
-    # 401 归因更正：refs 是 UUID 引用（非字面 key）→ native 源 stderr 出现引用尾缀 = resolve 返回引用（解析缺失）
+    # 401 归因：refs 值即字面 key，被 dsh-llm-deepseek-api-key 当 x-api-key 直发；401 = key 对该端点无效
     native_stderr = result['native_call'].get('stderr_tail', '')
-    if api_key_ref_kind == 'reference' and api_key and api_key[-4:] in native_stderr:
-        result['resolve_status'] = 'missing'  # credentials.resolve 返回引用非实际 key
-        result['auth_attribution'] = 'resolve-missing'  # 401 = 解析缺失（引用当 key），非 key 本身无效
-    elif native_stderr:
-        result['resolve_status'] = 'resolved'
-        result['auth_attribution'] = 'key-invalid'
+    if native_stderr and result['native_call'].get('auth_error'):
+        result['auth_attribution'] = 'key-invalid'  # key 值对该端点无效（非解析缺失，非引用）
     else:
-        result['resolve_status'] = 'unknown'
         result['auth_attribution'] = 'unknown'
     args.evidence.parent.mkdir(parents=True, exist_ok=True)
     args.evidence.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
