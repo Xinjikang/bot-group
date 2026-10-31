@@ -129,6 +129,10 @@ DSH 执行须启用模型审查工具操作的 Auto review。实装 `0.2.1-rc.5`
 
 方案阶段完成 headless 的插件加载、会话 Auto 选择入口及拒绝处理路径验证。验收覆盖允许、拒绝、审查异常、无人响应、取消、续跑及插件失效，检查未获准动作的工具主体保持未执行。人工接管的通道、超时和取消契约在设计中明确后再实施。现场源码证据见项目主目录 `reports/research/dsh-integration/approval-review.md`。
 
+### headless 隔离验证结果
+
+实测 headless 下 `--patch` 加载 `auto-review` 插件后，会话默认 permission preset 非 `auto`，工具调用直接执行（合成 MCP 工具返回独立 marker，工具主体已执行），事件流无审查/拒绝痕迹。会话切 `auto` 的入口仅在 Web UI（`/permission auto` 命令与 composer picker）；headless 命令集仅 feedback/goal/compact，无 `/permission` 命令，且 `auto` 预设不能持久化恢复（`ensureInitial` 拒绝）。因此首期 headless 子进程无法启用 Auto review 模型审查；智能审批需 Web profile 承载，或后续为 headless 增加会话 Auto 切换入口。验证脚本与结果见 `reports/research/dsh-integration/probe-auto-review.py`。
+
 ### 待完成的设计核验
 
 以下仍缺实装证据，需在实现阶段以真实 dsh 验证后收敛：`dsh-agent-instructions` 的指令内容加载来源（AGENTS.md 等价物）、skill 目录约定、persona 持久化位置、模型/认证切换后的续跑语义。生产引擎适配完成后验证 UI 保存闭环、真实命令执行、工作区授权、状态展示、重试恢复及卸载清理。当前阶段为能力范围已盘点、关键映射已据实装源码核验、剩余行为待实测。
