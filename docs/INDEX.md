@@ -54,6 +54,7 @@ Profile 凭证继承与异常可见性见 [设计依据](design/2026-10-25-profi
 | [算法研发模板需求](requirements/2026-10-21-algorithm-template.md) | 四角色、算法方案、实验复现和报告交付 |
 | [测试项目模板需求](requirements/2026-10-21-testing-template.md) | PRD 与原型、三角色、用例脚本联动及报告交付 |
 | [MCP API 需求](requirements/2026-10-20-mcp-api-runtime.md) / [配置设计](design/2026-10-20-mcp-config-scope.md) | 运行时配置及身份隔离 |
+| [角色名称字符校验](requirements/2026-10-31-role-name-validation.md) | 不可见字符过滤、按名称筛选与派单 |
 | [协作设计依据](design/DESIGN-NOTES.md) / [配置职责](design/PROJECT-CONFIG-INVENTORY-2026-09-23.md) | 会话、持久知识和配置边界 |
 | [Codex 驱动设计](design/CODEX-DRIVER-DESIGN-2026-09-29.md) | 宿主、Bot 与项目成员分层 |
 | [进程查询兼容性](design/2026-10-25-process-query.md) | Windows 进程探测、三态保护与依赖交付 |
