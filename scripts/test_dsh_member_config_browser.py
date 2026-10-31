@@ -216,16 +216,21 @@ def main():
         assert plugin_status.is_visible()
         text = plugin_status.inner_text()
         assert '人格' in text and '插件已禁用' in text and 'system-prompt' in text
-        assert '指令' in text and '未安装' in text and 'dsh-agent-instructions' in text
         assert '模型' in text and '加载失败' in text and 'agent-default-model' in text
         assert page.locator('#profile-soul').is_disabled()
-        assert page.locator('#profile-instructions').is_disabled()
         assert page.locator('#profile-model').is_disabled()
         assert page.locator('#profile-provider').is_disabled()
         assert page.locator('#profile-reasoning_effort').is_disabled()
         assert page.locator('#profile-description').is_enabled()
         assert page.locator('#profile-env').is_enabled()
         assert page.locator('#profile-save').is_enabled()
+        if real_plugins:
+            # 未覆盖的 instructions 继承 bundle 默认插件，状态为 ok，保持可编辑。
+            assert '指令' not in text
+            assert page.locator('#profile-instructions').is_enabled()
+        else:
+            assert '指令' in text and '未安装' in text and 'dsh-agent-instructions' in text
+            assert page.locator('#profile-instructions').is_disabled()
         page.screenshot(path=str(evidence / 'dsh-config-plugins-1280-dark.png'))
         page.evaluate("applyTheme('light')")
         page.screenshot(path=str(evidence / 'dsh-config-plugins-1280-light.png'))
