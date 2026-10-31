@@ -26,7 +26,7 @@ dsh 官方提供 headless 一次性执行：`dsh --profile headless "任务"`，
 ## 认证与配置
 
 - 接入方式以用户在所选 DSH 原生 profile 中的配置为依据，支持账号登录和 API key。引擎保存宿主定位及 profile/config 引用，启动时解析本次提供商选择；凭据继续由 DSH 管理。账号路由使用 DSH 保存的账号授权；API-key 路由支持 `DSH_HOME/.env` 的 `DEEPSEEK_API_KEY` 和界面保存的原生凭据。两类路由分别核验，认证失败保持所选路由并明确报错，禁止自动切换认证方式。
-- 继承所选原生 profile 的 provider、model 及相关服务配置，由 DSH 原生适配器处理目标地址与认证。`deepseek-account / deepseek-flash` 为本次通过的验证组合，具体值从配置读取。
+- 继承所选原生 profile 的 provider、model 及相关服务配置，由 DSH 原生适配器处理目标地址与认证。`deepseek-account / deepseek-flash` 为账号路由通过的验证组合；API-key 路由 provider 为 `deepseek-official`（`dsh-llm-deepseek` 传输 + `dsh-llm-deepseek-api-key` 鉴权，请求带 `x-api-key`，官方端点 `https://api.deepseek.com/anthropic`）。具体值从配置读取。
 - 账号路由需通过启动 overlay 恢复 `credentials`、`authorization`、`deepseek-account` 三项（headless 默认关闭这些服务）。API-key 路由通过 DSH 原生加载规则读取 `.env`；采用界面保存的 API key 时显式恢复 `credentials` 服务。API-key 路由保持 `deepseek-account` 关闭。提供商、模型及相关服务配置和凭据来源必须一起解析。
 - 启动器显式选择已确认的 home；Bot 会话、工作目录和 MCP 执行上下文分别隔离。凭据和原生配置的归属保持明确，验证产生的临时副本限制为当前用户可访问并在退出时清理；原配置保持原值。
 
