@@ -89,8 +89,8 @@ class EngineFixture:
                 "VALUES('dsh','desktop',?,'dsh',?, 'dsh-bot','')",
                 (str(source_home), str(entry)))
             bot_id = cur.lastrowid
-            conn.execute("UPDATE project_members SET bot_id=? WHERE project='bot-group' AND profile='dsh-bot'",
-                         (bot_id,))
+            conn.execute("INSERT OR IGNORE INTO project_members(project,profile,bot_id,active) "
+                         "VALUES('bot-group','dsh-bot',?,1)", (bot_id,))
             if with_task:
                 conn.execute("INSERT INTO requirements(id,project,title,status,created_at,updated_at) "
                              "VALUES(1,'bot-group','r267','open',?,?)", (db.now_iso(), db.now_iso()))
