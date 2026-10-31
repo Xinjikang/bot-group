@@ -347,7 +347,8 @@ def classify_auth_error(event, stderr: str = '') -> str | None:
             '401' in text and ('unauthorized' in text or 'authentication' in text or 'invalid' in text)):
         return 'auth'
     if ('initialization' in text or 'initialize' in text or 'load_failed' in text
-            or 'failed to load' in text or 'failed to initialize' in text):
+            or 'failed to load' in text or 'failed to initialize' in text
+            or 'failed to parse' in text):
         return 'init'
     return None
 

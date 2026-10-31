@@ -31,6 +31,11 @@ class ExecutionErrorTests(unittest.TestCase):
                  'rate_limit': 'Error code: 429 Too Many Requests', 'timeout': 'httpx.ReadTimeout: timed out',
                  'network': 'ConnectionError: connection refused', 'upstream': 'HTTP 503 Service Unavailable',
                  'capacity': 'Selected model is at capacity. Please try a different model.',
+                 'missing_credential': 'llm-deepseek: no API key for provider route "deepseek-official"; store DEEPSEEK_API_KEY through the credentials service',
+                 'init': 'bundle load_failed: plugin startup initialization failed',
+                 'refused': 'model refused the request: content policy',
+                 'cancelled': 'run cancelled by user',
+                 'corrupt': 'dsh output contained 2 unparseable line(s)',
                  'unknown': 'unexpected process termination'}
         for expected, text in cases.items():
             with self.subTest(expected=expected):
@@ -38,6 +43,27 @@ class ExecutionErrorTests(unittest.TestCase):
         self.assertEqual(errors.classify('process pid 403 stopped at line 429'), 'unknown')
         self.assertEqual(errors.classify('主账户凭据已过期'), 'authentication')
         self.assertEqual(errors.classify('access token expired'), 'authentication')
+
+    def test_dsh_six_way_failure_differentiation(self):
+        """验收 5：缺 final/损坏 JSON/初始化/模型拒绝/取消 与 认证细分（classify_auth_error 并入）。"""
+        cases = {
+            'incomplete': wake._dsh_failure_detail(had_final=False),
+            'corrupt': wake._dsh_failure_detail(corrupt_count=3),
+            'init': wake._dsh_failure_detail(error='bundle load_failed for plugin x'),
+            'missing_credential': wake._dsh_failure_detail(
+                error='llm-deepseek: no API key for provider route "deepseek-official"'),
+            'authentication': wake._dsh_failure_detail(error='HTTP 401 Unauthorized'),
+            'refused': wake._dsh_failure_detail(error='model refused the request'),
+            'cancelled': wake._dsh_failure_detail(error='run cancelled by user'),
+        }
+        for expected, detail in cases.items():
+            with self.subTest(expected=expected):
+                self.assertEqual(errors.classify(detail), expected)
+        # 缺 final 与初始化失败同时存在：init 是行动因，优先于 incomplete；损坏计数仍在文本中
+        both = wake._dsh_failure_detail(error='bundle load_failed', had_final=False, corrupt_count=1)
+        self.assertIn('dsh run ended without a final event', both)
+        self.assertIn('1 unparseable line', both)
+        self.assertEqual(errors.classify(both), 'init')
 
     def test_codex_failure_overrides_tool_output(self):
         tool_output = json.dumps({'type': 'item.completed', 'item': {

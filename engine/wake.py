@@ -72,6 +72,32 @@ def _report_execution_error(profile, project, thread_id, session, attempt, detai
         logging.getLogger(__name__).error('Could not persist execution failure for %s', profile)
 
 
+def _dsh_failure_detail(error='', tail='', had_final=True, corrupt_count=0) -> str:
+    """req#137 task#266 验收 5：构建 dsh 退出诊断。
+
+    缺 final、损坏 JSON 计数显式并入文本；再经 dsh_auth.classify_auth_error 三分类
+    （missing_credential/auth/init）细化，前缀映射 execution_errors.classify 的
+    'missing_credential'/'authentication'/'init' 类别，不再落 unknown。
+    """
+    text = str(error or '')
+    if corrupt_count:
+        text += ('\n' if text else '') + f'dsh output contained {corrupt_count} unparseable line(s)'
+    if not had_final:
+        text += ('\n' if text else '') + 'dsh run ended without a final event'
+    if tail:
+        text += ('\n' if text else '') + str(tail)
+    if text:
+        from . import dsh_auth
+        kind = dsh_auth.classify_auth_error(None, text)
+        if kind == 'init':
+            text = 'initialization failed: ' + text
+        elif kind == 'missing_credential':
+            text = 'missing credential: ' + text
+        elif kind == 'auth':
+            text = 'authentication failed: ' + text
+    return text
+
+
 def session_busy(profile, kind, thread_id, project):
     session = session_name(profile, kind, thread_id, project)
     with _session_lock:
@@ -1149,8 +1175,11 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         codex_reader = None
         codex_tail = None  # codex 通道滚动尾部文本（供退出诊断），hermes 用 TemporaryFile
         dsh_reader = None
+        dsh_err_reader = None
         dsh_tail = None
+        dsh_err_tail = None
         dsh_had_final = [False]
+        dsh_corrupt = [0]
         if runtime in ("codex", "dsh"):
             popen_kwargs["stdout"] = subprocess.PIPE
             popen_kwargs["text"] = True
@@ -1158,6 +1187,9 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
             popen_kwargs["errors"] = "replace"
         if runtime == "dsh":
             popen_kwargs["stdin"] = subprocess.PIPE
+            # dsh 的 stderr 是 CLI 诊断（'dsh: MISSING_CREDENTIAL: ...'），与 stdout 的
+            # JSONL 事件流分开收——损坏 JSON 计数只针对 stdout，不把诊断误计为损坏行。
+            popen_kwargs["stderr"] = subprocess.PIPE
         proc = subprocess.Popen(cmd, **popen_kwargs)
         if runtime == "dsh":
             # 提示词整段写入 stdin 后关闭（task 省略时 DSH 读 stdin；--json 事件流走 stdout）。
@@ -1239,6 +1271,9 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                     try:
                         ev = _json.loads(line)
                     except ValueError:
+                        # req#137 task#266 验收 5：损坏 JSON 不静默丢弃——计数并
+                        # 在退出诊断（_dsh_failure_detail）中显式告警。
+                        dsh_corrupt[0] += 1
                         continue
                     from . import dsh_reasoning
                     try:
@@ -1267,6 +1302,18 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                                 c2.close()
             dsh_reader = _th.Thread(target=_dsh_reader, daemon=True, name=f"dsh-{profile}")
             dsh_reader.start()
+            # stderr 单独收（CLI 诊断），只保留滚动尾部供退出判读；必须排空防止管道
+            # 写满阻塞子进程。
+            dsh_err_tail = []
+            def _dsh_err_reader():
+                for line in proc.stderr:
+                    line = line.strip()
+                    if line:
+                        dsh_err_tail.append(line)
+                        if len(dsh_err_tail) > 40:
+                            del dsh_err_tail[:-40]
+            dsh_err_reader = _th.Thread(target=_dsh_err_reader, daemon=True, name=f"dsh-err-{profile}")
+            dsh_err_reader.start()
         # 进程退出事件：后台线程 wait()
         # 子进程，退出即清心跳+唤醒归属——心跳从「90s 超时推断」升级为「真退出事件」。
         # 90s TTL 保留为兜底（wait 线程意外死亡/进程被强杀时仍能超时清）。
@@ -1310,15 +1357,26 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                 tail = "\n".join(codex_tail or []) if codex_tail else tail
             elif runtime == "dsh":
                 # dsh 同 PIPE 流式：退出诊断用滚动尾部；清理本次执行私有目录
-                # （凭据副本 + overlay JSON）；缺少 final 事件单独判读。
+                # （凭据副本 + overlay JSON）。req#137 task#266 验收 5：缺 final、
+                # 损坏 JSON 计数、初始化/凭据/认证细分并入 _dsh_failure_detail；
+                # stderr 诊断（dsh: MISSING_CREDENTIAL: ...）作主错误文本参与判读。
                 if dsh_reader is not None:
                     dsh_reader.join(timeout=5)
+                if dsh_err_reader is not None:
+                    dsh_err_reader.join(timeout=5)
                 tail = "\n".join(dsh_tail or []) if dsh_tail else tail
-                if not dsh_had_final[0]:
-                    error = (error or 'dsh run ended without a final event') + (f'\n{tail}' if tail else '')
+                err_text = "\n".join(dsh_err_tail or [])
+                error = _dsh_failure_detail(error or err_text, tail, dsh_had_final[0], dsh_corrupt[0])
+                if dsh_corrupt[0]:
+                    logging.getLogger(__name__).warning(
+                        'dsh output contained %d unparseable line(s) for %s', dsh_corrupt[0], profile)
                 _shutil_rmtree(dsh_tmp)
             if proc.returncode or bound_task is not None:
-                error = (error or f'process exit={proc.returncode}; task not handed off/completed') + (f'\n{tail}' if tail else '')
+                if runtime == "dsh":
+                    # dsh 尾部已由 _dsh_failure_detail 并入，避免重复
+                    error = error or f'process exit={proc.returncode}; task not handed off/completed'
+                else:
+                    error = (error or f'process exit={proc.returncode}; task not handed off/completed') + (f'\n{tail}' if tail else '')
             ended_at = time.time()
             if proc.returncode or error.startswith('execution timed out'):
                 _report_execution_error(profile, project, thread_id, session, f'{session}:{wake_started_at}',

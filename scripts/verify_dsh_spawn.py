@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from engine import db, native_runtime, dsh_reasoning, session_adapter  # noqa: E402
+from engine import execution_errors, wake  # noqa: E402
 
 PROMPT1 = "Remember this test marker: PROBE_DSH_266. Reply with exactly DSH_NATIVE_OK. Do not use tools."
 PROMPT2 = "What test marker did I ask you to remember? Reply with the marker only. Do not use tools."
@@ -150,12 +151,25 @@ def main():
             result['turn2'] = {k: v for k, v in turn2.items() if k != 'stderr_tail'}
             result['binding_read_back'] = session_adapter.dsh_session_id(
                 conn, 'bot-group', 'dsh-bot', 'work', None, bot_id=bot_id)
+            # 验收 5 负向：损坏 overlay（无效 JSON）→ 真实启动失败 → 经
+            # wake._dsh_failure_detail（stderr + 损坏计数 + classify_auth_error 细分）
+            # 判读归因 init（failed to parse overlay），不再落 unknown。
+            bad_overlay = Path(private) / 'bad-overlay.json'
+            bad_overlay.write_text('{ invalid json ]', encoding='utf-8')
+            neg = run_turn(str(args.entry), bad_overlay, args.source_home,
+                           args.test_directory, 'Reply DSH_OK.', resume=None)
+            neg_detail = wake._dsh_failure_detail(
+                neg.get('stderr_tail', ''), '\n'.join(neg.get('event_types', [])),
+                neg.get('had_final', False), 0)
+            result['turn_neg'] = {'exit_code': neg['exit_code'],
+                                  'classify': execution_errors.classify(neg_detail)}
         finally:
             conn.close()
             import shutil
             shutil.rmtree(private, ignore_errors=True)
 
     result['source_files_unchanged'] = before == {str(p): fingerprint(p) for p in source_files if p.is_file()}
+    turn_neg = result.get('turn_neg', {})
     result['passed'] = (
         result.get('version') == result['verified_version']
         and turn1['exit_code'] == 0 and turn1['answer'] == 'DSH_NATIVE_OK' and turn1['had_final']
@@ -164,6 +178,7 @@ def main():
         and turn2['session_id'] == turn1['session_id']
         and result['binding_read_back'] == turn1['session_id']
         and result['source_files_unchanged']
+        and turn_neg.get('exit_code', 0) != 0 and turn_neg.get('classify') == 'init'
     )
     args.evidence.parent.mkdir(parents=True, exist_ok=True)
     args.evidence.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
