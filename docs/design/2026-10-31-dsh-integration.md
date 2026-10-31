@@ -141,6 +141,12 @@ API-key 路由曾向其官方接口发起请求并收到 HTTP 401，账号路由
 
 Auto 的 permission preset 使用独立的 `permission/preset` 事件；上述 `assertAdoptable` 判定读取 agent preset。当前源码未证明 Auto 的持久化选择与该判定冲突。Auto 验证继续使用 `permissionPresets.set(session,'auto')` 原生写入路径，在首个工具前启用并验证恢复；保持权限状态的原生审计和持久化契约。
 
+### headless persona 与 Auto 实测
+
+persona：`--patch` 覆盖 `system-prompt.personaPrefix` 后运行 headless，模型回复命中人格标记（`persona_hit=true`），确认 headless 的人格正确挂载点是 system-prompt 的 personaPrefix，而非 agent preset。preset 挂载（`dsh-agent-preset-registry` + `dsh-persona`）不生效的根因是 headless one-shot runner 直接创建 agent、不消费 preset registry。
+
+Auto：受控适配插件在 `session/created` 事件调用 `permissionPresets.set(session,'auto')`，实测会话进入 auto（`preset=auto`），后续 `read`/`glob`/`pwsh` 工具调用均在 auto preset 下执行成功。确认 headless 启用 Auto 的正确路径是 `session/created` 事件 + 原生 `set` API，无需绕过 preset 持久化。验证脚本见 `reports/research/dsh-integration/probe-persona2.py`、`probe-auto2.py`。
+
 ### 内置插件与安装状态
 
 本机 desktop profile 的 `package.json` 中 `dsh.profile.bundles` 已包含 `@deepseek-ai/dsh-experimental-auto-review`。这证明该插件已加入桌面 profile 组合；headless 使用独立组合，须单独检查加载状态与会话模式。
