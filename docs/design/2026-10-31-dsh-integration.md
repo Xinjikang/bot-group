@@ -49,6 +49,11 @@ API-key 路由曾向其官方接口发起请求并收到 HTTP 401，账号路由
 
 涉及 `engine/discovery.py`、`engine/api.py`、`engine/access.py`、`engine/bot_identity.py`、`engine/profile_create.py`、`engine/native_runtime.py`、`engine/wake.py`、`engine/session_adapter.py`、`engine/commands.py`、`engine/process_tree.py`、`engine/project_models.py`、相关模型/配置/HUD/runtime 白名单与前端 `project_settings.js`。实施前完成全部双宿主分支盘点。
 
+## 宿主能力对齐
+
+- **Profile 编辑**：现有编辑入口按宿主分叉（hermes 走 profile.yaml/SOUL.md/.env/config.yaml 四文件，codex 走独立配置）。dsh 新增独立配置读写分支，对齐编辑入口与模型、提供商、认证方式字段；dsh 的 profile 为 `DSH_HOME/profiles/<name>/` 下的 cordis patch 层，不复用 hermes 文件格式。
+- **斜杠命令**：命令分发在引擎层（commands.py），按目标 bot runtime 分叉。/new、/stop、/help 对 dsh 有效（/new 重置会话绑定、/stop 走进程树清理、/help 通用）；/steer 不支持——运行中纠偏依赖 hermes gateway 的 session.steer，dsh headless 与 codex 子进程均无此通道。
+
 ## 验收标准
 
 | 项目 | 验收 |
