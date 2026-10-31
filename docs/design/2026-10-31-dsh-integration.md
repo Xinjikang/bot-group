@@ -25,9 +25,9 @@ dsh 官方提供 headless 一次性执行：`dsh --profile headless "任务"`，
 
 ## 认证与配置
 
-- 认证来源沿用 DSH 原生配置：API-key 路由支持 `DSH_HOME/.env` 中的 `DEEPSEEK_API_KEY` 和界面保存的原生凭据；账号路由使用 DSH 保存的账号授权。两类路由分别核验。引擎设置中保存宿主定位及配置引用，凭据继续由 DSH 管理。
+- 接入方式由用户选择（账号登录或 API key），引擎保存用户选择并按所选方式启动，不写死某一种。账号路由使用 DSH 保存的账号授权；API-key 路由支持 `DSH_HOME/.env` 的 `DEEPSEEK_API_KEY` 和界面保存的原生凭据。两类路由分别核验。引擎设置中保存宿主定位及配置引用，凭据继续由 DSH 管理。
 - 继承所选原生 profile 的 provider、model 及相关服务配置，由 DSH 原生适配器处理目标地址与认证。`deepseek-account / deepseek-flash` 为本次通过的验证组合，具体值从配置读取。
-- 使用已保存认证时，通过启动 overlay 恢复 `credentials`、`authorization`、`deepseek-account` 三项。headless 默认关闭这些服务，仅提供凭据而遗漏提供商选择会改变实际路由。
+- 账号路由需通过启动 overlay 恢复 `credentials`、`authorization`、`deepseek-account` 三项（headless 默认关闭这些服务）；API-key 路由仅需凭据来源，不恢复 `deepseek-account`。仅提供凭据而遗漏提供商选择会改变实际路由。
 - 启动器显式选择已确认的 home；Bot 会话、工作目录和 MCP 执行上下文分别隔离。凭据和原生配置的归属保持明确，验证产生的临时副本限制为当前用户可访问并在退出时清理；原配置保持原值。
 
 ## 已验证能力与实施边界
