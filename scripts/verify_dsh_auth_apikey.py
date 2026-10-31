@@ -26,16 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from engine import dsh_auth  # noqa: E402
 
-PROMPT = "Remember this test marker: PROBE_APK_773. Reply with exactly DSH_NATIVE_OK. Do not use tools."
-# API-key 路由的隔离 profile patch（provider=deepseek-official + 官方 API-key 适配器）
-PATCH = (
-    "- id: agent-default-model\n"
-    "  name: '@deepseek-ai/dsh-agent-default-model'\n"
-    "  config:\n    provider: deepseek-official\n    model: deepseek-chat\n"
-    "- id: llm-deepseek\n"
-    "  name: '@deepseek-ai/dsh-llm-deepseek-api-key'\n"
-    "  config:\n    apiKeyEnv: DEEPSEEK_API_KEY\n"
-)
+PROMPT = "Remember this test marker: PROBE_APK_991. Reply with exactly DSH_NATIVE_OK. Do not use tools."
+DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
 
 
 def fingerprint(path):
@@ -47,6 +39,36 @@ def sanitize(text, secret=''):
     if secret:
         t = t.replace(secret, '[redacted]')
     return t[:1000]
+
+
+def _read_env_key(env_path: Path, key: str) -> str:
+    """读 .env 的指定键值（不输出）。"""
+    if not env_path.is_file():
+        return ''
+    for line in env_path.read_text(encoding='utf-8-sig').splitlines():
+        k, _, v = line.partition('=')
+        if k.strip() == key:
+            return v.strip()
+    return ''
+
+
+def _stderr_auth(stderr: str) -> bool:
+    """识别 stderr 里的认证失败（AUTH / MISSING_CREDENTIAL / 401 / invalid key）。"""
+    t = (stderr or '').lower()
+    return ('authentication fails' in t or 'missing_credential' in t
+            or 'missing credential' in t or '401' in t or 'invalid' in t)
+
+
+def _api_key_patch(provider, model, base_url):
+    """按核对的 provider/baseURL/model 生成隔离 profile patch。"""
+    return (
+        "- id: agent-default-model\n"
+        "  name: '@deepseek-ai/dsh-agent-default-model'\n"
+        f"  config:\n    provider: {provider}\n    model: {model}\n"
+        "- id: llm-deepseek\n"
+        "  name: '@deepseek-ai/dsh-llm-deepseek-api-key'\n"
+        f"  config:\n    apiKeyEnv: DEEPSEEK_API_KEY\n    baseURL: {base_url}\n"
+    )
 
 
 def run_dsh(exe, cli, overlay_path, home, test_dir, secret):
@@ -78,9 +100,10 @@ def run_dsh(exe, cli, overlay_path, home, test_dir, secret):
             pass
     final = next((e for e in reversed(events) if e.get('type') == 'final'), {})
     answer = final.get('text', final.get('answer', ''))
+    auth_error = dsh_auth.is_auth_error(final) or _stderr_auth(err)
     return {'exit_code': p.returncode, 'timed_out': timed_out,
             'answer': answer if answer == 'DSH_NATIVE_OK' else '[unexpected]',
-            'auth_error': dsh_auth.is_auth_error(final),
+            'auth_error': auth_error,
             'stderr_tail': sanitize(err[-600:], secret)}
 
 
@@ -99,36 +122,70 @@ def main():
     if not args.test_directory.is_dir():
         raise ValueError('--test-directory 必须是已分配的隔离目录')
 
+    # ① 来源配置匹配：核对主 profile 的 key 对应 provider/baseURL/model
     cred_file = args.source_home / '.credentials.yaml'
-    cred = yaml.safe_load(cred_file.read_text(encoding='utf-8-sig'))
+    env_file = args.source_home / '.env'
+    patch_file = args.source_home / 'profiles' / 'desktop' / 'cordis.patch.yml'
+    cred = yaml.safe_load(cred_file.read_text(encoding='utf-8-sig')) if cred_file.is_file() else {}
     api_key = (cred.get('refs', {}) or {}).get('DEEPSEEK_API_KEY', '')
-    source_files = [cred_file]
-    before = {str(p): fingerprint(p) for p in source_files}
-    result = {'provider': 'deepseek-official', 'api_key_present': bool(api_key)}
+    base_url_env = _read_env_key(env_file, 'DEEPSEEK_BASE_URL')
+    source_provider = source_model = ''
+    if patch_file.is_file():
+        seq = yaml.safe_load(patch_file.read_text(encoding='utf-8-sig')) or []
+        agent = next((e for e in seq if isinstance(e, dict) and e.get('id') == 'agent-default-model'), None)
+        if agent and isinstance(agent.get('config'), dict):
+            source_provider = str(agent['config'].get('provider') or '')
+            source_model = str(agent['config'].get('model') or '')
+    # API-key 路由的 provider/baseURL/model：key 为 DEEPSEEK_API_KEY → deepseek-official；baseURL 取
+    # $DEEPSEEK_BASE_URL 或官方默认；model 取官方默认 deepseek-chat。
+    api_provider = 'deepseek-official'
+    api_base_url = base_url_env or DEFAULT_BASE_URL
+    api_model = 'deepseek-chat'
 
-    # .env 来源：隔离 HOME 的 .env 注入 key
+    source_files = [cred_file, env_file, patch_file]
+    before = {str(p): fingerprint(p) for p in source_files if p.is_file()}
+    result = {
+        'api_key_present': bool(api_key),
+        'source_binding': {
+            'credentials_ref': 'refs.DEEPSEEK_API_KEY' if api_key else None,
+            'profile_provider': source_provider,   # 当前 profile 选用的 provider（账号）
+            'profile_model': source_model,
+            'base_url_env': base_url_env or DEFAULT_BASE_URL,
+        },
+        'api_key_route': {'provider': api_provider, 'base_url': api_base_url, 'model': api_model},
+    }
+
+    # ② 切换序列（静态 resolve）：账号 provider → account 路由；API-key provider → apikey 路由
+    account_bot = {'config_root': str(args.source_home), 'profile': 'desktop'}
+    account_info = dsh_auth.resolve(account_bot)
+    result['account_route'] = account_info['route']
+    result['switch_account_to_apikey'] = (account_info['route'] == 'account'
+                                          and api_provider != dsh_auth._ACCOUNT_PROVIDER)
+
+    # ③ .env 来源：隔离 HOME 写前限权，.env 注入 key
     with tempfile.TemporaryDirectory(prefix='dsh-apk-', dir=args.test_directory) as tmp:
         home = Path(tmp)
+        dsh_auth.restrict_dir(str(home))  # 写敏感内容前限权
         prof = home / 'profiles' / 'apikey'
         prof.mkdir(parents=True)
-        (prof / 'cordis.patch.yml').write_text(PATCH, encoding='utf-8')
+        (prof / 'cordis.patch.yml').write_text(_api_key_patch(api_provider, api_model, api_base_url), encoding='utf-8')
         (home / '.env').write_text(f'DEEPSEEK_API_KEY={api_key}\n', encoding='utf-8')
         bot = {'config_root': str(home), 'profile': 'apikey'}
         info = dsh_auth.resolve(bot)
-        result['env_route'] = info['route']
         result['env_api_key_source'] = info['api_key_source']
         overlay = dsh_auth.overlay_entries(bot)
         overlay_path = home / 'overlay.json'
         overlay_path.write_text(json.dumps(overlay, ensure_ascii=False), encoding='utf-8')
-        result['env_call'] = run_dsh(str(args.exe), str(args.cli), overlay_path,
-                                     home, args.test_directory, api_key)
+        result['env_call'] = run_dsh(str(args.exe), str(args.cli), overlay_path, home,
+                                     args.test_directory, api_key)
 
-    # 界面保存凭据来源：把主 profile .credentials.yaml（含 refs.DEEPSEEK_API_KEY）复制为隔离 home 的 .credentials.yaml
+    # ④ 界面保存凭据来源：copy_credentials 私有副本 + native 路由
     with tempfile.TemporaryDirectory(prefix='dsh-apk-', dir=args.test_directory) as tmp:
         home = Path(tmp)
+        dsh_auth.restrict_dir(str(home))
         prof = home / 'profiles' / 'apikey'
         prof.mkdir(parents=True)
-        (prof / 'cordis.patch.yml').write_text(PATCH, encoding='utf-8')
+        (prof / 'cordis.patch.yml').write_text(_api_key_patch(api_provider, api_model, api_base_url), encoding='utf-8')
         (home / '.credentials.yaml').write_bytes(cred_file.read_bytes())
         bot = {'config_root': str(home), 'profile': 'apikey'}
         info = dsh_auth.resolve(bot)
@@ -138,14 +195,22 @@ def main():
         overlay = dsh_auth.overlay_entries(bot, credentials_path=str(cred))
         overlay_path = home / 'overlay.json'
         overlay_path.write_text(json.dumps(overlay, ensure_ascii=False), encoding='utf-8')
-        result['native_call'] = run_dsh(str(args.exe), str(args.cli), overlay_path,
-                                        home, args.test_directory, api_key)
+        result['native_call'] = run_dsh(str(args.exe), str(args.cli), overlay_path, home,
+                                        args.test_directory, api_key)
 
-    result['source_files_unchanged'] = before == {str(p): fingerprint(p) for p in source_files}
+    result['source_files_unchanged'] = before == {str(p): fingerprint(p) for p in source_files if p.is_file()}
+    # ⑤ passed 判定：账号路由成功 + 两 API-key 来源认证失败被正确识别 + 原配置不变
+    result['passed'] = (
+        result['account_route'] == 'account'
+        and result['switch_account_to_apikey']
+        and result['env_call']['auth_error'] is True
+        and result['native_call']['auth_error'] is True
+        and result['source_files_unchanged']
+    )
     args.evidence.parent.mkdir(parents=True, exist_ok=True)
     args.evidence.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0
+    return 0 if result['passed'] else 1
 
 
 if __name__ == '__main__':

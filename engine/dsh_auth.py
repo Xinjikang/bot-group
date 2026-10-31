@@ -261,6 +261,35 @@ def overlay_entries(bot, *, credentials_path: str | None = None) -> list:
     return list(merged.values())
 
 
+def restrict_dir(path: str) -> str | None:
+    """写敏感内容前把目录限制为仅当前用户（+OS 级主体）可访问；返回当前用户 SID。
+
+    供 copy_credentials 与 verify 脚本在写 `.env`/`.credentials.yaml` 等敏感副本前调用，
+    先限权再写，避免明文敏感字节先落盘后补 ACL 的窗口。
+    """
+    private = Path(path).resolve()
+    if not private.is_dir():
+        private.mkdir(parents=True, exist_ok=True)
+    if sys.platform != 'win32':
+        return None
+    current_sid = _current_user_sid()
+    identity = _windows_identity()
+    if not identity:
+        raise AuthSyncError('无法解析当前用户身份，中止凭据副本')
+    try:
+        r = subprocess.run(
+            ['icacls', str(private), '/inheritance:r', '/grant:r',
+             identity + ':(OI)(CI)F'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AuthSyncError('无法限制目录权限，已中止') from exc
+    if r.returncode != 0:
+        raise AuthSyncError(f'无法限制目录权限，已中止（icacls 返回 {r.returncode}）')
+    _verify_private_acl(private, current_sid)
+    return current_sid
+
+
 def copy_credentials(home: str, private_dir: str) -> str | None:
     """复制原生凭据到隔离目录并核验私有 ACL；任何限制失败中止并清理。
 
@@ -276,22 +305,7 @@ def copy_credentials(home: str, private_dir: str) -> str | None:
     dest = private / 'credentials.yaml'
     if dest.exists():
         raise AuthSyncError('凭据副本目标文件已存在，中止（防止沿用既有宽泛 ACL）')
-    if sys.platform == 'win32':
-        current_sid = _current_user_sid()
-        identity = _windows_identity()
-        if not identity:
-            raise AuthSyncError('无法解析当前用户身份，中止凭据副本')
-        try:
-            r = subprocess.run(
-                ['icacls', str(private), '/inheritance:r', '/grant:r',
-                 identity + ':(OI)(CI)F'],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                check=False, timeout=30)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise AuthSyncError('无法限制凭据副本目录权限，已中止') from exc
-        if r.returncode != 0:
-            raise AuthSyncError(f'无法限制凭据副本目录权限，已中止（icacls 返回 {r.returncode}）')
-        _verify_private_acl(private, current_sid)
+    current_sid = restrict_dir(private)
     try:
         dest.write_bytes(source.read_bytes())
     except Exception:
