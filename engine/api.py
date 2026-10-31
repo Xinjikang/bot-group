@@ -755,7 +755,7 @@ def get_discovery_scan(project: str = ''):
 def post_register_bot(body: dict[str, Any], identity=Depends(_resolve_identity)):
     """Bot 注册/复用（req#87 task#150：已绑定复用，未绑定注册新 Bot）。
 
-    body：host_type（hermes/codex，必填）、profile（必填）、config_root
+    body：host_type（hermes/codex/dsh，必填）、profile（必填）、config_root
     （必填，来自 /discovery/scan 候选）、display_name（可选，仅新注册
     时落库；复用不覆盖——Bot 身份全局统一）、project（可选，带则顺带加入
     当前项目：members 花名册 upsert + project_members 兼容期口径）。
@@ -790,6 +790,20 @@ def post_register_bot(body: dict[str, Any], identity=Depends(_resolve_identity))
                 "profile": profile, "member_profile": member, "project": project or None}
     finally:
         conn.close()
+
+
+@router_api.post("/bots/validate-dsh")
+def post_validate_dsh(body: dict[str, Any], identity=Depends(_resolve_identity)):
+    """DSH 目录/配置复核（req#137 task#263：手动路径创建前校验）。
+
+    body：config_root（必填）、profile（必填）。逐项校验目录存在、可访问、
+    宿主配置可解析、profile 可用；错误逐项返回（保留已填路径，不自动绑定
+    到另一套账号/profile）。执行入口可用性由启动路径单独检查。
+    """
+    _admin_only(identity, '仅管理员可校验宿主目录')
+    return discovery.validate_dsh_home(
+        (body.get("config_root") or "").strip(),
+        (body.get("profile") or "").strip())
 
 
 class ProfileSource(BaseModel):

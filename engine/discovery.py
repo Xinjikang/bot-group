@@ -17,6 +17,7 @@ import os
 import json
 import re
 import sqlite3
+import sys
 import tomllib
 from pathlib import Path
 
@@ -97,6 +98,9 @@ def candidate_available(bot) -> bool:
             if selector:
                 return selector in _codex_names(Path(home))
             return _codex_home(Path(home))
+        if bot['host_type'] == 'dsh':
+            home = root / 'profiles' / profile
+            return home.is_dir() and _dsh_patch(home / 'cordis.patch.yml')
     except (OSError, ValueError):
         return False
     return False
@@ -157,6 +161,88 @@ def _scan_codex() -> list[dict]:
     return out
 
 
+def _windows_user_env(name: str) -> str:
+    """读 Windows 当前运行账户的用户级环境变量（HKCU\\Environment）；非 Windows/失败返回空。"""
+    if sys.platform != "win32":
+        return ""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, _ = winreg.QueryValueEx(key, name)
+            return str(value).strip() if value else ""
+    except (OSError, ImportError):
+        return ""
+
+
+def _dsh_root() -> Path:
+    """DSH 配置根目录（进程 DSH_HOME 优先，Windows 用户级 HKCU\\Environment 次之，默认 ~/.dsh）。"""
+    configured = (os.environ.get("DSH_HOME") or "").strip()
+    if configured:
+        return Path(configured).resolve()
+    user_home = _windows_user_env("DSH_HOME")
+    if user_home:
+        return Path(user_home).resolve()
+    return Path.home() / ".dsh"
+
+
+def _dsh_patch(path: Path) -> bool:
+    """DSH profile 有效 patch：cordis.patch.yml 存在且可解析为 YAML。"""
+    try:
+        import yaml
+        yaml.safe_load(path.read_text(encoding='utf-8-sig'))
+        return True
+    except Exception:  # noqa: BLE001 - 只读可解析性检查，读取/解析失败均视为无效 patch
+        return False
+
+
+def _scan_dsh() -> list[dict]:
+    """Discover DSH named profiles under DSH_HOME/profiles/<name>/."""
+    root = _dsh_root()
+    if not root.is_dir():
+        return []
+    profiles_dir = root / "profiles"
+    if not profiles_dir.is_dir():
+        return []
+    out: list[dict] = []
+    for entry in _entries(profiles_dir):
+        if not entry.is_dir() or not _PROFILE_RE.match(entry.name):
+            continue
+        if _dsh_patch(entry / "cordis.patch.yml"):
+            out.append({"host_type": "dsh", "profile": entry.name, "config_root": str(root)})
+    return out
+
+
+def validate_dsh_home(config_root: str, profile: str = "") -> dict:
+    """DSH 目录/配置复核（手动路径创建前校验，req#137 task#263）。
+
+    逐项校验并保留失败项（不自动绑定到另一套账号/profile）：
+    - config_root 必填、目录存在、可访问；
+    - profile 名称合法；
+    - profile 可用且配置可解析（profiles/<name>/cordis.patch.yml 存在并可解析）。
+    返回 {ok, errors, config_root, profile}。执行入口可用性由启动路径单独检查。
+    """
+    errors: list[str] = []
+    root = Path((config_root or "").strip())
+    profile = (profile or "").strip()
+    if not profile:
+        errors.append("profile 必填")
+    elif not _PROFILE_RE.match(profile) or db.is_builtin_user(profile):
+        errors.append("profile 名称非法")
+    if not str(root):
+        errors.append("config_root 必填")
+    elif not root.is_dir():
+        errors.append("目录不存在")
+    elif not os.access(root, os.R_OK):
+        errors.append("目录不可访问")
+    elif profile and _PROFILE_RE.match(profile) and not db.is_builtin_user(profile):
+        home = root / "profiles" / profile
+        if not home.is_dir():
+            errors.append("profile 目录不存在")
+        elif not _dsh_patch(home / "cordis.patch.yml"):
+            errors.append("profile patch 不可解析（cordis.patch.yml）")
+    return {"ok": not errors, "errors": errors, "config_root": str(root), "profile": profile}
+
+
 def scan_candidates(conn: sqlite3.Connection, project: str = '') -> list[dict]:
     """产出可发现 profile 候选（只读，不写库）。
 
@@ -174,7 +260,7 @@ def scan_candidates(conn: sqlite3.Connection, project: str = '') -> list[dict]:
     project_bots = {r['bot_id'] for r in conn.execute(
         'SELECT bot_id FROM project_members WHERE project=?', (project,))} if project else set()
     out: list[dict] = []
-    for cand in _scan_hermes() + _scan_codex():
+    for cand in _scan_hermes() + _scan_codex() + _scan_dsh():
         if db.is_builtin_user(cand["profile"]):
             continue  # 内置 user 身份不是扫描资源（8.1）
         bot = bots.get((cand["host_type"], cand["config_root"], cand["profile"]))
@@ -204,8 +290,8 @@ def register_bot(conn: sqlite3.Connection, host_type: str, profile: str,
     host_type = (host_type or "").strip()
     profile = (profile or "").strip()
     config_root = (config_root or "").strip()
-    if host_type not in ("hermes", "codex"):
-        raise ValueError("host_type must be 'hermes' or 'codex'")
+    if host_type not in ("hermes", "codex", "dsh"):
+        raise ValueError("host_type must be 'hermes', 'codex' or 'dsh'")
     if not profile or not _PROFILE_RE.match(profile) or db.is_builtin_user(profile):
         raise ValueError(f"invalid profile: {profile!r}")
     if host_type == 'hermes':

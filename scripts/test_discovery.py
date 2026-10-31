@@ -39,11 +39,17 @@ class DiscoveryTests(unittest.TestCase):
         (self.croot / "coco").mkdir(parents=True)
         (self.croot / "coco" / "config.toml").write_text('model = "test-model"\n')
         (self.croot / "cache").mkdir(parents=True)  # 无工件 → 不发现
+        # 假 DSH 根：desktop 一个候选 + empty-shell 干扰目录
+        self.droot = Path(self.tmp.name) / "dsh"
+        (self.droot / "profiles" / "desktop").mkdir(parents=True)
+        (self.droot / "profiles" / "desktop" / "cordis.patch.yml").write_text("plugins: []\n")
+        (self.droot / "profiles" / "empty-shell").mkdir(parents=True)  # 无 patch → 不发现
         self._envs = {}
-        for k in ("HERMES_HOME", "CODEX_HOME", "GROUP_DB"):
+        for k in ("HERMES_HOME", "CODEX_HOME", "DSH_HOME", "GROUP_DB"):
             self._envs[k] = os.environ.get(k)
         os.environ["HERMES_HOME"] = str(self.hroot)
         os.environ["CODEX_HOME"] = str(self.croot)
+        os.environ["DSH_HOME"] = str(self.droot)
         self.dbfile = str(Path(self.tmp.name) / "group.db")
         os.environ["GROUP_DB"] = self.dbfile
         conn = db.get_connection()
@@ -317,9 +323,66 @@ class DiscoveryTests(unittest.TestCase):
         # 双根都不可用 → 空列表不报错（冷启动文案由前端渲染）
         os.environ["HERMES_HOME"] = str(Path(self.tmp.name) / "nope")
         os.environ["CODEX_HOME"] = str(Path(self.tmp.name) / "nope2")
+        os.environ["DSH_HOME"] = str(Path(self.tmp.name) / "nope3")
         r = self.client.get("/discovery/scan")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["candidates"], [])
+
+    def test_scan_dsh_produces_candidates(self):
+        conn = db.get_connection()
+        try:
+            cands = discovery.scan_candidates(conn)
+        finally:
+            conn.close()
+        dsh = {(c["host_type"], c["profile"], c["config_root"]) for c in cands if c["host_type"] == "dsh"}
+        self.assertEqual(dsh, {("dsh", "desktop", str(self.droot))})
+        # empty-shell 无 patch 不发现
+        self.assertFalse(any(c["profile"] == "empty-shell" and c["host_type"] == "dsh" for c in cands))
+
+    def test_register_dsh_bot(self):
+        r = self.client.post("/bots/register", json={
+            "host_type": "dsh", "profile": "desktop",
+            "config_root": str(self.droot), "display_name": "DSH 桌机"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json()["created"])
+
+    def test_validate_dsh_home(self):
+        # 合法目录 + profile → ok
+        r = self.client.post("/bots/validate-dsh", json={
+            "config_root": str(self.droot), "profile": "desktop"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json()["ok"])
+        # 目录不存在 → 指明失败项并保留路径
+        missing = str(Path(self.tmp.name) / "nope")
+        r = self.client.post("/bots/validate-dsh", json={"config_root": missing, "profile": "desktop"})
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertFalse(body["ok"])
+        self.assertTrue(any("目录不存在" in e for e in body["errors"]))
+        self.assertEqual(body["config_root"], missing)
+        # profile 目录不存在 → 指明失败项
+        r = self.client.post("/bots/validate-dsh", json={"config_root": str(self.droot), "profile": "ghost"})
+        self.assertFalse(r.json()["ok"])
+        self.assertTrue(any("profile 目录不存在" in e for e in r.json()["errors"]))
+
+    def test_dsh_candidate_available_after_delete(self):
+        # 注册后删除 profile patch → candidate_available 判失效（保留成员和历史）
+        reg = self.client.post("/bots/register", json={
+            "host_type": "dsh", "profile": "desktop", "config_root": str(self.droot)})
+        bot_id = reg.json()["bot_id"]
+        conn = db.get_connection()
+        try:
+            row = conn.execute("SELECT * FROM bots WHERE id=?", (bot_id,)).fetchone()
+            self.assertTrue(discovery.candidate_available(row))
+        finally:
+            conn.close()
+        (self.droot / "profiles" / "desktop" / "cordis.patch.yml").unlink()
+        conn = db.get_connection()
+        try:
+            row = conn.execute("SELECT * FROM bots WHERE id=?", (bot_id,)).fetchone()
+            self.assertFalse(discovery.candidate_available(row))
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":
