@@ -327,20 +327,31 @@ def copy_credentials(home: str, private_dir: str) -> str | None:
     return dest
 
 
+def classify_auth_error(event, stderr: str = '') -> str | None:
+    """分类认证/初始化失败：'missing_credential' / 'auth' / 'init' / None（区分具体失败）。
+
+    是 ``is_auth_error`` 的细分：MISSING_CREDENTIAL（凭据缺失）、AUTH（401/invalid 等 key 被
+    端点拒绝）、init（初始化失败，非认证失败）。诊断层据此区分，避免把任意 auth_error /
+    invalid 字符串一律归因 key-invalid。
+    """
+    if isinstance(event, dict):
+        kind = str(event.get('type') or '').lower()
+        msg = event.get('message') or event.get('text') or ''
+    else:
+        kind = ''
+        msg = ''
+    text = (kind + ' ' + str(msg) + ' ' + (stderr or '')).lower()
+    if kind == 'missing_credential' or 'missing_credential' in text or 'missing credential' in text:
+        return 'missing_credential'
+    if kind == 'auth' or 'authentication fails' in text or (
+            '401' in text and ('unauthorized' in text or 'authentication' in text or 'invalid' in text)):
+        return 'auth'
+    if ('initialization' in text or 'initialize' in text or 'load_failed' in text
+            or 'failed to load' in text or 'failed to initialize' in text):
+        return 'init'
+    return None
+
+
 def is_auth_error(event) -> bool:
     """识别 MISSING_CREDENTIAL / AUTH 认证失败事件（保持所选路由不切换）。"""
-    if not isinstance(event, dict):
-        return False
-    kind = str(event.get('type') or '').lower()
-    if kind in ('missing_credential', 'auth'):
-        return True
-    if kind in ('error', 'final', 'turn.failed'):
-        message = event.get('message') or event.get('text') or ''
-        if not isinstance(message, str):
-            return False
-        text = message.lower()
-        return ('authentication fails' in text or 'missing credential' in text
-                or 'missing_credential' in text
-                or ('401' in text and ('unauthorized' in text or 'authentication' in text
-                                       or 'invalid' in text)))
-    return False
+    return classify_auth_error(event) in ('missing_credential', 'auth')

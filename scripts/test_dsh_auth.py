@@ -276,6 +276,21 @@ class DshAuthTests(unittest.TestCase):
         self.assertFalse(dsh_auth.is_auth_error({"type": "tool_call"}))
         self.assertFalse(dsh_auth.is_auth_error("not-a-dict"))
 
+    def test_classify_auth_error(self):
+        # 区分具体失败：missing_credential / auth / init（不把任意失败归因 auth）
+        self.assertEqual(dsh_auth.classify_auth_error({"type": "MISSING_CREDENTIAL"}), 'missing_credential')
+        self.assertEqual(dsh_auth.classify_auth_error({"type": "AUTH"}), 'auth')
+        self.assertEqual(dsh_auth.classify_auth_error(
+            {"type": "error", "message": "401 unauthorized"}), 'auth')
+        self.assertEqual(dsh_auth.classify_auth_error(
+            {"type": "error", "message": "Failed to initialize"}), 'init')
+        self.assertEqual(dsh_auth.classify_auth_error(
+            {}, "plugin load_failed"), 'init')
+        # 任意 invalid 字符串不一律归因 auth（需 401+上下文）
+        self.assertIsNone(dsh_auth.classify_auth_error({"type": "error", "message": "invalid config value"}))
+        self.assertIsNone(dsh_auth.classify_auth_error({}))
+        self.assertIsNone(dsh_auth.classify_auth_error("not-a-dict"))
+
     def test_sanitize_redacts_credentials(self):
         msg = dsh_auth.sanitize("failed: sk-abcdef123456 DEEPSEEK_API_KEY=xyz bearer abc")
         self.assertNotIn("sk-abcdef", msg)
