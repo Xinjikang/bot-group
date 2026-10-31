@@ -72,6 +72,12 @@ _API_KEY_ADAPTERS = {
     'DEEPSEEK_API_KEY': 'deepseek-official',
 }
 _DEFAULT_API_MODEL = 'deepseek-chat'  # 官方默认模型（key 不绑定模型时的兜底）
+# key 名 → 官方服务主机（独立依据：凭据引用名派生，非 base_url 同源自比较）
+_KEY_SERVICE_HOST = {
+    'DEEPSEEK_API_KEY': 'api.deepseek.com',
+}
+# overlay 三服务（账号路由恢复 credentials/authorization/deepseek-account）
+_SERVICE_IDS = ('credentials', 'authorization', 'deepseek-account')
 
 
 def _api_key_provider(key_ref):
@@ -82,34 +88,50 @@ def _api_key_provider(key_ref):
     return _API_KEY_ADAPTERS.get(key_name)
 
 
-def _key_service_matched(key_ref, base_url, base_url_env):
-    """核对 key 归属服务与 base_url 一致：服务读 $DEEPSEEK_BASE_URL 或官方默认（非硬编码子串）。"""
-    service = base_url_env or DEFAULT_BASE_URL  # key 归属服务端点
-    return bool(key_ref) and base_url == service
+def _key_service_status(key_ref, base_url, base_url_env):
+    """key 归属服务状态：按 key 名派生官方服务主机（独立依据）核对 base_url。
+
+    返回 True（官方端点匹配）/ False（主机不匹配）/ None（缺独立依据：未知 key 服务或自定义端点）。
+    """
+    if not key_ref:
+        return None
+    key_name = key_ref.rsplit('.', 1)[-1]
+    host = _KEY_SERVICE_HOST.get(key_name)
+    if host is None:
+        return None  # 未知 key 服务
+    if base_url_env:
+        return None  # 自定义端点（代理）：主机不能独立确认 key 服务 → unknown
+    return host in (base_url or '').lower()  # 官方端点：主机含 key 服务 → True，否则 False
 
 
 def _overlay_evidence(overlay):
-    """overlay 构建证据：deepseek 相关条目的 provider/disabled（不含凭据值）。"""
+    """overlay 构建证据：按 id 取三服务（credentials/authorization/deepseek-account），
+    disabled 取条目顶层（非 config），不含凭据值。"""
+    by_id = {e['id']: e for e in overlay if isinstance(e, dict) and e.get('id')}
     out = []
-    for e in overlay if isinstance(overlay, list) else []:
-        if isinstance(e, dict) and 'deepseek' in str(e.get('name', '')).lower():
-            cfg = e.get('config') or {}
-            out.append({'id': e.get('id'), 'name': e.get('name'),
-                        'provider': cfg.get('provider'), 'disabled': cfg.get('disabled')})
+    for sid in _SERVICE_IDS:
+        e = by_id.get(sid)
+        if e is None:
+            out.append({'id': sid, 'present': False})
+        else:
+            out.append({'id': sid, 'name': e.get('name'), 'disabled': e.get('disabled'),
+                        'provider': (e.get('config') or {}).get('provider')})
     return out
 
 
-def assess(account_call, env_call, native_call, source_binding, source_files_unchanged):
+def assess(account_call, env_call, native_call, source_binding, source_files_unchanged, routes):
     """三态合成判定：账号 + 两 API-key 调用 → 整体结论。
 
-    - switch：三段 run_dsh 均实际调用（切换序列已执行），非「账号成功+API-key 失败」；
-    - diagnosis_ok：401 根因查明（key 存在 + key 归属服务匹配 + 两 API-key 路认证失败），单列不并入 passed；
+    - switch：resolve 路由正确（account→apikey→apikey，无错/漏切回）+ 三段 run_dsh 均实际调用；
+    - diagnosis_ok：401 根因查明（key 存在 + key 归属服务独立确认 + 两 API-key 路认证失败），单列不并入 passed；
     - passed：账号 + 两 API-key 三来源均成功（exit0/未超时/有效 final/无 auth_error）+ 切换 + 原配置不变。
     """
+    account_route, env_route, native_route = routes
     account_ok = _success(account_call)
     env_ok = _success(env_call)
     native_ok = _success(native_call)
-    switch = bool(account_call) and bool(env_call) and bool(native_call)
+    switch = (account_route == 'account' and env_route == 'apikey' and native_route == 'apikey'
+              and bool(account_call) and bool(env_call) and bool(native_call))
     diagnosis_ok = (
         source_binding.get('credentials_ref') is not None
         and source_binding.get('key_service_matched') is True
@@ -204,6 +226,7 @@ def main():
     api_provider = _api_key_provider('refs.DEEPSEEK_API_KEY')  # 按 key 名从注册表派生
     api_base_url = base_url_env or DEFAULT_BASE_URL
     api_model = source_model or _DEFAULT_API_MODEL  # 读自 config 的 agent-default-model.model
+    key_service_matched = _key_service_status(key_ref, api_base_url, base_url_env)
 
     source_files = [cred_file, env_file, patch_file]
     before = {str(p): fingerprint(p) for p in source_files if p.is_file()}
@@ -216,9 +239,19 @@ def main():
             'base_url_env': base_url_env or DEFAULT_BASE_URL,  # 读自 .env（无 $DEEPSEEK_BASE_URL→官方默认）
             'apikey_adapter': api_provider,       # 按 key 名从适配器注册表派生（非内联硬编码）
             'apikey_model': api_model,            # 读自 config 或官方默认
-            'key_service_matched': _key_service_matched(key_ref, api_base_url, base_url_env),  # key 归属服务与 base_url 一致
+            'key_service_matched': key_service_matched,  # key 归属服务独立核对（True/False/None=unknown）
         },
     }
+
+    # 来源缺独立依据 → 准确 unknown，停止重复真实请求（不发起 DSH 调用）
+    if api_key and key_service_matched is None:
+        result['note'] = 'key 归属服务缺独立依据（自定义端点或未知 key 服务），停止重复真实请求'
+        result['passed'] = False
+        result['diagnosis_ok'] = False
+        args.evidence.parent.mkdir(parents=True, exist_ok=True)
+        args.evidence.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 1
 
     # ② 切换序列：账号路由实际执行（第一段）→ API-key 路由实际执行（后两段）
     account_bot = {'config_root': str(args.source_home), 'profile': 'desktop'}
@@ -276,11 +309,12 @@ def main():
                                         args.test_directory, api_key)
 
     result['source_files_unchanged'] = before == {str(p): fingerprint(p) for p in source_files if p.is_file()}
-    # ⑤ 三态合成判定（assess 单测覆盖成功/全失败/单路失败）
-    result.update(assess(account_call, result['env_call'], result['native_call'],
-                         result['source_binding'], result['source_files_unchanged']))
     # 切换证据：resolve 路由 + overlay 构建 + 切回序列
     result['switch_sequence'] = [result['account_route'], result['env_route'], result['native_route']]
+    # ⑤ 三态合成判定（assess 单测覆盖成功/全失败/单路失败/路由错漏）
+    result.update(assess(account_call, result['env_call'], result['native_call'],
+                         result['source_binding'], result['source_files_unchanged'],
+                         result['switch_sequence']))
     args.evidence.parent.mkdir(parents=True, exist_ok=True)
     args.evidence.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps(result, ensure_ascii=False, indent=2))
