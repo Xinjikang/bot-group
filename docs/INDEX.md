@@ -57,7 +57,7 @@ Profile 凭证继承与异常可见性见 [设计依据](design/2026-10-25-profi
 | [角色名称字符校验](requirements/2026-10-31-role-name-validation.md) | 不可见字符过滤、按名称筛选与派单 |
 | [协作设计依据](design/DESIGN-NOTES.md) / [配置职责](design/PROJECT-CONFIG-INVENTORY-2026-09-23.md) | 会话、持久知识和配置边界 |
 | [Codex 驱动设计](design/CODEX-DRIVER-DESIGN-2026-09-29.md) | 宿主、Bot 与项目成员分层 |
-| [DeepSeek Harness 接入设计](design/2026-10-31-dsh-integration.md) | dsh 第三运行时、headless 接入、认证与会话契约 |
+| [DeepSeek Harness 接入需求](requirements/2026-10-31-dsh-integration.md) / [设计](design/2026-10-31-dsh-integration.md) | dsh 第三运行时、headless 接入、认证与会话契约 |
 | [进程查询兼容性](design/2026-10-25-process-query.md) | Windows 进程探测、三态保护与依赖交付 |
 | [维护代码命名空间](design/2026-10-25-maintenance-namespace.md) | Hermes 包共存、命令入口与独立安装器 |
 | [常驻执行后端方案](design/SERVE-RESIDENT-SOLUTION-2026-10-08.md) | 方案与实施前验证条件 |
