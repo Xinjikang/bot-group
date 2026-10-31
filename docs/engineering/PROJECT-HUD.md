@@ -1,5 +1,7 @@
 # 项目维护 HUD
 
+范围与验收见[项目助手需求](../requirements/2026-10-31-project-assistant.md)，运行时隔离方法见[测试隔离契约](TEST-RUNTIME-ISOLATION.md)。
+
 旧版 Hermes CLI 的临时数据目录调用设置 `HERMES_DISABLE_LAZY_INSTALLS=1`，保持当前 CLI 解释器和依赖环境，防止临时 home 触发运行时切换。子进程错误输出仅保留末尾 16 KiB 用于分类；依赖导入错误提示修复运行环境，其他失败显示退出码，原始错误输出与凭据保持不向页面透传。
 
 HUD 位于顶栏中间。维护 Bot 可与负责人相同，也可独立选择。HUD 使用独立的逻辑会话、历史表和模型调用通道；群消息、任务队列及宿主原会话保持各自归属。

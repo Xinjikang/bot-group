@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+项目助手的功能、配置一致性和隔离验收条款见[项目助手需求](../docs/requirements/2026-10-31-project-assistant.md)。项目助手返修回归组合覆盖 PA-C01～PA-C04，运行时隔离组合覆盖 PA-T01～PA-T03；真实产物验收入口覆盖 PA-01～PA-10、PA-T04，报告分别记录实际执行范围。
+
 运行时隔离与污染回归：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录 reports/tests 下的新绝对目录> scripts.test_runtime_isolation scripts.test_codex_driver_regressions scripts.test_hermes_connections scripts.test_hermes_session_reuse scripts.test_signing_keys`。先建立临时数据库、数据目录、Hermes/Codex home 与测试连接池，再导入用例；所有临时目录落入运行器沙箱。审计钩子在 SQLite 打开、文件写入、套接字连接和子进程创建前拦截资源越界；子进程显式环境补齐独立路径，真实网关连接默认关闭。工作区资源使用夹具持有的随机回环端口；隔离引擎端口须来自父进程分配并核验子进程实际监听归属，用例结束回收遗留测试子进程。共享数据库夹具与 Codex 驱动夹具独立持有连接池，退出先停止并 join 所有维护、清扫和事件线程，再恢复环境；超时直接终止测试进程并返回 70。用两套临时库复现工作区列表、环境恢复、维护中退出、异常清理和 resume 多池，逐项比对数据库内容、主文件及签名文件摘要；另验证未初始化签名拒绝持久授权写入、维护在开库前拒绝、未知签名代恢复仍失败。输出 isolation.json，记录后台错误、残留线程、拦截记录和测试结果。签名权限专项继续使用真实临时 DACL。整个回归使用合成资料与模拟 RPC。
 
 HUD 配置同步、原子写入与旧备注返修：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_review_regressions scripts.test_project_hud scripts.test_hud_gateway scripts.test_hud_native_tools scripts.test_hermes_prompt_state -q`。Node.js 须在 PATH；`verify_hud_config_sync.cjs` 从 stdin 接收隔离 API 快照，直接执行仓库的 applyConfigUpdates 与 applyHud。覆盖漏轮询/逐步轮询/重复轮询下连续创建角色、分配成员、全量保存和基础配置更新，保留未保存输入；独立线程与 SQLite 零等待连接确定性交错验证写锁、旧版本 409，以及角色/成员业务写入和审计一起回滚。旧备注覆盖待确认、已确认、混合配置和卡片，模型投影剥离 payload 与关联说明，存量待办归档且原始历史保留，阻止非空 facts 新提案。Hermes 隔离 RPC 验证 v2→v3 助手终态换代、待处理回执先对账再换代，以及旧组员 system prompt 按现有 /new 生命周期更新；这些回归使用模拟 RPC，不包含真实模型验收。浏览器复用 `preview_project_hud.py --data-dir <独立目录> --port <隔离端口>` 与 `test_project_hud_browser.py --url <隔离地址> --evidence <主目录报告目录>`，固定响应仅产生配置建议；普通双标签回归继续运行 test_hud_notifications_browser.py。
@@ -56,7 +58,7 @@ Hermes 连接池与顶栏状态：`.venv\Scripts\python.exe -X utf8 -B -m unitte
 
 升级反馈：`python -X utf8 -B scripts/test_app_upgrade_browser.py --evidence <主目录报告目录>/upgrade-browser`，需要 Playwright 与 Chrome。合成 HTTP 隔离升级操作，覆盖两个入口的慢响应、提交中即时提示、500 通用错误、503 具体原因、关闭弹窗后保留错误与允许重试、轮询错误及恢复、响应丢失续查和成功刷新；检查桌面、390px 及深浅主题。
 
-项目助手引导与实测依据：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_inspection scripts.test_project_hud scripts.test_hud_gateway -q`。隔离目录覆盖关键文档优先读取、扫描限额、失效链接、仓库范围、Git 远程缺失与凭据隐藏、CodeGraph 未初始化/过期/失败、角色不可见字符的字段/位置/码点证据、系统指令分离、当前值来源与重复提案消除。浏览器复用 `test_project_hud_browser.py --url <隔离地址> --evidence <报告目录>` 检查保存位置、当前内容与建议内容对照、备注确认及窄屏可读性。
+项目助手引导与实测依据：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_inspection scripts.test_project_hud scripts.test_hud_gateway -q`。隔离目录覆盖关键文档优先读取、扫描限额、失效链接、仓库范围、Git 远程缺失与凭据隐藏、CodeGraph 未初始化/过期/失败、角色不可见字符的字段/位置/码点证据、系统指令分离、当前值来源与重复提案消除。浏览器复用 `test_project_hud_browser.py --url <隔离地址> --evidence <报告目录>` 检查配置保存位置、当前内容与建议内容对照、配置确认及窄屏可读性。
 
 助手提案与资源读取回归：复用上述三个模块。隔离 SQLite 验证待处理提案阻止回答/执行入口超时换代、普通解释及历史截断后仍传递完整八项提案、确认/暂不处理后重新计时、旧提案 ID 与补充处理期间确认的 409、新提案替换及无提案时正常重置。资源覆盖共享目录归并、逐成员独立目录、部分资源缺失、目录未分配的 unknown、与页面 GET 返回的持久配置一致、项目隔离及只读查询。浏览器回归另核对“暂不处理”请求携带当前提案 ID，服务数据与端口由预览参数注入。
 

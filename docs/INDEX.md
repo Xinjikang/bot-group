@@ -6,7 +6,7 @@
 
 项目助手的实际配置检查、文档依据与修改前后确认见 [引导设计](design/2026-10-29-project-assistant-guidance.md)。
 
-项目助手的新建与详情配置、按类型检查资料、测试 PRD/原型整理和使用问答见 [准备能力设计](design/2026-10-31-project-assistant-preparation.md) 与 [工程契约](engineering/PROJECT-HUD.md)。
+项目助手的新建与详情配置、六类模板资料、原生执行/记忆、配置一致性及测试隔离的范围与验收见 [需求](requirements/2026-10-31-project-assistant.md)，方案见 [准备能力设计](design/2026-10-31-project-assistant-preparation.md) 与 [工程契约](engineering/PROJECT-HUD.md)。
 
 项目助手使用所选 Hermes/Codex 的原生文件能力、单一配置工具及一小时后台检查，执行与产物验收见 [原生工具设计](design/2026-10-31-project-assistant-native-tools.md)。
 
