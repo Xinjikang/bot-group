@@ -114,6 +114,8 @@ def main():
     ap.add_argument('--source-home', type=Path, required=True)
     ap.add_argument('--test-directory', type=Path, required=True)
     ap.add_argument('--evidence', type=Path, required=True)
+    ap.add_argument('--account-evidence', type=Path, default=None,
+                    help='账号路由验证证据（verify_dsh_auth_account.py 输出），供整体 passed 判定')
     args = ap.parse_args()
     if not args.exe.is_file():
         raise ValueError(f'--exe 不是文件：{args.exe}')
@@ -161,6 +163,12 @@ def main():
     result['account_route'] = account_info['route']
     result['switch_account_to_apikey'] = (account_info['route'] == 'account'
                                           and api_provider != dsh_auth._ACCOUNT_PROVIDER)
+    # 账号路由成功：引用 verify_dsh_auth_account.py 的证据（不重复真实请求）
+    account_ok = False
+    if args.account_evidence and args.account_evidence.is_file():
+        acc = json.loads(args.account_evidence.read_text(encoding='utf-8'))
+        account_ok = acc.get('answer') == 'DSH_NATIVE_OK' and acc.get('passed') is True
+    result['account_ok'] = account_ok
 
     # ③ .env 来源：隔离 HOME 写前限权，.env 注入 key
     with tempfile.TemporaryDirectory(prefix='dsh-apk-', dir=args.test_directory) as tmp:
@@ -199,12 +207,20 @@ def main():
                                         args.test_directory, api_key)
 
     result['source_files_unchanged'] = before == {str(p): fingerprint(p) for p in source_files if p.is_file()}
-    # ⑤ passed 判定：账号路由成功 + 两 API-key 来源认证失败被正确识别 + 原配置不变
-    result['passed'] = (
-        result['account_route'] == 'account'
-        and result['switch_account_to_apikey']
+    # ⑤ 三来源成功判定（9703 口径）：账号 + 两 API-key 均 DSH_NATIVE_OK 才整体通过
+    env_ok = result['env_call']['answer'] == 'DSH_NATIVE_OK'
+    native_ok = result['native_call']['answer'] == 'DSH_NATIVE_OK'
+    result['env_ok'] = env_ok
+    result['native_ok'] = native_ok
+    # 401 根因查明：单列诊断（不并入整体 passed）
+    result['diagnosis_ok'] = (
+        result['source_binding']['credentials_ref'] is not None
         and result['env_call']['auth_error'] is True
         and result['native_call']['auth_error'] is True
+    )
+    result['passed'] = (
+        account_ok and env_ok and native_ok
+        and result['switch_account_to_apikey']
         and result['source_files_unchanged']
     )
     args.evidence.parent.mkdir(parents=True, exist_ok=True)
