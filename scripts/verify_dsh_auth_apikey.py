@@ -162,6 +162,7 @@ def main():
             'base_url_env': base_url_env or DEFAULT_BASE_URL,  # 读自 .env（无 $DEEPSEEK_BASE_URL→官方默认）
             'apikey_adapter': api_provider,       # DSH API-key 适配器名（派生自 ASAR，非配置值）
             'apikey_model': api_model,            # 官方默认模型（key 不绑定模型）
+            'key_service_matched': 'api.deepseek.com' in api_base_url,  # DEEPSEEK_API_KEY 归属 DeepSeek 官方，base_url 与 key 服务匹配
         },
     }
 
@@ -223,11 +224,14 @@ def main():
     native_ok = _success(result['native_call'])
     result['env_ok'] = env_ok
     result['native_ok'] = native_ok
-    # 切换序列：账号路由成功 + 两 API-key 路由实际执行（账号→API-key）
-    result['switch_account_to_apikey'] = account_ok and not env_ok and not native_ok
-    # 401 根因查明：单列诊断（不并入整体 passed）
+    # 切换序列：三段 run_dsh（账号/环境/native）均实际调用，切换已执行（非「账号成功+API-key 失败」）
+    result['switch_account_to_apikey'] = (
+        bool(result.get('account_call')) and bool(result.get('env_call')) and bool(result.get('native_call'))
+    )
+    # 401 根因查明：单列诊断（不并入整体 passed），含 key 归属服务与 base_url 匹配核对
     result['diagnosis_ok'] = (
         result['source_binding']['credentials_ref'] is not None
+        and result['source_binding']['key_service_matched'] is True
         and result['env_call']['auth_error'] is True
         and result['native_call']['auth_error'] is True
     )
