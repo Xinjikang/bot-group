@@ -103,9 +103,24 @@ API-key 路由曾向其官方接口发起请求并收到 HTTP 401，账号路由
 | 项目指令加载 | hermes 走 `--in` 原生加载 AGENTS.md；codex 走 `-c developer_instructions` 注入 | dsh 的系统提示词/AGENTS.md 等价注入机制待验证 |
 | 成员启停/卸载 | active 0/1 与 home 清理通用 | 复用，不依赖 runtime 分叉；dsh home 清理按配置归属处理 |
 
+### 关键映射核验结果
+
+基于 dsh 0.2.1-rc.5 实装源码（`--dump-default-config` 完整 profile 树）核查：
+
+| 核验项 | 实装证据 | 结论 |
+| --- | --- | --- |
+| Profile 继承 | `cordis.yml`（空 root）+ `cordis.patch.yml`（用户 patch 层）+ `package.json` 的 `dsh.profile.bundles` | 四层叠加 bundle→profile(cordis.patch.yml)→home→CLI(--patch)，config 整体替换不深合并；编辑点=用户层 `cordis.patch.yml` |
+| 人格加载 | `dsh-system-prompt` config.personaPrefix（默认 `You are a coding agent powered by the {{model}} model.`） | 人格由 system-prompt 插件提供，含 {{model}} 模板变量；等价 SOUL.md 的持久化位置待实测确认 |
+| 指令加载 | `dsh-agent-instructions`（maxBytes 65536）+ `dsh-skill`/`dsh-skill-filesystem`/`dsh-tool-skill` | 指令与 skill 入口存在；AGENTS.md 等价文件的加载路径与顺序待实测确认 |
+| 推理参数 | `dsh-agent-default-model` 仅 provider/model | 无 reasoning_effort 字段，推理强度档位调节能力缺失，需明确产品处理（不展示或标注不支持） |
+| 沙箱/文件访问 | `dsh-sandbox-policy`：`mode = DSH_PERMISSION_MODE ?? 'workspace-write'`，`workspaceRoot = process.cwd()`；三级 read-only/workspace-write/danger-full-access | 工作区文件访问由 `DSH_PERMISSION_MODE` 环境变量 + cwd（workspaceRoot）控制，非固定 workspace-write |
+| 模型/认证切换续跑 | 待实测 | 切换 provider/model/认证后 `--session-id` 续跑的行为需隔离实验确认 |
+
+宿主候选发现需区分四个状态：目录存在、配置可解析、入口可执行、认证就绪，各保留独立诊断。
+
 ### 待完成的设计核验
 
-描述/人格加载映射、推理参数映射、原生 profile 继承及动态表达式写入边界、模型/认证变更后的续跑语义，均需以实装版本补充证据后收敛。另需逐项盘点成员创建/注册、启停/移除、模板与项目指令加载、工作区授权、运行状态/思考与工具展示、重试恢复及卸载清理，形成支持、限制和验收对应表。上述项属于方案完整性核验；通过 headless 模型实验仅证明已列出的实验能力。
+以下仍缺实装证据，需在实现阶段以真实 dsh 验证后收敛：`dsh-agent-instructions` 的指令内容加载来源（AGENTS.md 等价物）、skill 目录约定、persona 持久化位置、模型/认证切换后的续跑语义。生产引擎适配完成后验证 UI 保存闭环、真实命令执行、工作区授权、状态展示、重试恢复及卸载清理。当前阶段为能力范围已盘点、关键映射已据实装源码核验、剩余行为待实测。
 
 ## 验收标准
 
