@@ -303,10 +303,13 @@ def _commit(folder: Path, before: dict, after: dict) -> str | None:
 
 
 def read(profile: str) -> dict:
-    from . import codex_profile_config
+    from . import codex_profile_config, dsh_profile_config
     bot = codex_profile_config.resolve(profile)
     if bot:
         return codex_profile_config.read(bot)
+    bot = dsh_profile_config.resolve(profile)
+    if bot:
+        return dsh_profile_config.read(bot)
     try:
         with _LOCK:
             return _view(_snapshot(_directory(profile)))
@@ -317,10 +320,13 @@ def read(profile: str) -> dict:
 
 
 def save(profile: str, values: dict) -> dict:
-    from . import codex_profile_config
+    from . import codex_profile_config, dsh_profile_config
     bot = codex_profile_config.resolve(profile)
     if bot:
         return codex_profile_config.save(bot, values)
+    bot = dsh_profile_config.resolve(profile)
+    if bot:
+        return dsh_profile_config.save(bot, values)
     try:
         with _LOCK:
             folder = _directory(profile)
