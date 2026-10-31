@@ -931,6 +931,7 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
     - HERMES_EPHEMERAL_SYSTEM_PROMPT：协作规则 env 注入（subprocess 通道每次 spawn
       重新注入，无 gateway safe_env 过滤）。静态协作规则后追加当前项目配置，格式和字段顺序固定。
     """
+    import json  # 函数级导入放最前：dsh 分支 1080 行 json.dumps 在尾部局部 import（1157）之前
     session = session_name(profile, kind, thread_id, project)
     # --in 按 profile 派生：default 落主目录，其他 bot 落各自 worktree（不踩主目录红线）
     from . import task_retry
