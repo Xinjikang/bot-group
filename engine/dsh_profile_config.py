@@ -3,18 +3,22 @@
 ``cordis.patch.yml`` 是 YAML 列表，每项形如 ``{id, disabled?, config?, insert?}``。
 本模块只读写已知字段对应的条目 ``config``，其余条目与未知字段通过 round-trip 保留。
 
-字段映射（persona 为实测命中项，其余按设计文档落盘，待实测收敛的已注明）：
+字段映射（按 dsh 0.2.1-rc.5 实装源码收敛）：
 
-    persona          -> system-prompt.config.personaPrefix      （实测命中 probe-persona2）
-    model            -> agent-default-model.config.model         （实测 probe-desktop-model）
+    persona          -> system-prompt.config.personaPrefix      （dsh-system-prompt 实装
+                       ``personaPrefix: z.string().default("")``，probe-persona2 实测命中）
+    model            -> agent-default-model.config.model
     provider         -> agent-default-model.config.provider
     reasoning_effort -> agent-default-model.config.reasoningEffort
-    instructions     -> dsh-agent-instructions.config.instructions（字段名待实测收敛）
-    description      -> profile.config.description               （引擎元数据，待实测收敛）
+    instructions     -> DSH_HOME/AGENTS.md（dsh-agent-instructions 加载用户全局指令链
+                       ``$DSH_HOME/AGENTS.md``；其 config 仅 maxBytes 等预算字段，无指令正文）
+    description      -> profiles/<name>/.group-engine-description（DSH 无原生描述字段，
+                       存引擎侧边文件，不写入 cordis.patch.yml）
+    env              -> DSH_HOME/.env（``DEEPSEEK_API_KEY=...``）
 
-``.env`` 单独落在 DSH home 根（``DEEPSEEK_API_KEY=...``），与 patch 分开读写。
-含动态表达式（``!!js``）或锚点/别名引用的 patch 无法安全 round-trip，保存前拒绝为只读，
-避免覆盖损坏。凭据出现在错误消息时按脱敏规则替换。
+含动态表达式（``!!js``）的 patch 无法安全 round-trip，保存前拒绝为只读。锚点/别名由
+ruamel 原生 round-trip 保留，不再拒绝（避免误拒 ``A&B`` / ``*重点*`` 等合法字符串内容）。
+凭据出现在错误消息时按脱敏规则替换。
 """
 from __future__ import annotations
 
@@ -42,20 +46,18 @@ def _js_expression(loader, node):
 _TolerantLoader.add_constructor('tag:yaml.org,2002:js', _js_expression)
 
 
-# (entry_id, config_key) 映射，与 cordis.patch.yml 条目一一对应。
-_FIELDS = {
-    'description': ('profile', 'description'),
+# cordis.patch.yml 条目映射（entry id -> config key）。
+_PATCH_FIELDS = {
     'persona': ('system-prompt', 'personaPrefix'),
-    'instructions': ('dsh-agent-instructions', 'instructions'),
     'model': ('agent-default-model', 'model'),
     'provider': ('agent-default-model', 'provider'),
     'reasoning_effort': ('agent-default-model', 'reasoningEffort'),
 }
 _SINGLE_LINE = ('model', 'provider', 'reasoning_effort')
-# DSH reasoningEffort 档位（desktop 实测用 max，其余对齐 Codex 档位，待实测收敛）。
+# DSH reasoningEffort 档位（desktop 实测用 max，其余对齐 Codex 档位）。
 _REASONING_LEVELS = ('', 'minimal', 'low', 'medium', 'high', 'max', 'ultra')
-# 动态表达式 / 锚点 / 别名：无法安全 round-trip，保存前拒绝。
-_AMBIGUOUS = re.compile(r'!!js\b|&[A-Za-z0-9_-]+\b|\*\s*[A-Za-z0-9_-]+\b')
+# 动态表达式（!!js）无法安全 round-trip；锚点/别名由 ruamel 原生保留，不再拒绝。
+_AMBIGUOUS = re.compile(r'!!js\b')
 # 凭据脱敏：sk-* 密钥、bearer token、api_key=... 等。
 _CREDENTIAL = re.compile(r'(?i)(sk-[A-Za-z0-9_-]{6,}|bearer\s+\S+|api[_-]?key\s*[:=]\s*\S+)')
 
@@ -73,11 +75,15 @@ def resolve(member: str):
         conn.close()
 
 
-def _layout(bot) -> tuple[Path, Path, Path]:
+def _layout(bot) -> tuple[Path, Path, Path, Path, Path]:
+    """返回 (home, patch, env, agents_md, description_file)。"""
     home = Path(bot['config_root']).resolve()
-    patch = home / 'profiles' / bot['profile'] / 'cordis.patch.yml'
+    profile = bot['profile']
+    patch = home / 'profiles' / profile / 'cordis.patch.yml'
     env = home / '.env'
-    return home, patch, env
+    agents = home / 'AGENTS.md'
+    desc = home / 'profiles' / profile / '.group-engine-description'
+    return home, patch, env, agents, desc
 
 
 def _snapshot(paths) -> dict[str, bytes | None]:
@@ -113,24 +119,27 @@ def _parse(raw_text: str) -> list:
     return parsed
 
 
-def _view(patch: Path, env: Path, snapshot: dict[str, bytes | None]) -> dict:
+def _view(patch: Path, file_paths: dict[str, Path], snapshot: dict[str, bytes | None]) -> dict:
     seq = _parse(files._text(snapshot[str(patch)]))
     view = {'runtime': 'dsh', 'revision': files._revision(snapshot), 'config_path': str(patch)}
-    for field, (entry_id, key) in _FIELDS.items():
+    for field, (entry_id, key) in _PATCH_FIELDS.items():
         entry = next((e for e in seq if isinstance(e, dict) and str(e.get('id') or '') == entry_id), None)
         config = entry.get('config') if entry is not None else None
         view[field] = str(config[key] or '') if isinstance(config, dict) and key in config else ''
-    view['env'] = files._text(snapshot[str(env)])
+    for field, path in file_paths.items():
+        view[field] = files._text(snapshot.get(str(path)))
     return view
 
 
 def read(bot) -> dict:
     try:
         with files._LOCK:
-            home, patch, env = _layout(bot)
+            home, patch, env, agents, desc = _layout(bot)
             if not patch.is_file():
                 raise HTTPException(404, 'DSH profile cordis.patch.yml does not exist')
-            return _view(patch, env, _snapshot([patch, env]))
+            paths = [patch, env, agents, desc]
+            file_paths = {'env': env, 'instructions': agents, 'description': desc}
+            return _view(patch, file_paths, _snapshot(paths))
     except YAMLError as exc:
         raise HTTPException(400, _sanitize(f'cordis.patch.yml 解析失败：{exc}')) from None
     except UnicodeError:
@@ -187,18 +196,20 @@ def _commit(before: dict, after: dict) -> list[str]:
 def save(bot, values: dict) -> dict:
     try:
         with files._LOCK:
-            home, patch, env = _layout(bot)
+            home, patch, env, agents, desc = _layout(bot)
             if not patch.is_file():
                 raise HTTPException(404, 'DSH profile cordis.patch.yml does not exist')
-            before = _snapshot([patch, env])
-            current = _view(patch, env, before)
+            paths = [patch, env, agents, desc]
+            file_paths = {'env': env, 'instructions': agents, 'description': desc}
+            before = _snapshot(paths)
+            current = _view(patch, file_paths, before)
             if values['revision'] != current['revision']:
                 raise HTTPException(409, 'Configuration changed; reopen the editor')
             raw = files._text(before[str(patch)])
             if _AMBIGUOUS.search(raw):
-                raise HTTPException(400, 'cordis.patch.yml 含动态表达式或锚点引用，为避免覆盖损坏请先在 DSH 宿主中解析')
+                raise HTTPException(400, 'cordis.patch.yml 含动态表达式，为避免覆盖损坏请先在 DSH 宿主中解析')
             parser, seq = _yaml(before[str(patch)])
-            for field, (entry_id, key) in _FIELDS.items():
+            for field, (entry_id, key) in _PATCH_FIELDS.items():
                 value = values.get(field)
                 if value is None or value == current[field]:
                     continue
@@ -224,11 +235,13 @@ def save(bot, values: dict) -> dict:
                     config.pop(key, None)
             after = dict(before)
             after[str(patch)] = files._dump(parser, seq, before[str(patch)])
-            env_value = values['env'].replace('\r\n', '\n')
-            if env_value != current['env'].replace('\r\n', '\n'):
-                if before[str(env)] and b'\r\n' in before[str(env)]:
-                    env_value = env_value.replace('\n', '\r\n')
-                after[str(env)] = env_value.encode('utf-8')
+            # 独立文件字段（env/instructions/description）：仅写变更，保留原 EOL 风格。
+            for field, path in file_paths.items():
+                value = values[field].replace('\r\n', '\n')
+                if value != current[field].replace('\r\n', '\n'):
+                    if before[str(path)] and b'\r\n' in before[str(path)]:
+                        value = value.replace('\n', '\r\n')
+                    after[str(path)] = value.encode('utf-8')
             if any(raw is not None and len(raw) > files._MAX_BYTES for raw in after.values()):
                 raise HTTPException(400, 'Configuration file exceeds 2 MB')
             return {'saved': True, 'backup': _commit(before, after)}

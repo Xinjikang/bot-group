@@ -110,8 +110,9 @@ API-key 路由曾向其官方接口发起请求并收到 HTTP 401，账号路由
 | 核验项 | 实装证据 | 结论 |
 | --- | --- | --- |
 | Profile 继承 | `cordis.yml`（空 root）+ `cordis.patch.yml`（用户 patch 层）+ `package.json` 的 `dsh.profile.bundles` | 四层叠加 bundle→profile(cordis.patch.yml)→home→CLI(--patch)，config 整体替换不深合并；编辑点=用户层 `cordis.patch.yml` |
-| 人格加载 | 内置 `dsh-persona` 的 prefix/suffix/complete/includeRuntimeContext；agent preset 的 plugins 声明 | 人格编辑用途对应 SOUL.md；内容由所选 preset 的 persona 插件配置持久化。插件在 agent 作用域覆盖部署人格，部署全局人格由 system-prompt 管理。编辑需定位具体 preset 声明及其 patch，保存回读与模型实际加载仍需验证 |
-| 指令加载 | `dsh-agent-instructions`（maxBytes 65536）+ `dsh-skill`/`dsh-skill-filesystem`/`dsh-tool-skill` | 指令与 skill 入口存在；AGENTS.md 等价文件的加载路径与顺序待实测确认 |
+| 人格加载 | 内置 `dsh-persona` 的 prefix/suffix/complete/includeRuntimeContext；agent preset 的 plugins 声明 | 人格编辑用途对应 SOUL.md；headless 正确挂载点为 `system-prompt` 的 `personaPrefix`（dsh-system-prompt 实装 `personaPrefix: z.string().default("")`），非 agent preset（headless one-shot runner 不消费 preset registry）。dsh_profile_config.save 写出的 personaPrefix 经隔离原生 DSH 实测命中（persona_hit=true）。 |
+| 指令加载 | `dsh-agent-instructions`（config 仅 maxBytes/projectRootMarkers/instructionFileCandidates 等预算与发现字段，无指令正文字段） | 指令正文由插件加载 `$DSH_HOME/AGENTS.md` 用户全局指令链（含项目 AGENTS.md/CLAUDE.md 链）。成员指令编辑写入 DSH_HOME/AGENTS.md。 |
+| 描述存储 | 各插件 config schema 均无 `description` 字段 | DSH 无原生描述字段；描述为引擎元数据，存 `profiles/<name>/.group-engine-description` 侧边文件，不写入 cordis.patch.yml。 |
 | 推理参数 | `dsh-agent-default-model` 支持 `reasoningEffort`（desktop `cordis.patch.yml` 用 `max`）；headless 包内默认未显式设置 | reasoningEffort 字段真实生效，档位与默认值待确认，编辑映射按实装字段名对齐 |
 | 沙箱/文件访问 | `dsh-sandbox-policy`：`mode = DSH_PERMISSION_MODE ?? 'workspace-write'`，`workspaceRoot = process.cwd()`；三级 read-only/workspace-write/danger-full-access | 工作区文件访问由 `DSH_PERMISSION_MODE` 环境变量 + cwd（workspaceRoot）控制，非固定 workspace-write |
 | 智能审批 | 实装 `dsh-experimental-auto-review` 的工具执行前审查与 `permissionPresets.registerAuto`；`dsh-user-approval` 提供 ask/never 请求策略 | 接入要求启用 Auto review 插件并为执行会话选择 auto。ask 将请求交给人工或机器处理方；缺少处理方返回 unavailable。never 自动拒绝进入审批服务的请求。headless 的会话启用与拒绝后的处理链待隔离验证 |

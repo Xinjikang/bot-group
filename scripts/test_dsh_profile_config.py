@@ -35,9 +35,6 @@ PATCH = """\
 - id: unknown-plugin
   config:
     keep: "保留我"
-- id: dsh-agent-instructions
-  config:
-    instructions: "先思考再回答"
 """
 
 
@@ -50,6 +47,10 @@ class DshProfileConfigTests(unittest.TestCase):
         self.patch.write_text(PATCH, encoding="utf-8")
         self.envfile = self.droot / ".env"
         self.envfile.write_text("DEEPSEEK_API_KEY=sk-test123456\n", encoding="utf-8")
+        self.agentsfile = self.droot / "AGENTS.md"
+        self.agentsfile.write_text("先思考再回答\n", encoding="utf-8")
+        self.descfile = self.droot / "profiles" / "desktop" / ".group-engine-description"
+        self.descfile.write_text("", encoding="utf-8")
         self.dentry = Path(self.tmp.name) / "dsh.cmd"
         self.dentry.write_text("@echo off\n")
         self._envs = {}
@@ -95,7 +96,7 @@ class DshProfileConfigTests(unittest.TestCase):
         self.assertEqual(view["model"], "deepseek-flash")
         self.assertEqual(view["provider"], "deepseek-account")
         self.assertEqual(view["reasoning_effort"], "max")
-        self.assertEqual(view["instructions"], "先思考再回答")
+        self.assertIn("先思考再回答", view["instructions"])
         self.assertIn("DEEPSEEK_API_KEY=sk-test123456", view["env"])
         self.assertEqual(view["description"], "")
         self.assertEqual(view["runtime"], "dsh")
@@ -107,17 +108,23 @@ class DshProfileConfigTests(unittest.TestCase):
         self.assertIn("新人格", text)
         self.assertIn("unknown-plugin", text)
         self.assertIn("保留我", text)      # 未知字段保留
-        self.assertIn("先思考再回答", text)  # 未改字段保留
         self.assertIn("deepseek-account", text)  # 未改 provider 保留
+        # 指令在 AGENTS.md 侧边文件，未随 patch 变更
+        self.assertIn("先思考再回答", self.agentsfile.read_text(encoding="utf-8"))
         view = self._read()
         self.assertEqual(view["model"], "deepseek-reasoner")
         self.assertEqual(view["persona"], "新人格")
         self.assertEqual(view["provider"], "deepseek-account")
 
-    def test_add_new_entry_when_absent(self):
-        self._save({"description": "成员描述"})
-        self.assertEqual(self._read()["description"], "成员描述")
-        self.assertIn("profile", self.patch.read_text(encoding="utf-8"))
+    def test_save_instructions_and_description_to_files(self):
+        self._save({"instructions": "新指令", "description": "成员描述"})
+        # 指令写 AGENTS.md、描述写侧边文件，均不入 cordis.patch.yml
+        self.assertIn("新指令", self.agentsfile.read_text(encoding="utf-8"))
+        self.assertIn("成员描述", self.descfile.read_text(encoding="utf-8"))
+        self.assertNotIn("成员描述", self.patch.read_text(encoding="utf-8"))
+        view = self._read()
+        self.assertIn("新指令", view["instructions"])
+        self.assertEqual(view["description"], "成员描述")
 
     def test_revision_conflict(self):
         current = self._read()
@@ -153,10 +160,26 @@ class DshProfileConfigTests(unittest.TestCase):
         self.assertEqual(self._read()["model"], "")
         self.assertNotIn("deepseek-flash", self.patch.read_text(encoding="utf-8"))
 
-    def test_sanitize_redacts_credentials(self):
-        msg = dsh_profile_config._sanitize("auth failed: sk-abcdef123456 and api_key=xyz")
-        self.assertNotIn("sk-abcdef", msg)
+    def test_sanitize_redacts_each_credential_branch(self):
+        # sk- 分支
+        msg = dsh_profile_config._sanitize("auth failed sk-abcdef123456")
+        self.assertNotIn("sk-abcdef123456", msg)
         self.assertIn("[REDACTED]", msg)
+        # bearer 分支
+        msg = dsh_profile_config._sanitize("token bearer eyJhbGciOi")
+        self.assertNotIn("bearer eyJhbGciOi", msg)
+        self.assertIn("[REDACTED]", msg)
+        # api_key 分支
+        msg = dsh_profile_config._sanitize("missing api_key=secret-value")
+        self.assertNotIn("api_key=secret-value", msg)
+        self.assertIn("[REDACTED]", msg)
+
+    def test_amp_and_star_text_not_refused(self):
+        # 合法普通文本含 & / *（如 A&B、*重点*）不得被 _AMBIGUOUS 误拒
+        self._save({"persona": "你是 A&B 客服，回答用 *重点* 标注"})
+        view = self._read()
+        self.assertIn("A&B", view["persona"])
+        self.assertIn("*重点*", view["persona"])
 
     def test_profile_config_dispatch(self):
         from engine import profile_config
