@@ -110,6 +110,9 @@
     }
   }
   function setData(data) {
+    if (!data || typeof data !== 'object') return;
+    // 轮询响应在无卡片/无状态时可能省略 state/entries；HUD 渲染路径按空值处理，避免整页异常。
+    data = {...data, state: data.state || {}, entries: Array.isArray(data.entries) ? data.entries : []};
     const changed=current?.id!==data.id;
     if(changed) remember();
     current=data;
