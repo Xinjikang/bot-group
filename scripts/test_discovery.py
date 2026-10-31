@@ -365,6 +365,26 @@ class DiscoveryTests(unittest.TestCase):
         self.assertFalse(r.json()["ok"])
         self.assertTrue(any("profile 目录不存在" in e for e in r.json()["errors"]))
 
+    def test_validate_dsh_home_blocks_empty_config_root(self):
+        # 空串/纯空白 config_root 须在 Path 构造前判空，阻止隐式绑定到当前目录
+        for bad in ("", "   ", "\t\n"):
+            body = discovery.validate_dsh_home(bad, "desktop")
+            self.assertFalse(body["ok"], f"config_root={bad!r} 不应通过")
+            self.assertIn("config_root 必填", body["errors"])
+            self.assertEqual(body["config_root"], bad.strip())
+        # 当前目录恰含有效 profile 时，空 config_root 仍须被阻止（不隐式绑定）
+        cwd_home = Path(self.tmp.name) / "cwd-home"
+        (cwd_home / "profiles" / "desktop").mkdir(parents=True)
+        (cwd_home / "profiles" / "desktop" / "cordis.patch.yml").write_text("plugins: []\n")
+        old = os.getcwd()
+        try:
+            os.chdir(cwd_home)
+            body = discovery.validate_dsh_home("", "desktop")
+            self.assertFalse(body["ok"])
+            self.assertIn("config_root 必填", body["errors"])
+        finally:
+            os.chdir(old)
+
     def test_dsh_candidate_available_after_delete(self):
         # 注册后删除 profile patch → candidate_available 判失效（保留成员和历史）
         reg = self.client.post("/bots/register", json={

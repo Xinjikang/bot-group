@@ -222,25 +222,29 @@ def validate_dsh_home(config_root: str, profile: str = "") -> dict:
     返回 {ok, errors, config_root, profile}。执行入口可用性由启动路径单独检查。
     """
     errors: list[str] = []
-    root = Path((config_root or "").strip())
+    root_raw = (config_root or "").strip()
     profile = (profile or "").strip()
     if not profile:
         errors.append("profile 必填")
     elif not _PROFILE_RE.match(profile) or db.is_builtin_user(profile):
         errors.append("profile 名称非法")
-    if not str(root):
+    if not root_raw:
+        # 原始空白串须在 Path 构造前判空：Path('')=Path('.')，否则会误取当前目录
+        # 甚至隐式绑定到 cwd 下恰好存在的有效 profile。
         errors.append("config_root 必填")
-    elif not root.is_dir():
-        errors.append("目录不存在")
-    elif not os.access(root, os.R_OK):
-        errors.append("目录不可访问")
-    elif profile and _PROFILE_RE.match(profile) and not db.is_builtin_user(profile):
-        home = root / "profiles" / profile
-        if not home.is_dir():
-            errors.append("profile 目录不存在")
-        elif not _dsh_patch(home / "cordis.patch.yml"):
-            errors.append("profile patch 不可解析（cordis.patch.yml）")
-    return {"ok": not errors, "errors": errors, "config_root": str(root), "profile": profile}
+    else:
+        root = Path(root_raw)
+        if not root.is_dir():
+            errors.append("目录不存在")
+        elif not os.access(root, os.R_OK):
+            errors.append("目录不可访问")
+        elif profile and _PROFILE_RE.match(profile) and not db.is_builtin_user(profile):
+            home = root / "profiles" / profile
+            if not home.is_dir():
+                errors.append("profile 目录不存在")
+            elif not _dsh_patch(home / "cordis.patch.yml"):
+                errors.append("profile patch 不可解析（cordis.patch.yml）")
+    return {"ok": not errors, "errors": errors, "config_root": root_raw, "profile": profile}
 
 
 def scan_candidates(conn: sqlite3.Connection, project: str = '') -> list[dict]:
