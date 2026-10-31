@@ -110,9 +110,9 @@ API-key 路由曾向其官方接口发起请求并收到 HTTP 401，账号路由
 | 核验项 | 实装证据 | 结论 |
 | --- | --- | --- |
 | Profile 继承 | `cordis.yml`（空 root）+ `cordis.patch.yml`（用户 patch 层）+ `package.json` 的 `dsh.profile.bundles` | 四层叠加 bundle→profile(cordis.patch.yml)→home→CLI(--patch)，config 整体替换不深合并；编辑点=用户层 `cordis.patch.yml` |
-| 人格加载 | `dsh-system-prompt` config.personaPrefix（默认 `You are a coding agent powered by the {{model}} model.`） | 人格由 system-prompt 插件提供，含 {{model}} 模板变量；等价 SOUL.md 的持久化位置待实测确认 |
+| 人格加载 | 内置 `dsh-persona` 的 prefix/suffix/complete/includeRuntimeContext；agent preset 的 plugins 声明 | 人格编辑用途对应 SOUL.md；内容由所选 preset 的 persona 插件配置持久化。插件在 agent 作用域覆盖部署人格，部署全局人格由 system-prompt 管理。编辑需定位具体 preset 声明及其 patch，保存回读与模型实际加载仍需验证 |
 | 指令加载 | `dsh-agent-instructions`（maxBytes 65536）+ `dsh-skill`/`dsh-skill-filesystem`/`dsh-tool-skill` | 指令与 skill 入口存在；AGENTS.md 等价文件的加载路径与顺序待实测确认 |
-| 推理参数 | `dsh-agent-default-model` 仅 provider/model | 无 reasoning_effort 字段，推理强度档位调节能力缺失，需明确产品处理（不展示或标注不支持） |
+| 推理参数 | `dsh-agent-default-model` 支持 `reasoningEffort`（desktop `cordis.patch.yml` 用 `max`）；headless 包内默认未显式设置 | reasoningEffort 字段真实生效，档位与默认值待确认，编辑映射按实装字段名对齐 |
 | 沙箱/文件访问 | `dsh-sandbox-policy`：`mode = DSH_PERMISSION_MODE ?? 'workspace-write'`，`workspaceRoot = process.cwd()`；三级 read-only/workspace-write/danger-full-access | 工作区文件访问由 `DSH_PERMISSION_MODE` 环境变量 + cwd（workspaceRoot）控制，非固定 workspace-write |
 | 智能审批 | 实装 `dsh-experimental-auto-review` 的工具执行前审查与 `permissionPresets.registerAuto`；`dsh-user-approval` 提供 ask/never 请求策略 | 接入要求启用 Auto review 插件并为执行会话选择 auto。ask 将请求交给人工或机器处理方；缺少处理方返回 unavailable。never 自动拒绝进入审批服务的请求。headless 的会话启用与拒绝后的处理链待隔离验证 |
 | 模型/认证切换续跑 | 待实测 | 切换 provider/model/认证后 `--session-id` 续跑的行为需隔离实验确认 |
@@ -131,7 +131,17 @@ DSH 执行须启用模型审查工具操作的 Auto review。实装 `0.2.1-rc.5`
 
 ### headless 隔离验证结果
 
-实测 headless 下 `--patch` 加载 `auto-review` 插件后，会话默认 permission preset 非 `auto`，工具调用直接执行（合成 MCP 工具返回独立 marker，工具主体已执行），事件流无审查/拒绝痕迹。会话切 `auto` 的入口仅在 Web UI（`/permission auto` 命令与 composer picker）；headless 命令集仅 feedback/goal/compact，无 `/permission` 命令，且 `auto` 预设不能持久化恢复（`ensureInitial` 拒绝）。因此首期 headless 子进程无法启用 Auto review 模型审查；智能审批需 Web profile 承载，或后续为 headless 增加会话 Auto 切换入口。验证脚本与结果见 `reports/research/dsh-integration/probe-auto-review.py`。
+现有实验以 `--patch` 插入 `auto-review` 后运行 headless，合成 MCP 工具执行成功，JSON 投影未观测到审查痕迹。脚本未调用会话 Auto 选择入口，且未记录生效 permission preset、审查请求计数或审查监听器状态；该结果仅覆盖插件插入配置下的工具调用。JSON 投影的事件词汇有限，判断审查是否发生须补充服务状态和审查调用证据。验证脚本与结果见 `reports/research/dsh-integration/probe-auto-review.py`。
+
+实装 `dsh-permission-presets/lib/index.js` 提供 `set(session, name)`（344—348 行）；`pinInitialPermission` 对已保存 Auto 会话检查活动集成（370—375 行），活动集成缺失时拒绝恢复。插件生效时的会话切换与恢复入口已在源码确认。headless 可通过受控适配插件调用该服务的可行性、首个工具前的执行时序和持久化续跑仍待隔离验证；现有证据尚未排除该接入路径。
+
+### 内置插件与安装状态
+
+本机 desktop profile 的 `package.json` 中 `dsh.profile.bundles` 已包含 `@deepseek-ai/dsh-experimental-auto-review`。这证明该插件已加入桌面 profile 组合；headless 使用独立组合，须单独检查加载状态与会话模式。
+
+内置 `@deepseek-ai/dsh-persona` 必须放入 agent preset 的 `plugins` 中。`prefix` 为必填人格正文，`suffix` 默认为空，`complete=false`、`includeRuntimeContext=true`。编辑器通过对应 preset 声明的 patch 持久化内容，保留其他插件；全局挂载 persona 会与 system-prompt 的注册冲突。`complete=true` 会将系统提示词收缩为 prefix，普通人格编辑应保留既有组合语义。宿主 profile（插件部署组合）与 agent preset（会话人格/工具组合）分别定位。
+
+后续能力核验逐项记录包内插件、profile 声明、实际加载和会话选择四个层面的证据。插件已安装与具体会话能力生效分别验收。
 
 ### 待完成的设计核验
 
