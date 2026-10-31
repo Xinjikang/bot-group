@@ -184,6 +184,15 @@ def _segment_business(fx: EngineFixture) -> dict:
 
 def _segment_stop(fx: EngineFixture) -> dict:
     from engine import wake
+    # 第一轮完整跑完建会话绑定（/stop「恢复原会话」的前提）
+    fx.post_msg("@dsh-bot 只回复 DSH_STOP_PRE。")
+    run0 = fx.wait_run()
+    if run0 is None:
+        return {"ok": False, "detail": "pre-run did not finish in time"}
+    binding_before = [dict(r) for r in fx.q(
+        "SELECT session_id, generation FROM session_bindings "
+        "WHERE project='bot-group' AND profile='dsh-bot' AND kind='work'")]
+    # 第二轮运行中 /stop：真实进程树终止 + 绑定保留
     fx.post_msg("@dsh-bot 从 1 数到 20，每个数调用一次 group_list_members 工具，"
                 "最后回复 DSH_STOP_TARGET。")
     run = fx.live_run()
@@ -198,15 +207,19 @@ def _segment_stop(fx: EngineFixture) -> dict:
     resp = fx.post_msg("/stop @dsh-bot")
     time.sleep(2)
     pids_after = wake.find_bot_processes("dsh-bot", run["session"])
-    bindings = fx.q("SELECT session_id, generation, runtime FROM session_bindings "
-                    "WHERE project='bot-group' AND profile='dsh-bot' AND kind='work'")
+    binding_after = [dict(r) for r in fx.q(
+        "SELECT session_id, generation FROM session_bindings "
+        "WHERE project='bot-group' AND profile='dsh-bot' AND kind='work'")]
     return {
         "pids_before": pids_before,
         "pids_after": pids_after,
         "proc_gone": bool(pids_before) and not pids_after,
         "stop_body": resp,
         "jobs": [dict(r) for r in fx.q("SELECT id, status FROM wake_jobs")],
-        "binding_after_stop": [dict(r) for r in bindings],
+        "binding_before": binding_before,
+        "binding_after": binding_after,
+        "binding_preserved": bool(binding_before) and bool(binding_after)
+        and binding_before[0]["session_id"] == binding_after[0]["session_id"],
     }
 
 
@@ -248,21 +261,28 @@ def _segment_marker(fx: EngineFixture) -> dict:
 
 def _segment_tools(fx: EngineFixture) -> dict:
     fx.post_msg("@dsh-bot 依次执行：1) 调用 task_queue 的 task_claim 领取你的待办任务；"
-                "2) 调用 group_read_inbox 读收件箱并对其中 pending 消息调用 group_mark_seen；"
-                "3) 最终回复 DSH_TOOLS_OK，不要调用 group_send。")
+                "2) 调用 group_send 发送 '@user DSH_TOOLS_CLAIMED' 作为实质回复；"
+                "3) 调用 group_read_inbox 读收件箱并对其中 pending 消息调用 group_mark_seen；"
+                "4) 最终回复 DSH_TOOLS_OK。")
     run = fx.wait_run()
     if run is None:
         return {"ok": False, "detail": "run did not finish in time"}
     events = fx.q("SELECT payload FROM dsh_run_events WHERE session=? ORDER BY id",
                   (run["session"],))
-    tools = [json.loads(r["payload"]).get("tool", "") for r in events
-             if json.loads(r["payload"]).get("type") == "tool_call"]
-    claimed = fx.q("SELECT id FROM tasks WHERE project='bot-group' AND title='t267-probe' "
-                   "AND status='in_progress' AND claimed_by='dsh-bot'")
+    parsed = [json.loads(r["payload"]) for r in events]
+    tools = [p.get("tool", "") for p in parsed if p.get("type") == "tool_call"]
+    results = [json.loads(p.get("result") or "{}")
+                for p in parsed if p.get("type") == "tool_result"]
+    # 领取证据取工具回执（引擎在 run 结束后会释放未交接任务，落库终态不可靠）
+    claim_ok = any(isinstance(r, dict) and r.get("claimed") is True for r in results)
+    seen_ok = any(isinstance(r, dict) and bool(r.get("seen", 0)) for r in results)
     inbox = fx.q("SELECT message_id, status FROM inbox WHERE profile='dsh-bot'")
+    sent = fx.q("SELECT id, sender FROM messages WHERE content LIKE '%DSH_TOOLS_CLAIMED%'")
     return {"run_exit": run["exit_code"], "tools_called": tools,
-            "task_claimed": bool(claimed),
+            "task_claimed": claim_ok,
             "mark_seen_called": any("group_mark_seen" in t for t in tools),
+            "mark_seen_ok": seen_ok,
+            "replied_before_mark_seen": bool(sent),
             "inbox": [dict(r) for r in inbox]}
 
 
@@ -283,11 +303,12 @@ def _run_segment(args, segment: str) -> dict:
         result["passed"] = {
             "business": lambda d: d.get("sent_rows", 0) >= 1 and d.get("sent_by_bot")
             and d.get("group_send_called") and bool(d.get("reply_message_id")),
-            "stop": lambda d: d.get("proc_gone") and d.get("binding_after_stop")
-            and d.get("stop_body", {}).get("ok"),
-            "new": lambda d: d.get("generation_bumped") and d.get("switch_ops"),
-            "marker": lambda d: d.get("marker_recalled"),
-            "tools": lambda d: d.get("task_claimed") and d.get("mark_seen_called"),
+            "stop": lambda d: bool(d.get("proc_gone") and d.get("binding_preserved")
+                                   and d.get("stop_body", {}).get("ok")),
+            "new": lambda d: bool(d.get("generation_bumped") and d.get("switch_ops")),
+            "marker": lambda d: bool(d.get("marker_recalled")),
+            "tools": lambda d: bool(d.get("task_claimed") and d.get("mark_seen_ok")
+                                    and d.get("replied_before_mark_seen")),
         }[segment](r)
         return result
     finally:
