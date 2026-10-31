@@ -101,6 +101,33 @@ class DshProfileConfigTests(unittest.TestCase):
         self.assertEqual(view["description"], "")
         self.assertEqual(view["runtime"], "dsh")
 
+    def test_plugins_status(self):
+        view = self._read()
+        plugins = view["plugins"]
+        self.assertEqual(plugins["persona"]["state"], "ok")
+        self.assertEqual(plugins["persona"]["plugin"], "system-prompt")
+        self.assertEqual(plugins["model"]["state"], "ok")
+        self.assertEqual(plugins["instructions"]["state"], "missing")  # 条目未配置
+        self.assertEqual(plugins["instructions"]["plugin"], "dsh-agent-instructions")
+        self.assertEqual(plugins["description"]["state"], "ok")
+        self.assertIsNone(plugins["description"]["plugin"])
+        self.assertEqual(plugins["env"]["state"], "ok")
+
+    def test_plugins_status_disabled(self):
+        self.patch.write_text(
+            "- id: system-prompt\n  disabled: true\n  config:\n    personaPrefix: x\n"
+            "- id: agent-default-model\n  config:\n    provider: deepseek-account\n",
+            encoding="utf-8")
+        self.assertEqual(self._read()["plugins"]["persona"]["state"], "disabled")
+
+    def test_plugins_status_load_failed(self):
+        self.patch.write_text(
+            "- id: agent-default-model\n"
+            "  name: '@deepseek-ai/dsh-agent-default-model'\n"
+            "  config:\n    provider: deepseek-account\n    model: deepseek-flash\n",
+            encoding="utf-8")
+        self.assertEqual(self._read()["plugins"]["model"]["state"], "load_failed")
+
     def test_save_only_changes_target_and_preserves_unknown(self):
         self._save({"model": "deepseek-reasoner", "persona": "新人格"})
         text = self.patch.read_text(encoding="utf-8")

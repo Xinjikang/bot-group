@@ -60,6 +60,49 @@ _REASONING_LEVELS = ('', 'minimal', 'low', 'medium', 'high', 'max', 'ultra')
 _AMBIGUOUS = re.compile(r'!!js\b')
 # 凭据脱敏：sk-* 密钥、bearer token、api_key=... 等。
 _CREDENTIAL = re.compile(r'(?i)(sk-[A-Za-z0-9_-]{6,}|bearer\s+\S+|api[_-]?key\s*[:=]\s*\S+)')
+# 字段 -> (依赖插件 id, 包名)；description/env 无插件依赖（引擎侧边文件 / DSH 原生 .env）。
+_PLUGIN_BACKING = {
+    'persona': ('system-prompt', '@deepseek-ai/dsh-system-prompt'),
+    'model': ('agent-default-model', '@deepseek-ai/dsh-agent-default-model'),
+    'provider': ('agent-default-model', '@deepseek-ai/dsh-agent-default-model'),
+    'reasoning_effort': ('agent-default-model', '@deepseek-ai/dsh-agent-default-model'),
+    'instructions': ('dsh-agent-instructions', '@deepseek-ai/dsh-agent-instructions'),
+    'description': (None, None),
+    'env': (None, None),
+}
+
+
+def _pkg_installed(home: Path, profile: str, pkg_name: str) -> bool:
+    """插件包目录存在性（profile/home 的 node_modules），bundle 内插件视为已安装。"""
+    parts = pkg_name.lstrip('@').split('/')
+    for base in (home / 'profiles' / profile / 'node_modules', home / 'node_modules'):
+        if base.joinpath(*parts).is_dir():
+            return True
+    return False
+
+
+def _plugin_status(home: Path, profile: str, seq: list, patch: Path) -> dict:
+    """按字段返回插件状态（state/plugin/reason/path）。
+
+    来源 cordis.patch.yml 已知条目存在性 + disabled + 包目录加载探测；真实运行时加载失败
+    （bundle 插件在 asar 内，包目录不可见）由 266 启动探测补足。
+    """
+    out: dict[str, dict] = {}
+    for field, (plugin_id, pkg_name) in _PLUGIN_BACKING.items():
+        base = {'plugin': plugin_id, 'path': str(patch)}
+        if plugin_id is None:
+            out[field] = dict(base, state='ok', reason='')
+            continue
+        entry = next((e for e in seq if isinstance(e, dict) and str(e.get('id') or '') == plugin_id), None)
+        if entry is None:
+            out[field] = dict(base, state='missing', reason=f'{plugin_id} 插件未配置')
+        elif entry.get('disabled'):
+            out[field] = dict(base, state='disabled', reason=f'{plugin_id} 插件已禁用')
+        elif entry.get('name') and not _pkg_installed(home, profile, entry['name']):
+            out[field] = dict(base, state='load_failed', reason=f'{entry["name"]} 未安装或加载失败')
+        else:
+            out[field] = dict(base, state='ok', reason='')
+    return out
 
 
 def _sanitize(message: str) -> str:
@@ -119,7 +162,8 @@ def _parse(raw_text: str) -> list:
     return parsed
 
 
-def _view(patch: Path, file_paths: dict[str, Path], snapshot: dict[str, bytes | None]) -> dict:
+def _view(home: Path, profile: str, patch: Path, file_paths: dict[str, Path],
+          snapshot: dict[str, bytes | None]) -> dict:
     seq = _parse(files._text(snapshot[str(patch)]))
     view = {'runtime': 'dsh', 'revision': files._revision(snapshot), 'config_path': str(patch)}
     for field, (entry_id, key) in _PATCH_FIELDS.items():
@@ -128,6 +172,7 @@ def _view(patch: Path, file_paths: dict[str, Path], snapshot: dict[str, bytes | 
         view[field] = str(config[key] or '') if isinstance(config, dict) and key in config else ''
     for field, path in file_paths.items():
         view[field] = files._text(snapshot.get(str(path)))
+    view['plugins'] = _plugin_status(home, profile, seq, patch)
     return view
 
 
@@ -139,7 +184,7 @@ def read(bot) -> dict:
                 raise HTTPException(404, 'DSH profile cordis.patch.yml does not exist')
             paths = [patch, env, agents, desc]
             file_paths = {'env': env, 'instructions': agents, 'description': desc}
-            return _view(patch, file_paths, _snapshot(paths))
+            return _view(home, bot['profile'], patch, file_paths, _snapshot(paths))
     except YAMLError as exc:
         raise HTTPException(400, _sanitize(f'cordis.patch.yml 解析失败：{exc}')) from None
     except UnicodeError:
@@ -202,7 +247,7 @@ def save(bot, values: dict) -> dict:
             paths = [patch, env, agents, desc]
             file_paths = {'env': env, 'instructions': agents, 'description': desc}
             before = _snapshot(paths)
-            current = _view(patch, file_paths, before)
+            current = _view(home, bot['profile'], patch, file_paths, before)
             if values['revision'] != current['revision']:
                 raise HTTPException(409, 'Configuration changed; reopen the editor')
             raw = files._text(before[str(patch)])
