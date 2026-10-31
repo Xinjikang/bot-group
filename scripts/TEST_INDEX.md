@@ -185,6 +185,8 @@ Hermes 兼容性配套回归：设置 `HERMES_TEST_SOURCE` 为本机 Hermes 源�
 
 成员候选识别：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_discovery scripts.test_profile_create scripts.test_codex_driver_regressions scripts.test_member_identity -q`。使用隔离配置与 SQLite，覆盖浏览器配置误识别、空或无效配置、仅会话文件、独立认证 home、嵌套 home、根配置与外部命名 profile、删除后刷新过滤、读取失败隔离，以及历史 Bot 登记保留。两处选择列表的端到端验证复用 `scripts/test_profile_create_browser.py`。
 
+DSH 宿主接入：`python -X utf8 -B scripts/test_dsh_host_browser.py --evidence <主目录报告路径>`。真实 Chrome + 合成 HTTP，验证固定 Hermes/Codex/DSH 三项、选择 DSH 自动扫描、扫描成功自动带出 profile、扫描为空/异常的原因与手动 HOME、选择目录和重新扫描、`/bots/validate-dsh` 校验失败逐项展示并保留输入、校验通过后 `/bots/register` 保存 config_root/profile/runtime 绑定，以及已创建 dsh 成员绑定失效提示和 390px 深浅主题。合成接口只验证 DOM 与请求契约；真实发现与校验由 `test_discovery` 覆盖。
+
 后台重启诊断：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_service_restart scripts.test_service scripts.test_install -q`。隔离 Windows 程序目录、数据和端口，验证失败安装检查的 stdout/stderr 写入重启日志且旧实例保留，随后连续两次正常重启；配套覆盖安装就绪检查与依赖核验。手动更新依赖声明后，先运行 `tools/install.py repair` 并确认 `tools/install.py check` 通过，再手动重启生产实例。
 
 Profile 模型凭证与执行异常：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_profile_credentials scripts.test_profile_create scripts.test_execution_errors scripts.test_profile_config scripts.test_task_retry scripts.test_wake_pid_watch scripts.test_hermes_transport scripts.test_stop_scope -q`。覆盖静态 provider 扫描且源码未执行、默认/指定来源、自定义 key_env、多个 key 与地址、渠道排除、不兼容回滚；真实子进程 stderr、分类、脱敏、持久化去重、话题父消息、主动停止及重试。补充回归运行 `scripts.test_codex_driver_regressions scripts.test_wmic_free_wake scripts.test_engine_shutdown`，覆盖 Codex 过期凭证、实际唤醒链路及停机。浏览器运行 `scripts/test_profile_create_browser.py --evidence <主目录报告目录>/browser`，验证默认来源创建、无认证勾选框、桌面异常消息刷新恢复，以及创建对话框 390px 深浅主题。使用隔离目录、数据库和合成凭证；Hermes 安装版本升级后先检查静态适配器兼容性。
@@ -334,7 +336,7 @@ MCP API 与运行时配置：`test_task_api.py` 验证成员/项目/执行校验
 | 范围 | 用例 |
 | --- | --- |
 | 项目与模板 | `test_project_entry_browser.py`、`test_project_import_browser.py`、`test_project_setup_browser.py`、`test_project_templates_browser.py`、`test_project_settings_browser.py`、`test_project_history_browser.py`、`test_project_removal_browser.py`、`test_project_menu_loading_browser.py`、`test_workspace_save_browser.py` |
-| 成员、角色与配置 | `test_profile_create_browser.py`、`test_profile_soul_templates_browser.py`、`test_codex_config_browser.py`、`test_project_models_browser.py`、`test_member_name_browser.py`、`test_member_role_dropdown_browser.py`、`test_member_mentions_browser.py` |
+| 成员、角色与配置 | `test_profile_create_browser.py`、`test_dsh_host_browser.py`、`test_profile_soul_templates_browser.py`、`test_codex_config_browser.py`、`test_project_models_browser.py`、`test_member_name_browser.py`、`test_member_role_dropdown_browser.py`、`test_member_mentions_browser.py` |
 | 消息与需求 | `test_message_navigation_browser.py`、`test_requirement_details_browser.py`、`test_thread_creation_browser.py`、`test_image_browser.py` |
 | 外观和控件 | `test_alert_dialog.py`、`test_appearance_browser.py`、`test_background_storage_browser.py`、`test_directory_picker_browser.py`、`test_fixed_controls_browser.py`、`test_thinking_cache_browser.py`、`test_thinking_compaction_browser.py`、`test_execution_state_browser.py`、`test_service_restart_browser.py` |
 

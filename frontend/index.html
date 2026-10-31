@@ -755,6 +755,12 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 .member-create-fields .member-create-auth input{width:15px;height:15px;flex:0 0 15px;margin:0}
 .member-create-fields details{margin-top:12px}
 .member-create-fields summary{cursor:pointer;color:var(--fg-2);font-size:13px}
+/* req#137 task#263：DSH HOME 手动选择；固定三项宿主入口在窄屏允许两行。 */
+#dlg-member-add .project-mode-options label{min-width:100px}
+.member-create-fields .member-create-path{display:flex;gap:8px;align-items:center}
+.member-create-fields .member-create-path input{flex:1;min-width:0}
+.member-create-fields .member-create-path .directory-picker-button{flex:0 0 auto}
+.member-create-fields .member-create-path #member-create-dsh-rescan{flex:0 0 auto;white-space:nowrap}
 #dlg-member-add{max-height:calc(100dvh - 32px);overflow-y:auto}
 #dlg-member-add .dlg-btns{position:sticky;bottom:-1px;background:var(--card);padding-top:12px}
 #dlg-member-picker{width:560px;max-width:calc(100vw - 24px);box-sizing:border-box;max-height:calc(100dvh - 32px);overflow:auto}
@@ -4824,7 +4830,7 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/project_removal.js?v=20261014-hidden-removed"></script>
 <script src="/app/project_template_references.js?v=20261016-latest-soul"></script>
 <script src="/app/profile_soul_templates.js?v=20261029-project-context"></script>
-<script src="/app/project_settings.js?v=20261031-assistant-config"></script>
+<script src="/app/project_settings.js?v=20261031-dsh-home"></script>
 <link rel="stylesheet" href="/app/project_hud.css?v=20261031-native-agent">
 <script src="/app/project_hud.js?v=20261031-settings-actions"></script>
 <script src="/app/requirement_details.js?v=20261012-controls"></script>
