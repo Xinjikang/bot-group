@@ -32,7 +32,7 @@ def main():
                 file = ROOT / 'frontend' / (path[5:] or 'index.html')
                 req.fulfill(body=file.read_bytes(), content_type=mimetypes.guess_type(file.name)[0] or 'text/plain')
                 return
-            if req.request.method in ('POST', 'PUT', 'PATCH'):
+            if req.request.method in ('POST', 'PUT', 'PATCH') and path != '/hud':
                 writes.append((path, req.request.post_data_json))
             data = {}
             if path.endswith('/template-reference'):
