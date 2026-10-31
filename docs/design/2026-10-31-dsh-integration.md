@@ -159,6 +159,8 @@ Auto review 缺失属于可选能力缺失，显示状态即可。执行沿用 D
 
 `DSH_HOME`、`HERMES_HOME`、`CODEX_HOME` 均为可选的定位来源。已注册成员优先使用已保存的 `config_root` 与 profile 绑定；发现新宿主时按用户显式指定目录、引擎启动环境中的对应 HOME、宿主原生默认目录的顺序定位。环境 HOME 需同时读进程环境（`os.environ`）与 Windows 用户级环境（`HKCU\Environment` 注册表）——现有 `discovery` 仅读 `os.environ`，新设的用户级 HOME 在引擎进程重启前不可见，会误回退到默认目录。发现、编辑与启动须使用同一解析结果，并显示实际目录及来源。
 
+兼容现有扫描的护栏：一、用户级注册表读取仅作进程 env 之后的 fallback，不覆盖进程 env，现有 Hermes/Codex 的 env→default 优先级不变，仅在中段插入用户级注册表一层；二、手动选 HOME 是自动扫描失败后的 fallback，不替代自动扫描，扫描成功仍以扫描结果为准；三、`_scan_dsh` 为新增扫描器，不改动 `_scan_hermes`/`_scan_codex` 现有逻辑，前端 host 选择器加 dsh 是新增一项，不改现有 hermes/codex 两项。
+
 | 宿主 | HOME 缺省时的发现位置 |
 | --- | --- |
 | DSH | 当前运行账户的 `~/.dsh`；自定义迁移目录通过显式配置绑定 |
