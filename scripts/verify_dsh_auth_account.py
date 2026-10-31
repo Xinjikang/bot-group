@@ -96,6 +96,8 @@ def main():
     bot = {'config_root': str(args.source_home), 'profile': 'desktop'}
     info = dsh_auth.resolve(bot)
     result = {'route': info['route'], 'provider': info['provider'], 'model': info['model']}
+    # 只读来源核验：仅报告存在/缺失 + 配置引用，不输出凭据值
+    result['credential_sources'] = dsh_auth.credential_sources(str(args.source_home))
     with tempfile.TemporaryDirectory(prefix='dsh-auth-', dir=args.test_directory) as tmp:
         private = Path(tmp)
         cred = dsh_auth.copy_credentials(str(args.source_home), str(private))

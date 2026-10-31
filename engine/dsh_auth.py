@@ -21,6 +21,18 @@ from pathlib import Path
 
 from . import dsh_profile_config
 
+try:
+    import ntsecuritycon
+    import win32api
+    import win32security
+except ImportError:  # 非 Windows 环境，结构化 DACL 核验不可用
+    ntsecuritycon = win32api = win32security = None  # type: ignore[assignment]
+
+try:
+    import yaml as _yaml
+except ImportError:  # 无 YAML 库时退化为正则键名匹配
+    _yaml = None  # type: ignore[assignment]
+
 
 # 凭据脱敏：sk-* 密钥、bearer token、api_key=...、DEEPSEEK_API_KEY=...、authorization=...
 _CREDENTIAL = re.compile(
@@ -30,9 +42,12 @@ _CREDENTIAL = re.compile(
 _ACCOUNT_PROVIDER = 'deepseek-account'
 # provider/model/服务配置条目，随 overlay 一并透传（desktop 实测 id 集合）。
 _PROVIDER_IDS = ('agent-default-model', 'llm-deepseek', 'llm-pi-ai', 'deepseek-account')
-# 宽泛 ACE（Everyone/Users/Authenticated Users 及对应 SID），凭据副本目录/文件不得残留。
-_BROAD_ACE = re.compile(
-    r'(?i)(Everyone|BUILTIN\\Users|Authenticated Users|S-1-1-0\b|S-1-5-32-545\b|S-1-5-11\b)')
+
+
+# 宽泛 SID（Everyone/Users/Authenticated Users/Guests/ANONYMOUS）——凭据副本不得出现。
+_BROAD_SIDS = {'S-1-1-0', 'S-1-5-7', 'S-1-5-11', 'S-1-5-32-545', 'S-1-5-32-546'}
+# 系统/管理员/所有者 SID（OS 级，非宽泛、非其他用户）——允许。
+_SYSTEM_SIDS = {'S-1-5-18', 'S-1-5-32-544', 'S-1-3-0', 'S-1-3-4'}
 
 
 class AuthSyncError(ValueError):
@@ -47,26 +62,95 @@ def _windows_identity() -> str:
     return user
 
 
-def _read_acl(path: Path) -> str:
-    """读回 ACL，失败（非零/超时/异常/空/不可解析）均显式中止。"""
+def _current_user_sid() -> str:
+    """可信进程身份：当前进程令牌用户 SID（非环境变量，防伪造）。"""
+    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32security.TOKEN_QUERY)
     try:
-        r = subprocess.run(['icacls', str(path)], stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, text=True,
-                           encoding='utf-8', errors='replace', timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise AuthSyncError('无法读取凭据副本 ACL，已中止') from exc
-    if r.returncode != 0:
-        raise AuthSyncError(f'无法读取凭据副本 ACL，已中止（icacls 返回 {r.returncode}）')
-    acl = (r.stdout or '').strip()
-    if not acl:
-        raise AuthSyncError('凭据副本 ACL 读取为空或不可解析，已中止')
-    return acl
+        sid, _ = win32security.GetTokenInformation(token, win32security.TokenUser)
+        return win32security.ConvertSidToStringSid(sid)
+    finally:
+        win32api.CloseHandle(token)
 
 
-def _verify_acl(acl: str) -> None:
-    """核验 ACL 无宽泛 ACE（Everyone/Users/Authenticated Users 及 SID）。"""
-    if _BROAD_ACE.search(acl):
-        raise AuthSyncError('凭据副本仍存在宽泛访问权限，已中止')
+def _file_aces(path: Path) -> list[tuple[str, int]]:
+    """结构化读取 DACL：返回允许 ACE 的 (SID 字符串, 访问掩码) 列表。"""
+    sd = win32security.GetNamedSecurityInfo(str(path), win32security.SE_FILE_OBJECT,
+                                             win32security.DACL_SECURITY_INFORMATION)
+    dacl = sd.GetSecurityDescriptorDacl()
+    if dacl is None:
+        raise AuthSyncError('凭据副本无 DACL 保护，已中止')
+    aces: list[tuple[str, int]] = []
+    for i in range(dacl.GetAceCount()):
+        ace = dacl.GetAce(i)
+        if ace[0][0] == ntsecuritycon.ACCESS_ALLOWED_ACE_TYPE:
+            aces.append((win32security.ConvertSidToStringSid(ace[2]), int(ace[1])))
+    if not aces:
+        raise AuthSyncError('凭据副本无可解析允许 ACE，已中止')
+    return aces
+
+
+def _verify_private_acl(path: Path, current_sid: str) -> None:
+    """结构化核验：无宽泛/其他用户 ACE，且当前进程用户有读权限。
+
+    允许 OS 级主体（SYSTEM/Administrators/Owner Rights），拒绝 Everyone/Users/
+    Authenticated Users/Guests 等宽泛 SID 及任何其他具体用户 SID。
+    """
+    aces = _file_aces(path)
+    current_read = False
+    for sid, access in aces:
+        if sid in _BROAD_SIDS:
+            raise AuthSyncError('凭据副本存在宽泛访问权限，已中止')
+        if sid == current_sid:
+            current_read = bool(access & ntsecuritycon.FILE_READ_DATA)
+            continue
+        if sid in _SYSTEM_SIDS:
+            continue
+        raise AuthSyncError('凭据副本存在其他主体访问权限，已中止')
+    if not current_read:
+        raise AuthSyncError('当前用户无读取权限，已中止')
+
+
+def credential_sources(home: str) -> dict:
+    """只读核验凭据来源存在性（仅报告存在/缺失 + 配置引用，不输出凭据值）。
+
+    返回 ``{account_credentials, api_key_entry, api_key_refs, env_api_key,
+    process_env_api_key}``；``api_key_refs`` 为 ``.credentials.yaml`` 内 API-key
+    类型条目的键路径（如 ``refs.DEEPSEEK_API_KEY``），仅键名不含值。
+    """
+    home = Path(home).resolve()
+    credentials = home / '.credentials.yaml'
+    account = credentials.is_file()
+    api_key_refs: list[str] = []
+    if account:
+        try:
+            raw = credentials.read_text(encoding='utf-8-sig')
+            if _yaml is not None:
+                api_key_refs = _api_key_paths(_yaml.safe_load(raw))
+            if not api_key_refs:
+                api_key_refs = [m.group(1).strip() for m in re.finditer(
+                    r'(?i)^\s*([^#\n]*\b(?:api[_-]?key|DEEPSEEK_API_KEY)\b[^#\n]*)\s*:',
+                    raw, re.MULTILINE)]
+        except Exception:  # 解析失败/无权限读：只报告存在性，不中断
+            pass
+    return {'account_credentials': account, 'api_key_entry': bool(api_key_refs),
+            'api_key_refs': api_key_refs,
+            'env_api_key': bool(_env_key(home)),
+            'process_env_api_key': 'DEEPSEEK_API_KEY' in os.environ}
+
+
+def _api_key_paths(data, prefix: str = '') -> list[str]:
+    """递归提取 API-key 类型条目的键路径（不返回值）。"""
+    out: list[str] = []
+    if isinstance(data, dict):
+        for key, value in data.items():
+            full = f'{prefix}.{key}' if prefix else str(key)
+            if re.search(r'(?i)\b(?:api[_-]?key|DEEPSEEK_API_KEY)\b', str(key)):
+                out.append(full)
+            out.extend(_api_key_paths(value, full))
+    elif isinstance(data, list):
+        for i, item in enumerate(data):
+            out.extend(_api_key_paths(item, f'{prefix}[{i}]'))
+    return out
 
 
 def sanitize(message: str) -> str:
@@ -193,6 +277,7 @@ def copy_credentials(home: str, private_dir: str) -> str | None:
     if dest.exists():
         raise AuthSyncError('凭据副本目标文件已存在，中止（防止沿用既有宽泛 ACL）')
     if sys.platform == 'win32':
+        current_sid = _current_user_sid()
         identity = _windows_identity()
         if not identity:
             raise AuthSyncError('无法解析当前用户身份，中止凭据副本')
@@ -206,14 +291,25 @@ def copy_credentials(home: str, private_dir: str) -> str | None:
             raise AuthSyncError('无法限制凭据副本目录权限，已中止') from exc
         if r.returncode != 0:
             raise AuthSyncError(f'无法限制凭据副本目录权限，已中止（icacls 返回 {r.returncode}）')
-        _verify_acl(_read_acl(private))
+        _verify_private_acl(private, current_sid)
     try:
         dest.write_bytes(source.read_bytes())
     except Exception:
         dest.unlink(missing_ok=True)
         raise AuthSyncError('无法写入凭据副本，已中止') from None
     if sys.platform == 'win32':
-        _verify_acl(_read_acl(dest))
+        try:
+            _verify_private_acl(dest, current_sid)
+        except AuthSyncError:
+            # 写后核验失败：清理本次副本，清理失败亦显式可见
+            cleanup_failed = False
+            try:
+                dest.unlink(missing_ok=True)
+            except OSError:
+                cleanup_failed = True
+            if cleanup_failed:
+                raise AuthSyncError('写后 ACL 核验失败且副本清理失败，请手动清理') from None
+            raise AuthSyncError('写后 ACL 核验失败，副本已清理，已中止') from None
     return dest
 
 

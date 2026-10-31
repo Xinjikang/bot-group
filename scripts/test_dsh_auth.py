@@ -142,22 +142,31 @@ class DshAuthTests(unittest.TestCase):
         self.assertIn({'id': 'session-log-deepseek', 'disabled': True}, entries)
         self.assertIn({'id': 'session-telemetry-otel', 'disabled': True}, entries)
 
-    def _copy(self, *, restrict_rc=0, dir_acl='DOMAIN\\user:(OI)(CI)F\n',
-              file_acl='DOMAIN\\user:(OI)(CI)F\n', read_raise=None):
+    SID = 'S-1-5-21-4233577952-3064609659-4148397581-2891'
+    FULL = 0x1F01FF  # FILE_ALL_ACCESS
+
+    def _copy(self, *, restrict_rc=0, dir_aces=None, file_aces=None, file_raise=None):
         private = Path(self.tmp.name) / "private"
         private.mkdir()
+        if dir_aces is None:
+            dir_aces = [(self.SID, self.FULL)]
+        if file_aces is None:
+            file_aces = [(self.SID, self.FULL)]
 
         def run(args, **kwargs):
             return type('R', (), {'returncode': restrict_rc, 'stdout': '', 'stderr': ''})()
 
-        def read_acl(path):
-            if read_raise is not None:
-                raise read_raise
-            return file_acl if path.name == 'credentials.yaml' else dir_acl
+        def aces(path):
+            if path.name == 'credentials.yaml':
+                if file_raise is not None:
+                    raise file_raise
+                return file_aces
+            return dir_aces
 
         with patch.object(dsh_auth, '_windows_identity', return_value='DOMAIN\\user'), \
+             patch.object(dsh_auth, '_current_user_sid', return_value=self.SID), \
              patch.object(dsh_auth.subprocess, 'run', side_effect=run), \
-             patch.object(dsh_auth, '_read_acl', side_effect=read_acl):
+             patch.object(dsh_auth, '_file_aces', side_effect=aces):
             return dsh_auth.copy_credentials(str(self.droot), str(private)), private
 
     def test_copy_credentials_byte_identical_and_original_kept(self):
@@ -170,12 +179,12 @@ class DshAuthTests(unittest.TestCase):
 
     def test_copy_credentials_icacls_failure_aborts(self):
         self._account()
-        _, private = None, None
+        private = Path(self.tmp.name) / "private"
+        private.mkdir()
         with patch.object(dsh_auth, '_windows_identity', return_value='DOMAIN\\user'), \
+             patch.object(dsh_auth, '_current_user_sid', return_value=self.SID), \
              patch.object(dsh_auth.subprocess, 'run',
                           side_effect=lambda *a, **k: type('R', (), {'returncode': 1, 'stdout': '', 'stderr': ''})()):
-            private = Path(self.tmp.name) / "private"
-            private.mkdir()
             with self.assertRaises(dsh_auth.AuthSyncError):
                 dsh_auth.copy_credentials(str(self.droot), str(private))
         self.assertFalse((private / 'credentials.yaml').exists())
@@ -184,39 +193,51 @@ class DshAuthTests(unittest.TestCase):
         self._account()
         private = Path(self.tmp.name) / "private"
         private.mkdir()
-        with patch.object(dsh_auth, '_windows_identity', return_value=''):
+        with patch.object(dsh_auth, '_current_user_sid', return_value=self.SID), \
+             patch.object(dsh_auth, '_windows_identity', return_value=''):
             with self.assertRaises(dsh_auth.AuthSyncError):
                 dsh_auth.copy_credentials(str(self.droot), str(private))
         self.assertFalse((private / 'credentials.yaml').exists())
 
-    def _copy_broad(self, acl):
+    def _copy_error(self, aces_side_effect):
         self._account()
         private = Path(self.tmp.name) / "private"
         private.mkdir()
         with patch.object(dsh_auth, '_windows_identity', return_value='DOMAIN\\user'), \
+             patch.object(dsh_auth, '_current_user_sid', return_value=self.SID), \
              patch.object(dsh_auth.subprocess, 'run',
                           side_effect=lambda *a, **k: type('R', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()), \
-             patch.object(dsh_auth, '_read_acl', return_value=acl):
+             patch.object(dsh_auth, '_file_aces', side_effect=aces_side_effect):
             with self.assertRaises(dsh_auth.AuthSyncError):
                 dsh_auth.copy_credentials(str(self.droot), str(private))
+        return private
+
+    def test_copy_credentials_garbage_acl_aborts(self):
+        # 非空但无法解析（结构化读取抛错）→ 中止
+        private = self._copy_error(dsh_auth.AuthSyncError('unparseable'))
         self.assertFalse((private / 'credentials.yaml').exists())
 
-    def test_copy_credentials_broad_ace_aborts(self):
-        self._copy_broad('BUILTIN\\Users:(OI)(CI)(RX)\n')
+    def test_copy_credentials_other_user_read_aborts(self):
+        # 其他用户显式读取 ACE → 中止
+        private = self._copy_error(lambda path: [(self.SID, self.FULL), ('S-1-5-21-other', self.FULL)])
+        self.assertFalse((private / 'credentials.yaml').exists())
 
-    def test_copy_credentials_sid_broad_ace_aborts(self):
-        self._copy_broad('S-1-5-32-545:(OI)(CI)(RX)\n')
+    def test_copy_credentials_file_readback_failure_cleans(self):
+        # 目录核验成功后文件读回失败 → 清理副本
+        def aces(path):
+            if path.name == 'credentials.yaml':
+                raise dsh_auth.AuthSyncError('readback fail')
+            return [(self.SID, self.FULL)]
+        private = self._copy_error(aces)
+        self.assertFalse((private / 'credentials.yaml').exists())
 
-    def test_copy_credentials_read_acl_failure_aborts(self):
-        self._account()
-        private = Path(self.tmp.name) / "private"
-        private.mkdir()
-        with patch.object(dsh_auth, '_windows_identity', return_value='DOMAIN\\user'), \
-             patch.object(dsh_auth.subprocess, 'run',
-                          side_effect=lambda *a, **k: type('R', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()), \
-             patch.object(dsh_auth, '_read_acl', side_effect=dsh_auth.AuthSyncError('read fail')):
-            with self.assertRaises(dsh_auth.AuthSyncError):
-                dsh_auth.copy_credentials(str(self.droot), str(private))
+    def test_copy_credentials_file_verify_failure_cleans(self):
+        # 目录核验成功后文件 ACL 校验失败（其他用户 ACE）→ 清理副本
+        def aces(path):
+            if path.name == 'credentials.yaml':
+                return [(self.SID, self.FULL), ('S-1-5-21-other', self.FULL)]
+            return [(self.SID, self.FULL)]
+        private = self._copy_error(aces)
         self.assertFalse((private / 'credentials.yaml').exists())
 
     def test_copy_credentials_existing_file_aborts(self):
@@ -231,6 +252,20 @@ class DshAuthTests(unittest.TestCase):
         private = Path(self.tmp.name) / "private"
         private.mkdir()
         self.assertIsNone(dsh_auth.copy_credentials(str(self.droot), str(private)))
+
+    def test_credential_sources(self):
+        self._account()
+        src = dsh_auth.credential_sources(str(self.droot))
+        self.assertTrue(src['account_credentials'])
+        self.assertFalse(src['api_key_entry'])
+        self.assertFalse(src['env_api_key'])
+        self.assertFalse(src['process_env_api_key'])
+        self.envfile.write_text("DEEPSEEK_API_KEY=sk-test123456\n", encoding="utf-8")
+        self.assertTrue(dsh_auth.credential_sources(str(self.droot))['env_api_key'])
+        self.credfile.write_text("apiKey: sk-test123456\n", encoding="utf-8")
+        src = dsh_auth.credential_sources(str(self.droot))
+        self.assertTrue(src['api_key_entry'])
+        self.assertEqual(src['api_key_refs'], ['apiKey'])
 
     def test_is_auth_error(self):
         self.assertTrue(dsh_auth.is_auth_error({"type": "MISSING_CREDENTIAL"}))
