@@ -152,8 +152,10 @@ def _handle_steer(conn: sqlite3.Connection, project: str, targets: list[str],
         raise CommandError("请用 @ 指定目标 bot（如 /steer @苏瑾 请改用方案 B）")
     if not args:
         raise CommandError("/steer 需要纠偏正文（如 /steer @苏瑾 请改用方案 B）")
-    from . import steer_ledger, hermes_gateway_steer
+    from . import steer_ledger, hermes_gateway_steer, bot_identity
     kind = "chat" if thread_id is not None else "work"
+    # req#137 task#267：dsh 首期无运行中纠偏通道——按宿主能力在进入 Hermes 执行
+    # 查询/账本投递前拦截（命令留痕由 dispatch 层完成，不落 steer 账本）。
     # 每个 target 落一条 queued 账本，随即定位运行中执行并投递，回执映射回账本
     ops = []
     statuses = []
@@ -161,6 +163,11 @@ def _handle_steer(conn: sqlite3.Connection, project: str, targets: list[str],
     for t in targets:
         if db.is_builtin_user(t):
             continue  # 目标必须 bot，user 不记账本
+        bot = bot_identity.resolve(conn, project, t)
+        if bot and bot.get('runtime') == 'dsh':
+            statuses.append('unsupported')
+            details.append(f'@{t}：dsh 宿主暂不支持运行中纠偏（/steer）')
+            continue
         op = steer_ledger.new_operation(conn, project, t, kind, thread_id, args)
         ops.append(op["operation_id"])
         outcome = hermes_gateway_steer.deliver_steer(
@@ -168,6 +175,10 @@ def _handle_steer(conn: sqlite3.Connection, project: str, targets: list[str],
         statuses.append(outcome["status"])
         details.append(f"@{t}：{outcome['detail']}")
     if not ops:
+        if statuses:
+            # 全部目标为 dsh（不支持）：明确能力提示，命令已留痕
+            return {"handled": True, "ok": False, "command": "/steer", "targets": targets,
+                    "statuses": statuses, "detail": "；".join(details)}
         raise CommandError("/steer 目标必须是 bot（@ 里不含 user）")
     ok = all(s == "queued" for s in statuses)
     return {"handled": True, "ok": ok, "command": "/steer", "targets": targets,
@@ -210,9 +221,9 @@ COMMAND_REGISTRY = {
         "name": "/steer",
         "requires_target": True,
         "menu_description": "向运行中的目标 bot 注入纠偏（网关运行中执行）",
-        "help": "向运行中的目标 bot 注入纠偏；已接入网关 session.steer 运行中纠偏，子进程/Codex 后端不支持。",
+        "help": "向运行中的目标 bot 注入纠偏；已接入网关 session.steer 运行中纠偏，dsh/Codex 子进程后端不支持（dsh 首期返回能力不支持提示）。",
         "scope": "@ 目标 bot + 纠偏正文",
-        "busy_policy": "目标空闲时无法投递；仅网关（hermes）运行中执行可纠偏",
+        "busy_policy": "目标空闲时无法投递；仅网关（hermes）运行中执行可纠偏，dsh/Codex 不支持",
         "handler": _handle_steer,
     },
     "help": {

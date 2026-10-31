@@ -186,16 +186,20 @@ def find_bot_processes(profile: str, session: str | None = None) -> "list[int] |
 
 
 def _find_codex_processes(profile, session):
-    """Return scoped native PIDs, None on query failure, False for Hermes."""
+    """Return scoped native PIDs, None on query failure, False for Hermes.
+
+    req#137 task#267：覆盖 codex 与 dsh 两种原生 runtime——dsh /stop 经同一
+    wake_runs + 命令行身份链路定位（进程命令行无 session 参数，靠 overlay 目录标签）。
+    """
     conn = db.get_connection()
     try:
         member = conn.execute('SELECT b.runtime FROM members m JOIN bots b ON b.id=m.bot_id '
                               'WHERE m.profile=?', (profile,)).fetchone()
-        rows = conn.execute("SELECT session,started_at,pid,project FROM wake_runs WHERE profile=? "
-                            "AND runtime='codex' AND (ended_at IS NULL OR exit_code=-1) "
+        rows = conn.execute("SELECT session,started_at,pid,project,runtime FROM wake_runs WHERE profile=? "
+                            "AND runtime IN ('codex','dsh') AND (ended_at IS NULL OR exit_code=-1) "
                             + ('AND session=?' if session else ''),
                             (profile, session) if session else (profile,)).fetchall()
-        if not rows and (not member or member['runtime'] != 'codex'):
+        if not rows and (not member or member['runtime'] not in ('codex', 'dsh')):
             return False
     except sqlite3.Error as exc:
         process_query.diagnostic(profile, 'codex_records', exc)
@@ -217,10 +221,33 @@ def _find_codex_processes(profile, session):
         argv = process_query.command_line(run['pid'], scope=profile)
         if argv is None:
             return None
-        if _matches_codex_execution(argv, profile, run):
+        if run['runtime'] == 'dsh':
+            if _matches_dsh_execution(argv, run):
+                pids.append(run['pid'])
+        elif _matches_codex_execution(argv, profile, run):
             pids.append(run['pid'])
     process_query.diagnostic(profile, 'codex_pid')
     return pids
+
+
+def _dsh_spawn_tag(session: str, wake_started_at) -> str:
+    """req#137 task#267：dsh 私有目录标签。
+
+    dsh 命令行 `--patch <overlay>` 的 overlay 位于带该标签的目录——/stop 与引擎
+    重启后的进程定位用它核验进程身份（命令行匹配，不信任裸 pid）。
+    """
+    return f'dsh-spawn-{session}-{wake_started_at}'
+
+
+def _matches_dsh_execution(argv: list[str], run) -> bool:
+    """校验 dsh 内联执行身份：`--profile headless --patch <overlay>` 且 overlay
+    路径含本会话/启动时间标签（_dsh_spawn_tag）。"""
+    if '--patch' not in argv or 'headless' not in argv:
+        return False
+    idx = argv.index('--patch')
+    if idx + 1 >= len(argv):
+        return False
+    return _dsh_spawn_tag(run['session'], run['started_at']) in argv[idx + 1]
 
 
 def _matches_codex_execution(argv, profile, run):
@@ -957,6 +984,7 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         dsh_resume_sid = None
         dsh_spawn_gen = None
         dsh_bot_id = None
+        dsh_project_overrides = {}
         if runtime == "codex":
             # req#88 task#153：读绑定改 runtime 列逐行校验（第四节第 1/3 条）——
             # 只认 runtime='codex' 的行，防 hermes 行残留 session_id 被误当 codex
@@ -985,6 +1013,8 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                 if row is not None:
                     dsh_resume_sid = row["session_id"] or None
                     dsh_spawn_gen = row["generation"]
+            # conn 在 1016 行关闭后才进 spawn 分支，项目覆盖须在块内读完
+            dsh_project_overrides = _dsh_project_overrides(conn, project, profile)
     finally:
         conn.close()
     if runtime == 'hermes':
@@ -1037,7 +1067,9 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                    'session': session, 'wake_started_at': wake_started_at}
         from . import native_runtime, dsh_auth
         import tempfile as _tempfile
-        dsh_tmp = _tempfile.mkdtemp(prefix='dsh-spawn-')
+        # req#137 task#267：目录名带会话/启动时间标签——/stop 与重启后进程定位靠
+        # 命令行 overlay 路径核对身份（_matches_dsh_execution）。
+        dsh_tmp = _tempfile.mkdtemp(prefix=_dsh_spawn_tag(session, wake_started_at) + '-')
         try:
             dsh_cred = dsh_auth.copy_credentials(bot['config_root'], dsh_tmp)
         except dsh_auth.AuthSyncError as exc:
@@ -1046,7 +1078,7 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         dsh_overlay = native_runtime.dsh_overlay(
             bot, credentials_path=dsh_cred,
             mcp_entry=_dsh_mcp_entry(profile, context, workdir, chat=kind == 'chat'),
-            project_overrides=_dsh_project_overrides(conn, project, profile))
+            project_overrides=dsh_project_overrides)
         dsh_overlay_path = Path(dsh_tmp) / 'overlay.json'
         dsh_overlay_path.write_text(json.dumps(dsh_overlay, ensure_ascii=False), encoding='utf-8')
         try:
