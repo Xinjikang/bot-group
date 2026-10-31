@@ -1088,9 +1088,8 @@ def patch_project_role(name: str, role_id: int, body: dict[str, Any], identity=D
     改名同步更新该角色下成员的 role 文本列（保持兼容列与权威关联一致）。
     """
     _admin_only(identity, '仅管理员可管理项目角色')
-    new_name = (body.get('name') or '').strip()
-    if not new_name or len(new_name) > 100 or any(ord(c) < 32 for c in new_name):
-        raise HTTPException(400, 'name 必须是长度不超过 100 的单行文本')
+    from .project_team import validate_role_text
+    new_name = validate_role_text(body.get('name'))
     conn = _conn()
     try:
         row = conn.execute('SELECT * FROM project_roles WHERE id=? AND project=?', (role_id, name)).fetchone()

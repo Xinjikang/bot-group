@@ -218,12 +218,10 @@ def _config(body):
     for role in roles:
         if not isinstance(role, dict) or set(role) != {'name', 'permissions'}:
             raise HTTPException(400, '角色需要 name 和 permissions')
-        name = role['name']
-        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 100 or any(ord(c) < 32 for c in name):
-            raise HTTPException(400, '角色名必须是长度不超过 100 的单行文本')
-        if name.strip() in names:
+        name = project_team.validate_role_text(role['name'])
+        if name in names:
             raise HTTPException(400, '角色名重复')
-        names.add(name.strip())
+        names.add(name)
         _permission_list(role['permissions'])
     for member in members:
         if not isinstance(member, dict) or set(member) != {'bot_id', 'role', 'permissions'}:
@@ -232,7 +230,8 @@ def _config(body):
         if type(bot_id) is not int or bot_id <= 0 or bot_id in ids:
             raise HTTPException(400, 'bot_id 必须是唯一的正整数')
         ids.add(bot_id)
-        if not isinstance(role, str) or (role.strip() and role.strip() not in names):
+        role = project_team.validate_role_text(role, member=True)
+        if role and role not in names:
             raise HTTPException(400, '成员必须选择一个已定义角色，或留空')
         _permission_list(member['permissions'])
     owner = body.get('owner_bot_id')

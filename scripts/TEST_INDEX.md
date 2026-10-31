@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+角色文本字符校验：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_roles scripts.test_project_import scripts.test_hud_native_tools scripts.test_role_entity scripts.test_permission_roles -q`。临时 SQLite、宿主配置和项目目录，真实进程内 HTTP API；覆盖三个写入入口的零宽/控制/代理项/未分配码点/Unicode 行段分隔符、首尾字符校验与错误位置、类型及长度边界、合法 Unicode 精确筛选、失败时角色/成员/审计和导入文件保持原值、助手已建项目与创建草稿，以及存量异常角色读取和改名后 ID/权限关联保留。无需业务服务或模型调用，退出清理自身临时资源。
+
 项目助手数据库配置与导航返修：HUD 核心回归加 `scripts.test_profile_create`、`scripts.test_hud_inspection`，覆盖角色新增/改名/删除、启停、角色分配、角色权限隔离、profile 创建后的实际说明校验和 Unicode 位置证据。`python -X utf8 -B scripts/test_project_settings_browser.py --permissions-only` 验证助手保存后保留未提交的权限选择、保存/冲突及 390px；实际导航由 `verify_hud_native_artifacts.py --scenario settings --browser-python <Playwright Python>` 启动 `test_hud_navigation_browser.py` 验证完整页面。
 
 项目助手原生工具与配置：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_native_tools scripts.test_project_hud scripts.test_hud_gateway scripts.test_hud_preparation scripts.test_access_contract scripts.test_hermes_gateway_sessions -q`。隔离 SQLite、API 和模拟 RPC 覆盖精简配置/导航 MCP、执行凭据、创建草稿/详情保存及审计、并发冲突、归档与过期拒写、用户授权按轮清理、一小时间隔内跳过扫描、元数据上下文、原生工具及 Windows Codex home 复用、Hermes 私有工具作用域与跨轮换证。六类模板和历史文档提案兼容继续由 `test_hud_preparation` 覆盖。浏览器运行 `python -X utf8 -B scripts/test_hud_notifications_browser.py --evidence <主目录报告绝对路径>`，验证文件摘要、直接配置同步及未保存字段保护，截图覆盖 1440px/390px 深浅主题。

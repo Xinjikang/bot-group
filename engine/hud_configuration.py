@@ -5,7 +5,7 @@ import hashlib
 from pathlib import Path
 
 from fastapi import HTTPException
-from . import hud_tools, project_hud as hud
+from . import hud_tools, project_hud as hud, project_team
 
 SECTIONS = ('basic', 'roles', 'members', 'permissions', 'profiles')
 OPERATIONS = {'basic': ['update'], 'roles': ['create', 'rename', 'remove'],
@@ -140,12 +140,10 @@ def _draft(item, section, operation, changes, current):
         raise HTTPException(409, '成员启停在项目创建后生效；创建草稿通过成员选择管理入组范围')
     if section == 'roles' and operation == 'create':
         _validate(changes, ['name'])
-        name = changes['name']
-        if not isinstance(name, str) or not name.strip() or len(name) > 100 or any(ord(c) < 32 for c in name):
-            raise HTTPException(400, '角色名必须为非空单行文本')
-        if any(r['name'] == name.strip() for r in roles):
+        name = project_team.validate_role_text(changes['name'])
+        if any(r['name'] == name for r in roles):
             raise HTTPException(409, '已存在同名角色')
-        roles.append({'name': name.strip(), 'permissions': []})
+        roles.append({'name': name, 'permissions': []})
     else:
         # Wizard roles have names before their stable database IDs are assigned.
         _validate(changes, ['role', 'name'] if section == 'roles' and operation == 'rename' else
@@ -155,21 +153,20 @@ def _draft(item, section, operation, changes, current):
             if role is None:
                 raise HTTPException(404, '草稿中未找到该角色')
             if operation == 'rename':
-                name = changes['name']
-                if not isinstance(name, str) or not name.strip() or len(name) > 100 or any(ord(c) < 32 for c in name):
-                    raise HTTPException(400, '角色名必须为非空单行文本')
-                if any(r is not role and r['name'] == name.strip() for r in roles):
+                name = project_team.validate_role_text(changes['name'])
+                if any(r is not role and r['name'] == name for r in roles):
                     raise HTTPException(409, '已存在同名角色')
                 for member in members:
                     if member.get('role') == role['name']:
-                        member['role'] = name.strip()
-                role['name'] = name.strip()
+                        member['role'] = name
+                role['name'] = name
             else:
                 roles.remove(role)
                 for member in members:
                     if member.get('role') == role['name']:
                         member['role'] = ''
         elif section == 'members':
+            project_team.validate_role_text(changes['role'], member=True)
             member = next((m for m in members if m.get('bot_id') == changes['bot_id']), None)
             if member is None:
                 with hud.connection() as conn:

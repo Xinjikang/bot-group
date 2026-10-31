@@ -179,9 +179,9 @@ class NativeToolTests(unittest.TestCase):
 
     def test_roles_members_and_permissions_use_existing_business_operations(self):
         item = self.running()
-        response = self.settings(item, 'roles', 'create', {'name': 'secretary\u200c'})
+        response = self.settings(item, 'roles', 'create', {'name': 'secretary-old'})
         self.assertEqual(response.status_code, 200, response.text)
-        role = next(r for r in response.json()['configuration']['roles'] if r['name'] == 'secretary\u200c')
+        role = next(r for r in response.json()['configuration']['roles'] if r['name'] == 'secretary-old')
         profile = self.conn.execute("SELECT profile FROM project_members WHERE project='p' LIMIT 1").fetchone()[0]
         assigned = self.settings(item, 'members', 'assign_role', {'profile': profile, 'role_id': role['id']})
         self.assertEqual(assigned.status_code, 200, assigned.text)
@@ -213,6 +213,17 @@ class NativeToolTests(unittest.TestCase):
         response = self.settings(item, 'roles', 'create', {'name': '非法字段', 'project': 'q'})
         self.assertEqual(response.status_code, 400)
 
+    def test_settings_role_validation_preserves_configuration(self):
+        item = self.running()
+        role = self.client.post('/projects/p/roles', json={'name': '开发'}).json()
+        before = self.settings(item, 'roles')['sections']['roles']
+        for operation, changes in [('create', {'name': 'secretary\u200c'}),
+                                   ('rename', {'role_id': role['id'], 'name': '开发\u2028'})]:
+            response = self.settings(item, 'roles', operation, changes)
+            self.assertEqual(response.status_code, 400, response.text)
+            self.assertIn('U+', response.json()['detail'])
+            self.assertEqual(self.settings(item, 'roles')['sections']['roles'], before)
+
     def test_create_profile_uses_template_soul_and_assigns_role(self):
         from engine import project_templates
         item = self.running()
@@ -241,6 +252,17 @@ class NativeToolTests(unittest.TestCase):
         with hud.connection() as conn:
             conn.execute("UPDATE hud_sessions SET status='running' WHERE id=?", (draft['id'],))
         draft = hud.view(draft['id'])
+        before = hud.view(draft['id'])['state']['draft']['wizard']
+        for operation, changes in [('create', {'name': '秘书\u200c'}),
+                                   ('rename', {'role': '开发', 'name': '工程师\ufeff'})]:
+            rejected = self.settings(draft, 'roles', operation, changes)
+            self.assertEqual(rejected.status_code, 400, rejected.text)
+            self.assertIn('U+', rejected.json()['detail'])
+            self.assertEqual(hud.view(draft['id'])['state']['draft']['wizard'], before)
+        rejected = self.settings(draft, 'members', 'assign_role', {'bot_id': 99, 'role': '开发\u200c'})
+        self.assertEqual(rejected.status_code, 400, rejected.text)
+        self.assertIn('U+200C', rejected.json()['detail'])
+        self.assertEqual(hud.view(draft['id'])['state']['draft']['wizard'], before)
         response = self.settings(draft, 'roles', 'rename', {'role': '开发', 'name': '工程师'})
         self.assertEqual(response.status_code, 200, response.text)
         saved = hud.view(draft['id'])['state']['draft']['wizard']

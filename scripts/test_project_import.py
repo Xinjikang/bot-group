@@ -79,6 +79,16 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(snapshot(self.conn), before)
         self.assertEqual(fingerprints(self.root), files)
 
+    def test_invalid_role_codepoints_rejected_before_import_writes(self):
+        for field in ('roles', 'members'):
+            for char in ('\u200c', '\ufeff', '\x85', '\u0378', '\u2028', '\u2029'):
+                with self.subTest(field=field, codepoint=ascii(char)):
+                    body = copy.deepcopy(self.body)
+                    body[field][0]['name' if field == 'roles' else 'role'] = 'editor' + char
+                    self.assertRejectedCleanly(body)
+                    response = self.submit(body)
+                    self.assertIn(f'U+{ord(char):04X}', response.json()['detail'])
+
     def test_read_only_preview_and_atomic_configuration_preserve_all_files(self):
         before = fingerprints(self.root)
         rows = snapshot(self.conn)
