@@ -234,11 +234,14 @@ def _segment_fail(fx: EngineFixture) -> dict:
     if run is None:
         return {"ok": False, "detail": "run did not finish in time"}
     ev = _turn_evidence(fx, run)
+    audits = ev["audits"]
     errors = [dict(r) for r in fx.q(
         "SELECT category, diagnostic FROM execution_errors "
         "WHERE project='bot-group' ORDER BY message_id DESC LIMIT 2")]
     return dict(ev, **{
         "errors": errors,
+        "audit_row": bool(audits),
+        "preset_confirmed": bool(audits) and bool(audits[0]["preset_confirmed"]),
         "blocked_as_auto_unavailable": any(
             r.get("category") == "auto_unavailable" for r in errors),
     })
