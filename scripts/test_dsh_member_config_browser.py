@@ -1,6 +1,7 @@
 """DSH member configuration editor in real Chrome, with synthetic API only."""
 import argparse
 from copy import deepcopy
+import json
 import mimetypes
 from pathlib import Path
 from urllib.parse import urlparse
@@ -13,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--evidence', default='cache/dsh-member-config')
+    parser.add_argument('--plugins-json', help='real GET /members/<profile>/config payload from the backend')
     args = parser.parse_args()
     evidence = Path(args.evidence)
     evidence.mkdir(parents=True, exist_ok=True)
@@ -34,6 +36,9 @@ def main():
     project_model = dict(project='p', member_profile='bot-dsh', runtime='dsh',
                          model='', provider='', reasoning_effort='', revision='b' * 64)
     state = {'config_conflict': False, 'model_conflict': False}
+    real_plugins = None
+    if args.plugins_json:
+        real_plugins = json.loads(Path(args.plugins_json).read_text(encoding='utf-8'))['plugins']
 
     def config_response():
         data = deepcopy(config)
@@ -194,13 +199,17 @@ def main():
         state['config_conflict'] = False
 
         # Plugin missing/disabled/load failure: only the dependent fields are disabled.
-        state['plugins'] = {
+        state['plugins'] = real_plugins or {
             'persona': {'state': 'disabled', 'plugin': 'system-prompt',
                         'reason': '插件已禁用', 'path': 'cordis.patch.yml#system-prompt'},
             'instructions': {'state': 'missing', 'plugin': 'dsh-agent-instructions',
                              'reason': '未安装', 'path': 'cordis.patch.yml#dsh-agent-instructions'},
             'model': {'state': 'load_failed', 'plugin': 'agent-default-model',
                       'reason': '加载失败', 'path': 'cordis.patch.yml#agent-default-model'},
+            'provider': {'state': 'load_failed', 'plugin': 'agent-default-model',
+                         'reason': '加载失败', 'path': 'cordis.patch.yml#agent-default-model'},
+            'reasoning_effort': {'state': 'load_failed', 'plugin': 'agent-default-model',
+                                 'reason': '加载失败', 'path': 'cordis.patch.yml#agent-default-model'},
         }
         open_editor()
         plugin_status = page.locator('#profile-plugin-status')
@@ -212,8 +221,10 @@ def main():
         assert page.locator('#profile-soul').is_disabled()
         assert page.locator('#profile-instructions').is_disabled()
         assert page.locator('#profile-model').is_disabled()
+        assert page.locator('#profile-provider').is_disabled()
+        assert page.locator('#profile-reasoning_effort').is_disabled()
         assert page.locator('#profile-description').is_enabled()
-        assert page.locator('#profile-provider').is_enabled()
+        assert page.locator('#profile-env').is_enabled()
         assert page.locator('#profile-save').is_enabled()
         page.screenshot(path=str(evidence / 'dsh-config-plugins-1280-dark.png'))
         page.evaluate("applyTheme('light')")
@@ -225,6 +236,8 @@ def main():
         plugin_write = writes[-1]
         assert plugin_write[1]['persona'] == config['persona']
         assert plugin_write[1]['instructions'] == config['instructions']
+        assert plugin_write[1]['provider'] == config['provider']
+        assert plugin_write[1]['reasoning_effort'] == config['reasoning_effort']
         assert plugin_write[1]['description'] == '插件缺失下仍可保存描述'
         page.wait_for_function('profileEditor === null')
         state['plugins'] = {}
