@@ -198,7 +198,8 @@ async def authorize(request: Request, identity=Depends(resolve_identity)):
                                       'WHERE session=? AND started_at=?',
                                       (scope['session'], scope['wake_started_at'])).fetchone()
                 if (scope['signing_generation'] != auth.signing_keys()[0]
-                        or native is None or native['runtime'] not in ('codex', 'hermes')
+                        or native is None
+                        or native['runtime'] not in ('codex', 'hermes', 'dsh')
                         or native['ended_at'] is not None
                         or any(native[k] != scope[k] for k in ('profile', 'project', 'thread_id'))):
                     raise HTTPException(401, 'Execution credential expired or unregistered')

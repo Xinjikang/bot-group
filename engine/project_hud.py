@@ -77,7 +77,7 @@ def default_bot(conn):
 def valid_bot(conn, bot_id):
     if bot_id is None:
         return None
-    bot = conn.execute("SELECT * FROM bots WHERE id=? AND runtime IN ('hermes','codex')", (bot_id,)).fetchone()
+    bot = conn.execute("SELECT * FROM bots WHERE id=? AND runtime IN ('hermes','codex','dsh')", (bot_id,)).fetchone()
     if not bot:
         raise HTTPException(400, '请选择可用的 Hermes 或 Codex Bot')
     return dict(bot)
@@ -115,7 +115,7 @@ def view(sid, conn=None):
         with connection() as conn:
             return view(sid, conn)
     item = row(conn, sid)
-    bot = conn.execute("SELECT id,display_name,runtime FROM bots WHERE id=? AND runtime IN ('hermes','codex')", (item['bot_id'],)).fetchone()
+    bot = conn.execute("SELECT id,display_name,runtime FROM bots WHERE id=? AND runtime IN ('hermes','codex','dsh')", (item['bot_id'],)).fetchone()
     item['bot'] = {k: bot[k] for k in ('id', 'display_name', 'runtime')} if bot else None
     item['entries'] = [dict(r, content=json.loads(r['content'])) for r in reversed(conn.execute(
         'SELECT id,role,content,created FROM hud_entries WHERE session=? ORDER BY id DESC LIMIT 80', (sid,)).fetchall())]

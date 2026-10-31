@@ -56,6 +56,8 @@ def classify(text):
         return 'configuration'
     if re.search(r'\bmodel\b[^\n.]{0,80}\bat capacity\b', text):
         return 'capacity'
+    if 'dsh run ended without a final event' in text:
+        return 'incomplete'
     if re.search(r'no usable credentials|missing.{0,40}(?:key|credential|config)|'
                  r'(?:key|credential).{0,40}(?:missing|not set|unset)|'
                  r'hermescompatibilityerror|configurationerror|config(?:uration)? (?:error|invalid)|'

@@ -92,7 +92,8 @@ def _handle_new(conn: sqlite3.Connection, project: str, targets: list[str],
         return wake.session_busy(profile, k, t, prj)
 
     # req#88 task#153：/new 按目标 Bot runtime 分叉（第四节第 6 条 codex /new 必做）。
-    # codex Bot 走 codex_new（弃旧 thread、清空绑定、落审计）；hermes Bot 走 switch_session。
+    # codex Bot 走 codex_new（弃旧 thread、清空绑定、落审计）；dsh Bot 走 dsh_new
+    # （req#137 task#266，弃旧 session、generation+1）；hermes Bot 走 switch_session。
     if session_adapter._codex_bot_id(conn, project, target) is not None:
         result = session_adapter.codex_new(conn, project, target, kind, tid, title,
                                           busy_check=busy_check, existing_only=existing_only)
@@ -101,6 +102,15 @@ def _handle_new(conn: sqlite3.Connection, project: str, targets: list[str],
                     "detail": result.get("detail", "未知错误")}
         return {"handled": True, "ok": True, "command": "/new", "target": target,
                 "detail": f"@{target} 的{'当前话题' if thread_id is not None else '工作'}会话已重置。下一条发给该会话的消息将使用新的 codex 会话。",
+                "operation_id": result.get("operation_id")}
+    if session_adapter._dsh_bot_id(conn, project, target) is not None:
+        result = session_adapter.dsh_new(conn, project, target, kind, tid, title,
+                                        busy_check=busy_check, existing_only=existing_only)
+        if not result.get("ok"):
+            return {"handled": True, "ok": False, "command": "/new",
+                    "detail": result.get("detail", "未知错误")}
+        return {"handled": True, "ok": True, "command": "/new", "target": target,
+                "detail": f"@{target} 的{'当前话题' if thread_id is not None else '工作'}会话已重置。下一条发给该会话的消息将使用新的 dsh 会话。",
                 "operation_id": result.get("operation_id")}
 
     options = {"existing_only": True} if existing_only else {}

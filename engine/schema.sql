@@ -385,6 +385,15 @@ CREATE TABLE IF NOT EXISTS codex_run_events (
 );
 CREATE INDEX IF NOT EXISTS idx_codex_run_events ON codex_run_events(session,wake_started_at,id);
 
+CREATE TABLE IF NOT EXISTS dsh_run_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session TEXT NOT NULL,
+    wake_started_at REAL NOT NULL,
+    timestamp REAL NOT NULL,
+    payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dsh_run_events ON dsh_run_events(session,wake_started_at,id);
+
 CREATE TABLE IF NOT EXISTS project_rule_copies (
     path TEXT PRIMARY KEY,
     project TEXT NOT NULL,

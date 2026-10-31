@@ -627,6 +627,45 @@ def _codex_mcp_config(profile: str, project: str, *, context=None, chat=False) -
     return ["-c", f"mcp_servers.task_queue={_toml(server)}"]
 
 
+def _shutil_rmtree(path):
+    import shutil
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _dsh_mcp_entry(profile, context, workdir, *, chat=False) -> dict:
+    """DSH 的 stdio MCP 客户端 overlay 条目（req#137 task#266）。
+
+    ``dsh-mcp-client`` 配置（0.2.1-rc.5 实装字段）：command/args/env 复用引擎执行凭据
+    上下文；``failOnStartupError`` 使必需工具初始化失败阻止模型执行（可诊断终态）。
+    """
+    server = _mcp_server_config(profile, context=context, chat=chat)
+    return {
+        'id': 'task-queue-mcp',
+        'name': '@deepseek-ai/dsh-mcp-client',
+        'config': {
+            'serverName': 'task_queue',
+            'transport': 'stdio',
+            'command': server['command'],
+            'args': server['args'],
+            'cwd': str(workdir),
+            'env': server['env'],
+            'failOnStartupError': True,
+            'reconnect': {'enabled': False},
+            'toolCallTimeoutMs': 60000,
+        },
+    }
+
+
+def _dsh_project_overrides(conn, project, profile) -> dict:
+    """dsh 项目级 model/provider/reasoning_effort 覆盖（spawn overlay 的 agent-default-model config 字段）。"""
+    from . import project_models
+    values, key = project_models.read(conn, project, profile)
+    configured = conn.execute('SELECT 1 FROM settings WHERE project=? AND key=?', (project, key)).fetchone()
+    if not configured:
+        return {}
+    return {field: values[field] for field in project_models.FIELDS if values[field]}
+
+
 # codex 内联 MCP 的 Python 解释器：优先 GROUP_MCP_PYTHON 覆盖，否则用当前解释器（引擎
 # venv 已随 requirements.lock 装 mcp；pythonw 换 python 保证 stdio MCP 可读写）。
 def _default_mcp_python() -> str:
@@ -889,6 +928,9 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         codex_thread_id = None
         codex_spawn_gen = None
         codex_bot_id = None
+        dsh_resume_sid = None
+        dsh_spawn_gen = None
+        dsh_bot_id = None
         if runtime == "codex":
             # req#88 task#153：读绑定改 runtime 列逐行校验（第四节第 1/3 条）——
             # 只认 runtime='codex' 的行，防 hermes 行残留 session_id 被误当 codex
@@ -904,6 +946,19 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                 if row is not None:
                     codex_thread_id = row["session_id"] or None
                     codex_spawn_gen = row["generation"]
+        elif runtime == "dsh":
+            # req#137 task#266：dsh 绑定同 codex 语义（runtime='dsh' 存 --session-id），
+            # spawn 时刻快照 generation 供 dsh_save_session 守卫旧运行迟到回写。
+            dsh_bot_id = session_adapter._dsh_bot_id(conn, project, profile)
+            if dsh_bot_id is not None:
+                row = conn.execute(
+                    "SELECT session_id, generation FROM session_bindings "
+                    "WHERE project=? AND bot_id=? AND kind=? AND thread_id=? AND runtime='dsh'",
+                    (project, dsh_bot_id, kind, thread_id or 0),
+                ).fetchone()
+                if row is not None:
+                    dsh_resume_sid = row["session_id"] or None
+                    dsh_spawn_gen = row["generation"]
     finally:
         conn.close()
     if runtime == 'hermes':
@@ -912,7 +967,7 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
             return hermes_gateway.spawn(profile, kind, signal, thread_id, project,
                 bot=bot, workdir=workdir, model_args=model_args, bound_task=bound_task,
                 job_id=job_id, trigger_msg_id=trigger_msg_id)
-    use_binding = runtime != "codex" and session_adapter.available()
+    use_binding = runtime not in ("codex", "dsh") and session_adapter.available()
     if use_binding:
         conn = db.get_connection()
         try:
@@ -947,6 +1002,43 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         # wake_runs.runtime_session_id：codex 行 spawn 前存 NULL（#148 契约），
         # 首建 thread_id 执行后才可知，由 #153 的 thread.started 回填写入。
         sid_for_run = None if not codex_thread_id else codex_thread_id
+    elif runtime == "dsh":
+        # req#137 task#266：dsh headless 子进程。overlay = bot profile 全部条目（264 保存
+        # 的 persona/model/provider/reasoning_effort）+ 认证控制 + 项目覆盖 + MCP 客户端；
+        # 提示词经 stdin；--session-id 续跑（无绑定=首建，session 事件回填）。
+        wake_started_at = time.time()
+        context = {'profile': profile, 'project': project, 'thread_id': thread_id,
+                   'session': session, 'wake_started_at': wake_started_at}
+        from . import native_runtime, dsh_auth
+        import tempfile as _tempfile
+        dsh_tmp = _tempfile.mkdtemp(prefix='dsh-spawn-')
+        try:
+            dsh_cred = dsh_auth.copy_credentials(bot['config_root'], dsh_tmp)
+        except dsh_auth.AuthSyncError as exc:
+            _shutil_rmtree(dsh_tmp)
+            return {'ok': False, 'detail': str(exc)}
+        dsh_overlay = native_runtime.dsh_overlay(
+            bot, credentials_path=dsh_cred,
+            mcp_entry=_dsh_mcp_entry(profile, context, workdir, chat=kind == 'chat'),
+            project_overrides=_dsh_project_overrides(conn, project, profile))
+        dsh_overlay_path = Path(dsh_tmp) / 'overlay.json'
+        dsh_overlay_path.write_text(json.dumps(dsh_overlay, ensure_ascii=False), encoding='utf-8')
+        try:
+            cmd_without_q, dsh_home = native_runtime.dsh(bot, overlay_path=str(dsh_overlay_path),
+                                                         resume=dsh_resume_sid)
+        except FileNotFoundError as exc:
+            _shutil_rmtree(dsh_tmp)
+            return {'ok': False, 'detail': str(exc)}
+        # req#137 task#266 验收 6：升级后按 dsh.cmd 自定位入口（每轮 FileNotFoundError
+        # 重校验）+ 读包版本；非已验证版本告警（可用性以启动证据为准，不阻断）。
+        dsh_ver = native_runtime.dsh_version(bot.get('runtime_entry') or '')
+        if dsh_ver and dsh_ver != native_runtime._DSH_VERIFIED_VERSION:
+            logging.getLogger(__name__).warning(
+                'DSH package version %s differs from the verified %s for %s; '
+                'runtime usability depends on startup evidence', dsh_ver,
+                native_runtime._DSH_VERIFIED_VERSION, profile)
+        # 首建无绑定（session 事件回填），续跑存既有 session id。
+        sid_for_run = dsh_resume_sid
     else:
         from . import native_runtime
         cmd_without_q = native_runtime.hermes_chat(bot['profile'] if bot else profile, entry=_hermes_bin()) + [
@@ -960,8 +1052,8 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                                             trigger_msg_id, bound_task, cmd_without_q)
     elif bound_task is not None:
         signal += _TASK_SUFFIX.format(task_id=bound_task)
-    # codex 的 prompt 是末位裸参数（无 -q 包装）；hermes 仍是 -q。
-    cmd = cmd_without_q + (["-q", signal] if runtime != "codex" else [signal])
+    # codex 的 prompt 是末位裸参数（无 -q 包装）；hermes 仍是 -q；dsh 提示词经 stdin。
+    cmd = cmd_without_q if runtime == "dsh" else cmd_without_q + (["-q", signal] if runtime != "codex" else [signal])
     from . import native_runtime
     env = native_runtime.environment()
     # Database configuration belongs to the engine process.
@@ -982,6 +1074,16 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         # HERMES_EPHEMERAL_SYSTEM_PROMPT 对 codex 无意义且误导，主动清掉。
         env.pop("HERMES_EPHEMERAL_SYSTEM_PROMPT", None)
         env['HERMES_CHAT_MODE'] = '1' if kind == 'chat' else '0'
+    elif runtime == "dsh":
+        # req#137 task#266：显式传 DSH_HOME（不依赖系统环境变量传播）+ 工作区写权限
+        # 模式（workspace-write，workspaceRoot=进程 cwd）；父环境的 DeepSeek key 清掉，
+        # 凭据由 DSH 原生解析（账号路由 credentials / .env 路由 $DSH_HOME/.env）。
+        env['DSH_HOME'] = dsh_home
+        env['DSH_PERMISSION_MODE'] = 'workspace-write'
+        env.pop('DEEPSEEK_API_KEY', None)
+        env.pop('DSH_PROFILE', None)
+        env.pop("HERMES_EPHEMERAL_SYSTEM_PROMPT", None)
+        env['HERMES_CHAT_MODE'] = '1' if kind == 'chat' else '0'
     else:
         if bot:
             env['HERMES_HOME'] = bot['config_root']
@@ -990,7 +1092,7 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
     # MCP server 恒读不到（与 HERMES_CHAT_MODE 同坑，hermes 2026-09-08 查证）。
     # 思考归属由引擎侧 wake_jobs.chat_context_until 窗口关联（heartbeat.py）。
     try:
-        if runtime != 'codex':
+        if runtime not in ('codex', 'dsh'):
             wake_started_at = time.time()
         # Hermes preserves XDG_* variables for its MCP subprocesses. This is
         # execution metadata, not a credential; /msg validates it against DB.
@@ -1001,7 +1103,7 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
             "session": session, "wake_started_at": wake_started_at,
         })
         env["XDG_GROUP_ENGINE_TOKEN"] = execution_token(profile, json.loads(env[CONTEXT_ENV]))
-        if runtime != "codex":
+        if runtime not in ("codex", "dsh"):
             from .mcp_runtime import cleanup_overlay, hermes_overlay
             hermes_server = _mcp_server_config(profile, context=json.loads(env[CONTEXT_ENV]), chat=kind == "chat")
             hermes_server["tools"] = {"include": list(_MCP_TOOLS)}
@@ -1035,7 +1137,8 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
             conn.close()
         # req#88 task#153：codex 通道用 stdout=PIPE 流式读 JSONL，及时捕获
         # thread.started 的 thread_id 回填绑定（第四节第 4 条「收到即保存」）。
-        # hermes 通道保持 TemporaryFile（一次性读 tail，无需流式）。
+        # req#137 task#266：dsh 通道同样流式读 JSONL（session 事件回填 + 事件落库），
+        # 提示词经 stdin 提交。hermes 通道保持 TemporaryFile（一次性读 tail）。
         popen_kwargs = dict(
             stdout=output,
             stderr=subprocess.STDOUT,
@@ -1045,13 +1148,25 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         )
         codex_reader = None
         codex_tail = None  # codex 通道滚动尾部文本（供退出诊断），hermes 用 TemporaryFile
-        if runtime == "codex":
+        dsh_reader = None
+        dsh_tail = None
+        dsh_had_final = [False]
+        if runtime in ("codex", "dsh"):
             popen_kwargs["stdout"] = subprocess.PIPE
             popen_kwargs["text"] = True
             popen_kwargs["encoding"] = "utf-8"
             popen_kwargs["errors"] = "replace"
+        if runtime == "dsh":
+            popen_kwargs["stdin"] = subprocess.PIPE
         proc = subprocess.Popen(cmd, **popen_kwargs)
-        if runtime == 'codex':
+        if runtime == "dsh":
+            # 提示词整段写入 stdin 后关闭（task 省略时 DSH 读 stdin；--json 事件流走 stdout）。
+            try:
+                proc.stdin.write(signal or '')
+                proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+        if runtime in ('codex', 'dsh'):
             with _session_lock:
                 _native_procs[session] = (proc, wake_started_at)
         import threading as _th
@@ -1107,6 +1222,51 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                                 c2.close()
             codex_reader = _th.Thread(target=_codex_reader, daemon=True, name=f"codex-{profile}")
             codex_reader.start()
+        elif runtime == "dsh":
+            # req#137 task#266：dsh 流式 reader——session 事件（首行）回填真实会话 ID
+            # 绑定与 wake_runs.runtime_session_id（dsh_save_session 同 generation 守卫）；
+            # thinking/tool_call/tool_result/final 落 dsh_run_events（dsh_reasoning）。
+            dsh_tail = []
+            def _dsh_reader():
+                import json as _json
+                for line in proc.stdout:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    dsh_tail.append(line)
+                    if len(dsh_tail) > 60:
+                        del dsh_tail[:-60]
+                    try:
+                        ev = _json.loads(line)
+                    except ValueError:
+                        continue
+                    from . import dsh_reasoning
+                    try:
+                        dsh_reasoning.record(session, wake_started_at, ev)
+                    except Exception:
+                        logging.getLogger(__name__).exception('Cannot persist DSH execution event for %s', session)
+                    if not isinstance(ev, dict):
+                        continue
+                    if ev.get("type") == "final":
+                        dsh_had_final[0] = True
+                    if ev.get("type") == "session":
+                        sid_val = ev.get("sessionId")
+                        if sid_val:
+                            c2 = db.get_connection()
+                            try:
+                                saved = session_adapter.dsh_save_session(
+                                    c2, project, profile, kind, thread_id, sid_val,
+                                    bot_id=dsh_bot_id, spawn_gen=dsh_spawn_gen)
+                                if saved:
+                                    c2.execute(
+                                        "UPDATE wake_runs SET runtime_session_id=? "
+                                        "WHERE session=? AND started_at=?",
+                                        (sid_val, session, wake_started_at))
+                                    c2.commit()
+                            finally:
+                                c2.close()
+            dsh_reader = _th.Thread(target=_dsh_reader, daemon=True, name=f"dsh-{profile}")
+            dsh_reader.start()
         # 进程退出事件：后台线程 wait()
         # 子进程，退出即清心跳+唤醒归属——心跳从「90s 超时推断」升级为「真退出事件」。
         # 90s TTL 保留为兜底（wait 线程意外死亡/进程被强杀时仍能超时清）。
@@ -1148,6 +1308,15 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                 if codex_reader is not None:
                     codex_reader.join(timeout=5)
                 tail = "\n".join(codex_tail or []) if codex_tail else tail
+            elif runtime == "dsh":
+                # dsh 同 PIPE 流式：退出诊断用滚动尾部；清理本次执行私有目录
+                # （凭据副本 + overlay JSON）；缺少 final 事件单独判读。
+                if dsh_reader is not None:
+                    dsh_reader.join(timeout=5)
+                tail = "\n".join(dsh_tail or []) if dsh_tail else tail
+                if not dsh_had_final[0]:
+                    error = (error or 'dsh run ended without a final event') + (f'\n{tail}' if tail else '')
+                _shutil_rmtree(dsh_tmp)
             if proc.returncode or bound_task is not None:
                 error = (error or f'process exit={proc.returncode}; task not handed off/completed') + (f'\n{tail}' if tail else '')
             ended_at = time.time()
