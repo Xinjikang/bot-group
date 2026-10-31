@@ -137,7 +137,9 @@ API-key 路由曾向其官方接口发起请求并收到 HTTP 401，账号路由
 
 ### headless agent 生命周期与 preset 边界
 
-实测 `--patch` 注入 `dsh-agent-preset-registry` + 含 `dsh-persona` 的 preset 后运行 headless，模型回复仍为默认 persona（`persona_hit=false`），prefix 未加载。根因：headless one-shot runner 通过 core registry 直接创建 agent（`dsh-headless/lib/startup.js`），不经过 agent-preset-registry；且 `assertAdoptable` 对运行在 agent preset 下的会话（`preset !== void 0`）直接拒绝 adopt。因此 persona 的 preset 挂载与 Auto 的 `permissionPresets.set(session,'auto')`（会写 `permission/preset` 会话事件）在 headless 下均不与 agent 生命周期对齐：persona 需非 preset 挂载（如 `dsh-system-prompt` 的 personaPrefix），Auto 需在 agent 创建后、首个工具前以不落 preset 的方式切换，具体适配点待实现验证。验证脚本见 `reports/research/dsh-integration/probe-persona.py`。
+实测 `--patch` 注入 `dsh-agent-preset-registry` + 含 `dsh-persona` 的 preset 后运行 headless，模型回复未命中人格标记（`persona_hit=false`）。实装 `dsh-headless/lib/index.js` 的 one-shot runner 直接创建 agent；`currentPreset`（209—218 行）读取 header.agentPreset 和 `agent-preset/selected`，`assertAdoptable`（221—226 行）拒绝该 agent preset 存在的会话。人格配置需核验适用于 headless 的加载路径，例如将用户选定的 persona 正文适配到 system-prompt 的 personaPrefix，同时保留原生配置来源。验证脚本见 `reports/research/dsh-integration/probe-persona.py`。
+
+Auto 的 permission preset 使用独立的 `permission/preset` 事件；上述 `assertAdoptable` 判定读取 agent preset。当前源码未证明 Auto 的持久化选择与该判定冲突。Auto 验证继续使用 `permissionPresets.set(session,'auto')` 原生写入路径，在首个工具前启用并验证恢复；保持权限状态的原生审计和持久化契约。
 
 ### 内置插件与安装状态
 
