@@ -135,6 +135,10 @@ API-key 路由曾向其官方接口发起请求并收到 HTTP 401，账号路由
 
 实装 `dsh-permission-presets/lib/index.js` 提供 `set(session, name)`（344—348 行）；`pinInitialPermission` 对已保存 Auto 会话检查活动集成（370—375 行），活动集成缺失时拒绝恢复。插件生效时的会话切换与恢复入口已在源码确认。headless 可通过受控适配插件调用该服务的可行性、首个工具前的执行时序和持久化续跑仍待隔离验证；现有证据尚未排除该接入路径。
 
+### headless agent 生命周期与 preset 边界
+
+实测 `--patch` 注入 `dsh-agent-preset-registry` + 含 `dsh-persona` 的 preset 后运行 headless，模型回复仍为默认 persona（`persona_hit=false`），prefix 未加载。根因：headless one-shot runner 通过 core registry 直接创建 agent（`dsh-headless/lib/startup.js`），不经过 agent-preset-registry；且 `assertAdoptable` 对运行在 agent preset 下的会话（`preset !== void 0`）直接拒绝 adopt。因此 persona 的 preset 挂载与 Auto 的 `permissionPresets.set(session,'auto')`（会写 `permission/preset` 会话事件）在 headless 下均不与 agent 生命周期对齐：persona 需非 preset 挂载（如 `dsh-system-prompt` 的 personaPrefix），Auto 需在 agent 创建后、首个工具前以不落 preset 的方式切换，具体适配点待实现验证。验证脚本见 `reports/research/dsh-integration/probe-persona.py`。
+
 ### 内置插件与安装状态
 
 本机 desktop profile 的 `package.json` 中 `dsh.profile.bundles` 已包含 `@deepseek-ai/dsh-experimental-auto-review`。这证明该插件已加入桌面 profile 组合；headless 使用独立组合，须单独检查加载状态与会话模式。
