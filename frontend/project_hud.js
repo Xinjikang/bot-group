@@ -187,7 +187,7 @@
     const proposals=[...(proposal?[{proposal}]:[]),...cards.filter(card=>card.proposal&&card.proposal.id!==proposal?.id)];
     for(const card of proposals){
       const proposal=card.proposal;
-      const changes=Object.entries(proposal.changes),facts=proposal.facts;
+      const changes=Object.entries(proposal.changes),facts=proposal.facts,documents=proposal.documents||[];
       const box=node('section',null,'hud-proposal hud-todo-card');box.dataset.card=proposal.id;
       if(card.text)box.append(node('p',card.text,'hud-text'));
       box.append(node('strong','以下建议尚未保存'));
@@ -213,10 +213,37 @@
           box.append(compare(fact.label,before,fact.value,'尚未保存这条备注'));
         }
       }
-      const count=changes.length+facts.length;
-      box.append(action(changes.length&&facts.length?`确认保存以上 ${count} 项`:changes.length?(item.project?'确认修改项目设置':'确认更新向导草稿'):'确认保存项目备注',async()=>{
+      if(documents.length){
+        box.append(node('p','保存位置：当前项目文档。确认后写入以下文件。','hud-muted'));
+        for(const document of documents){
+          const details=node('details',null,'hud-document-preview');
+          details.append(node('summary',document.path));
+          details.append(node('p','资料来源：'+document.sources.join('；'),'hud-muted'));
+          details.append(compare(document.path,document.before===null?'文件尚未创建':document.before,document.content,'空文档'));
+          box.append(details);
+        }
+      }
+      const count=changes.length+facts.length+documents.length;
+      box.append(action(documents.length?`确认保存以上 ${count} 项`:changes.length&&facts.length?`确认保存以上 ${count} 项`:changes.length?(item.project?'确认修改项目设置':'确认更新向导草稿'):'确认保存项目备注',async()=>{
         if(draftMode)await beforeConfirm?.();
         const data=await mutate('/accept',{proposal_id:proposal.id});if(data&&draftMode&&Object.keys(proposal.changes).length)onApply?.(data.state.draft);
+        if(data&&item.project){
+          const form=document.querySelector('#pj-detail-form');
+          if(form?.dataset.origName===item.project){
+            const ids={display_name:'name',description:'desc',root:'root',directory_mode:'mode',worktree_root:'worktree'};
+            for(const [key,value] of changes){
+              const input=document.querySelector('#pj-d-'+ids[key]);
+              if(input&&input.value===(proposal.before?.[key]??'')){
+                input.value=value;
+                if(key==='directory_mode'){
+                  document.querySelectorAll('[name="project-directory-mode"]').forEach(radio=>radio.checked=radio.value===value);
+                  document.querySelector('#pj-worktree-options').hidden=value!=='worktree';
+                }
+              }
+            }
+          }
+          if(changes.length)await loadProjects();
+        }
       },'hud-primary'),action('暂不处理',()=>mutate('/answer',{text:'这项建议暂不处理，请继续当前问题。',question_id:null,dismiss_proposal:proposal.id})));todos.append(box);
     }
     const reminder=actionable?notification.action:'';

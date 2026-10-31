@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+项目助手配置与资料准备：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_preparation scripts.test_project_hud scripts.test_hud_inspection scripts.test_hud_gateway scripts.test_codex_project_access scripts.test_project_workspaces scripts.test_project_templates scripts.test_testing_template scripts.test_product_prototype_template scripts.test_algorithm_template -q`。使用隔离 SQLite、宿主和项目目录，覆盖六类模板准备要求、新建/详情字段知识、默认骨架和缺失文件、doc 兼容、截断状态、安装文档问答依据、PRD/原型双文件确认、原文预览、并发修改/根目录变化、路径保护、失败回滚、目录授权同步、创建后自动检查及等待状态资料变化。模板资源清单同时核验助手元数据与生成文件的归属。无外部模型调用。浏览器复用 `python -X utf8 -B scripts/test_hud_notifications_browser.py --evidence <主目录报告绝对路径>`，验证文档预览的来源、原文和建议全文、确认提交、1440px/390px 深浅主题及长内容换行。
+
 项目助手 agent 复用：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_gateway scripts.test_project_hud scripts.test_hermes_connections scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway scripts.test_hermes_compatibility -q`。覆盖与群聊共用版本分流、低版本隔离子进程、高版本连续复用会话且逐轮独立回执、Bot/profile/工作目录/系统指令/对话代次变化、旧记录升级、断线对账、提交未知防重、取消后新轮次、忙碌与工具隔离检查。使用隔离数据库及模拟 RPC，无外部模型调用。
 
 项目助手原生复用验收：使用安装 Hermes 与项目依赖的解释器执行 `python -X utf8 -B scripts/verify_hud_session_reuse_native.py --hermes-source <Hermes源码绝对目录> --evidence <主目录报告下的新目录>`。真实 GatewayRunner、WS admission、AIAgent 和 HUD 持久化，临时 home/SQLite 与随机回环模型、合成 ticket；两轮构建计数为 1，HUD 换代后两轮计数为 2，四轮均无工具且各有独立回执，空闲 600 秒 detach 并关闭连接。保留模型原始请求、逐轮耗时与 RPC 类型，结束关闭自身连接、agent 和模型服务。

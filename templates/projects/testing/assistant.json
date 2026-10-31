@@ -1,0 +1,10 @@
+{
+  "inputs": ["PRD 的权威来源、版本及适用产品版本", "原型文件、截图或链接及可访问范围", "被测版本、测试范围、环境与测试身份"],
+  "configuration": "确认这是独立测试项目，简介写清被测对象与交付报告。按模板配置测试负责人、测试工程师、测试评审员及相应权限；工作区资源与产品环境分别登记。",
+  "normalization": "先询问并读取可访问的来源，结合原模板章节整理为 docs/product/PRD.md 和 docs/product/PROTOTYPE.md。PRD 保留来源、版本、需求编号、业务规则和验收标准；原型保留来源、版本、页面、状态、交互和 PRD 映射。外部链接只登记为来源；尚未读取的正文和待确认业务预期须标记待补充。将整理后的完整 Markdown 作为 documents 提案供用户预览确认。",
+  "documents": [
+    {"path": "docs/product/PRD.md", "purpose": "标准化产品需求及测试预期的权威来源"},
+    {"path": "docs/product/PROTOTYPE.md", "purpose": "标准化原型、交互与页面状态依据"},
+    {"path": "docs/environment/ENVIRONMENT.md", "purpose": "被测环境、版本、访问条件和身份用途"}
+  ]
+}
