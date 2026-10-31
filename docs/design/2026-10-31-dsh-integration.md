@@ -114,6 +114,7 @@ API-key 路由曾向其官方接口发起请求并收到 HTTP 401，账号路由
 | 指令加载 | `dsh-agent-instructions`（maxBytes 65536）+ `dsh-skill`/`dsh-skill-filesystem`/`dsh-tool-skill` | 指令与 skill 入口存在；AGENTS.md 等价文件的加载路径与顺序待实测确认 |
 | 推理参数 | `dsh-agent-default-model` 仅 provider/model | 无 reasoning_effort 字段，推理强度档位调节能力缺失，需明确产品处理（不展示或标注不支持） |
 | 沙箱/文件访问 | `dsh-sandbox-policy`：`mode = DSH_PERMISSION_MODE ?? 'workspace-write'`，`workspaceRoot = process.cwd()`；三级 read-only/workspace-write/danger-full-access | 工作区文件访问由 `DSH_PERMISSION_MODE` 环境变量 + cwd（workspaceRoot）控制，非固定 workspace-write |
+| 智能审批 | `dsh-user-approval` policy 由 `DSH_PERMISSION_MODE` 决定（workspace-write→'ask'，danger-full-access→'never'）+ `dsh-permission-presets` 三级预设；`dsh-authorization` 默认 disabled | 默认 workspace-write 即危险命令审批开启；headless 无人值守下 'ask' 的交互呈现与网页审批卡片等价物待验证 |
 | 模型/认证切换续跑 | 待实测 | 切换 provider/model/认证后 `--session-id` 续跑的行为需隔离实验确认 |
 
 宿主候选发现需区分四个状态：目录存在、配置可解析、入口可执行、认证就绪，各保留独立诊断。
