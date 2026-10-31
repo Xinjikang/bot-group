@@ -59,13 +59,27 @@ def respond(bot, prompt, workdir, progress, *, system_prompt='', server=None, ed
     def event(frame):
         nonlocal text
         data = frame.get('params') or {}
-        if (frame.get('method') != 'event' or data.get('session_id') != record.get('session_id')
-                or data.get('type') != 'reasoning.delta'):
+        if frame.get('method') != 'event' or data.get('session_id') != record.get('session_id'):
             return
-        delta = (data.get('payload') or {}).get('text')
-        if isinstance(delta, str):
-            text = (text + delta)[-500:]
-            progress('reasoning', text)
+        payload = data.get('payload') or {}
+        if data.get('type') == 'reasoning.delta':
+            delta = payload.get('text')
+            if isinstance(delta, str):
+                text = (text + delta)[-500:]
+                progress('reasoning', text)
+        elif data.get('type') in ('tool.start', 'tool.complete'):
+            text = ''
+            name = payload.get('name') or payload.get('tool_name')
+            labels = {'read_file': '读取文件', 'search_files': '查找资料', 'write_file': '写入文档',
+                      'patch': '修改文档', 'tool_search': '查找可用工具',
+                      'tool_describe': '读取工具说明', 'tool_call': '调用工具'}
+            label = ('更新项目配置' if isinstance(name, str) and name.endswith('update_project_config') else
+                     '处理项目配置' if isinstance(name, str) and name.endswith('project_config') else
+                     '打开项目配置' if isinstance(name, str) and name.endswith('open_project_page') else labels.get(name, '执行工具'))
+            if data['type'] == 'tool.start':
+                progress('stage', '正在' + label)
+            else:
+                progress('stage', label + ('失败，正在处理' if payload.get('is_error') else '完成，正在继续分析'))
 
     progress('stage', '正在连接 Hermes 网关')
     # A previous admission belongs to its original profile even after the HUD bot changes.

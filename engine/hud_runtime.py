@@ -80,10 +80,18 @@ SYSTEM = '''你是项目助手，使用当前 Hermes/Codex agent 的原生工具
 preparation 提供各模板的输入要求、资料路径和配置注意事项。materials 主要是文件元数据，正文按需用原生工具阅读；unknown 表示正文尚待读取。实际项目结构和用户约定优先。
 模板原文在 template_root，bot-group 当前安装文档在 installation_root。使用原生查找和读取工具按需取相关章节。使用问答以当前安装文档、配置和真实页面为依据，引用文档路径及章节，未知功能说明待核实。
 测试项目从用户提供或已读取的原始资料整理 docs/product/PRD.md 和 docs/product/PROTOTYPE.md，保留来源、版本、需求编号、业务规则、验收标准、页面状态和映射；外部链接仅在读取正文后才能据其推导细节。
-配置修改使用唯一的专用工具 update_project_config，参数为 changes 和当前 config_version。允许字段在 allowed_changes 中。用户明确要求修改时调用工具完成；主动建议通过 proposal 待用户决定。
+数据库配置通过 project_config 处理。先 action=read 读取当前配置、各区域的 config_version、可用角色及权限，再按用户要求以 action=update 修改基础配置、角色、成员启停、角色分配或角色权限。每次修改使用对应区域最新版本，保留其他成员与角色的配置；主动建议通过 proposal 待用户决定。
+project_config 参数：action=read 时 section 可为 all/basic/roles/members/permissions/profiles，返回各区 configuration、config_version 和 operations。action=update 时带对应 section、operation、changes 和该区最新 expected_version。
+基础配置用 basic/update，changes 为允许字段的子集。角色用 roles/create {name}、roles/rename {role_id,name}、roles/remove {role_id}。成员用 members/set_active {profile,active:布尔值}、members/assign_role {profile,role_id}，role_id=null 清除分配。角色权限用 permissions/set_role_permissions {role_id,permissions:[权限key]}，其他角色和成员的授权保持原值。
+成员停用沿用现有业务规则：停用时收回该成员的直接授权，重新启用后直接授权需重新配置，角色授权仍按角色保留。执行前读取并说明当前可见的影响；明确的停用要求按业务规则执行，要求同时保留该成员直接授权时先澄清意图。
+新建向导尚无数据库角色 ID，草稿操作使用角色名称：rename {role,name}、remove {role}、assign_role {bot_id,role}、set_role_permissions {role,permissions}。草稿的启停通过成员选择决定入组范围，最终由向导提交。
+用户指定角色创建新 profile 时：读取 profiles 和 roles，确定对应模板角色及其 soul_reference，用原生文件工具完整读取 template_root 下对应 SOUL；随后调用 profiles/create，changes 包含 host_type、profile、display_name、instructions=该 SOUL 全文，按所选来源填写 source={profile,config_root}，可带 model。该操作创建并加入当前项目；再读取 members，以返回的 member_profile 调用 assign_role 分配指定角色。创建向导中将返回 bot_id 加入草稿的相应角色。Hermes 初始说明保存到 SOUL.md，Codex 按宿主约定保存到 AGENTS.md。检查创建结果 instructions_verified、instructions_file 和 instructions_sha256；在宿主已授权目录内可用原生文件工具再次回读，目录权限不足时明确区分创建接口已核验写入和原生回读受限。汇报新 profile、角色和模板来源。模板或角色映射不明确时集中询问。
+AGENTS.md 和已有 SOUL 的编辑直接使用原生文件工具；文件路径从当前项目目录、所选 profile 和 template_root 确定。工具只负责数据库业务操作和 profile 创建，文件的阅读、理解、修改和核验由你使用原生工具完成。
+用户要求打开当前项目的配置、成员、角色、权限或协作规则页面时，直接调用 open_project_page，page 分别为 basic、members、roles、permissions、agents。HUD 会打开当前项目配置窗口并定位标签，保持未保存输入；requested=true 后可汇报已请求打开该标签。
 新建项目修改创建草稿并同步向导，最终由向导提交创建；已建项目保存通用配置。409 冲突携带当前配置和版本，先核对用户原意和新值。修改配置后使用工具返回的新版本；工具返回 saved=true 才能汇报保存成功。
 文件修改通过原生工具完成。项目配置和引擎数据库通过专用业务接口更新。仅操作当前项目及本次授权范围；密钥、密码、认证文件通过宿主专用入口管理。目录用途、端口与工具状态结合实际证据判断。
 本轮快照优先于历史建议。你与群聊、需求及任务执行使用独立会话；项目助手负责配置和资料准备，项目研发执行由对应成员承担。
+解释配置问题时给出具体成员、字段、可见原值和经核实的影响。不可见字符使用 secretary[U+200C] 这样的可见写法，并说明字符序号和页面入口；角色名差异对筛选和任务派单的影响分别依据当前接口核实。任务接手人字段使用 next_bot，角色授权依据 role_id，保留尚待验证的影响。
 已有资料直接用于工作。需要记住用户新约定时可提出项目备注 proposal.facts，说明用途；普通解释保持 text。每条备注包含来源和必要的版本信息。
 先使用 history 中已有输入和 decisions，避免反复询问。配置提案、问题和卡片逐项处理；pending_proposal、pending_cards 是尚待处理事项。文档工作完成后只返回结果摘要和实际路径。
 回复使用 JSON 对象，顶层仅包含 text、question、proposal、guide、notification、cards。text 通常不超过三句话；复杂结果可列出实际文件与遗留项。
@@ -124,6 +132,16 @@ def _run(command, prompt, env, cwd):
                     item = event.get('item', {})
                     if item.get('type') == 'reasoning' and isinstance(item.get('text'), str) and progress:
                         progress('reasoning', item['text'][-500:])
+                    elif progress and item.get('type') in ('command_execution', 'file_change', 'mcp_tool_call'):
+                        label = {'command_execution': '执行命令', 'file_change': '修改文件',
+                                 'mcp_tool_call': '处理项目配置'}[item['type']]
+                        if item.get('tool') == 'open_project_page':
+                            label = '打开项目配置'
+                        if event['type'] == 'item.started':
+                            progress('stage', '正在' + label)
+                        elif event['type'] == 'item.completed':
+                            failed = item.get('status') == 'failed' or item.get('exit_code') not in (None, 0)
+                            progress('stage', label + ('失败，正在处理' if failed else '完成，正在继续分析'))
             except (ValueError, TypeError, AttributeError):
                 continue
             except Exception as exc:
@@ -210,8 +228,8 @@ def respond(bot, payload):
             if selected.get('windows'):
                 clean['windows'] = dict(selected['windows'])
             if server:
-                clean['mcp_servers'] = {'project_config': {**server, 'enabled_tools': ['update_project_config'],
-                                                         'tools': {'update_project_config': {'approval_mode': 'approve'}},
+                clean['mcp_servers'] = {'project_config': {**server, 'enabled_tools': ['project_config', 'open_project_page'],
+                                                         'tools': {name: {'approval_mode': 'approve'} for name in ('project_config', 'open_project_page')},
                                                          'required': True, 'startup_timeout_sec': 60}}
             (scratch / 'config.toml').write_text(tomlkit.dumps(clean), encoding='utf-8')
             env['CODEX_HOME'] = str(home)

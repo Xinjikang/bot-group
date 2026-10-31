@@ -1,8 +1,10 @@
 # 测试脚本索引
 
-项目助手原生工具与配置：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_native_tools scripts.test_project_hud scripts.test_hud_gateway scripts.test_hud_preparation scripts.test_access_contract scripts.test_hermes_gateway_sessions -q`。隔离 SQLite、API 和模拟 RPC 覆盖唯一配置 MCP、执行凭据、创建草稿/详情保存及审计、并发冲突、归档与过期拒写、用户授权按轮清理、一小时间隔内跳过扫描、元数据上下文、原生工具及 Windows Codex home 复用、Hermes 私有工具作用域与跨轮换证。六类模板和历史文档提案兼容继续由 `test_hud_preparation` 覆盖。浏览器运行 `python -X utf8 -B scripts/test_hud_notifications_browser.py --evidence <主目录报告绝对路径>`，验证文件摘要、直接配置同步及未保存字段保护，截图覆盖 1440px/390px 深浅主题。
+项目助手数据库配置与导航返修：HUD 核心回归加 `scripts.test_profile_create`、`scripts.test_hud_inspection`，覆盖角色新增/改名/删除、启停、角色分配、角色权限隔离、profile 创建后的实际说明校验和 Unicode 位置证据。`python -X utf8 -B scripts/test_project_settings_browser.py --permissions-only` 验证助手保存后保留未提交的权限选择、保存/冲突及 390px；实际导航由 `verify_hud_native_artifacts.py --scenario settings --browser-python <Playwright Python>` 启动 `test_hud_navigation_browser.py` 验证完整页面。
 
-项目助手实际产物验收：`python -X utf8 -B scripts/verify_hud_native_artifacts.py --live --runtime hermes|codex --home <所选宿主绝对目录> --profile <profile> --scenario all --evidence <主目录报告下的新绝对目录>`。须已授权所选模型调用；脚本先输出实际模型路由，仅发送隔离合成资料，使用随机回环 API 和独立 SQLite。通过原生 agent 实际生成六类模板启动文档，逐份检查正文、来源和既有内容保留，核对创建草稿与已建项目实际配置、使用问答的文档依据及重启说明；记录文件摘要、耗时、HUD 回复和原配置指纹。可用 `testing|software|research|writing|algorithm|product-prototype|usage|draft` 单项，`remaining` 为后四类模板与使用问答。验收直接连接用户所选安装，保留原生执行与工具调用记录。
+项目助手原生工具与配置：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_native_tools scripts.test_project_hud scripts.test_hud_gateway scripts.test_hud_preparation scripts.test_access_contract scripts.test_hermes_gateway_sessions -q`。隔离 SQLite、API 和模拟 RPC 覆盖精简配置/导航 MCP、执行凭据、创建草稿/详情保存及审计、并发冲突、归档与过期拒写、用户授权按轮清理、一小时间隔内跳过扫描、元数据上下文、原生工具及 Windows Codex home 复用、Hermes 私有工具作用域与跨轮换证。六类模板和历史文档提案兼容继续由 `test_hud_preparation` 覆盖。浏览器运行 `python -X utf8 -B scripts/test_hud_notifications_browser.py --evidence <主目录报告绝对路径>`，验证文件摘要、直接配置同步及未保存字段保护，截图覆盖 1440px/390px 深浅主题。
+
+项目助手实际产物验收：`python -X utf8 -B scripts/verify_hud_native_artifacts.py --live --runtime hermes|codex --home <所选宿主绝对目录> --profile <profile> --scenario all --evidence <主目录报告下的新绝对目录>`。须已授权所选模型调用；脚本先输出实际模型路由，仅发送隔离合成资料，使用随机回环 API 和独立 SQLite。通过原生 agent 实际生成六类模板启动文档，逐份检查正文、来源和既有内容保留，核对创建草稿与已建项目实际配置、使用问答的文档依据及重启说明；记录文件摘要、耗时、HUD 回复和原配置指纹。可用 `testing|software|research|writing|algorithm|product-prototype|usage|draft` 单项，`remaining` 为后四类模板与使用问答。`--scenario settings --browser-python <已安装 Playwright 的 Python 绝对路径>` 使用真实助手完成角色改名、成员启停与分配、角色授权、读取模板 SOUL 后创建 profile，并在真实配置窗口打开角色标签；核对数据库、审计和实际文件。验收直接连接用户所选安装，保留原生执行与工具调用记录。
 
 项目助手 agent 复用：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_gateway scripts.test_project_hud scripts.test_hermes_connections scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway scripts.test_hermes_compatibility -q`。覆盖与群聊共用版本分流、低版本隔离子进程、高版本连续复用会话且逐轮独立回执、Bot/profile/工作目录/系统指令/对话代次变化、旧记录升级、断线对账、提交未知防重、取消后新轮次、忙碌与工具隔离检查。使用隔离数据库及模拟 RPC，无外部模型调用。
 
@@ -46,7 +48,7 @@ Hermes 连接池与顶栏状态：`.venv\Scripts\python.exe -X utf8 -B -m unitte
 
 升级反馈：`python -X utf8 -B scripts/test_app_upgrade_browser.py --evidence <主目录报告目录>/upgrade-browser`，需要 Playwright 与 Chrome。合成 HTTP 隔离升级操作，覆盖两个入口的慢响应、提交中即时提示、500 通用错误、503 具体原因、关闭弹窗后保留错误与允许重试、轮询错误及恢复、响应丢失续查和成功刷新；检查桌面、390px 及深浅主题。
 
-项目助手引导与实测依据：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_inspection scripts.test_project_hud scripts.test_hud_gateway -q`。隔离目录覆盖关键文档优先读取、扫描限额、失效链接、仓库范围、Git 远程缺失与凭据隐藏、CodeGraph 未初始化/过期/失败、系统指令分离、当前值来源与重复提案消除。浏览器复用 `test_project_hud_browser.py --url <隔离地址> --evidence <报告目录>` 检查保存位置、当前内容与建议内容对照、备注确认及窄屏可读性。
+项目助手引导与实测依据：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hud_inspection scripts.test_project_hud scripts.test_hud_gateway -q`。隔离目录覆盖关键文档优先读取、扫描限额、失效链接、仓库范围、Git 远程缺失与凭据隐藏、CodeGraph 未初始化/过期/失败、角色不可见字符的字段/位置/码点证据、系统指令分离、当前值来源与重复提案消除。浏览器复用 `test_project_hud_browser.py --url <隔离地址> --evidence <报告目录>` 检查保存位置、当前内容与建议内容对照、备注确认及窄屏可读性。
 
 助手提案与资源读取回归：复用上述三个模块。隔离 SQLite 验证待处理提案阻止回答/执行入口超时换代、普通解释及历史截断后仍传递完整八项提案、确认/暂不处理后重新计时、旧提案 ID 与补充处理期间确认的 409、新提案替换及无提案时正常重置。资源覆盖共享目录归并、逐成员独立目录、部分资源缺失、目录未分配的 unknown、与页面 GET 返回的持久配置一致、项目隔离及只读查询。浏览器回归另核对“暂不处理”请求携带当前提案 ID，服务数据与端口由预览参数注入。
 

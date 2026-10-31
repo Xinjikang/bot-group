@@ -208,6 +208,7 @@ def answer(sid, body):
             else:
                 item['state'].pop('question')
         advance_generation(item)
+        item['state'].pop('navigation', None)
         add_entry(conn, item, 'user', {'text': text})
         item['state']['user_request'] = text
         return store(conn, item, queue=True)
@@ -311,7 +312,7 @@ def project_snapshot(conn, project):
     config['template'] = (project_templates.reference(project).get('template') or {}).get('id', 'blank')
     config['settings'] = [dict(r) for r in conn.execute(
         "SELECT key,value FROM settings WHERE project=? AND key='owner_profile'", (project,))]
-    config['members'] = [dict(r) for r in conn.execute('SELECT profile,role,active FROM project_members WHERE project=?', (project,))]
+    config['members'] = [dict(r) for r in conn.execute('SELECT profile,role,role_id,active FROM project_members WHERE project=?', (project,))]
     resources = {r['path']: dict(r) for r in conn.execute(
         'SELECT path,workspace_id,revision,config FROM workspace_resources WHERE project=?', (project,))}
     workspaces, errors = {}, []

@@ -58,7 +58,10 @@ def main():
             body = req.request.post_data_json if req.request.method in ('POST', 'PUT', 'PATCH') else None
             requests.append((path, body))
             data = {}
-            if path == '/projects/p/roles':
+            if path.startswith('/hud'):
+                data = {'id': 'settings-hud', 'project': 'p', 'revision': 1, 'status': 'paused',
+                        'bot': None, 'state': {}, 'entries': []}
+            elif path == '/projects/p/roles':
                 # req#96 #165：角色实体 CRUD mock（角色 tab + 成员卡片候选来源）
                 roles = state.get('roles', [{'id': 1, 'name': 'orchestrator', 'member_count': 1}])
                 if req.request.method == 'POST':
@@ -161,7 +164,7 @@ def main():
         page.route('**/*', route)
         page.goto('http://workspace.test/app/index.html')
         page.evaluate('''p => { S.projects=[p]; S.currentProject=p.name; S.members=[{profile:'dev',display_name:'开发者'}]; showLogin(false); renderProjectBar(); }''', project)
-        page.locator('[data-project="p"]').click()
+        page.evaluate("openProjectDetail('p',document.querySelector('#chip-all'))")
         assert page.locator('#pj-d-id').input_value() == 'p'
         assert page.locator('#pj-d-id').get_attribute('readonly') is not None
         page.locator('#pj-tab-permissions').click()
@@ -194,6 +197,10 @@ def main():
         assert '保存后' in page.locator('#app-alert-message').inner_text()
         page.get_by_role('button', name='确定', exact=True).click()
         tc_row.locator('input[value="custom-lead"]').check()             # 同一项权限可同时勾角色和 bot
+        page.evaluate("refreshProjectSettingsFromAssistant('p')")
+        assert '未保存的权限选择已保留' in page.locator('#pj-permissions-status').inner_text()
+        assert tc_row.locator('input[value="custom-lead"]').is_checked()
+        assert not tc_row.locator('input[value="role:2"]').is_checked()
         page.locator('#pj-permissions-save').click()
         page.wait_for_function("document.querySelector('#pj-permissions-status').textContent.includes('权限已保存')")
         assert permissions['grants']['task.create'] == ['custom-lead']   # role:2 已取消、bot 已加入

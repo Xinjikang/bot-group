@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import unicodedata
 from urllib.parse import unquote, urlsplit
 
 EXCLUDED = {'node_modules', 'reports', 'targets', 'dist', 'build', '__pycache__', 'venv', 'vendor'}
@@ -245,6 +246,17 @@ def inspect(project, materials):
         add('members', 'ok' if active and all(m.get('role') for m in active) else 'missing',
             '成员已分配职责' if active and all(m.get('role') for m in active) else '项目成员或职责分配尚未齐备',
             active=len(active))
+        for member in active:
+            role = member.get('role') or ''
+            hidden = [{'position': i + 1, 'codepoint': f'U+{ord(char):04X}',
+                       'name': unicodedata.name(char, 'UNKNOWN')}
+                      for i, char in enumerate(role) if unicodedata.category(char) in ('Cf', 'Cc')]
+            if hidden:
+                visible = ''.join(f'[U+{ord(char):04X}]' if unicodedata.category(char) in ('Cf', 'Cc') else char
+                                  for char in role)
+                add('member_role_characters', 'changed', '成员角色名含不可见字符，按名称查询时需使用完整原值',
+                    profile=member['profile'], field='role', visible_value=visible, characters=hidden,
+                    role_id=member.get('role_id'), impact='name_filter_uses_exact_value; task_dispatch_impact_not_checked')
     if project.get('directory_mode') == 'worktree':
         worktree_root = project.get('worktree_root')
         add('worktree_root', 'ok' if worktree_root and Path(worktree_root).is_dir() else 'missing',

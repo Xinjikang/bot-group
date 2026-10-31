@@ -70,7 +70,7 @@ HUD 展开时读取详情边界，将自身放在详情右侧并与其同高；�
 
 页面维护 HTTP 接口要求管理员身份。写入携带 `revision`，并发变更返回 409；模型结果按启动时的修订号比较，过期结果丢弃。切换阶段把未答问题转为待核对资料。服务重启把运行中的检查标记为失败，避免自动重复请求。后台只处理已启用会话。
 
-`mcp/hud_server.py` 仅声明 `update_project_config(changes, expected_version)` 一个业务工具，提供给本轮原生 agent。工具通过 `POST /hud/{id}/tool-config` 访问引擎，凭据绑定 HUD ID、Bot、修订与对话代次，只允许当前运行中的明确用户请求。基础字段使用现有校验、空闲保护、目录授权同步及审计；创建向导保存草稿，详情保存项目配置。`expected_version` 为当前基础配置的 SHA-256，冲突返回当前值和新版本。工具保存保持本轮修订，`state.config_update` 的独立事件 ID 驱动表单同步；用户已经另行编辑的字段保留输入。归档项目、结束轮次和跨会话凭据均拒绝写入。
+`mcp/hud_server.py` 声明 `project_config` 和 `open_project_page` 两个业务入口，提供给本轮原生 agent。配置通过 `POST /hud/{id}/tool-settings` 读取及保存，导航通过 `POST /hud/{id}/tool-navigation` 请求前端打开当前项目配置；旧 `/tool-config` 保留基础字段兼容。凭据绑定 HUD ID、Bot、修订与对话代次，只允许当前运行中的明确用户请求。基础字段使用现有校验、空闲保护、目录授权同步及审计；创建向导保存草稿，详情保存项目配置。`expected_version` 为当前基础配置的 SHA-256，冲突返回当前值和新版本。工具保存保持本轮修订，`state.config_update` 的独立事件 ID 驱动表单同步；用户已经另行编辑的字段保留输入。归档项目、结束轮次和跨会话凭据均拒绝写入。
 
 ## 模型与运行
 
@@ -80,9 +80,9 @@ HUD 展开时读取详情边界，将自身放在详情右侧并与其同高；�
 
 `hud_gateway.py` 复用群聊的会话创建、恢复与传输接口。同一 HUD 会话和对话代次内，Bot、profile home、工作目录及专用系统指令保持一致时，后续轮次通过 `session.resume` 使用原 ACP 会话，保留原生 agent 缓存；每轮分别生成 submission/admission 和超时记录。首次创建使用唯一标题，HUD 空闲重置、切换 Bot、工作目录或专用指令变化后重新创建。旧格式执行记录先核对原回执，后续新轮次创建带绑定摘要的会话。
 
-会话沿用所选 profile 的模型配置和 persona，通过公开 `toolsets: [file, no_mcp]` 选择 `read_file`、`search_files`、`write_file`、`patch` 四个原生文件工具，并以私有 editor MCP 挂载唯一配置工具；关闭 checkpoints/hooks。每轮更新配置工具凭据并检查会话空闲。宿主的工具定义缓存在会话信息阶段可能缓存缺少 editor scope 的清单，因此使用公开 `verbose: true` 让原生 agent 在实际执行作用域解析工具；私有工具轮次省略额外的 `tools.show` 查询。原生 agent 复用、执行回执和文件工具继续由 Hermes 管理。
+会话沿用所选 profile 的模型配置和 persona，通过公开 `toolsets: [file, no_mcp]` 选择 `read_file`、`search_files`、`write_file`、`patch` 四个原生文件工具，并以私有 editor MCP 挂载配置与导航入口；关闭 checkpoints/hooks。每轮更新配置工具凭据并检查会话空闲。宿主的工具定义缓存在会话信息阶段可能缓存缺少 editor scope 的清单，因此使用公开 `verbose: true` 让原生 agent 在实际执行作用域解析工具；私有工具轮次省略额外的 `tools.show` 查询。原生 agent 复用、执行回执和文件工具继续由 Hermes 管理。
 
-Hermes 开启原生 Tool Search 时，配置工具可能通过宿主的 `tool_search`、`tool_describe`、`tool_call` 暴露；其可达目录仍受当前会话的 file 与单个私有配置工具集约束。该桥接由宿主按当前配置管理，业务 MCP 继续只声明一个工具。
+Hermes 开启原生 Tool Search 时，配置工具可能通过宿主的 `tool_search`、`tool_describe`、`tool_call` 暴露；其可达目录仍受当前会话的 file 与单个私有配置工具集约束。该桥接由宿主按当前配置管理，业务 MCP 继续只声明配置与导航两个入口。
 
 轮次结束释放调用租约，订阅及连接沿用群聊连接池的生命周期。profile 无活跃租约、无未决执行且空闲 600 秒后 detach 并关闭连接；再次对话恢复持久会话，agent 由原生缓存状态决定复用或重建。助手对话代次的空闲重置时间仍由 HUD 设置决定。
 
@@ -99,3 +99,13 @@ Codex 使用所选真实 `CODEX_HOME` 和 profile 复用认证及 Windows 沙箱
 `scripts/preview_project_hud.py` 提供独立 SQLite 和固定响应的本地交互验证服务，明确标记“本地验证”，不连接模型。其测试重置接口只存在于该脚本的预览实例。生产入口为 `python -m engine.main`。
 
 API：`POST /hud` 创建/取得会话；`GET /hud` 待办与草稿；`GET/PATCH /hud/{id}` 读取/配置；`POST /answer` 回答；`POST /accept` 确认提案；`POST /retry` 启用或重试；`POST /bind` 绑定成功创建回执。
+
+## 数据库配置、页面导航与 profile 创建
+
+`project_config` 的 read/update 动作按 basic、roles、members、permissions、profiles 分区返回当前值、版本和可用操作。角色创建、改名、删除复用角色接口；成员启停和分配复用成员接口；角色权限在完整授权快照上只替换目标角色授权。项目和成员范围从当前有效助手会话确定，写入保持当前 HUD 修订，`settings_update` 提供独立事件标识。向导角色与成员列表使用 `config_update` 同步，保留已发生的本地编辑。
+
+操作方法保存在 `hud_runtime.SYSTEM`。助手通过原生文件工具读取模板角色的 `soul_reference` 全文，将初始说明传给已有 profile 创建接口，再单独分配项目角色。创建接口仅回读本次创建的固定说明文件，返回校验结果、路径与 SHA-256；助手在宿主已授权范围内可再次原生回读。已有 AGENTS.md、SOUL 使用原生文件工具编辑。工具定义只说明业务功能和参数，工作流由原生 agent 执行。成员停用沿用原有直接授权清理和消息推进规则；角色授权按角色保留。
+
+导航请求限于当前项目配置的 basic、agents、members、roles、permissions 标签。前端复用 `openProjectDetail` 和 `selectProjectTab`，保持当前项目未保存输入；同一导航 ID 在当前标签页去重，超过两分钟的请求保持静默。Hermes 的 tool.start/tool.complete 和 Codex 的命令/文件/MCP 事件更新 HUD 当前阶段，省略参数与结果正文。配置保存后刷新当前项目的成员、角色或权限视图，权限编辑已有本地修改时保留选择并提示服务端已更新。
+
+成员角色字符检查提供可见转义值、从 1 起的字符位置、Unicode 码点和 role_id；名称精确筛选与当前 next_bot/role_id 派单及授权契约分别核对。

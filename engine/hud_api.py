@@ -39,6 +39,18 @@ class ToolConfig(BaseModel):
     expected_version: str = Field(min_length=64, max_length=64)
 
 
+class ToolNavigation(BaseModel):
+    page: str = Field(min_length=1, max_length=30)
+
+
+class ToolSettings(BaseModel):
+    action: str = 'read'
+    section: str = 'all'
+    operation: str = 'update'
+    changes: dict = Field(default_factory=dict)
+    expected_version: str = ''
+
+
 def router(identity, admin):
     routes = APIRouter()
 
@@ -51,6 +63,16 @@ def router(identity, admin):
     def tool_config(sid: str, body: ToolConfig, authorization: str = Header(default='')):
         from . import hud_tools
         return hud_tools.update(sid, authorization.removeprefix('Bearer '), body.changes, body.expected_version)
+
+    @routes.post('/hud/{sid}/tool-navigation')
+    def tool_navigation(sid: str, body: ToolNavigation, authorization: str = Header(default='')):
+        from . import hud_tools
+        return hud_tools.open_page(sid, authorization.removeprefix('Bearer '), body.page)
+
+    @routes.post('/hud/{sid}/tool-settings')
+    def tool_settings(sid: str, body: ToolSettings, authorization: str = Header(default='')):
+        from . import hud_configuration
+        return hud_configuration.execute(sid, authorization.removeprefix('Bearer '), **body.model_dump())
 
     @protected.get('')
     def index():

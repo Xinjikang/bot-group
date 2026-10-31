@@ -72,6 +72,22 @@ class InspectionTests(unittest.TestCase):
         self.assertIsNone(probe.local_link(self.root, 'README.md', 'file:///outside.md'))
         self.assertEqual(probe.local_link(self.root, 'README.md', 'docs/a%20b.md#part'), Path('docs/a b.md'))
 
+    def test_role_character_evidence_is_visible_precise_and_read_only(self):
+        members = [{'profile': 'default', 'role': 'secretary\u200c', 'role_id': 41, 'active': 1},
+                   {'profile': 'regular', 'role': 'manager', 'active': 1},
+                   {'profile': 'inactive', 'role': 'hidden\u200b', 'active': 0}]
+        with patch.object(probe.shutil, 'which', return_value=None), patch.object(probe, 'codegraph_command', return_value=None):
+            result = probe.inspect({'root': str(self.root), 'members': members}, {'documents': {}})
+        checks = [c for c in result['checks'] if c['key'] == 'member_role_characters']
+        self.assertEqual(len(checks), 1)
+        evidence = checks[0]['evidence']
+        self.assertEqual(evidence['visible_value'], 'secretary[U+200C]')
+        self.assertEqual(evidence['characters'], [{'position': 10, 'codepoint': 'U+200C', 'name': 'ZERO WIDTH NON-JOINER'}])
+        self.assertEqual(evidence['profile'], 'default')
+        self.assertEqual(evidence['role_id'], 41)
+        self.assertIn('task_dispatch_impact_not_checked', evidence['impact'])
+        self.assertEqual(members[0]['role'], 'secretary\u200c')
+
 
 if __name__ == '__main__':
     unittest.main()

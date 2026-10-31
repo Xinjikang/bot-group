@@ -19,6 +19,7 @@ class Client:
         self.tools = [{'name': name} for name in ('read_file', 'write_file', 'patch', 'search_files')]
         self.created = 0
         self.busy = False
+        self.events = []
         self.receipts = [{'status': 'terminal', 'outcome': 'completed',
                           'result': {'final_response': '{"text":"ready"}'}}]
 
@@ -41,6 +42,8 @@ class Client:
                           'type': 'reasoning.delta', 'payload': {'text': 'unrelated'}}})
             self.callback({'method': 'event', 'params': {'session_id': params['session_id'],
                           'type': 'reasoning.delta', 'payload': {'text': '核对项目目标'}}})
+            for event in self.events:
+                self.callback({'method': 'event', 'params': event})
             return {'admission_id': params['submission_id']}
         if method == 'prompt.receipt':
             if self.fail_receipt:
@@ -108,6 +111,27 @@ class HudGatewayTests(unittest.TestCase):
         self.assertEqual(len(bindings), 2)
         self.assertEqual(bindings[-1]['mcp_servers'][0]['env'], [{'name': 'HUD_TOOL_TOKEN', 'value': 'next'}])
         self.assertEqual(sum(m == 'prompt.submit' for m, _ in self.client.calls), 2)
+
+    def test_tool_progress_is_scoped_and_omits_arguments_and_output(self):
+        self.client.events = [
+            {'session_id': 'other-session', 'type': 'tool.start', 'payload': {'name': 'write_file'}},
+            {'session_id': 'hud-session', 'type': 'tool.start', 'payload': {
+                'name': 'read_file', 'args': {'path': 'private-token-file'}, 'context': 'private-token-file'}},
+            {'session_id': 'hud-session', 'type': 'tool.complete', 'payload': {
+                'tool_name': 'read_file', 'result': 'private-secret', 'is_error': False}},
+            {'session_id': 'hud-session', 'type': 'tool.start', 'payload': {'name': 'patch'}},
+            {'session_id': 'hud-session', 'type': 'tool.complete', 'payload': {'name': 'patch', 'is_error': True}},
+            {'session_id': 'hud-session', 'type': 'tool.start', 'payload': {'name': 'mcp__editor_config__update_project_config'}},
+            {'session_id': 'hud-session', 'type': 'reasoning.delta', 'payload': {'text': '继续核验'}},
+        ]
+        self.run_prompt()
+        self.assertIn(('stage', '正在读取文件'), self.updates)
+        self.assertIn(('stage', '读取文件完成，正在继续分析'), self.updates)
+        self.assertIn(('stage', '修改文档失败，正在处理'), self.updates)
+        self.assertIn(('stage', '正在更新项目配置'), self.updates)
+        self.assertIn(('reasoning', '继续核验'), self.updates)
+        self.assertNotIn(('stage', '正在写入文档'), self.updates)
+        self.assertNotIn('private-', json.dumps(self.updates))
 
     def test_binding_changes_start_separate_sessions(self):
         self.run_prompt()

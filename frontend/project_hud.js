@@ -36,6 +36,8 @@
   let activeTab='chat';
   const inputs = new Map(), silenced = new Set();
   const appliedConfigUpdates = new Map();
+  const appliedNavigation = new Set();
+  const appliedSettingsUpdates = new Map();
   const notificationKey = item => item?.state.notification?.id||item?.state.question?.id||item?.state.proposal?.id;
   function isSilenced(key) {
     if(!key)return false;
@@ -111,6 +113,28 @@
       el('input').value=inputs.get(data.id)??saved;
     }
     render();
+    if(data.project&&data.state.settings_update?.id&&appliedSettingsUpdates.get(data.id)!==data.state.settings_update.id){
+      appliedSettingsUpdates.set(data.id,data.state.settings_update.id);
+      window.refreshProjectSettingsFromAssistant?.(data.project);
+    }
+    const navigation=data.state.navigation;
+    if(!draftMode&&navigation?.project===data.project&&Date.now()/1000-navigation.created<120&&['basic','agents','members','roles','permissions'].includes(navigation.page)){
+      const key='hud-navigation:'+data.id+':'+navigation.id;
+      let applied=appliedNavigation.has(key);
+      try{applied=applied||sessionStorage.getItem(key)==='1';}catch{}
+      if(!applied&&typeof window.openProjectDetail==='function'&&typeof window.selectProjectTab==='function'){
+        appliedNavigation.add(key);
+        try{
+          const dialog=document.querySelector('#dlg-project-detail');
+          if(!dialog?.open||document.querySelector('#pj-detail-form')?.dataset.origName!==data.project){
+            window.openProjectDetail(data.project,el('toggle'));
+          }
+          if(document.querySelector('#pj-tab-'+navigation.page)?.getAttribute('aria-selected')!=='true')window.selectProjectTab(navigation.page);
+          try{sessionStorage.setItem(key,'1');}catch{}
+          placeBesideDialog();
+        }catch(error){appliedNavigation.delete(key);errorText='打开项目配置失败：'+error.message;render();}
+      }
+    }
   }
   function renderProgress(){
     const active=current?.status==='running'||current?.status==='queued';
@@ -405,7 +429,7 @@
     try{
       const data=await api('/hud/'+sid);
       if(stamp!==version)return;
-      if(data.revision>=current.revision&&(data.revision!==current.revision||data.status!==current.status||data.state.config_update?.id!==current.state.config_update?.id))setData(data);
+      if(data.revision>=current.revision&&(data.revision!==current.revision||data.status!==current.status||data.state.config_update?.id!==current.state.config_update?.id||data.state.settings_update?.id!==current.state.settings_update?.id||data.state.navigation?.id!==current.state.navigation?.id))setData(data);
       else if(data.revision===current.revision){current.state.progress=data.state.progress;renderProgress();}
     }catch(e){if(stamp===version){errorText='维护连接暂时中断，输入已保留。'+e.message;render();}}
     finally{refreshing=false;}

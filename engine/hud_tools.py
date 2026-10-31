@@ -12,6 +12,8 @@ import sys
 from fastapi import HTTPException
 from . import auth, config
 
+PROJECT_PAGES = {'basic', 'agents', 'members', 'roles', 'permissions'}
+
 
 def version(values):
     return hashlib.sha256(json.dumps(values, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -112,6 +114,22 @@ def update(sid, token, changes, expected_version):
         hud.events.bus.publish('hud.changed', {'session': sid, 'project': item['project']})
         hud.events.bus.publish('project.updated', {'project': item['project']})
         return {'saved': True, 'changes': changed, 'configuration': after, 'config_version': version(after)}
+
+
+def open_page(sid, token, page):
+    from . import project_hud as hud
+    if page not in PROJECT_PAGES:
+        raise HTTPException(400, '请选择项目配置中的有效标签')
+    with hud._LOCK, hud.connection() as conn:
+        item = authorize(token, sid, conn)
+        if not item['project'] or not item['state'].get('user_request'):
+            raise HTTPException(409, '打开项目配置需要当前项目及本轮用户请求')
+        navigation = {'id': secrets.token_hex(12), 'project': item['project'], 'page': page, 'created': hud.time.time()}
+        item['state']['navigation'] = navigation
+        conn.execute('UPDATE hud_sessions SET state=?,updated=? WHERE id=?',
+                     (hud.encode(item['state']), hud.time.time(), sid))
+    hud.events.bus.publish('hud.changed', {'session': sid, 'project': item['project']})
+    return {'requested': True, **navigation}
 
 
 def server(item):

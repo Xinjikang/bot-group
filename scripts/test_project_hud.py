@@ -585,6 +585,8 @@ class HudTests(unittest.TestCase):
         script = (
             'import json,sys,time; from pathlib import Path; sys.stdin.read(); '
             'print(json.dumps({"type":"item.completed","item":{"type":"reasoning","text":"确认资料来源"}}),flush=True); '
+            'print(json.dumps({"type":"item.started","item":{"type":"mcp_tool_call","tool":"open_project_page","arguments":{"secret":"not-for-progress"}}}),flush=True); '
+            'print(json.dumps({"type":"item.completed","item":{"type":"command_execution","exit_code":1,"aggregated_output":"not-for-progress"}}),flush=True); '
             'time.sleep(0.4); Path(sys.argv[1]).touch(); print("{}")'
         )
         updates = []
@@ -593,6 +595,9 @@ class HudTests(unittest.TestCase):
         with hud_runtime.progress_sink(receive):
             result = hud_runtime._run([sys.executable, '-c', script, str(marker)], 'fixture', env, str(self.root))
         self.assertIn(('reasoning', '确认资料来源', False), updates)
+        self.assertIn(('stage', '正在打开项目配置', False), updates)
+        self.assertIn(('stage', '执行命令失败，正在处理', False), updates)
+        self.assertNotIn('not-for-progress', str(updates))
         self.assertIn('item.completed', result)
         script = 'import sys; sys.exit(1)'
         with self.assertRaisesRegex(RuntimeError, '子进程退出码 1'):

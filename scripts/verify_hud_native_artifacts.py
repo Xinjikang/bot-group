@@ -1,12 +1,13 @@
 """Live selected-agent acceptance using isolated project artifacts and configuration."""
 import argparse
-from contextlib import closing
+from contextlib import closing, contextmanager
 import hashlib
 import json
 import os
 from pathlib import Path
 import socket
 import sys
+import subprocess
 import threading
 import time
 
@@ -21,7 +22,8 @@ def main():
     parser.add_argument('--profile', default='default')
     parser.add_argument('--evidence', type=Path, required=True)
     parser.add_argument('--scenario', choices=['testing', 'software', 'research', 'writing', 'algorithm',
-        'product-prototype', 'usage', 'draft', 'remaining', 'all'], default='all')
+        'product-prototype', 'usage', 'draft', 'settings', 'remaining', 'all'], default='all')
+    parser.add_argument('--browser-python', type=Path)
     args = parser.parse_args()
     if not args.home.is_absolute() or not args.evidence.is_absolute() or not args.home.is_dir():
         parser.error('existing absolute home and new absolute evidence directory required')
@@ -62,6 +64,8 @@ def main():
         conn.commit()
     app = FastAPI()
     app.include_router(api.router_api)
+    from fastapi.staticfiles import StaticFiles
+    app.mount('/app', StaticFiles(directory=Path(__file__).resolve().parents[1] / 'frontend', html=True))
     sock = socket.socket()
     sock.bind(('127.0.0.1', 0))
     port = sock.getsockname()[1]
@@ -75,9 +79,21 @@ def main():
         if time.monotonic() > limit:
             raise RuntimeError('isolated API did not start')
         time.sleep(.05)
-    records, calls = [], []
+    records, calls, progress_updates = [], [], []
     original_connection = hermes_gateway.connection
     original_run = hud_runtime._run
+    original_sink = hud_runtime.progress_sink
+    browser = None
+    @contextmanager
+    def observed_sink(callback):
+        def observed_progress(kind, text):
+            if kind == 'reasoning' and progress_updates and progress_updates[-1]['kind'] == 'reasoning':
+                progress_updates[-1] = {'kind': kind, 'text': text}
+            else:
+                progress_updates.append({'kind': kind, 'text': text})
+            callback(kind, text)
+        with original_sink(observed_progress):
+            yield
     def observed_connection(*values, **options):
         client, root, command = original_connection(*values, **options)
         rpc = client.rpc
@@ -114,6 +130,7 @@ def main():
         return result
     hermes_gateway.connection = observed_connection
     hud_runtime._run = observed_run
+    hud_runtime.progress_sink = observed_sink
     def save():
         (base / 'result.json').write_text(json.dumps({'runtime': args.runtime, 'route': route,
             'records': records, 'calls': calls, 'configuration_unchanged': before == fingerprints(),
@@ -152,6 +169,16 @@ def main():
                     instruction = ('依据当前安装 bot-group 的工程与使用文档，说明项目成员如何登记工作区资源、'
                         '测试报告应写到哪里，以及更新引擎代码后如何使其生效。读取依据后准确回答，引用文档路径和章节，'
                         '这是使用咨询，在 HUD 简短解答。')
+                elif scenario == 'settings':
+                    targets = []
+                    isolated_home = base / 'created-profiles'
+                    (isolated_home / 'profiles').mkdir(parents=True)
+                    os.environ['CODEX_HOME'] = str(isolated_home)
+                    instruction = ('请实际完成本项目配置：把角色“旧审查\u200c”改名为“审查员”，将现有的合成测试成员先停用再启用，'
+                        '并给它分配“审查员”角色；审查员只启用 task.update 角色权限，保留其他角色及成员授权。'
+                        '再创建 Codex profile，标识 hud-reviewer-proof、显示名“验收审查员”，使用默认配置来源，'
+                        '自动引用当前软件模板的 reviewer SOUL 全文，并分配审查员角色，读取实际说明文件核验。'
+                        '最后帮我打开角色页面，我看一眼。在 HUD 简短汇报实际结果。')
                 else:
                     cases = {
                         'research': (['docs/BRIEF.md', 'materials/SOURCES.md'],
@@ -172,8 +199,20 @@ def main():
                     conn.execute("INSERT INTO projects(name,display_name,root,description,directory_mode,created_at) VALUES(?,?,?,?, 'shared',?)",
                                  (scenario, '原生助手验收', str(root), '合成资料准备', db.now_iso()))
                     conn.execute("INSERT INTO project_config_events(project,actor,action,detail,created_at) VALUES(?, 'fixture','project.import',?,?)",
-                                 (scenario, json.dumps({'template': {'id': 'software' if scenario == 'usage' else scenario}}), db.now_iso()))
+                                 (scenario, json.dumps({'template': {'id': 'software' if scenario in ('usage', 'settings') else scenario}}), db.now_iso()))
                     conn.commit()
+                    if scenario == 'settings':
+                        from engine import project_team, bot_identity
+                        role = project_team.create_role(conn, scenario, '旧审查\u200c', 'fixture')
+                        cursor = conn.execute('INSERT INTO bots(host_type,runtime,profile,config_root,display_name) VALUES(?,?,?,?,?)',
+                            ('codex', 'codex', 'synthetic-member', str(isolated_home), '合成测试成员'))
+                        member = bot_identity.enroll(conn, cursor.lastrowid, scenario)
+                        project_team.assign_role(conn, scenario, member, role['name'], 'fixture')
+                        cursor = conn.execute('INSERT INTO bots(host_type,runtime,profile,config_root,display_name) VALUES(?,?,?,?,?)',
+                            ('codex', 'codex', 'preserved-member', str(isolated_home), '保持原授权的成员'))
+                        preserved = bot_identity.enroll(conn, cursor.lastrowid, scenario)
+                        conn.execute('INSERT INTO project_permissions(project,profile,permission) VALUES(?,?,?)', (scenario, preserved, 'req.create'))
+                        conn.commit()
                 item = hud.create(scenario)
             else:
                 targets = []
@@ -184,11 +223,22 @@ def main():
             item = hud.update(item['id'], {'revision': item['revision'], 'bot_id': bot_id})
             item = hud.answer(item['id'], {'revision': item['revision'], 'text': instruction, 'question_id': None})
             began = time.monotonic()
+            progress_updates.clear()
+            if scenario == 'settings' and args.browser_python:
+                evidence = base / 'browser'
+                browser = subprocess.Popen([str(args.browser_python), '-X', 'utf8', '-B',
+                    str(Path(__file__).with_name('test_hud_navigation_browser.py')), '--url', f'http://127.0.0.1:{port}',
+                    '--project', scenario, '--evidence', str(evidence)])
+                deadline = time.monotonic() + 40
+                while not (evidence / 'ready.json').exists():
+                    if browser.poll() is not None or time.monotonic() >= deadline:
+                        raise RuntimeError('navigation browser did not become ready')
+                    time.sleep(.1)
             hud.run_one(item['id'])
             result = hud.view(item['id'])
             record = {'scenario': scenario, 'seconds': round(time.monotonic()-began, 2),
                       'status': result['status'], 'error': result['error'], 'session': item['id'],
-                      'entries': result['entries'], 'artifacts': []}
+                      'entries': result['entries'], 'progress': list(progress_updates), 'artifacts': []}
             records.append(record)
             save()
             assert result['status'] != 'error', result['error']
@@ -216,6 +266,28 @@ def main():
                 assert result['state']['draft']['display_name'] == '光伏市场研究', result['state']['draft']
                 assert result['state']['draft']['description'] == '研究工商业光伏设备市场，交付带来源的决策报告'
                 record['configuration'] = result['state']['draft']
+            elif scenario == 'settings':
+                from engine import project_templates
+                with closing(db.get_connection()) as conn:
+                    actual_role = conn.execute('SELECT id,name FROM project_roles WHERE project=? AND name=?', (scenario, '审查员')).fetchone()
+                    assert actual_role is not None
+                    assert conn.execute('SELECT active,role_id FROM project_members WHERE project=? AND profile=?', (scenario, member)).fetchone()[:] == (1, actual_role['id'])
+                    transitions = [json.loads(r[0]) for r in conn.execute("SELECT detail FROM project_config_events WHERE project=? AND action='member.active' ORDER BY id", (scenario,))]
+                    assert [r['after'] for r in transitions if r['profile'] == member] == [0, 1], transitions
+                    assert conn.execute('SELECT permission FROM project_permissions WHERE project=? AND profile=?', (scenario, f'role:{actual_role["id"]}')).fetchall()[0][0] == 'task.update'
+                    assert conn.execute('SELECT 1 FROM project_permissions WHERE project=? AND profile=? AND permission=?', (scenario, preserved, 'req.create')).fetchone()
+                    created = conn.execute("SELECT pm.profile,pm.role_id FROM project_members pm JOIN bots b ON b.id=pm.bot_id WHERE pm.project=? AND b.profile='hud-reviewer-proof'", (scenario,)).fetchone()
+                    assert created and created['role_id'] == actual_role['id']
+                path = isolated_home / 'profiles/hud-reviewer-proof/AGENTS.md'
+                expected = project_templates.text_resource(project_templates.TEMPLATE_ROOT / 'software', 'references/souls/reviewer.md')
+                assert path.read_text(encoding='utf-8').rstrip('\r\n') == expected.rstrip('\r\n')
+                assert result['state']['navigation']['page'] == 'roles'
+                assert any(p['text'] == ('正在读取文件' if args.runtime == 'hermes' else '正在执行命令') for p in progress_updates), progress_updates
+                record['artifacts'].append({'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'characters': len(expected)})
+                record['configuration'] = {'role': actual_role['name'], 'member': member, 'created_profile': created['profile']}
+                if browser:
+                    assert browser.wait(timeout=20) == 0
+                    assert json.loads((base / 'browser/result.json').read_text(encoding='utf-8'))['passed']
             elif scenario == 'usage':
                 response = '\n'.join(e['content'].get('text', '') for e in result['entries'] if e['role'] == 'assistant')
                 assert 'docs/' in response and 'reports/' in response and '重启' in response, response
@@ -233,9 +305,13 @@ def main():
         save()
         hermes_gateway.connection = original_connection
         hud_runtime._run = original_run
+        hud_runtime.progress_sink = original_sink
         from engine import hermes_connections
         hermes_connections.stop()
         server.should_exit = True
+        if browser and browser.poll() is None:
+            browser.terminate()
+            browser.wait(timeout=10)
         worker.join(timeout=10)
         sock.close()
 

@@ -3,6 +3,18 @@ let profileProjectReturn = null;
 const projectMembersCache = new Map(), projectMembersPending = new Map(), projectMembersVersions = new Map();
 let workspaceEditor = null;
 let projectPermissionsEditor = null, projectPermissionsVersion = 0;
+window.refreshProjectSettingsFromAssistant = (project) => {
+  if(!$('#dlg-project-detail').open||$('#pj-detail-form').dataset.origName!==project)return;
+  const tab=$('#pj-detail-tabs [aria-selected="true"]')?.dataset.tab;
+  if(tab==='roles'&&!$('#pj-role-list').querySelector('.pj-role-rename'))loadProjectRoles();
+  if(tab==='members')loadProjectMembers();
+  if(tab==='permissions'&&projectPermissionsEditor){
+    const dirty=[...$('#pj-permissions-list').querySelectorAll('[data-permission]')].some(row=>
+      [...row.querySelectorAll('input')].some(input=>input.checked!==(projectPermissionsEditor.grants[row.dataset.permission]||[]).includes(input.value)));
+    if(dirty)$('#pj-permissions-status').textContent='助手已更新服务端配置，当前未保存的权限选择已保留。';
+    else loadProjectPermissions(true);
+  }
+};
 function resetProjectPermissions() {
   projectPermissionsVersion++;
   projectPermissionsEditor = null;

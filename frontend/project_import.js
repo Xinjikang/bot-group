@@ -139,11 +139,30 @@
   }
   function applyHud(draft, before) {
     if(!draft || !dialog.open) return;
+    if(draft.wizard){
+      if(!before?.wizard||JSON.stringify(roles)===JSON.stringify(before.wizard.roles||[])){
+        roles=draft.wizard.roles||roles;if(preview)renderRoles();invalidateRules();
+      }
+      if(!before?.wizard||JSON.stringify([...members.values()])===JSON.stringify(before.wizard.members||[])){
+        members=new Map((draft.wizard.members||[...members.values()]).map(member=>[member.bot_id,member]));
+      }
+      if(preview){
+        renderMembers();
+        const currentPreview=preview;
+        if([...members.keys()].some(id=>!preview.bots.some(bot=>bot.bot_id===id))){
+          MemberPicker.load().then(candidates=>{
+            if(preview!==currentPreview||!dialog.open)return;
+            for(const candidate of candidates)if(!preview.bots.some(bot=>bot.bot_id===candidate.bot_id))preview.bots.push(candidate);
+            renderMembers();
+          }).catch(error=>status('新 profile 列表刷新失败：'+error.message,true));
+        }
+      }else hudRestored={...draft.wizard,roles,members:[...members.values()]};
+    }
     for(const [field,id] of Object.entries({display_name:'name',description:'description',root:'root',template:'template',directory_mode:'mode',worktree_root:'worktree'})) {
       if(typeof draft[field]==='string'&&(!before||el(id).value===(before[field]??''))) el(id).value=draft[field];
     }
     nameEdited=!!el('name').value;templateExplicit=true;updateModeHelp();
-    if(preview) { preview=null;payload=null;showStep(0);status('HUD 已更新草稿，请重新检查目录和配置。'); }
+    if(preview&&Object.keys(draft).some(key=>key!=='wizard')) { preview=null;payload=null;showStep(0);status('HUD 已更新草稿，请重新检查目录和配置。'); }
   }
   dialog.addEventListener('input',e=>{
     if(e.target.closest('#project-hud'))return;

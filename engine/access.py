@@ -57,7 +57,7 @@ def resolve_identity(
         return profile, "bot"
     if isinstance(authorization, str):
         if (request is not None and request.method == 'POST'
-                and request.scope['route'].path == '/hud/{sid}/tool-config'
+                and request.scope['route'].path in ('/hud/{sid}/tool-config', '/hud/{sid}/tool-navigation', '/hud/{sid}/tool-settings')
                 and authorization.startswith('Bearer hud.')):
             from . import hud_tools, project_hud
             with project_hud.connection() as conn:
@@ -119,7 +119,7 @@ async def authorize(request: Request, identity=Depends(resolve_identity)):
     request.state.identity = identity
     profile, kind = identity
     if kind == 'hud':
-        if route != ('POST', '/hud/{sid}/tool-config'):
+        if route not in (('POST', '/hud/{sid}/tool-config'), ('POST', '/hud/{sid}/tool-navigation'), ('POST', '/hud/{sid}/tool-settings')):
             raise HTTPException(403, '助手配置凭据仅用于当前配置工具')
         from . import wake
         if wake._shutting_down.is_set():
