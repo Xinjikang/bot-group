@@ -142,34 +142,43 @@ class DshAuthTests(unittest.TestCase):
         self.assertIn({'id': 'session-log-deepseek', 'disabled': True}, entries)
         self.assertIn({'id': 'session-telemetry-otel', 'disabled': True}, entries)
 
-    def _fake_run(self, restrict_rc=0, acl_stdout='DOMAIN\\user:(OI)(CI)F\n'):
+    def _copy(self, *, restrict_rc=0, dir_acl='DOMAIN\\user:(OI)(CI)F\n',
+              file_acl='DOMAIN\\user:(OI)(CI)F\n', read_raise=None):
+        private = Path(self.tmp.name) / "private"
+        private.mkdir()
+
         def run(args, **kwargs):
-            if '/inheritance:r' in args:
-                return type('R', (), {'returncode': restrict_rc, 'stdout': '', 'stderr': ''})()
-            return type('R', (), {'returncode': 0, 'stdout': acl_stdout, 'stderr': ''})()
-        return run
+            return type('R', (), {'returncode': restrict_rc, 'stdout': '', 'stderr': ''})()
+
+        def read_acl(path):
+            if read_raise is not None:
+                raise read_raise
+            return file_acl if path.name == 'credentials.yaml' else dir_acl
+
+        with patch.object(dsh_auth, '_windows_identity', return_value='DOMAIN\\user'), \
+             patch.object(dsh_auth.subprocess, 'run', side_effect=run), \
+             patch.object(dsh_auth, '_read_acl', side_effect=read_acl):
+            return dsh_auth.copy_credentials(str(self.droot), str(private)), private
 
     def test_copy_credentials_byte_identical_and_original_kept(self):
         self._account()
         original = self.credfile.read_bytes()
-        private = Path(self.tmp.name) / "private"
-        private.mkdir()
-        with patch.object(dsh_auth, '_windows_identity', return_value='DOMAIN\\user'), \
-             patch.object(dsh_auth.subprocess, 'run', side_effect=self._fake_run()):
-            dest = dsh_auth.copy_credentials(str(self.droot), str(private))
+        dest, _ = self._copy()
         self.assertIsNotNone(dest)
         self.assertEqual(Path(dest).read_bytes(), original)
         self.assertEqual(self.credfile.read_bytes(), original)  # 原文件保持原值
 
     def test_copy_credentials_icacls_failure_aborts(self):
         self._account()
-        private = Path(self.tmp.name) / "private"
-        private.mkdir()
+        _, private = None, None
         with patch.object(dsh_auth, '_windows_identity', return_value='DOMAIN\\user'), \
-             patch.object(dsh_auth.subprocess, 'run', side_effect=self._fake_run(restrict_rc=1)):
+             patch.object(dsh_auth.subprocess, 'run',
+                          side_effect=lambda *a, **k: type('R', (), {'returncode': 1, 'stdout': '', 'stderr': ''})()):
+            private = Path(self.tmp.name) / "private"
+            private.mkdir()
             with self.assertRaises(dsh_auth.AuthSyncError):
                 dsh_auth.copy_credentials(str(self.droot), str(private))
-        self.assertFalse((private / 'credentials.yaml').exists())  # 无副本残留
+        self.assertFalse((private / 'credentials.yaml').exists())
 
     def test_copy_credentials_missing_identity_aborts(self):
         self._account()
@@ -180,16 +189,43 @@ class DshAuthTests(unittest.TestCase):
                 dsh_auth.copy_credentials(str(self.droot), str(private))
         self.assertFalse((private / 'credentials.yaml').exists())
 
-    def test_copy_credentials_broad_ace_aborts(self):
+    def _copy_broad(self, acl):
         self._account()
         private = Path(self.tmp.name) / "private"
         private.mkdir()
         with patch.object(dsh_auth, '_windows_identity', return_value='DOMAIN\\user'), \
              patch.object(dsh_auth.subprocess, 'run',
-                          side_effect=self._fake_run(acl_stdout='BUILTIN\\Users:(OI)(CI)(RX)\n')):
+                          side_effect=lambda *a, **k: type('R', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()), \
+             patch.object(dsh_auth, '_read_acl', return_value=acl):
             with self.assertRaises(dsh_auth.AuthSyncError):
                 dsh_auth.copy_credentials(str(self.droot), str(private))
         self.assertFalse((private / 'credentials.yaml').exists())
+
+    def test_copy_credentials_broad_ace_aborts(self):
+        self._copy_broad('BUILTIN\\Users:(OI)(CI)(RX)\n')
+
+    def test_copy_credentials_sid_broad_ace_aborts(self):
+        self._copy_broad('S-1-5-32-545:(OI)(CI)(RX)\n')
+
+    def test_copy_credentials_read_acl_failure_aborts(self):
+        self._account()
+        private = Path(self.tmp.name) / "private"
+        private.mkdir()
+        with patch.object(dsh_auth, '_windows_identity', return_value='DOMAIN\\user'), \
+             patch.object(dsh_auth.subprocess, 'run',
+                          side_effect=lambda *a, **k: type('R', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()), \
+             patch.object(dsh_auth, '_read_acl', side_effect=dsh_auth.AuthSyncError('read fail')):
+            with self.assertRaises(dsh_auth.AuthSyncError):
+                dsh_auth.copy_credentials(str(self.droot), str(private))
+        self.assertFalse((private / 'credentials.yaml').exists())
+
+    def test_copy_credentials_existing_file_aborts(self):
+        self._account()
+        private = Path(self.tmp.name) / "private"
+        private.mkdir()
+        (private / 'credentials.yaml').write_text('stale')
+        with self.assertRaises(dsh_auth.AuthSyncError):
+            dsh_auth.copy_credentials(str(self.droot), str(private))
 
     def test_copy_credentials_missing_returns_none(self):
         private = Path(self.tmp.name) / "private"

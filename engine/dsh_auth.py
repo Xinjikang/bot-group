@@ -7,8 +7,9 @@
 保持原值。
 
 provider、model、服务配置与凭据来源一起解析（``resolve``）；认证 overlay 条目由
-``overlay_entries`` 构建，供 spawn（task 266）以 ``--patch`` 注入。三种来源的真实模型
-调用成功由 task 266 起真实 dsh 验收，本模块提供路由判定与 overlay 构造的隔离可测闭环。
+``overlay_entries`` 构建，供 spawn（task 266 引擎集成）以 ``--patch`` 注入。三种来源的
+真实调用由本任务 verify 脚本在隔离原生 DSH 验收（账号已实测 DSH_NATIVE_OK，API-key 待
+有效 key），task 266 承接引擎 spawn 集成，不重复真实验收。
 """
 from __future__ import annotations
 
@@ -29,8 +30,9 @@ _CREDENTIAL = re.compile(
 _ACCOUNT_PROVIDER = 'deepseek-account'
 # provider/model/服务配置条目，随 overlay 一并透传（desktop 实测 id 集合）。
 _PROVIDER_IDS = ('agent-default-model', 'llm-deepseek', 'llm-pi-ai', 'deepseek-account')
-# 宽泛 ACE（Everyone/Users/Authenticated Users），凭据副本目录不得残留。
-_BROAD_ACE = re.compile(r'(?i)\b(Everyone|BUILTIN\\Users|NT AUTHORITY\\Authenticated Users)\b')
+# 宽泛 ACE（Everyone/Users/Authenticated Users 及对应 SID），凭据副本目录/文件不得残留。
+_BROAD_ACE = re.compile(
+    r'(?i)(Everyone|BUILTIN\\Users|Authenticated Users|S-1-1-0\b|S-1-5-32-545\b|S-1-5-11\b)')
 
 
 class AuthSyncError(ValueError):
@@ -46,10 +48,25 @@ def _windows_identity() -> str:
 
 
 def _read_acl(path: Path) -> str:
-    r = subprocess.run(['icacls', str(path)], stdout=subprocess.PIPE,
-                       stderr=subprocess.DEVNULL, text=True,
-                       encoding='utf-8', errors='replace', timeout=30, check=False)
-    return r.stdout or ''
+    """读回 ACL，失败（非零/超时/异常/空/不可解析）均显式中止。"""
+    try:
+        r = subprocess.run(['icacls', str(path)], stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, text=True,
+                           encoding='utf-8', errors='replace', timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AuthSyncError('无法读取凭据副本 ACL，已中止') from exc
+    if r.returncode != 0:
+        raise AuthSyncError(f'无法读取凭据副本 ACL，已中止（icacls 返回 {r.returncode}）')
+    acl = (r.stdout or '').strip()
+    if not acl:
+        raise AuthSyncError('凭据副本 ACL 读取为空或不可解析，已中止')
+    return acl
+
+
+def _verify_acl(acl: str) -> None:
+    """核验 ACL 无宽泛 ACE（Everyone/Users/Authenticated Users 及 SID）。"""
+    if _BROAD_ACE.search(acl):
+        raise AuthSyncError('凭据副本仍存在宽泛访问权限，已中止')
 
 
 def sanitize(message: str) -> str:
@@ -163,15 +180,18 @@ def overlay_entries(bot, *, credentials_path: str | None = None) -> list:
 def copy_credentials(home: str, private_dir: str) -> str | None:
     """复制原生凭据到隔离目录并核验私有 ACL；任何限制失败中止并清理。
 
-    先建立/核验本次独占私有目录权限，再写敏感字节；icacls 失败、异常、超时或身份缺失
-    均中止并显式报错（不返回可用副本、不回退读取原始凭据）。失败清理本次副本并报告。
-    核验最终 DACL 无宽泛 ACE；原 ``.credentials.yaml`` 保持原值。
+    先建立/核验本次独占私有目录权限，再写敏感字节；icacls 失败、异常、超时、身份缺失、
+    读回失败或宽泛 ACE 均中止并显式报错（不返回可用副本、不回退读取原始凭据）。已有目标
+    文件明确拒绝，防止沿用既有宽泛 ACL。核验目录与最终文件 DACL 均无宽泛 ACE；原
+    ``.credentials.yaml`` 保持原值。
     """
     source = Path(home).resolve() / '.credentials.yaml'
     if not source.is_file():
         return None
     private = Path(private_dir).resolve()
     dest = private / 'credentials.yaml'
+    if dest.exists():
+        raise AuthSyncError('凭据副本目标文件已存在，中止（防止沿用既有宽泛 ACL）')
     if sys.platform == 'win32':
         identity = _windows_identity()
         if not identity:
@@ -186,14 +206,14 @@ def copy_credentials(home: str, private_dir: str) -> str | None:
             raise AuthSyncError('无法限制凭据副本目录权限，已中止') from exc
         if r.returncode != 0:
             raise AuthSyncError(f'无法限制凭据副本目录权限，已中止（icacls 返回 {r.returncode}）')
-        acl = _read_acl(private)
-        if _BROAD_ACE.search(acl):
-            raise AuthSyncError('凭据副本目录仍存在宽泛访问权限，已中止')
+        _verify_acl(_read_acl(private))
     try:
         dest.write_bytes(source.read_bytes())
     except Exception:
         dest.unlink(missing_ok=True)
         raise AuthSyncError('无法写入凭据副本，已中止') from None
+    if sys.platform == 'win32':
+        _verify_acl(_read_acl(dest))
     return dest
 
 

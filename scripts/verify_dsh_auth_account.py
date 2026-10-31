@@ -24,9 +24,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from engine import dsh_auth  # noqa: E402
 
-EXE = r"D:\deepseek\DeepSeek Harness.exe"
-CLI = r"D:\deepseek\resources\app.asar\dsh\node_modules\@deepseek-ai\dsh-desktop-host\lib\cli.js"
-SOURCE_HOME = Path(r"E:\home\admin\deepseek\.dsh")
 PROMPT = "Remember this test marker: PROBE_CEDAR_741. Reply with exactly DSH_NATIVE_OK. Do not use tools."
 
 
@@ -78,12 +75,18 @@ def run_dsh(exe, cli, overlay_path, home, test_dir, prompt):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--exe', type=Path, default=Path(EXE))
-    ap.add_argument('--cli', type=Path, default=Path(CLI))
-    ap.add_argument('--source-home', type=Path, default=SOURCE_HOME)
+    ap.add_argument('--exe', type=Path, required=True, help='DSH 桌面可执行文件绝对路径')
+    ap.add_argument('--cli', type=Path, required=True, help='DSH desktop-host cli.js 绝对路径')
+    ap.add_argument('--source-home', type=Path, required=True, help='源 DSH_HOME 绝对路径')
     ap.add_argument('--test-directory', type=Path, required=True)
     ap.add_argument('--evidence', type=Path, required=True)
     args = ap.parse_args()
+    if not args.exe.is_file():
+        raise ValueError(f'--exe 不是文件：{args.exe}')
+    if not str(args.cli).strip():
+        raise ValueError('--cli 不能为空（asar 内路径无法用 is_file 校验，由 DSH --expose-internals 读取）')
+    if not args.source_home.is_dir():
+        raise ValueError(f'--source-home 不是目录：{args.source_home}')
     if not args.test_directory.is_dir():
         raise ValueError('--test-directory 必须是已分配的隔离目录')
     credentials = args.source_home / '.credentials.yaml'
