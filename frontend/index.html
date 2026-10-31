@@ -858,7 +858,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 @media(max-width:420px){.project-member-card{padding:12px}}
 </style>
 <link rel="stylesheet" href="/app/dialogs.css?v=20261030-edit-policy">
-<link rel="stylesheet" href="/app/appearance.css?v=20261017-background-storage">
+<link rel="stylesheet" href="/app/appearance.css?v=20261031">
 </head>
 <body>
 <div id="app">
@@ -888,7 +888,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
       </div>
       </div>
       <span id="hermes-gateway-status" hidden data-state="waiting" role="status" aria-live="polite"><span class="gateway-dot"></span><span class="gateway-label"></span></span>
-      <span id="conn" data-state="connecting" role="status"><span class="dot"></span><span id="conn-text">连接中…</span></span>
+      <span id="conn" data-state="connecting" role="status"><span class="dot"></span><span id="conn-text">引擎连接中…</span></span>
     </div>
   </div>
 
@@ -1512,16 +1512,16 @@ async function connectSSE() {
   const es = new EventSource("/events");
   S.es = es;
   es.onopen = () => { setConn("connected"); loadThinking(); };
-  es.onerror = () => setConn(es.readyState === EventSource.CLOSED ? "disconnected" : "connecting", "断线重连中…");
+  es.onerror = () => setConn(es.readyState === EventSource.CLOSED ? "disconnected" : "connecting", "引擎断线重连中…");
   es.onmessage = (ev) => {
     let evt; try { evt = JSON.parse(ev.data); } catch { return; }
     handleEvent(evt);
   };
 }
-function setConn(state, connectingText = "连接中…") {
+function setConn(state, connectingText = "引擎连接中…") {
   if (S.restarting) { state = 'connecting'; connectingText = S.restartMessage || '正在重启…'; }
   $("#conn").dataset.state = state;
-  $("#conn-text").textContent = state === "connected" ? "已连接" : state === "disconnected" ? "已断开" : connectingText;
+  $("#conn-text").textContent = state === "connected" ? "引擎已连接" : state === "disconnected" ? "引擎已断开" : connectingText;
   window.HermesGatewayStatus?.engineConnection(state);
 }
 
@@ -4831,6 +4831,6 @@ themeBtn.addEventListener("click", () => {
 <link rel="stylesheet" href="/app/hermes_approvals.css?v=20261029">
 <link rel="stylesheet" href="/app/hermes_gateway_status.css?v=20261030">
 <script src="/app/hermes_approvals.js?v=20261029"></script>
-<script src="/app/hermes_gateway_status.js?v=20261030"></script>
+<script src="/app/hermes_gateway_status.js?v=20261031"></script>
 </body>
 </html>

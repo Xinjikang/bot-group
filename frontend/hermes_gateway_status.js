@@ -3,9 +3,9 @@
   const element = document.querySelector('#hermes-gateway-status');
   const label = element.querySelector('.gateway-label');
   const labels = {
-    waiting: 'Hermes 待连接', connecting: 'Hermes 连接中', connected: 'Hermes 已连接',
-    offline: 'Hermes 离线', error: 'Hermes 连接异常', restart_required: 'Hermes 需要重启',
-    unknown: 'Hermes 状态未知',
+    waiting: 'Hermes 网关待连接', connecting: 'Hermes 网关连接中', connected: 'Hermes 网关已连接',
+    offline: 'Hermes 网关离线', error: 'Hermes 网关连接异常', restart_required: 'Hermes 网关需要重启',
+    unknown: 'Hermes 网关状态未知',
   };
   let mode = null, state = 'unknown', received = 0, request = null, generation = 0;
   let engine = document.querySelector('#conn').dataset.state;

@@ -44,7 +44,7 @@ Hermes 连接池与顶栏状态：`.venv\Scripts\python.exe -X utf8 -B -m unitte
 
 连接池原生订阅：使用带 Hermes 与 bot-group 依赖的解释器执行 `python -X utf8 -B scripts/verify_hermes_connections_native.py --hermes-source <Hermes源码绝对目录> --evidence <主目录报告下的新目录>`。真实 SessionAuthority、AuthorityConnection 和回环 WS 验证共享连接、最后租约释放保留订阅、再次 resume 与空闲 detach/关闭。home、数据库全部隔离，control 身份与 ticket 为合成夹具，保持零模型调用。
 
-顶栏浏览器验证：`python -X utf8 -B scripts/preview_hermes_gateway_status.py [--port <隔离端口>]`，默认由系统分配端口。浏览器访问输出地址，真实前端资产与合成只读响应自动验证七种状态、子进程隐藏、引擎断连、过期、退出登录和无交互；1200px 深色及 390px 深浅主题各检查全部标签边界。三个面板均应显示 `PASS 21 checks`。验证结束关闭预览服务，截图和文本证据放入主目录报告。
+顶栏浏览器验证：`python -X utf8 -B scripts/preview_hermes_gateway_status.py [--port <隔离端口>]`，默认由系统分配端口。浏览器访问输出地址，真实前端资产与合成只读响应自动验证七种状态、子进程隐藏、引擎断连、过期、退出登录和无交互；1200px 深色及 390px 深浅主题各检查全部标签边界。三个面板均应显示 `PASS 21 checks`。连接文案调整时另核对两处完整对象名称（Hermes 网关、引擎），并调用真实 `setConn` 检查连接、断开及重连标签；窄屏两处标签均应可见。验证结束关闭预览服务，截图和文本证据放入主目录报告。
 
 全局智能审批策略：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_edit_policy scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway scripts.test_access_contract -q`。隔离 SQLite 和 RPC 替身覆盖默认 workspace、全局持久化、跨项目/profile 每轮更新、身份与非法字段校验、忙碌轮次保护和策略设置失败。浏览器执行 `python -X utf8 -B scripts/test_edit_policy_browser.py --evidence <主目录报告目录>/browser`，需要 Playwright 和 Chrome；合成 HTTP 验证三档选择、取消、刷新/跨页面读取、错误重试、重复提交保护、身份变更、键盘及桌面/390px 深浅主题。配套复用 `test_app_settings_browser.py` 检查已有设置菜单。
 

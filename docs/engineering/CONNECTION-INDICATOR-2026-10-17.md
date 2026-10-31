@@ -6,9 +6,11 @@
 
 | 状态 | 颜色与动效 | 文案 |
 | --- | --- | --- |
-| connecting | 黄色呼吸灯，无绿色光晕 | 连接中… / 断线重连中… |
-| connected | 绿色呼吸灯与光晕 | 已连接 |
-| disconnected | 灰色静态灯 | 已断开 |
+| connecting | 黄色呼吸灯，无绿色光晕 | 引擎连接中… / 引擎断线重连中… |
+| connected | 绿色呼吸灯与光晕 | 引擎已连接 |
+| disconnected | 灰色静态灯 | 引擎已断开 |
+
+引擎状态表示当前页面与 bot-group 引擎的 SSE 连接。相邻的 Hermes 网关状态表示引擎管理的网关连接池，所有状态文案均包含“Hermes 网关”对象名称。
 
 初始 HTML 和每次创建 EventSource 都进入 connecting；onopen 进入 connected；onerror 根据 readyState 区分自动重连与 CLOSED；退出登录主动关闭连接时进入 disconnected。
 
