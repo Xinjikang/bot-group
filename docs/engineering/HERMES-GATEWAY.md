@@ -40,6 +40,8 @@
 
 旧 CLI 会话通过官方 `session.export` 和 `session.mutate import` 建立确定 ID 的 ACP 副本，原会话完整保留，映射记录在 `hermes_session_migrations`。活动会话先等待终态。`/new` 使用 `session.create`，绑定 generation 按现有流程递增。恢复、标题查找和思考记录分别使用 `session.resume`、`session.list`、`session.export`。压缩后的逻辑会话由 Hermes 解析。
 
+思考记录导出使用独立只读连接，响应上限为 64 MiB；控制连接继续使用 8 MiB 上限。超限导出明确返回读取错误，其连接关闭与业务提交、回执查询连接隔离；历史内容、思考窗口和原生会话保持原有语义。
+
 已有绑定按持久化 session ID 恢复。首次绑定时调用官方 `session.list title=...`；v0.22.5 的原生标题解析返回零个或一个结果。适配器对多候选响应返回 `ambiguous_session_title`，保留原会话及绑定状态；管理员核对标题归属后重试。空结果按原有流程创建会话，唯一结果写入 ID 绑定。
 
 只读状态查询 `existing_session_id()` 优先读取已有绑定；缺少绑定时以 `read_only=True` 解析标题。网关模式从连接池取得只读租约，通过本地 control `identify` 发现已运行的实例，校验 profile、协议、实例身份与回环地址，再调用 `session.list`，完成后释放租约。命名 profile 可查询承载它的根目录 multiplexer；发现过程保持目录与进程状态。查询中的网关传输、拒绝、配置和超时异常降级为 `None`。旧版模式使用 SQLite `mode=ro` 查询已有 state.db。创建与执行路径按上述发现优先契约取得业务租约。工作区 GET 对查询层抛出的已知数据库、系统和网关异常返回 `work_session_exists=null`，成员视图仍可读取。
@@ -87,6 +89,8 @@ AGENTS.md、SOUL 和记忆通过用户主动 `/new` 刷新。v0.22.5 在同 sid 
 原生明确以 `invalid_params`、`target_message_id` 和 `compacted:` 标记停止位置已压缩时，清理保留当前历史与已受理的规则哈希，记录 `rewind_target_compacted; transcript preserved` 并释放清理待办。其他拒绝继续保留清理门禁。实现与边界见[终态清理恢复](../design/2026-10-31-terminal-cleanup-recovery.md)。
 
 ## 签名密钥与凭据生命周期
+
+会话授权登记在 SQLite 写事务取得锁后读取签名代次，并在同一事务内保存引用。入口预检读取的代次仅用于确认签名服务已初始化；登记时重新读取当前代，避免在轮换和退役完成后写入已失效的旧引用。
 
 服务启动在恢复执行和启动 worker 前初始化 `config.data_dir()/secrets/bot-signing.key`。文件保存当前代和最多一个退役代，目录和临时文件均受权限保护：POSIX 为目录 0700、文件 0600，Windows 使用当前运行账户的独占受保护 DACL。密钥与签名凭据禁止进入源码包、Git、普通诊断报告及数据库；数据库仅保存初始化标记、代次及密钥摘要用于恢复一致性检查。
 

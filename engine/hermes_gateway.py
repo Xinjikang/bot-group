@@ -25,11 +25,16 @@ def enabled():
     return hermes_runtime.gateway_source(hermes_runtime.source_directory(_hermes_home()))
 
 
-def connection(profile, *, home=None, command=None, read_only=False, on_event=None):
+def connection(profile, *, home=None, command=None, read_only=False, on_event=None, history=False):
     from . import bot_identity
     from . import hermes_connections
     from .session_adapter import _hermes_home
     home = Path(home) if home else bot_identity.hermes_home(profile, _hermes_home())
+    if history:
+        # Transcript reads own their socket and cannot interrupt admission RPCs.
+        client = hermes_connections.open_connection(home, [], on_event, allow_start=False,
+            revision=hermes_connections.installed_revision(), max_message_bytes=64 * 1024 * 1024)
+        return client, home, []
     command = command or ([] if read_only else hermes_runtime.command())
     return hermes_connections.acquire(home, command, callback=on_event, business=not read_only), home, command
 

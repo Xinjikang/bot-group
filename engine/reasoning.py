@@ -130,7 +130,7 @@ def read_reasoning(profile: str, session: str, after_id: int = 0, *, wake_starte
     """
     from . import hermes_gateway
     if hermes_gateway.enabled():
-        client, _, _ = hermes_gateway.connection(profile)
+        client, _, _ = hermes_gateway.connection(profile, read_only=True, history=True)
         with client:
             sid = hermes_session_id
             if not sid:

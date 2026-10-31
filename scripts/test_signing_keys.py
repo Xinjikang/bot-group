@@ -1,6 +1,7 @@
 """Isolated key rotation, recovery, HTTP revocation and pre-stop gates."""
 import json
 import os
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
@@ -79,6 +80,48 @@ class SigningTests(unittest.TestCase):
         self.assertEqual(keys.read()[0], 2)
         keys.retire(self.conn)
         self.assertEqual(set(keys.read()[1]), {2})
+
+    def test_grant_registration_survives_rotation_before_its_write(self):
+        from engine import hermes_session_auth as grants
+        keys.initialize(self.conn)
+        bot = db._ensure_hermes_bot(self.conn, 'default')
+        self.conn.execute("INSERT INTO session_bindings(project,bot_id,profile,kind,thread_id,session_id,runtime,generation,title,updated_at) "
+                          "VALUES('alpha',?,'default','work',0,'sid','hermes',0,'fixture',?)", (bot, db.now_iso()))
+        self.conn.commit()
+        other = db.get_connection()
+        self.addCleanup(other.close)
+        other.execute('PRAGMA busy_timeout=0')
+        original = grants._signing_generation
+        attempted = False
+        rotation_blocked = False
+
+        def concurrent_rotation():
+            nonlocal attempted, rotation_blocked
+            generation = original()
+            if not attempted:
+                attempted = True
+                keys.initialize(other)
+                keys.retire(other)
+            else:
+                try:
+                    keys.initialize(other)
+                except sqlite3.OperationalError as exc:
+                    self.assertIn('locked', str(exc))
+                    rotation_blocked = True
+            return generation
+
+        with patch.object(grants, '_signing_generation', side_effect=concurrent_rotation):
+            row = grants.grant(self.conn, project='alpha', profile='default', bot_id=bot, kind='work',
+                thread_id=None, session='fixture', home=keys.path().parent.parent, command=[],
+                workdir=str(keys.path().parent.parent), model_args=[])
+        keys.preflight()
+        self.assertTrue(rotation_blocked)
+        self.assertEqual(row['signing_generation'], 2)
+        keys.initialize(self.conn)
+        self.assertEqual(keys.read()[0], 3)
+        self.assertIn(row['signing_generation'], keys.read()[1])
+        keys.retire(self.conn)
+        self.assertIn(row['signing_generation'], keys.read()[1])
 
     def test_missing_and_identity_generation_mismatch_fail_closed(self):
         keys.initialize(self.conn)

@@ -201,6 +201,20 @@ class DiscoveryTests(unittest.TestCase):
             self.assertIs(self.call(), self.remote)
         ensure.assert_not_called()
 
+    def test_history_connection_is_separate_and_never_starts_gateway(self):
+        with patch.object(connections, 'installed_revision', return_value=('source', 'sha')), \
+             patch.object(gateway, 'discover', return_value=self.endpoint), \
+             patch.object(gateway, 'ensure') as ensure, \
+             patch.object(connections, 'acquire') as pooled, \
+             patch.object(gateway, 'GatewayClient', return_value=self.remote) as client:
+            actual, home, command = gateway.connection('fixture', home=self.home, read_only=True, history=True)
+        self.assertIs(actual, self.remote)
+        self.assertEqual(home, self.home)
+        self.assertEqual(command, [])
+        self.assertEqual(client.call_args.kwargs['max_message_bytes'], 64 * 1024 * 1024)
+        pooled.assert_not_called()
+        ensure.assert_not_called()
+
     def test_absence_alone_allows_start(self):
         with patch.object(gateway, 'discover', side_effect=transport.GatewayUnavailable('absent')), \
              patch.object(gateway, 'ensure', return_value=self.endpoint) as ensure, \
@@ -247,6 +261,39 @@ class DiscoveryTests(unittest.TestCase):
 
 
 class WireTests(unittest.TestCase):
+    def test_large_history_and_failed_history_leave_control_socket_usable(self):
+        from websockets.sync.server import serve
+        from websockets.exceptions import ConnectionClosed
+        payload = 'x' * (9 * 1024 * 1024)
+
+        def handler(socket):
+            try:
+                for raw in socket:
+                    call = json.loads(raw)
+                    result = payload if call['method'] == 'session.export' else {'status': 'started'}
+                    socket.send(json.dumps({'jsonrpc': '2.0', 'id': call['id'], 'result': result}))
+            except ConnectionClosed:
+                pass
+
+        transport.resume_connections()
+        with serve(handler, '127.0.0.1', 0, subprotocols=['hermes-gateway-v1']) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            endpoint = {'api_origin': 'http://127.0.0.1:' + str(server.socket.getsockname()[1])}
+            try:
+                with patch.object(transport, 'ticket', return_value='synthetic'), \
+                     transport.GatewayClient(endpoint) as control:
+                    with transport.GatewayClient(endpoint, max_message_bytes=64 * 1024 * 1024) as history:
+                        self.assertEqual(len(history.rpc('session.export', timeout=5)), len(payload))
+                    with transport.GatewayClient(endpoint) as oversized:
+                        with self.assertRaisesRegex(transport.GatewayTransportError, 'receive limit'):
+                            oversized.rpc('session.export', timeout=5)
+                    self.assertEqual(control.rpc('prompt.receipt', timeout=2), {'status': 'started'})
+                    self.assertFalse(control.closed)
+            finally:
+                server.shutdown()
+                thread.join(2)
+
     def test_concurrent_rpc_responses_and_events_use_one_ws(self):
         from websockets.sync.server import serve
         events = []

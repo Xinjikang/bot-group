@@ -284,7 +284,7 @@ def close_all(timeout: float = 5.0) -> None:
 
 class GatewayClient:
     """One viewer connection; the receiver drains events independently of RPCs."""
-    def __init__(self, endpoint, *, on_event=None, deadline=None):
+    def __init__(self, endpoint, *, on_event=None, deadline=None, max_message_bytes=8 * 1024 * 1024):
         from websockets.sync.client import connect
         if _CLOSING.is_set():
             raise GatewayTransportError('Hermes viewers are closing')
@@ -294,7 +294,7 @@ class GatewayClient:
         token = ticket(endpoint, **({'timeout': remaining(deadline)} if deadline else {}))
         self._socket = connect(url, subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + token],
                                proxy=None, open_timeout=remaining(deadline) if deadline else 10,
-                               close_timeout=1, ping_interval=20, ping_timeout=5, max_size=8 * 1024 * 1024)
+                               close_timeout=1, ping_interval=20, ping_timeout=5, max_size=max_message_bytes)
         if self._socket.subprotocol != 'hermes-gateway-v1':
             self._socket.close()
             raise GatewayTransportError('Hermes gateway protocol mismatch')
@@ -302,6 +302,7 @@ class GatewayClient:
         self._pending = {}
         self._sequence = 0
         self._closed = False
+        self._read_error = None
         self._on_event = on_event
         if not _register(self):
             self.close()
@@ -322,8 +323,10 @@ class GatewayClient:
                         callback = self._on_event
                 if callback:
                     callback(frame)
-        except Exception:
-            pass
+        except Exception as exc:
+            close = getattr(exc, 'sent', None)
+            if close is not None and close.code == 1009:
+                self._read_error = 'Hermes response exceeds the WebSocket receive limit'
         finally:
             _unregister(self)
             with self._condition:
@@ -344,7 +347,7 @@ class GatewayClient:
                     raise GatewayTransportError('Hermes RPC timed out; reconcile its receipt')
                 frame = self._pending[rid]
                 if frame is None:
-                    raise GatewayTransportError('Hermes RPC outcome unknown; reconcile its receipt')
+                    raise GatewayTransportError(self._read_error or 'Hermes RPC outcome unknown; reconcile its receipt')
                 if 'error' in frame:
                     error = frame['error']
                     data = error.get('data') or {}

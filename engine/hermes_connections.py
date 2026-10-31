@@ -36,7 +36,7 @@ def installed_revision():
     return (str(source.resolve()), value)
 
 
-def open_connection(home, command, callback, *, allow_start, revision):
+def open_connection(home, command, callback, *, allow_start, revision, max_message_bytes=None):
     from . import hermes_gateway as gateway
     deadline = time.monotonic() + 5
     try:
@@ -63,7 +63,8 @@ def open_connection(home, command, callback, *, allow_start, revision):
         deadline = time.monotonic() + 5
     if endpoint.get('code_sha') != revision[1]:
         raise GatewayRefusal('gateway_restart_required')
-    client = gateway.GatewayClient(endpoint, on_event=callback, deadline=deadline)
+    options = {'max_message_bytes': max_message_bytes} if max_message_bytes is not None else {}
+    client = gateway.GatewayClient(endpoint, on_event=callback, deadline=deadline, **options)
     try:
         info = client.rpc('runtime.describe', timeout=remaining(deadline))
         if (info.get('profile_id') != endpoint['profile_id']

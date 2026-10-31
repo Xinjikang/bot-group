@@ -126,7 +126,7 @@ def _signing_generation():
 
 def grant(conn, *, project, profile, bot_id, kind, thread_id, session, home, command, workdir, model_args):
     """Create a fresh binding generation after revocation; retain old rows for detach."""
-    signing_generation = _signing_generation()
+    _signing_generation()
     binding = conn.execute('SELECT * FROM session_bindings WHERE project=? AND bot_id=? AND kind=? AND thread_id=?',
                            (project, bot_id, kind, thread_id or 0)).fetchone()
     old = conn.execute('SELECT * FROM hermes_session_grants WHERE ' + WHERE, key(binding)).fetchone()
@@ -140,6 +140,10 @@ def grant(conn, *, project, profile, bot_id, kind, thread_id, session, home, com
                      'AND kind=? AND thread_id=?', (generation, project, bot_id, kind, thread_id or 0))
         binding = conn.execute('SELECT * FROM session_bindings WHERE project=? AND bot_id=? AND kind=? AND thread_id=?',
                                (project, bot_id, kind, thread_id or 0)).fetchone()
+    # Pin generation selection and its new reference against rotation/retirement.
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
+    signing_generation = _signing_generation()
     conn.execute('INSERT INTO hermes_session_grants(project,bot_id,profile,kind,thread_id,session,session_id,generation,'
                  'signing_generation,home,command,workdir,model_args) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) '
                  'ON CONFLICT(project,bot_id,kind,thread_id,generation) DO UPDATE SET '

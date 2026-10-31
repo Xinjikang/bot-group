@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+重启签名与长历史断线回归：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录 reports/tests 下的新绝对目录> scripts.test_signing_keys scripts.test_hermes_session_reuse scripts.test_hermes_connections scripts.test_reasoning_window scripts.test_runtime_isolation scripts.test_hermes_gateway scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway_ledger`。临时数据库与密钥复现读取代次后轮换、退役、再登记的交错；验证写事务阻止并发轮换、后续重启继续换代且保留有效引用、失败交接保留两代、终态撤权。随机回环 WebSocket 返回 9 MiB 合成历史，验证独立历史连接成功读取、超限断线后控制连接仍可查回执；分别覆盖网关和旧 CLI 的思考时间窗口。无需外部模型或业务数据，运行器检查资源隔离与线程清理。
+
 Hermes 终态清理恢复：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录 reports/tests 下的新绝对目录> scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway_sessions scripts.test_hermes_connections scripts.test_hermes_prompt_state scripts.test_hermes_session_reuse scripts.test_stop_scope`。隔离 SQLite、合成会话与模拟 RPC，覆盖持续忙碌超过五次后恢复、持久化期限到期停止、错误重试上限与重启保留、显式停止重开清理预算、活跃 worker 保留预算、压缩停止位置保留历史和规则哈希、分类字段严格匹配、普通拒绝继续阻塞以及停止失败提示与项目/话题范围保护。无需真实网关或外部模型；运行器阻止访问业务资源。设计见[终态清理恢复](../docs/design/2026-10-31-terminal-cleanup-recovery.md)。
 
 项目助手的功能、配置一致性和隔离验收条款见[项目助手需求](../docs/requirements/2026-10-31-project-assistant.md)。项目助手返修回归组合覆盖 PA-C01～PA-C04，运行时隔离组合覆盖 PA-T01～PA-T03；真实产物验收入口覆盖 PA-01～PA-10、PA-T04，报告分别记录实际执行范围。
