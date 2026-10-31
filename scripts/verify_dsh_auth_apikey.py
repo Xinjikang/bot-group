@@ -133,13 +133,14 @@ def assess(account_call, env_call, native_call, account_back_call, source_bindin
     account_back_ok = _success(account_back_call)
     switch = (account_route == 'account' and env_route == 'apikey' and native_route == 'apikey'
               and account_back_route == 'account'
-              and bool(account_call) and bool(env_call) and bool(native_call)
+              and bool(account_call) and bool(native_call)
+              and env_call.get('skipped') is not True  # .env 占位跳过不计 switch
               and account_back_ok)  # 切回 account 成功
     diagnosis_ok = (
         source_binding.get('credentials_ref') is not None
         and source_binding.get('api_key_ref_kind') == 'reference'  # 401 根因：refs 是 UUID 引用非字面 key
         and source_binding.get('key_service_matched') is True
-        and native_call.get('auth_error') is True  # native 源 401 = 引用被当 key 发送，非 key 本身无效
+        and native_call.get('auth_error') is True  # native 源 401 = resolve 缺失（引用当 key），非 key 本身无效
     )
     passed = account_ok and env_ok and native_ok and switch and source_files_unchanged
     return {'account_ok': account_ok, 'env_ok': env_ok, 'native_ok': native_ok,
@@ -309,7 +310,7 @@ def main():
         result['env_api_key_source'] = 'absent'
         result['env_route'] = 'apikey'  # provider 仍是 API-key 路由，仅缺字面 key
         result['env_call'] = {'answer': '[unexpected]', 'exit_code': 1, 'timed_out': False,
-                              'auth_error': False,
+                              'auth_error': False, 'skipped': True,
                               'stderr_tail': 'no literal DEEPSEEK_API_KEY in source .env (source uses refs UUID reference)'}
 
     # ④ 界面保存凭据来源：copy_credentials 私有副本 + native 路由
@@ -348,13 +349,16 @@ def main():
     result.update(assess(account_call, result['env_call'], result['native_call'], account_back_call,
                          result['source_binding'], result['source_files_unchanged'],
                          result['switch_sequence']))
-    # 401 归因更正：refs 是 UUID 引用（非字面 key）→ native 源 stderr 出现引用尾缀 = 引用被当 key 发送
+    # 401 归因更正：refs 是 UUID 引用（非字面 key）→ native 源 stderr 出现引用尾缀 = resolve 返回引用（解析缺失）
     native_stderr = result['native_call'].get('stderr_tail', '')
     if api_key_ref_kind == 'reference' and api_key and api_key[-4:] in native_stderr:
-        result['auth_attribution'] = 'ref-sent-as-key'  # 引用 UUID 被当 key 发送，非 key 本身无效
+        result['resolve_status'] = 'missing'  # credentials.resolve 返回引用非实际 key
+        result['auth_attribution'] = 'resolve-missing'  # 401 = 解析缺失（引用当 key），非 key 本身无效
     elif native_stderr:
+        result['resolve_status'] = 'resolved'
         result['auth_attribution'] = 'key-invalid'
     else:
+        result['resolve_status'] = 'unknown'
         result['auth_attribution'] = 'unknown'
     args.evidence.parent.mkdir(parents=True, exist_ok=True)
     args.evidence.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')

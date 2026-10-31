@@ -28,7 +28,7 @@ dsh 官方提供 headless 一次性执行：`dsh --profile headless "任务"`，
 - 接入方式以用户在所选 DSH 原生 profile 中的配置为依据，支持账号登录和 API key。引擎保存宿主定位及 profile/config 引用，启动时解析本次提供商选择；凭据继续由 DSH 管理。账号路由使用 DSH 保存的账号授权；API-key 路由支持 `DSH_HOME/.env` 的 `DEEPSEEK_API_KEY` 和界面保存的原生凭据。两类路由分别核验，认证失败保持所选路由并明确报错，禁止自动切换认证方式。
 - 继承所选原生 profile 的 provider、model 及相关服务配置，由 DSH 原生适配器处理目标地址与认证。`deepseek-account / deepseek-flash` 为账号路由通过的验证组合；API-key 路由 provider 为 `deepseek-official`（`dsh-llm-deepseek` 传输 + `dsh-llm-deepseek-api-key` 鉴权，请求带 `x-api-key`，官方端点 `https://api.deepseek.com/anthropic`）。具体值从配置读取。
 - 账号路由需通过启动 overlay 恢复 `credentials`、`authorization`、`deepseek-account` 三项（headless 默认关闭这些服务）。API-key 路由通过 DSH 原生加载规则读取 `.env`；采用界面保存的 API key 时显式恢复 `credentials` 服务。API-key 路由保持 `deepseek-account` 关闭。提供商、模型及相关服务配置和凭据来源必须一起解析。
-- `.credentials.yaml` 结构为 `version` + `records`（grant 类记录：账号 token/device/browser-session）+ `refs`（名称 → 36 字符 UUID 引用）。`refs.DEEPSEEK_API_KEY` 是 UUID 引用 ID（非 `sk-` 开头、非 key 正文），实际 key 存于 DSH 保护凭据存储，由 `dsh-credentials-local` + `dsh-authorization` 经 `credentials.resolve(ref)` 逐请求解析；`dsh-llm-*` 适配器的 `resolveApiKey` 取 `credentials.resolve(apiKeyEnv)?.value`，回退进程环境。不得把 refs 引用直接当 API key 发送。
+- `.credentials.yaml` 结构为 `version` + `records`（grant 类记录：账号 token/device/browser-session）+ `refs`（名称 → 36 字符 UUID 引用）。`refs.DEEPSEEK_API_KEY` 是 UUID 引用 ID（非 `sk-` 开头、非 key 正文），实际 key 存于 DSH 保护凭据存储（`dsh-credentials-local` WASM 本地后端，api-key 记录不在 `.credentials.yaml` 的 records 里），由 `dsh-credentials-local` + `dsh-authorization` 经 `credentials.resolve(ref)` 逐请求解析；`dsh-llm-*` 适配器的 `resolveApiKey` 取 `credentials.resolve(apiKeyEnv)?.value`，回退进程环境。不得把 refs 引用直接当 API key 发送。
 - 启动器显式选择已确认的 home；Bot 会话、工作目录和 MCP 执行上下文分别隔离。凭据和原生配置的归属保持明确，验证产生的临时副本限制为当前用户可访问并在退出时清理；原配置保持原值。
 
 ## 已验证能力与实施边界
@@ -42,7 +42,7 @@ dsh 官方提供 headless 一次性执行：`dsh --profile headless "任务"`，
 
 客户端级实验同时覆盖工具错误、初始化失败以及工具注销和子进程清理。生产引擎的注册、执行凭据、权限、消息已读和任务状态链属于后续实现与验收范围。
 
-API-key 路由曾向其官方接口发起请求并收到 HTTP 401，账号路由的模型调用与续跑已通过。401 成因已核验：`refs.DEEPSEEK_API_KEY` 是 UUID 引用 ID（非 key 正文），实际 key 存于保护凭据存储；headless 下 DSH 原生 `credentials.resolve(ref)` 返回引用值（非实际 key），适配器把引用当 key 发送 → 401，非 key 本身无效。API-key 路由的成功调用须经 DSH 原生解析链实际解析到 key（headless 若解析缺失则报精确后端/引用状态）或另行提供有效字面 key；两种接入方式的切换均列入验收。
+API-key 路由曾向其官方接口发起请求并收到 HTTP 401，账号路由的模型调用与续跑已通过。401 成因已核验：`refs.DEEPSEEK_API_KEY` 是 UUID 引用 ID（非 key 正文），实际 key 存于 `dsh-credentials-local` WASM 保护存储；headless 下 DSH 原生 `credentials.resolve(ref)` 返回引用值（非实际 key），适配器把引用当 key 发送 → 401（auth_attribution=resolve-missing），非 key 本身无效。API-key 路由的成功调用须经 DSH 原生解析链实际解析到 key（headless 若解析缺失则报精确后端/引用状态）或另行提供有效字面 key；两种接入方式的切换均列入验收。
 
 方法与现场证据保存在项目主目录 `reports/research/dsh-integration/`。技术依据为 [headless](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/bundle/headless/README.md) 和 [MCP 客户端](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md)；上游文档更新时以实装版本验证结果约束解析契约。
 
