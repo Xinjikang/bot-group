@@ -243,6 +243,8 @@ Auto 补验覆盖原 #268 的拒绝/异常/无人响应/取消验收，归入 #2
 
 llm/stream 拦截属于测试夹具，生产侧采用原生审查。夹具先核对 `isAgentLoopRequest` 导入、请求特征及流协议，再以普通模型请求透传和 allow 对照验证拦截准确性。取消区分请求前/等待中；续跑、插件失效、超过 40 行日志与显式停止同样覆盖。模型真实拒绝保留为独立实测项。
 
+`isAgentLoopRequest` 加载路径：外部 patch 的 `.mjs` 缺模块解析起点，裸说明符 `@deepseek-ai/dsh-llm` import 解析失败（module resolution error）。可行路径为经 `createRequire(cliAnchor).resolve('@deepseek-ai/dsh-llm')` 解析出绝对路径后 `import(pathToFileURL(resolved).href)` 动态导入。cliAnchor 从实际启动 CLI/已确认 runtime 入口派生或注入，禁止写死本机安装路径，不复制/解包模块。核验标准：解析结果与 agent-loop 侧（`createRequire(resolve('@deepseek-ai/dsh-agent-loop')).resolve('@deepseek-ai/dsh-llm')`）同路径且同模块；同一 request 在原生 `markAgentLoopRequest` 前返回 false、标记后返回 true、新对象 false。审查识别联合条件沿用 `isAgentLoopRequest===false` + REVIEW_POLICY 准确特征 + `temperature===0`，`===true` 直接透传。
+
 ### 证据口径
 
 F7/F9/F10 当前为源码调用链确认，其他相关项有合成探针；已有 113 项隔离回归全绿不覆盖这些缺口。各新任务（#269—#272）内部开发/审查/返修/复审沿用各自 task_id，原 #137 与 #263—#268 保留历史记录。
