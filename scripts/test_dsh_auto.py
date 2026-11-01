@@ -299,15 +299,42 @@ class AuditTests(unittest.TestCase):
             conn.close()
 
     def test_review_fixture_exact_policy_prefix_not_bare(self):
-        # req#138 node1618：审查夹具识别用 REVIEW_POLICY 原文前缀（「REVIEW_POLICY\nYou are the
-        # final authorization reviewer...」），非裸「REVIEW_POLICY」（裸前缀会误拦 REVIEW_POLICY_EXTRA
-        # 等「同前缀+temp0 非审查」请求——isAgentLoopRequest 是 dsh-llm 模块级导出、本地 .mjs
-        # 裸说明符解析失败，故以原文前缀 + temperature 0 复合识别等价区分）。
+        # req#138 node1647：审查夹具复用原生 isAgentLoopRequest（createRequire CLI 锚点动态 import，
+        # 与生产适配插件同模块），联合 REVIEW_POLICY 原文精确前缀 + temperature 0 识别；
+        # 非裸「REVIEW_POLICY」（裸前缀会误拦 REVIEW_POLICY_EXTRA 等「同前缀+temp0 非审查」请求）。
         from scripts import verify_dsh_auto_layers as _v
         src = _v.REVIEW_FIXTURE
-        self.assertIn('"REVIEW_POLICY" + String.fromCharCode(10) + "You are the final authorization reviewer"',
+        self.assertIn('createRequire(', src)
+        self.assertIn('isAgentLoopRequest(options) === true', src)
+        self.assertIn('\"REVIEW_POLICY\" + String.fromCharCode(10) + \"You are the final authorization reviewer\"',
                       src)
-        self.assertNotIn('startsWith("REVIEW_POLICY")', src)  # 不再裸前缀
+        self.assertNotIn('startsWith(\"REVIEW_POLICY\")', src)  # 不再裸前缀
+
+    def test_pass_entry_fail_requires_prod_entry_count(self):
+        # req#138 node1647：三态门禁核验生产入口计数——entry-fail 段 prod_entry_count=0（缺计数）
+        # 必须失败，不能只看 marker 日志 entry_count。
+        from scripts import verify_dsh_auto_layers as _v
+        base = {
+            "timed_out": False, "exit": 0, "tool_calls": ["mcp__marker_probe__probe"],
+            "tool_results": [("error", True)], "entry_written": True, "marker_written": False,
+            "prod_entry_count": 0, "review_count": 1, "review_decisions": ["allow"],
+        }
+        self.assertFalse(_v._pass("entry-fail", base))
+        base["prod_entry_count"] = 1  # 进入后失败 entry=1 → 通过
+        self.assertTrue(_v._pass("entry-fail", base))
+
+    def test_pass_approval_cancelled_requires_prod_entry_zero(self):
+        # req#138 node1647：取消入口 0 —— approval-cancelled 段 prod_entry_count>0 必须失败。
+        from scripts import verify_dsh_auto_layers as _v
+        base = {
+            "timed_out": False, "exit": 0, "tool_calls": ["mcp__marker_probe__probe"],
+            "tool_results": [("error", True)], "entry_written": False, "marker_written": False,
+            "prod_entry_count": 1, "review_count": 1, "review_decisions": ["deny"],
+            "approval_lines": ["[approval-fixture] outcome=cancelled"],
+        }
+        self.assertFalse(_v._pass("approval-cancelled", base))
+        base["prod_entry_count"] = 0
+        self.assertTrue(_v._pass("approval-cancelled", base))
 
     def test_blocked_from_evidence_not_derived(self):
         # req#138 F7：blocked 不再由 tool_calls-completed 反推（否则审查拒绝与适配阻断混同）。

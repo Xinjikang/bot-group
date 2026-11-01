@@ -24,6 +24,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -41,7 +42,17 @@ SEGMENTS = ("review-allow", "review-deny", "review-rejected",
 
 # 审查层夹具：拦截 llm/stream，识别 Auto 审查请求（system 以 REVIEW_POLICY 开头），
 # 返回固定决策流（text-delta + finish stop）；异常时 throw，abort 时 finish aborted。
-REVIEW_FIXTURE = """export const name = "review-fixture";
+REVIEW_FIXTURE = """import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+// 与生产适配插件同模块加载（manager node1647）：以 DSH CLI 入口（process.argv[1]）为 createRequire
+// 解析锚点动态 import 原生 isAgentLoopRequest（同一模块 WeakSet 检查），联合 REVIEW_POLICY 准确
+// 特征 + temperature 0 识别——与生产识别一致，避免夹具误拦 agent-loop 普通请求。
+const _rfRequire = createRequire(process.argv[1]);
+const _rfLlmPath = _rfRequire.resolve("@deepseek-ai/dsh-llm");
+const _rfLlmMod = await import(pathToFileURL(_rfLlmPath).href);
+const isAgentLoopRequest = _rfLlmMod.isAgentLoopRequest;
+console.error(`[review-fixture] llm-load isAgentLoopRequest=${typeof isAgentLoopRequest}`);
+export const name = "review-fixture";
 export const inject = ["llm"];
 export function apply(ctx) {
     let reviewCount = 0;
@@ -49,13 +60,13 @@ export function apply(ctx) {
     ctx.on("llm/stream", (options, fallback) => {
         const sys = options && options.system;
         const temp = options && options.temperature;
-        // 精确识别 Auto 审查请求：system 以 REVIEW_POLICY 原文开头（首行「REVIEW_POLICY」
-        // 后接「You are the final authorization reviewer...」，classifyRisk 组装的审查请求）
-        // + temperature 固定 0。与 isAgentLoopRequest 等价：审查请求未进 agent-loop WeakSet
-        // （false），普通 agent 请求进（true）——但 isAgentLoopRequest 是 dsh-llm 模块级导出，
-        // 本地 .mjs 裸说明符 @deepseek-ai/dsh-llm 解析失败（同 dsh-user-approval），故以
-        // REVIEW_POLICY 原文前缀 + temperature 0 复合识别等价区分；裸「REVIEW_POLICY」前缀
-        // 过宽（会误拦 REVIEW_POLICY_EXTRA 等非审查请求），须用原文精确前缀。
+        // 联合识别（与生产适配插件一致）：isAgentLoopRequest===true → agent-loop 普通请求直接透传；
+        // ===false 联合 REVIEW_POLICY 原文精确前缀 + temperature 0 才判定审查（REVIEW_POLICY_EXTRA
+        // 同前缀非审查无准确特征 → 透传）。
+        if (isAgentLoopRequest(options) === true) {
+            passCount += 1;
+            return fallback();
+        }
         if (typeof sys === "string"
                 && sys.startsWith("REVIEW_POLICY" + String.fromCharCode(10) + "You are the final authorization reviewer")
                 && temp === 0) {
@@ -393,6 +404,7 @@ def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision:
             "timed_out": timed_out,
             "entry_written": entry_file.is_file(),
             "entry_count": sum(1 for l in err.splitlines() if "[marker-probe] ENTRY" in l),
+            "prod_entry_count": _last_state_entry(err),
             "marker_written": marker_file.is_file(),
             "tool_calls": [e.get("tool") for e in events if e.get("type") == "tool_call"],
             "tool_results": [(e.get("status"), bool(e.get("isError")))
@@ -417,6 +429,18 @@ def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision:
             result["cleanup_ok"] = bool(cleanup) and all(v is True for v in cleanup.values())
 
 
+def _last_state_entry(err: str) -> int:
+    """生产入口计数：adapter 末位 state 行的 entry=（tools/execute 主体入口），独立于 marker 日志 entry_count。
+
+    manager node1647：verify 的 entry_count 来自 marker 日志，须另明确生产入口计数字段核验三态——
+    成功 entry=1、进入失败 entry=1、取消 entry=0；缺计数/错误计数必须失败。"""
+    for line in reversed((err or "").splitlines()):
+        if "[auto-enable] state" in line:
+            m = re.search(r"entry=(\d+)", line)
+            return int(m.group(1)) if m else 0
+    return 0
+
+
 def _pass(segment, r):
     completed = any(s == "completed" for s, _ in r["tool_results"])
     # 门禁：非崩溃（exit 0、未超时）+ 目标工具确实被请求（tool_call 非空）。
@@ -425,12 +449,16 @@ def _pass(segment, r):
     if not gated:
         return False
     if segment == "review-allow":
-        # 成功入口 1：body 进入（entry_written + [marker-probe] ENTRY）+ 副作用 marker + completed。
+        # 成功入口 1：body 进入（entry_written + [marker-probe] ENTRY）+ 副作用 marker + completed
+        # + 生产入口计数 entry=1。
         return (r["entry_written"] and r["marker_written"] and completed
+                and r["prod_entry_count"] == 1
                 and r["review_count"] >= 1 and r["review_decisions"] == ["allow"])
     if segment == "review-deny":
-        # 工具主体未进入（取消入口 0）：无 entry + marker 缺失 + 无 completed；审查命中且 decision=deny。
+        # 工具主体未进入（取消入口 0）：无 entry + marker 缺失 + 无 completed + 生产入口 entry=0；
+        # 审查命中且 decision=deny。
         return (not r["entry_written"] and not r["marker_written"] and not completed
+                and r["prod_entry_count"] == 0
                 and r["review_count"] >= 1 and r["review_decisions"] == ["deny"])
     if segment == "review-rejected":
         return (not r["marker_written"] and not completed
@@ -463,15 +491,17 @@ def _pass(segment, r):
                 and any("wait-abort outcome=cancelled" in l for l in lines))
     if segment == "approval-cancelled":
         # 审批 cancelled → serviceAsk 映射 deny（approvalCancelled）→ 工具主体不执行（取消入口 0）：
-        # 无 entry + marker 缺失 + 无 completed；审批夹具落 outcome=cancelled 证据。
+        # 无 entry + marker 缺失 + 无 completed + 生产入口 entry=0；审批夹具落 outcome=cancelled 证据。
         return (not r["entry_written"] and not r["marker_written"] and not completed
+                and r["prod_entry_count"] == 0
                 and r["review_count"] >= 1 and r["review_decisions"] == ["deny"]
                 and any("outcome=cancelled" in l for l in r["approval_lines"]))
     if segment == "entry-fail":
-        # 进入后失败：body 进入（entry_written + [marker-probe] ENTRY 落行，entry=1）+ 副作用
-        # marker 写失败（marker_written=false，tool_result error，completed=0）——证明 entry
+        # 进入后失败：body 进入（entry_written + [marker-probe] ENTRY 落行）+ 生产入口 entry=1 +
+        # 副作用 marker 写失败（marker_written=false，tool_result error，completed=0）——证明 entry
         # 独立于 completed（进入主体后失败 entry=1 completed=0）。
         return (r["entry_written"] and not r["marker_written"] and not completed
+                and r["prod_entry_count"] == 1
                 and r["review_count"] >= 1 and r["review_decisions"] == ["allow"])
     if segment == "review-passthrough":
         # 「同前缀非审查」反例：review-fixture 精确前缀（REVIEW_POLICY 原文）不匹配非审查请求 →
