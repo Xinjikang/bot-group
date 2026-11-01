@@ -211,3 +211,38 @@ Auto review 缺失属于可选能力缺失，显示状态即可。执行沿用 D
 | 会话 | 两轮续跑、引擎重启恢复、/new 与迟到事件 |
 | 业务闭环 | 合成项目 group_send、已读确认与 task 权限 |
 | 隔离 | 双 Bot、双项目、work/chat 交叉与工作区资源 |
+
+## 审查返修与 Auto 补验
+
+2026-11-01 独立审查（HEAD=9519c1d，证据 `reports/tests/review/2026-11-01-dsh-independent/EVIDENCE.md`）发现 10 项缺口，与 Auto 三层补验统一归入 req#137 原任务链返修。
+
+### 返修项映射
+
+| 编号 | 级别 | 问题 | 归入任务 |
+| --- | --- | --- | --- |
+| F1 | P1 | 前端保存体发 persona/instructions 无 soul，`ProfileConfigEdit` 仍必填 soul + extra=forbid → PUT 422 | #264 |
+| F2 | P1 | Auto 适配器 pre-execute 只打日志 + next()，未在 current≠auto 时阻断，fail-closed 落在事后检查 | #268 |
+| F3 | P1 | 认证 overlay 先按全局 provider 解析路由，项目 provider 覆盖后认证路由与运行 provider 分裂 | #265/#266 |
+| F4 | P1 | `dsh_overlay` 只保留带 id 项，insert 插件丢失；`!!js` 解析异常回空连 persona 一起消失 | #266 |
+| F5 | P2 | `reasoning_effort`（下划线）与原生 `reasoningEffort`（驼峰）字段名不匹配，项目覆盖未生效 | #266 |
+| F6 | P2 | stderr 仅留 40 行，41 次工具日志挤掉开头 session/created，正常 Auto 误报能力失效 | #268 |
+| F7 | P2 | pre-execute 日志数≠实际审查次数，completed≠工具主体副作用，拒绝/异常/取消/无人响应缺独立证据 | #268 |
+| F8 | P2 | `_dsh_entry` 只查 DSH_BIN/PATH，bundled dsh.cmd 不在 PATH，手选 HOME 仍因入口不可用无法创建 | #263 |
+| F9 | P2 | 前端无 auto_review 控件/保存字段，侧边文件默认 off，界面无法开启 Auto | #268 |
+| F10 | P2 | exit 0 缺 final/坏 JSON 时诊断生成但 watcher 未上报协议失败，wake_runs 记 exit_code=0 | #266 |
+
+待验证项（非已确认缺陷）：#267 真实根及 Node/Electron/MCP/工具后代退出——`_WRAPPERS` 只控向父攀升，后代收集不限进程名，DSH /stop 走 taskkill /T，wrapper 名单不列已确认缺陷。
+
+### Auto 三层补验
+
+Auto 补验覆盖 #268 的拒绝/异常/无人响应/取消验收，三层固定：
+
+1. **审批层**：policy=never、answerer rejected、无 answerer unavailable、请求前及等待中 cancelled 分别覆盖。
+2. **审查层**：仅在隔离夹具的 llm/stream waterfall 精确识别 Auto 请求（`isAgentLoopRequest` + `REVIEW_POLICY`/temperature 特征），返回固定 allow/deny/异常，普通 agent 请求 next()，记录实际命中次数及决定。
+3. **取证层**：每条路径独立工具入口计数 + 文件 marker + 执行结果关联；allow 阳性对照必须进入主体，拒绝/异常等场景证明主体未进入。
+
+llm/stream 拦截属于测试夹具，生产侧采用原生审查。夹具先核对 `isAgentLoopRequest` 导入、请求特征及流协议，再以普通模型请求透传和 allow 对照验证拦截准确性。取消区分请求前/等待中；续跑、插件失效、超过 40 行日志与显式停止同样覆盖。模型真实拒绝保留为独立实测项。
+
+### 证据口径
+
+F7/F9/F10 当前为源码调用链确认，其他相关项有合成探针；已有 113 项隔离回归全绿不覆盖这些缺口。返修后正式审查/返修/复审记录继续留原 task 节点。
