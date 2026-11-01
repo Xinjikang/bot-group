@@ -25,6 +25,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -233,17 +234,18 @@ class EngineProc:
 class EngineFixture:
     """隔离数据目录 + 引擎子进程 + 种子 dsh-bot + HTTP 客户端。"""
 
-    def __init__(self, entry: Path, isolated_home: Path, test_dir: Path, segment: str,
-                 host: str, port: int, data_dir: Path = None):
+    def __init__(self, entry: Path, isolated_home: Path, isolated_home_2: Path,
+                 test_dir: Path, segment: str, host: str, port: int,
+                 data_dir: Path = None, workdir: Path = None, scratch: Path = None):
         self.segment = segment
         self.host = host
         self.port = port
+        self.isolated_home_2 = isolated_home_2
         self.data_dir = data_dir or (Path(test_dir) / f"engine-272-{segment}")
-        self.workdir = Path(test_dir) / f"work-272-{segment}"
-        self.scratch = Path(test_dir) / f"scratch-272-{segment}"
+        self.workdir = workdir or (Path(test_dir) / f"work-272-{segment}")
+        self.scratch = scratch or (Path(test_dir) / f"scratch-272-{segment}")
+        # 唯一目录由 mkdtemp 生成（空目录），不再无条件 rmtree 固定路径。
         for d in (self.data_dir, self.workdir, self.scratch):
-            if d.exists():
-                shutil.rmtree(d, ignore_errors=True)
             d.mkdir(parents=True, exist_ok=True)
         self.engine = EngineProc(ROOT, self.data_dir, host, port, self.scratch, self.scratch)
         # 父进程侧 DB 访问指向同一数据目录（config.db_path 读 GROUP_DATA_DIR）。
@@ -270,6 +272,17 @@ class EngineFixture:
             bot_id = cur.lastrowid
             conn.execute("INSERT OR IGNORE INTO project_members(project,profile,bot_id,active) "
                          "VALUES('bot-group','dsh-bot',?,1)", (bot_id,))
+            # 另一已绑定 bot（dsh-bot-2）：需求 138 验收 7「其他 bot 保持运行」对照，
+            # 真实 DSH 执行（session/bot 归属），非裸 sleep Python。
+            conn.execute("INSERT OR IGNORE INTO members(profile,display_name,role) "
+                         "VALUES('dsh-bot-2','dsh-bot-2','dsh-bot')")
+            cur2 = conn.execute(
+                "INSERT INTO bots(host_type,profile,config_root,runtime,runtime_entry,display_name,role) "
+                "VALUES('dsh','desktop',?,'dsh',?, 'dsh-bot-2','')",
+                (str(self.isolated_home_2), str(entry)))
+            bot_id2 = cur2.lastrowid
+            conn.execute("INSERT OR IGNORE INTO project_members(project,profile,bot_id,active) "
+                         "VALUES('bot-group','dsh-bot-2',?,1)", (bot_id2,))
             conn.commit()
         finally:
             conn.close()
@@ -378,25 +391,41 @@ def _start_and_capture(fx: EngineFixture, spawner_pid_file: Path) -> dict:
                     spawner_server_pids.append(pid)
             except Exception:
                 pass
+    # 另一已绑定 bot（dsh-bot-2）真实执行：POST /msg 起第二 DSH + 找其根（session/bot 归属，
+    # 非裸 sleep Python）——验收 7「其他 bot 保持运行」的停止作用域对照。
+    fx.post_msg("@dsh-bot-2 回复 DSH_OTHER_BOT_272，保持运行，不要调用任何工具。")
+    other_roots = []
+    other_finder = "unknown"
+    for _ in range(60):
+        rows = fx.q("SELECT session FROM wake_runs WHERE runtime='dsh' AND profile='dsh-bot-2' "
+                    "AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1")
+        if rows:
+            r2 = wake.find_bot_processes("dsh-bot-2", rows[0]["session"])
+            if r2 is not None:
+                other_roots = r2
+                other_finder = "resolved"
+                break
+        time.sleep(0.5)
+    snap_other = _process_tree()
+    other_live_roots = [p for p in other_roots if p in snap_other]
     return {"ok": True, "run": run, "live_roots": live_roots,
             "root_identity_before": root_identity_before, "finder_before": finder_before,
             "seen": seen, "spawner_child_pid": spawner_child_pid,
             "spawner_call_id": spawner_call_id,
             "spawner_child_observed": spawner_child_observed,
-            "spawner_server_pids": spawner_server_pids}
+            "spawner_server_pids": spawner_server_pids,
+            "other_roots": other_roots, "other_live_roots": other_live_roots,
+            "other_finder": other_finder}
 
 
 def _stop_and_verify(fx: EngineFixture, run: dict, live_roots: list,
                      root_identity_before: dict, finder_before: str,
                      seen: dict, spawner_child_pid, spawner_child_observed,
-                     spawner_call_id) -> dict:
-    """/stop + 独立核验根/后代/工具子进程退出 + 受保护引擎/自身/另一 Bot 存活对照。"""
+                     spawner_call_id, other_live_roots=None) -> dict:
+    """/stop + 独立核验根/后代/工具子进程退出 + 受保护引擎/自身/另一已绑定 Bot 存活对照。"""
     from engine import wake
-    # 受保护对照：引擎子进程 PID + 验证脚本自身 PID + 隔离的另一 Bot（合成长活 python，非 DSH 树）。
-    other_bot = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
     protected = {"engine_pid": fx.engine.proc.pid if fx.engine.proc else None,
-                 "self_pid": os.getpid(),
-                 "other_bot_pid": other_bot.pid}
+                 "self_pid": os.getpid()}
     resp = fx.post_msg("/stop @dsh-bot")
     time.sleep(3)
     snap_after = _process_tree()
@@ -405,15 +434,8 @@ def _stop_and_verify(fx: EngineFixture, run: dict, live_roots: list,
     spawner_alive = spawner_child_pid is not None and spawner_child_pid in snap_after
     finder_after = wake.find_bot_processes("dsh-bot", run["session"])  # 不 or []
     protected_alive = {k: bool(v and v in snap_after) for k, v in protected.items()}
-    # 回收受保护 other-bot 进程（验证其存活后清理，不遗留）。
-    try:
-        other_bot.terminate()
-        other_bot.wait(timeout=5)
-    except Exception:
-        try:
-            other_bot.kill()
-        except Exception:
-            pass
+    # 另一已绑定 bot（dsh-bot-2）在 /stop @dsh-bot 后仍存活（session/bot 停止作用域对照）。
+    other_alive = bool(other_live_roots) and all(p in snap_after for p in other_live_roots)
     return {
         "ok": bool(resp.get("ok")),
         "roots_before": live_roots,
@@ -434,6 +456,8 @@ def _stop_and_verify(fx: EngineFixture, run: dict, live_roots: list,
         "spawner_child_observed": spawner_child_observed,
         "spawner_child_alive_after": spawner_alive,
         "protected_alive_after": protected_alive,
+        "other_bot_alive": other_alive,
+        "other_live_roots": other_live_roots,
     }
 
 
@@ -446,30 +470,51 @@ def _stop_pass(r: dict) -> bool:
             and r.get("spawner_child_spawned")
             and r.get("spawner_child_observed")  # 实际观察，非仅 PID 文件非空
             and not r.get("spawner_child_alive_after")
-            and all(r.get("protected_alive_after", {}).values()))
+            and all(r.get("protected_alive_after", {}).values())
+            and r.get("other_bot_alive"))  # 另一已绑定 bot 在 /stop 后仍存活
+
+
+def _kill_pids(pids) -> int:
+    """taskkill /T /F 终止给定 PID 及其进程树（DSH 根 + 后代），返回杀掉的数量。"""
+    killed = 0
+    for pid in pids:
+        if pid is None:
+            continue
+        try:
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            killed += 1
+        except OSError:
+            pass
+    return killed
 
 
 def _run_segment(args, segment: str) -> dict:
-    data_dir = Path(args.test_directory) / f"engine-272-{segment}"
-    isolated_home = Path(args.test_directory) / f"home-272-{segment}"
-    workdir = Path(args.test_directory) / f"work-272-{segment}"
-    scratch = Path(args.test_directory) / f"scratch-272-{segment}"
+    # 唯一资源目录：mkdtemp 每次运行独立生成（验证归属，不固定目录无条件 rmtree）。
+    data_dir = Path(tempfile.mkdtemp(prefix=f"engine-272-{segment}-", dir=args.test_directory))
+    isolated_home = Path(tempfile.mkdtemp(prefix=f"home-272-{segment}-", dir=args.test_directory))
+    isolated_home_2 = Path(tempfile.mkdtemp(prefix=f"home2-272-{segment}-", dir=args.test_directory))
+    workdir = Path(tempfile.mkdtemp(prefix=f"work-272-{segment}-", dir=args.test_directory))
+    scratch = Path(tempfile.mkdtemp(prefix=f"scratch-272-{segment}-", dir=args.test_directory))
     spawner_cjs = Path(args.test_directory) / f"spawner-272-{segment}.cjs"
     spawner_pid_file = Path(args.test_directory) / f"spawn-pid-272-{segment}.txt"
 
     fx = None
+    live_roots = []   # 捕获到的 DSH 根（异常后独立 DSH/MCP 树回收用）
+    seen = {}         # 捕获到的后代（异常后回收用）
     result = {"segment": segment}
     try:
-        # 先清理上次失败可能残留的同名资源，再复制/注入。
-        for d in (data_dir, isolated_home, workdir, scratch):
-            shutil.rmtree(d, ignore_errors=True)
         spawner_cjs.write_text(SPAWNER_MCP_SOURCE, encoding="utf-8")
         _copy_home(args.source_home, isolated_home)
+        _copy_home(args.source_home, isolated_home_2)
         _inject_spawner(isolated_home, spawner_cjs, spawner_pid_file, args.node)
 
-        fx = EngineFixture(args.entry, isolated_home, args.test_directory, segment,
-                           args.host, args.port, data_dir=data_dir)
+        fx = EngineFixture(args.entry, isolated_home, isolated_home_2, args.test_directory,
+                           segment, args.host, args.port, data_dir=data_dir,
+                           workdir=workdir, scratch=scratch)
         cap = _start_and_capture(fx, spawner_pid_file)
+        live_roots = cap.get("live_roots", [])
+        seen = cap.get("seen", {})
         if not cap.get("ok"):
             result["result"] = cap
             result["passed"] = False
@@ -477,7 +522,8 @@ def _run_segment(args, segment: str) -> dict:
         if segment == "stop":
             r = _stop_and_verify(fx, cap["run"], cap["live_roots"], cap["root_identity_before"],
                                  cap["finder_before"], cap["seen"], cap["spawner_child_pid"],
-                                 cap["spawner_child_observed"], cap["spawner_call_id"])
+                                 cap["spawner_child_observed"], cap["spawner_call_id"],
+                                 cap.get("other_live_roots"))
             result["result"] = r
             result["result"]["spawner_server_pids"] = cap.get("spawner_server_pids", [])
             result["passed"] = _stop_pass(r)
@@ -495,7 +541,8 @@ def _run_segment(args, segment: str) -> dict:
             new_engine_pid = fx.engine.proc.pid
             r = _stop_and_verify(fx, cap["run"], cap["live_roots"], cap["root_identity_before"],
                                  cap["finder_before"], cap["seen"], cap["spawner_child_pid"],
-                                 cap["spawner_child_observed"], cap["spawner_call_id"])
+                                 cap["spawner_child_observed"], cap["spawner_call_id"],
+                                 cap.get("other_live_roots"))
             result["result"] = r
             result["result"]["restart"] = {
                 "old_engine_pid": old_engine_pid,
@@ -507,12 +554,16 @@ def _run_segment(args, segment: str) -> dict:
                                 and new_engine_pid != old_engine_pid and dsh_still_alive)
         return result
     finally:
+        # 异常后回收：先终止独立 DSH/MCP 后代进程树（引擎退出后 DSH 独立存活，停引擎≠回收
+        # DSH 树，capture/stop 异常路径也回收），再停引擎，最后清理唯一目录。
+        _kill_pids(list(seen.keys()) + list(live_roots))
         if fx is not None:
             fx.close()  # 无论成败都回收自启引擎进程
         time.sleep(1)  # 等 OS 释放引擎进程遗留的 SQLite -shm/-wal 句柄
         # 统一回收本次创建的隔离资源 + 核验清理结果（删除失败重试 + 显式报告，进入 passed）。
         cleanup = {}
-        for d in (data_dir, isolated_home, workdir, scratch, spawner_cjs, spawner_pid_file):
+        for d in (data_dir, isolated_home, isolated_home_2, workdir, scratch,
+                  spawner_cjs, spawner_pid_file):
             if not d.exists():
                 cleanup[str(d)] = True
                 continue
