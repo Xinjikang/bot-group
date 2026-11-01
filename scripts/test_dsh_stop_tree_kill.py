@@ -8,6 +8,9 @@ manager node1642 固定断言：A 不存在（NoSuchProcess）与查询失败（
 import unittest
 from unittest import mock
 import tempfile
+import sqlite3
+from contextlib import ExitStack
+from types import SimpleNamespace
 from pathlib import PureWindowsPath
 
 import scripts.verify_dsh_stop_tree as v
@@ -186,7 +189,7 @@ class RunSegmentTests(unittest.TestCase):
         }
         stop_r = {"passed": True, "other_bot_alive": True}
         args = mock.Mock()
-        args.test_directory = tempfile.mkdtemp()
+        args.test_directory = self.enterContext(tempfile.TemporaryDirectory())
         args.source_home = "E:/x"
         args.entry = "dsh.cmd"
         args.node = "node"
@@ -211,7 +214,7 @@ class RunSegmentTests(unittest.TestCase):
         fake_fx.engine.proc.pid = 9999
         fake_fx.close.return_value = None
         args = mock.Mock()
-        args.test_directory = tempfile.mkdtemp()
+        args.test_directory = self.enterContext(tempfile.TemporaryDirectory())
         args.source_home = "E:/x"
         args.entry = "dsh.cmd"
         args.node = "node"
@@ -228,6 +231,121 @@ class RunSegmentTests(unittest.TestCase):
         self.assertFalse(r["passed"])
         self.assertEqual(r.get("kill_report"), {9999: "killed"})
         kill.assert_called_once()
+
+
+class RecoveryIntegrationTests(unittest.TestCase):
+    def run_case(self, *, capture_error=False, db_error=False, unreadable=False,
+                 scan_error=False):
+        from engine import process_query
+        from engine.wake import _dsh_spawn_tag
+        scratch = v.Path("fixture-scratch").resolve()
+        run = dict(session="s", started_at=123.0, project="bot-group",
+                   profile="dsh-bot", runtime="dsh", pid=71001)
+        overlay = scratch / (_dsh_spawn_tag("s", 123.0) + "-unique") / "overlay.yml"
+        argv = ["harness.exe", "--profile", "headless", "--patch", str(overlay)]
+        tree = {9999: (0, "python.exe"), 71001: (9999, "harness.exe"),
+                71002: (71001, "node.exe"), 72001: (0, "other.exe")}
+        alive = set(tree)
+        order = []
+        fx = mock.Mock(data_dir=v.Path("private-data"), scratch=scratch)
+        fx.engine.proc.pid = 9999
+        fx.live_run.side_effect = RuntimeError("query failed")
+
+        def close():
+            order.append("close")
+            alive.discard(9999)
+            fx.engine.proc = None
+
+        fx.close.side_effect = close
+        conn = mock.Mock()
+        conn.execute.return_value = [run]
+
+        def connect(*args, **kwargs):
+            order.append("read")
+            self.assertTrue(kwargs["uri"])
+            self.assertTrue(args[0].endswith("group.db?mode=ro"))
+            if db_error or (capture_error and "close" not in order):
+                raise sqlite3.OperationalError("unavailable")
+            return conn
+
+        def snapshot():
+            if scan_error:
+                raise OSError("snapshot unavailable")
+            return {pid: tree[pid] for pid in alive}
+
+        def command_line(pid, **kwargs):
+            return (None if unreadable else argv) if pid == 71001 else ["other.exe"]
+
+        def identity(pid):
+            return ("ok", tree[pid][1], pid * 1000) if pid in alive else ("exited",)
+
+        def kill(cmd, **kwargs):
+            order.append("kill")
+            pid = int(cmd[cmd.index("/PID") + 1])
+            self.assertIn(pid, (71001, 71002))
+            alive.discard(pid)
+            if pid == 71001:
+                alive.discard(71002)
+            return mock.Mock(returncode=0)
+
+        args = SimpleNamespace(test_directory="fixture", source_home="source",
+                               entry="dsh.cmd", node="node", host="fixture", port=1)
+        cap = dict(ok=True, run=run, live_roots=[71001], root_identity_before={},
+                   finder_before="resolved", seen={}, spawner_child_pid=None,
+                   spawner_child_observed=False, spawner_call_id=None)
+        with ExitStack() as stack:
+            for name, value in {"EngineFixture": mock.Mock(return_value=fx),
+                                "_copy_home": mock.Mock(), "_inject_spawner": mock.Mock(),
+                                "_process_tree": snapshot, "_process_identity": identity,
+                                "_stop_and_verify": mock.Mock(return_value={"other_bot_alive": True}),
+                                "_stop_pass": mock.Mock(return_value=True)}.items():
+                stack.enter_context(mock.patch.object(v, name, value))
+            if not capture_error:
+                stack.enter_context(mock.patch.object(v, "_start_and_capture", return_value=cap))
+            stack.enter_context(mock.patch.object(v.tempfile, "mkdtemp", side_effect=[
+                "private-data", "home", "home2", "work", str(scratch)]))
+            stack.enter_context(mock.patch.object(v.Path, "write_text"))
+            stack.enter_context(mock.patch.object(v.Path, "exists", return_value=False))
+            stack.enter_context(mock.patch.object(v.time, "sleep"))
+            stack.enter_context(mock.patch.object(sqlite3, "connect", side_effect=connect))
+            stack.enter_context(mock.patch.object(process_query, "command_line", side_effect=command_line))
+            stack.enter_context(mock.patch.object(v.subprocess, "run", side_effect=kill))
+            result = v._run_segment(args, "stop")
+        fx.q.assert_not_called()
+        return result, alive, order
+
+    def test_recovery_after_engine_exit_preserves_foreign_process(self):
+        result, alive, order = self.run_case(capture_error=True)
+        self.assertFalse(result["passed"])
+        self.assertTrue(result["recovery_report"]["ok"])
+        self.assertEqual(alive, {72001})
+        self.assertLess(order.index("close"), order.index("kill"))
+
+    def test_successful_recovery_preserves_pass(self):
+        result, alive, order = self.run_case()
+        self.assertTrue(result["passed"])
+        self.assertEqual(alive, {72001})
+        self.assertLess(order.index("close"), order.index("read"))
+
+    def test_database_failure_cannot_pass(self):
+        result, alive, _ = self.run_case(db_error=True)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["recovery_report"]["stage"], "database")
+        self.assertEqual(result["recovery_report"]["error"], "OperationalError")
+        self.assertTrue(all("preserved" in s for s in result["cleanup"].values()))
+        self.assertIn(71001, alive)
+
+    def test_owned_unknown_cannot_pass(self):
+        result, alive, _ = self.run_case(unreadable=True)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["recovery_report"]["owned_unknown"], [71001])
+        self.assertIn(71001, alive)
+
+    def test_snapshot_failure_cannot_pass(self):
+        result, _, _ = self.run_case(scan_error=True)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["recovery_report"]["stage"], "process_scan")
+        self.assertEqual(result["recovery_report"]["error"], "OSError")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+DSH 停止验证器补偿回收：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_dsh_stop_tree_kill -q`。实际调用 `_run_segment`、私有数据库恢复、归属匹配和进程回收函数；底层数据库连接、进程查询及终止操作使用内存夹具。覆盖引擎先退出、首次查询失败后恢复、外部进程保留、私有数据库或进程扫描失败、本次执行命令行未知。恢复结果写入 `recovery_report`；失败使总结果为 false 并保留本次目录供诊断。无归属的系统进程查询失败单列诊断，本次运行 PID 或已登记 PID 的未知状态进入失败判定。
+
 重启签名与长历史断线回归：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录 reports/tests 下的新绝对目录> scripts.test_signing_keys scripts.test_hermes_session_reuse scripts.test_hermes_connections scripts.test_reasoning_window scripts.test_runtime_isolation scripts.test_hermes_gateway scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway_ledger`。临时数据库与密钥复现读取代次后轮换、退役、再登记的交错；验证写事务阻止并发轮换、后续重启继续换代且保留有效引用、失败交接保留两代、终态撤权。随机回环 WebSocket 返回 9 MiB 合成历史，验证独立历史连接成功读取、超限断线后控制连接仍可查回执；分别覆盖网关和旧 CLI 的思考时间窗口。无需外部模型或业务数据，运行器检查资源隔离与线程清理。
 
 Hermes 终态清理恢复：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录 reports/tests 下的新绝对目录> scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway_sessions scripts.test_hermes_connections scripts.test_hermes_prompt_state scripts.test_hermes_session_reuse scripts.test_stop_scope`。隔离 SQLite、合成会话与模拟 RPC，覆盖持续忙碌超过五次后恢复、持久化期限到期停止、错误重试上限与重启保留、显式停止重开清理预算、活跃 worker 保留预算、压缩停止位置保留历史和规则哈希、分类字段严格匹配、普通拒绝继续阻塞以及停止失败提示与项目/话题范围保护。无需真实网关或外部模型；运行器阻止访问业务资源。设计见[终态清理恢复](../docs/design/2026-10-31-terminal-cleanup-recovery.md)。

@@ -366,24 +366,48 @@ def _recover_from_snapshot(registry, scratch, runs, snapshot, argv_by_pid) -> di
 
 
 def _compensate_via_snapshot(fx, registry) -> bool:
-    """live_run 异常后按私有 DB wake_runs + scratch 标签反查 DSH 树（overlay 路径含 spawn tag）→
-    登记 + 回收（manager 10047；引擎已退出也按持久化 run 定位）。返回是否定位到 DSH 根。"""
+    """Recover owned DSH roots from the private database; retain scan failures."""
+    import sqlite3
     from engine import process_query
+    report = {"ok": False, "stage": "database", "roots": [], "registered": [],
+              "unknown": [], "owned_unknown": []}
+    registry.recovery_report = report
     try:
-        rows = fx.q("SELECT session, started_at, profile, project, runtime FROM wake_runs "
-                    "WHERE runtime='dsh' AND profile IN ('dsh-bot','dsh-bot-2')")
-        runs = [dict(r) for r in rows]
-    except Exception:
+        db_uri = (Path(fx.data_dir) / "group.db").resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(db_uri, uri=True, timeout=5)
+        try:
+            conn.row_factory = sqlite3.Row
+            runs = [dict(r) for r in conn.execute(
+                "SELECT session, started_at, profile, project, runtime, pid FROM wake_runs "
+                "WHERE project='bot-group' AND runtime='dsh' "
+                "AND profile IN ('dsh-bot','dsh-bot-2')")]
+        finally:
+            conn.close()
+    except Exception as exc:
+        report["error"] = type(exc).__name__
         return False
     if not runs:
+        report.update(ok=True, stage="complete")
         return False
     try:
+        report["stage"] = "process_scan"
         snap = _process_tree()
         argv_by_pid = {pid: process_query.command_line(pid, scope="dsh-recovery")
                        for pid in snap}
         result = _recover_from_snapshot(registry, str(fx.scratch), runs, snap, argv_by_pid)
-        return bool(result["roots"])
-    except Exception:
+        report.update(result)
+        owned_pids = set(registry.pids()) | {r["pid"] for r in runs if r["pid"] is not None}
+        report["owned_unknown"] = sorted(set(result["unknown"]) & owned_pids)
+        # Unreadable unrelated system processes remain diagnostic entries. A run
+        # without a recorded PID needs a matching command line to prove recovery.
+        report["unresolved_runs"] = [r["session"] for r in runs if r["pid"] is None
+            and not any(_owned_overlay(argv, str(fx.scratch), [r])
+                        for argv in argv_by_pid.values())]
+        report.update(ok=not report["owned_unknown"] and not report["unresolved_runs"],
+                      stage="complete")
+        return bool(result["roots"]) and report["ok"]
+    except Exception as exc:
+        report["error"] = type(exc).__name__
         return False
 
 
@@ -580,6 +604,7 @@ class _ResourceRegistry:
     def __init__(self):
         self._procs = {}  # pid -> (name_lower, create_time_ms, known)
         self.dsh_not_located = False  # 隔离 DSH 树未定位（首次根发现前异常），须总失败
+        self.recovery_report = {"ok": False, "stage": "not_attempted"}
 
     def register(self, pid, name=None):
         if pid is None:
@@ -718,8 +743,11 @@ def _run_segment(args, segment: str) -> dict:
         if fx is not None:
             try:
                 _compensate_via_snapshot(fx, registry)
-            except Exception:
-                pass
+            except Exception as exc:
+                registry.recovery_report = {"ok": False, "stage": "recovery",
+                                            "error": type(exc).__name__}
+        result["recovery_report"] = registry.recovery_report
+        recovery_ok = fx is None or registry.recovery_report.get("ok") is True
         try:
             kill_report = _kill_registered(registry)
         except Exception as e:
@@ -729,6 +757,9 @@ def _run_segment(args, segment: str) -> dict:
         # 统一回收本次创建的隔离资源 + 核验清理结果（删除失败重试 + 显式报告，进入 passed）。
         cleanup = {}
         for d in dirs + [spawner_cjs, spawner_pid_file]:
+            if not recovery_ok:
+                cleanup[str(d)] = "preserved: recovery incomplete"
+                continue
             if not d.exists():
                 cleanup[str(d)] = True
                 continue
@@ -751,7 +782,7 @@ def _run_segment(args, segment: str) -> dict:
         result["cleanup_ok"] = all(v is True for v in cleanup.values())
         # kill 失败/身份不符/still_alive/身份未知 显式记录并纳入总 passed（进程未真正退出不通过）。
         kill_ok = (all(s in ("killed", "already_exited") for s in kill_report.values())
-                   and not registry.dsh_not_located)
+                   and not registry.dsh_not_located and recovery_ok)
         result["kill_ok"] = kill_ok
         # C：fx_close 异常（fx_close_error）及任意清理错误必须使总 passed=false。
         result["passed"] = (bool(result.get("passed")) and result["cleanup_ok"] and kill_ok
