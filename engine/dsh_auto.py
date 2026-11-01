@@ -42,7 +42,20 @@ _PRESET_OK = 'auto'  # state 行 preset= 捕获值须为 auto 才算会话预设
 # - tools/pre-execute 累积 preexec 计数；current≠auto 时 fail-closed **阻断**（不 next，
 #   工具不执行，副作用不发生），并累加 blocked；current==auto 时 next() 放行交由原生
 #   auto-review 审查。证据走 stderr（累积状态行），不与 stdout --json 事件流混淆。
-ADAPTER_SOURCE = """export const name = "auto-enable-adapter";
+ADAPTER_SOURCE = """import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+// 原生模块加载（manager node1638 实测可行路径）：外部 patch 的 .mjs 裸说明符
+// @deepseek-ai/dsh-llm 解析失败，须以 DSH CLI 入口（process.argv[1]=cli.js）为 createRequire
+// 解析锚点定位同一 node_modules 模块，动态 import 取 isAgentLoopRequest（模块级 WeakSet 检查，
+// 与 agent-loop 同 URL/同模块，原生 markAgentLoopRequest 前 false/后 true）。cliAnchor 从实际
+// 启动入口派生，不写死安装路径、不复制/解包模块。
+const _cliAnchor = process.argv[1];
+const _nativeRequire = createRequire(_cliAnchor);
+const _llmPath = _nativeRequire.resolve("@deepseek-ai/dsh-llm");
+const _llmMod = await import(pathToFileURL(_llmPath).href);
+const isAgentLoopRequest = _llmMod.isAgentLoopRequest;
+console.error(`[auto-enable] llm-load anchor=${_cliAnchor} path=${_llmPath} isAgentLoopRequest=${typeof isAgentLoopRequest}`);
+export const name = "auto-enable-adapter";
 export const inject = ["permissionPresets", "llm"];
 export function apply(ctx) {
     let presetConfirmed = false;
@@ -58,12 +71,13 @@ export function apply(ctx) {
         state();
     });
     ctx.on("llm/stream", (options, fallback) => {
-        // 审查识别：REVIEW_POLICY 准确特征 + temperature===0 复合识别（classifyRisk 固定 temp0、
-        // 审查原文首行「REVIEW_POLICY」后接「You are the final authorization reviewer」）。
-        // isAgentLoopRequest 是 dsh-llm 模块级导出，本地 .mjs 裸说明符 @deepseek-ai/dsh-llm
-        // 解析失败（实测 module resolution error，同 review-fixture），故以准确特征 + temp0
-        // 等价区分：agent-loop 普通请求无 REVIEW_POLICY 准确特征 → 透传；REVIEW_POLICY_EXTRA
+        // 审查识别联合条件（manager 10001/10002）：isAgentLoopRequest(options)===true → agent-loop
+        // 普通请求，直接透传（不误计审查）；===false 仅证明非 agent-loop（插件普通请求也可 false），
+        // 须联合 REVIEW_POLICY 准确特征 + temperature===0 才判定审查请求——REVIEW_POLICY_EXTRA
         // 同前缀非审查（无准确特征）→ 透传，均不误计审查。
+        if (isAgentLoopRequest(options) === true) {
+            return fallback();
+        }
         const sys = options && options.system;
         const temp = options && options.temperature;
         if (typeof sys === "string"

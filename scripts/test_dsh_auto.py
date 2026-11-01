@@ -40,6 +40,11 @@ class AutoOverlayTests(unittest.TestCase):
         self.assertIn('return next()', src)
         self.assertIn('blocked += 1', src)
         self.assertIn('return;  // fail-closed', src)
+        # node1638：原生模块加载（createRequire 解析锚点 + isAgentLoopRequest 联合识别）。
+        self.assertIn('createRequire(', src)
+        self.assertIn('@deepseek-ai/dsh-llm', src)
+        self.assertIn('isAgentLoopRequest(options) === true', src)
+        self.assertIn('process.argv[1]', src)
 
     def test_adapter_blocks_on_non_auto(self):
         # req#138 F2 语义：适配插件在 current≠auto 分支必须阻断（不 next）。

@@ -403,6 +403,7 @@ def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision:
             "approval_lines": [l for l in err.splitlines() if "[approval-fixture]" in l],
             "adapter_block_lines": [l for l in err.splitlines() if "[auto-enable] BLOCK" in l],
             "adapter_state_tail": [l for l in err.splitlines() if "[auto-enable] state" in l][-1:],
+            "adapter_llm_load": [l for l in err.splitlines() if "[auto-enable] llm-load" in l],
             "cancel_probe_lines": [l for l in err.splitlines() if "[cancel-probe]" in l],
             "final": final.get("text", "") if "DSH_LAYERS" in final.get("text", "") else "[omitted]",
             "stderr_tail": err[-600:] if err else "",
