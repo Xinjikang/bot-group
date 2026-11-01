@@ -392,8 +392,9 @@ def _start_and_capture(fx: EngineFixture, spawner_pid_file: Path) -> dict:
             except Exception:
                 pass
     # 另一已绑定 bot（dsh-bot-2）真实执行：POST /msg 起第二 DSH + 找其根（session/bot 归属，
-    # 非裸 sleep Python）——验收 7「其他 bot 保持运行」的停止作用域对照。
-    fx.post_msg("@dsh-bot-2 回复 DSH_OTHER_BOT_272，保持运行，不要调用任何工具。")
+    # 非裸 sleep Python）——验收 7「其他 bot 保持运行」的停止作用域对照。用工具循环保持 DSH
+    # 在 agent-loop 内不退出（简单回复会在 restart 长序列期间完成并退出）。
+    fx.post_msg("@dsh-bot-2 依次调用 group_list_members 工具 4 次（每次等 tool_result 再下一次），保持运行。")
     other_roots = []
     other_finder = "unknown"
     for _ in range(60):
@@ -470,8 +471,7 @@ def _stop_pass(r: dict) -> bool:
             and r.get("spawner_child_spawned")
             and r.get("spawner_child_observed")  # 实际观察，非仅 PID 文件非空
             and not r.get("spawner_child_alive_after")
-            and all(r.get("protected_alive_after", {}).values())
-            and r.get("other_bot_alive"))  # 另一已绑定 bot 在 /stop 后仍存活
+            and all(r.get("protected_alive_after", {}).values()))
 
 
 def _kill_pids(pids) -> int:
@@ -502,6 +502,7 @@ def _run_segment(args, segment: str) -> dict:
     fx = None
     live_roots = []   # 捕获到的 DSH 根（异常后独立 DSH/MCP 树回收用）
     seen = {}         # 捕获到的后代（异常后回收用）
+    other_live_roots = []  # 另一 bot（dsh-bot-2）的根（异常后回收用）
     result = {"segment": segment}
     try:
         spawner_cjs.write_text(SPAWNER_MCP_SOURCE, encoding="utf-8")
@@ -515,6 +516,7 @@ def _run_segment(args, segment: str) -> dict:
         cap = _start_and_capture(fx, spawner_pid_file)
         live_roots = cap.get("live_roots", [])
         seen = cap.get("seen", {})
+        other_live_roots = cap.get("other_live_roots", [])
         if not cap.get("ok"):
             result["result"] = cap
             result["passed"] = False
@@ -526,7 +528,10 @@ def _run_segment(args, segment: str) -> dict:
                                  cap.get("other_live_roots"))
             result["result"] = r
             result["result"]["spawner_server_pids"] = cap.get("spawner_server_pids", [])
-            result["passed"] = _stop_pass(r)
+            # 另一已绑定 bot（dsh-bot-2）存活是 stop 段主验证（验收 7「其他 bot 保持运行」）；
+            # restart 段因长序列 dsh-bot-2 可能自然完成退出，不纳入（restart 主验证是
+            # dsh_survived_engine_exit + engine_pid_changed）。
+            result["passed"] = _stop_pass(r) and r.get("other_bot_alive")
         else:
             # 独立引擎进程重启：引擎 A 起 DSH 运行后（不 /stop），终止引擎 A（DSH 独立存活），
             # 起新引擎 B 进程（新 PID）→ 引擎 B 经命令行身份（_matches_dsh_execution +
@@ -556,7 +561,7 @@ def _run_segment(args, segment: str) -> dict:
     finally:
         # 异常后回收：先终止独立 DSH/MCP 后代进程树（引擎退出后 DSH 独立存活，停引擎≠回收
         # DSH 树，capture/stop 异常路径也回收），再停引擎，最后清理唯一目录。
-        _kill_pids(list(seen.keys()) + list(live_roots))
+        _kill_pids(list(seen.keys()) + list(live_roots) + list(other_live_roots))
         if fx is not None:
             fx.close()  # 无论成败都回收自启引擎进程
         time.sleep(1)  # 等 OS 释放引擎进程遗留的 SQLite -shm/-wal 句柄
