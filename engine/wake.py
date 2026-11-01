@@ -98,6 +98,16 @@ def _dsh_failure_detail(error='', tail='', had_final=True, corrupt_count=0) -> s
     return text
 
 
+def _dsh_effective_exit(runtime, returncode, had_final, corrupt_count) -> int:
+    """req#138 F10：DSH 有效退出码——exit 0 但缺 final/坏 JSON 仍判协议失败（记 -1）。
+
+    协议有效性独立于进程退出码：退出码 0 而缺 final 事件或含损坏 JSON 行时，wake_runs
+    不得记 exit_code=0，须上报协议失败（非零终态）。
+    """
+    protocol_failed = runtime == "dsh" and ((not had_final) or corrupt_count > 0)
+    return returncode if returncode else (-1 if protocol_failed else 0)
+
+
 def session_busy(profile, kind, thread_id, project):
     session = session_name(profile, kind, thread_id, project)
     with _session_lock:
@@ -1090,8 +1100,9 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
             mcp_entry=_dsh_mcp_entry(profile, context, workdir, chat=kind == 'chat'),
             project_overrides=dsh_project_overrides,
             auto_review=dsh_auto_overlay)
-        dsh_overlay_path = Path(dsh_tmp) / 'overlay.json'
-        dsh_overlay_path.write_text(json.dumps(dsh_overlay, ensure_ascii=False), encoding='utf-8')
+        dsh_overlay_path = Path(dsh_tmp) / 'overlay.yml'
+        # req#138 F4：YAML 序列化保留 !!js 动态表达式与 insert 条目（JSON 无法表示 !!js 标签）。
+        dsh_overlay_path.write_text(native_runtime.overlay_yaml(dsh_overlay), encoding='utf-8')
         try:
             cmd_without_q, dsh_home = native_runtime.dsh(bot, overlay_path=str(dsh_overlay_path),
                                                          resume=dsh_resume_sid)
@@ -1445,21 +1456,24 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                     error = error or f'process exit={proc.returncode}; task not handed off/completed'
                 else:
                     error = (error or f'process exit={proc.returncode}; task not handed off/completed') + (f'\n{tail}' if tail else '')
+            # req#138 F10：协议有效性独立于退出码——exit 0 但缺 final/坏 JSON 仍是协议失败，
+            # 须上报失败并记非零 exit_code（不把协议失败误记为成功 exit_code=0）。
+            effective_exit = _dsh_effective_exit(runtime, proc.returncode, dsh_had_final[0], dsh_corrupt[0])
             ended_at = time.time()
-            if proc.returncode or error.startswith('execution timed out') \
+            if effective_exit or error.startswith('execution timed out') \
                     or error.startswith('auto review capability unavailable'):
                 _report_execution_error(profile, project, thread_id, session, f'{session}:{wake_started_at}',
-                                        error, exit_code=proc.returncode, job_id=job_id,
+                                        error, exit_code=effective_exit, job_id=job_id,
                                         parent_id=trigger_msg_id or parent_id, env=env)
             try:
                 _handle_task_exit(profile, project, kind, session, wake_started_at, ended_at,
-                                  proc.returncode, event_floor, task_id=bound_task, job_id=job_id, error=error)
+                                  effective_exit, event_floor, task_id=bound_task, job_id=job_id, error=error)
             except Exception:
                 logging.getLogger(__name__).exception("Task exit handling failed for %s", session)
             conn = db.get_connection()
             try:
                 conn.execute("UPDATE wake_runs SET ended_at=?,exit_code=? WHERE session=? AND started_at=?",
-                             (ended_at, proc.returncode, session, wake_started_at))
+                             (ended_at, effective_exit, session, wake_started_at))
                 conn.commit()
                 from . import steer_ledger
                 steer_ledger.reconcile_targets(conn)

@@ -74,54 +74,104 @@ def dsh(bot, *, overlay_path='', resume=None):
     return command, str(Path(bot['config_root']).resolve())
 
 
+# req#138 F5：项目覆盖字段名映射——项目模型统一用下划线 reasoning_effort，DSH 原生
+# agent-default-model 用驼峰 reasoningEffort。
+_DASH_PROJECT_FIELD = {'model': 'model', 'provider': 'provider', 'reasoning_effort': 'reasoningEffort'}
+# req#138 F4：认证 overlay 会把非控制的 provider 条目（经 tolerant parse 降级 !!js）重发；
+# ruamel 已原样载入这些条目，跳过重发以保留 !!js 动态表达式。
+_AUTH_NON_CONTROL = frozenset({'agent-default-model', 'llm-deepseek', 'llm-pi-ai'})
+
+
 def dsh_overlay(bot, *, credentials_path=None, mcp_entry=None, project_overrides=None,
                 auto_review=None) -> list:
-    """构建 DSH spawn 的完整 ``--patch`` overlay（req#137 task#266/#268）。
+    """构建 DSH spawn 的完整 ``--patch`` overlay（req#137 task#266/#268，req#138 F3/F4/F5）。
 
     = bot profile ``cordis.patch.yml`` 全部条目（264 保存的 persona/model/provider/
     reasoning_effort 等）∪ dsh_auth 认证控制（同名条目覆盖启停与凭据路径）∪
-    项目级 model/provider/reasoning_effort 覆盖 ∪ MCP 客户端 insert ∪ Auto 审批
-    （auto_review={adapter_path} 时插入 auto-review 插件 + 受控适配插件）。动态表达式
-    （``!!js``）条目原样透传（DSH 原生求值），只做静态拼装。
+    项目级 model/provider/reasoningEffort 覆盖 ∪ MCP 客户端 insert ∪ Auto 审批
+    （auto_review={adapter_path} 时插入 auto-review 插件 + 受控适配插件）。
+
+    req#138 F4：用 ruamel round-trip 读取，保留无 id 的 ``insert`` 插件条目与 ``!!js``
+    动态表达式（原样透传，DSH 原生求值），解析失败显式报错而非回空丢失 persona。
+    req#138 F3：认证路由按含项目覆盖的最终 provider 统一解析（见 overlay_entries 的
+    final_provider）。req#138 F5：项目覆盖 reasoning_effort 映射为原生 reasoningEffort。
+    返回值含 ruamel 类型（``!!js`` 为带标签标量），须用 :func:`overlay_yaml` 序列化。
     """
-    import yaml as _yaml
     from pathlib import Path
     from . import dsh_auth
     home = Path(bot['config_root']).resolve()
     patch = home / 'profiles' / bot['profile'] / 'cordis.patch.yml'
     entries: list = []
     if patch.is_file():
+        from ruamel.yaml import YAML
+        parser = YAML(typ='rt')
         try:
-            entries = _yaml.safe_load(patch.read_text(encoding='utf-8-sig')) or []
-        except Exception:
-            entries = []
-    merged: dict[str, dict] = {}
-    for entry in entries:
-        if isinstance(entry, dict) and entry.get('id'):
-            merged[str(entry['id'])] = dict(entry)
-    # 认证控制优先（credentials 路径/启停），同 id 覆盖 profile 原条目。
+            loaded = parser.load(patch.read_text(encoding='utf-8-sig'))
+        except Exception as exc:  # 解析失败显式报错，不回空丢失 persona
+            from fastapi import HTTPException
+            raise HTTPException(400, f'cordis.patch.yml 解析失败：{exc}') from exc
+        entries = [e for e in (loaded or []) if isinstance(e, dict)]
+    # 认证控制优先（credentials 路径/启停），同 id 覆盖 profile 原条目；按最终 provider 路由。
+    final_provider = (project_overrides or {}).get('provider') or None
     for control in dsh_auth.overlay_entries(
-            bot, credentials_path=str(credentials_path) if credentials_path else None):
-        merged[str(control['id'])] = dict(control)
-    # 项目级覆盖：只改 agent-default-model 的 config 字段，保留其余字段。
+            bot, credentials_path=str(credentials_path) if credentials_path else None,
+            final_provider=final_provider):
+        if str(control.get('id') or '') in _AUTH_NON_CONTROL:
+            # req#138 F4：跳过非控制 provider 条目重发，保留 ruamel 载入的 !!js 原值。
+            continue
+        _replace_or_append(entries, control)
+    # 项目级覆盖：只改 agent-default-model 的 config 字段，保留其余字段；字段名映射原生。
     if project_overrides:
-        target = merged.setdefault('agent-default-model', {'id': 'agent-default-model'})
-        config = target.setdefault('config', {})
+        target = _find_entry(entries, 'agent-default-model')
+        if target is None:
+            target = {'id': 'agent-default-model'}
+            entries.append(target)
+        config = target.get('config')
         if not isinstance(config, dict):
             config = {}
             target['config'] = config
         for field, value in project_overrides.items():
             if value:
-                config[field] = value
-    out = list(merged.values())
+                config[_DASH_PROJECT_FIELD.get(field, field)] = value
     if mcp_entry:
-        out.append({'insert': [mcp_entry]})
+        entries.append({'insert': [mcp_entry]})
     if auto_review:
         # req#137 task#268：Auto 审批 insert（插件加载 + session/created 切 auto 的
         # 受控适配插件）。插入层优先级最高，覆盖 profile patch 的 auto-review 条目。
         from . import dsh_auto
-        out.extend(dsh_auto.overlay_inserts(str(auto_review['adapter_path'])))
-    return out
+        entries.extend(dsh_auto.overlay_inserts(str(auto_review['adapter_path'])))
+    return entries
+
+
+def _replace_or_append(entries: list, control: dict) -> None:
+    """同 id 就地覆盖，保留原条目位置；新 id 追加尾部（保持 cordis patch 顺序语义）。"""
+    cid = str(control.get('id') or '')
+    for i, entry in enumerate(entries):
+        if isinstance(entry, dict) and str(entry.get('id') or '') == cid:
+            entries[i] = control
+            return
+    entries.append(control)
+
+
+def _find_entry(entries: list, entry_id: str):
+    for entry in entries:
+        if isinstance(entry, dict) and str(entry.get('id') or '') == entry_id:
+            return entry
+    return None
+
+
+def overlay_yaml(overlay: list) -> str:
+    """把 dsh_overlay 的返回值序列化为 YAML（保留 ``!!js`` 动态表达式与 insert 条目）。
+
+    ``--patch`` 接受 YAML；JSON 无法表示 ``!!js`` 标签，故改用 YAML 输出（req#138 F4）。
+    """
+    import io
+    from ruamel.yaml import YAML
+    parser = YAML(typ='rt')
+    parser.width = 4096
+    buf = io.StringIO()
+    parser.dump(overlay, buf)
+    return buf.getvalue()
 
 
 # 已验证事件契约的 DSH 包版本（0.2.1-rc.5；其它版本以启动证据为准，见 design）。

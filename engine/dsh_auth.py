@@ -176,11 +176,13 @@ def _env_key(home: Path) -> str:
     return ''
 
 
-def resolve(bot) -> dict:
+def resolve(bot, *, final_provider: str | None = None) -> dict:
     """解析认证路由 + provider/model + 凭据来源（一起解析，不做实际调用）。
 
     返回 ``{route, provider, model, api_key_source, credentials_file, selected}``。
     ``route`` ∈ ``{'account', 'apikey'}``；``api_key_source`` ∈ ``{'env', 'native', None}``。
+    ``final_provider``：req#138 F3——项目覆盖后的最终 provider；传入时优先于 profile 的
+    provider 参与路由判定，避免「运行 provider 与认证路由分裂」。
     """
     home = Path(bot['config_root']).resolve()
     seq = _read_patch(bot)
@@ -197,6 +199,8 @@ def resolve(bot) -> dict:
             model = str(config.get('model') or '')
         if eid in _PROVIDER_IDS:
             selected.append(entry)
+    if final_provider is not None and final_provider != '':
+        provider = final_provider
     route = 'account' if provider == _ACCOUNT_PROVIDER else 'apikey'
     api_key_source = None
     if route == 'apikey':
@@ -215,15 +219,17 @@ def resolve(bot) -> dict:
     }
 
 
-def overlay_entries(bot, *, credentials_path: str | None = None) -> list:
+def overlay_entries(bot, *, credentials_path: str | None = None,
+                    final_provider: str | None = None) -> list:
     """构建启动 overlay 的认证相关条目（供 266 以 ``--patch`` 注入）。
 
     按 ``id`` 合并：账号路由最终 ``deepseek-account`` 为 ``disabled=False``，API-key 路由
     最终为 ``disabled=True``；所选 provider/model/服务 config（accountId 等）保留，同一
     ``id`` 只输出唯一条目（控制条目的启停状态优先，不依赖 cordis 重复覆盖语义）。
     遥测与会话日志默认关闭；.env 键由 DSH 原生加载，界面保存凭据显式恢复 credentials。
+    ``final_provider``（req#138 F3）：项目覆盖后的最终 provider，路由据此判定。
     """
-    info = resolve(bot)
+    info = resolve(bot, final_provider=final_provider)
     controls: list[dict] = []
     if info['route'] == 'account':
         path = credentials_path or info['credentials_file']

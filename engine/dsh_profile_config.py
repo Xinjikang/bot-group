@@ -308,7 +308,7 @@ def save(bot, values: dict) -> dict:
             after[str(patch)] = files._dump(parser, seq, before[str(patch)])
             # 独立文件字段（env/instructions/description）：仅写变更，保留原 EOL 风格。
             for field, path in file_paths.items():
-                value = values[field].replace('\r\n', '\n')
+                value = (values.get(field) or '').replace('\r\n', '\n')
                 if value != current[field].replace('\r\n', '\n'):
                     if before[str(path)] and b'\r\n' in before[str(path)]:
                         value = value.replace('\n', '\r\n')

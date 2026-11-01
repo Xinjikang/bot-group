@@ -342,7 +342,7 @@ def save(profile: str, values: dict) -> dict:
                 after["profile.yaml"] = _dump(parser, meta, before["profile.yaml"])
             for field, name in (("soul", "SOUL.md"), ("env", ".env")):
                 # Browsers normalize textarea CRLF. Preserve untouched bytes and the file's EOL style.
-                value = values[field].replace("\r\n", "\n")
+                value = (values.get(field) or "").replace("\r\n", "\n")
                 if value != current[field].replace("\r\n", "\n"):
                     if before[name] and b"\r\n" in before[name]:
                         value = value.replace("\n", "\r\n")

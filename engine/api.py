@@ -1159,11 +1159,15 @@ def delete_project_role(name: str, role_id: int, identity=Depends(_resolve_ident
 
 class ProfileConfigEdit(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    description: str = Field(max_length=100000)
-    soul: str = Field(max_length=2 * 1024 * 1024)
-    env: str = Field(max_length=2 * 1024 * 1024)
-    model: str = Field(max_length=500)
-    provider: str = Field(max_length=200)
+    description: str = Field(default='', max_length=100000)
+    # req#138 F1：DSH 成员用 persona 替代 soul；soul 对 DSH 不必填，persona/instructions
+    # 由 DSH 编辑器提交。Hermes/Codex 仍提交 soul。
+    soul: Optional[str] = Field(default=None, max_length=2 * 1024 * 1024)
+    persona: Optional[str] = Field(default=None, max_length=2 * 1024 * 1024)
+    instructions: Optional[str] = Field(default=None, max_length=2 * 1024 * 1024)
+    env: str = Field(default='', max_length=2 * 1024 * 1024)
+    model: str = Field(default='', max_length=500)
+    provider: str = Field(default='', max_length=200)
     reasoning_effort: Optional[str] = Field(default=None, max_length=30)
     auto_review: Optional[str] = Field(default=None, max_length=10)
     member_profile: Optional[str] = Field(default=None, max_length=200)

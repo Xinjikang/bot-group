@@ -196,8 +196,77 @@ def _dsh_patch(path: Path) -> bool:
         return False
 
 
+def _dsh_bundled_entry() -> str:
+    """定位桌面安装的 bundled dsh.cmd（不依赖 DSH_BIN/PATH，req#138 F8）。
+
+    优先读 Windows 卸载注册表的 DeepSeek/Harness 条目安装位置；回退常见安装目录
+    （LOCALAPPDATA/ProgramFiles）。相对路径固定为 ``resources/runtime/cli/bin/dsh.cmd``
+    （桌面安装布局，0.2.1-rc.5 实测）。非 Windows 返回空。
+    """
+    if sys.platform != "win32":
+        return ""
+    candidates: list[Path] = []
+    import winreg
+    roots = (
+        (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+    )
+    for hkey, sub in roots:
+        try:
+            key = winreg.OpenKey(hkey, sub)
+        except OSError:
+            continue
+        try:
+            for i in range(winreg.QueryInfoKey(key)[0]):
+                name = winreg.EnumKey(key, i)
+                try:
+                    subkey = winreg.OpenKey(key, name)
+                except OSError:
+                    continue
+                display = location = ""
+                for vname in ("DisplayName", "InstallLocation", "DisplayIcon", "UninstallString"):
+                    try:
+                        val, _ = winreg.QueryValueEx(subkey, vname)
+                    except OSError:
+                        continue
+                    val = str(val).strip()
+                    if vname == "DisplayName":
+                        display = val
+                    elif vname == "InstallLocation" and val:
+                        location = val
+                    elif vname == "DisplayIcon" and not location and val:
+                        # "<root>\DeepSeek Harness.exe,0" → 取 exe 父目录
+                        location = str(Path(val.split(",")[0]).parent)
+                    elif vname == "UninstallString" and not location and val:
+                        # "\"<root>\Uninstall ....exe\" /currentuser" → 取首个 token 父目录
+                        token = val.strip().strip('"').split(" ")[0]
+                        location = str(Path(token).parent)
+                if location and any(t in (display + " " + location).lower()
+                                   for t in ("deepseek", "harness", "dsh")):
+                    candidates.append(Path(location))
+        except OSError:
+            continue
+    # 常见安装目录回退。
+    for env_name in ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"):
+        base = (os.environ.get(env_name) or "").strip()
+        if not base:
+            continue
+        try:
+            for child in Path(base).iterdir():
+                if "deepseek" in child.name.lower() or "harness" in child.name.lower():
+                    candidates.append(child)
+        except OSError:
+            continue
+    for root in candidates:
+        entry = Path(root) / "resources" / "runtime" / "cli" / "bin" / "dsh.cmd"
+        if _has_file(entry):
+            return str(entry)
+    return ""
+
+
 def _dsh_entry() -> str:
-    """DSH 执行入口：DSH_BIN 优先，PATH 的 dsh/dsh.cmd 次之，未发现返回空。"""
+    """DSH 执行入口：DSH_BIN 优先，PATH 的 dsh/dsh.cmd 次之，桌面 bundled 兜底（req#138 F8）。"""
     configured = (os.environ.get("DSH_BIN") or "").strip()
     if configured:
         return configured
@@ -205,7 +274,7 @@ def _dsh_entry() -> str:
         found = shutil.which(name)
         if found:
             return found
-    return ""
+    return _dsh_bundled_entry()
 
 
 def _dsh_entry_available(entry: str) -> bool:
