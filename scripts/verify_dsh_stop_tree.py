@@ -27,7 +27,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 ROOT = Path(__file__).resolve().parents[1]
@@ -321,20 +321,68 @@ class EngineFixture:
         self.engine.stop()
 
 
-def _compensate_dsh_descendants(fx, registry) -> bool:
-    """live_run 异常后按进程树身份反查引擎后代（DSH 树仍为引擎子进程）→ 登记，返回是否定位到。
+def _owned_overlay(argv, scratch, runs) -> bool:
+    """匹配原生 DSH CLI 参数到私有 scratch 路径 + 持久化 run（manager 10047 样例）。
 
-    manager node1642：首次根发现前异常时按本次归属定位 DSH 树（用已登记引擎 PID 反查后代），
-    补偿回收；找不到返回 False（调用方标 dsh_not_located 总失败，不假报回收）。"""
-    engine_pid = fx.engine.proc.pid if fx.engine.proc else None
-    if engine_pid is None:
+    引擎在 scratch/dsh-spawn-<session>-<started_at>-<random>/overlay.yml 放 overlay，
+    命令行 --profile headless --patch <overlay>；overlay 父目录名以 _dsh_spawn_tag 开头。
+    """
+    from engine.wake import _dsh_spawn_tag
+    if not argv:
+        return False
+    try:
+        profile_at = argv.index('--profile')
+        patch_at = argv.index('--patch')
+        if argv[profile_at + 1] != 'headless':
+            return False
+        overlay = PureWindowsPath(argv[patch_at + 1])
+    except (ValueError, IndexError, TypeError):
+        return False
+    base = PureWindowsPath(scratch)
+    if not base.is_absolute() or not overlay.is_absolute():
+        return False
+    if '..' in overlay.parts or overlay.name.lower() != 'overlay.yml':
+        return False
+    if overlay.parent.parent != base:
+        return False
+    return any(
+        run['runtime'] == 'dsh' and run['project'] == 'bot-group'
+        and run['profile'] in ('dsh-bot', 'dsh-bot-2')
+        and overlay.parent.name.startswith(_dsh_spawn_tag(run['session'], run['started_at']) + '-')
+        for run in runs
+    )
+
+
+def _recover_from_snapshot(registry, scratch, runs, snapshot, argv_by_pid) -> dict:
+    """注册已证归属的 DSH 根/后代，缺命令行（未知）单独报告不注册（manager 10047 样例）。"""
+    roots = [pid for pid, argv in argv_by_pid.items()
+             if pid in snapshot and _owned_overlay(argv, scratch, runs)]
+    owned = {pid: snapshot[pid] for pid in roots}
+    owned.update(_descendants(snapshot, roots))
+    registry.register_many(owned)
+    return {'roots': roots, 'registered': sorted(owned),
+            'unknown': sorted(pid for pid, argv in argv_by_pid.items()
+                              if argv is None and pid in snapshot)}
+
+
+def _compensate_via_snapshot(fx, registry) -> bool:
+    """live_run 异常后按私有 DB wake_runs + scratch 标签反查 DSH 树（overlay 路径含 spawn tag）→
+    登记 + 回收（manager 10047；引擎已退出也按持久化 run 定位）。返回是否定位到 DSH 根。"""
+    from engine import process_query
+    try:
+        rows = fx.q("SELECT session, started_at, profile, project, runtime FROM wake_runs "
+                    "WHERE runtime='dsh' AND profile IN ('dsh-bot','dsh-bot-2')")
+        runs = [dict(r) for r in rows]
+    except Exception:
+        return False
+    if not runs:
         return False
     try:
         snap = _process_tree()
-        desc = _descendants(snap, [engine_pid])
-        for pid, (_parent, name) in desc.items():
-            registry.register(pid, name)
-        return bool(desc)
+        argv_by_pid = {pid: process_query.command_line(pid, scope="dsh-recovery")
+                       for pid in snap}
+        result = _recover_from_snapshot(registry, str(fx.scratch), runs, snap, argv_by_pid)
+        return bool(result["roots"])
     except Exception:
         return False
 
@@ -353,7 +401,7 @@ def _start_and_capture(fx: EngineFixture, spawner_pid_file: Path,
     except Exception:
         # B：补偿回收——按进程树身份反查引擎后代（DSH 树）→ 登记 + finally 回收；找不到则
         # dsh_not_located（总失败，不假报回收）。
-        if not _compensate_dsh_descendants(fx, registry):
+        if not _compensate_via_snapshot(fx, registry):
             registry.dsh_not_located = True
         return {"ok": False, "detail": "live_run query failed"}
     if run is None:

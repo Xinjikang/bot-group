@@ -315,24 +315,47 @@ class AuditTests(unittest.TestCase):
         # 必须失败，不能只看 marker 日志 entry_count。
         from scripts import verify_dsh_auto_layers as _v
         base = {
-            "timed_out": False, "exit": 0, "tool_calls": ["mcp__marker_probe__probe"],
-            "tool_results": [("error", True)], "entry_written": True, "marker_written": False,
+            "timed_out": False, "exit": 0,
+            "tool_calls": [("mcp__marker_probe__probe", "call_A")],
+            "tool_results": [("error", True, "call_A")],
+            "entry_call_ids": ["call_A"],
+            "entry_written": True, "marker_written": False,
             "prod_entry_count": 0, "review_count": 1, "review_decisions": ["allow"],
         }
-        self.assertFalse(_v._pass("entry-fail", base))
+        self.assertFalse(_v._pass("entry-fail", base))  # prod_entry_count=0 缺计数
         base["prod_entry_count"] = 1  # 进入后失败 entry=1 → 通过
         self.assertTrue(_v._pass("entry-fail", base))
+
+    def test_pass_no_borrow_completed_from_other_call(self):
+        # manager 10043：completed 用同一目标调用核对——其他调用的 completed 不得借用。
+        from scripts import verify_dsh_auto_layers as _v
+        base = {
+            "timed_out": False, "exit": 0,
+            "tool_calls": [("mcp__marker_probe__probe", "call_A"),
+                           ("group_list_members", "call_B")],
+            "tool_results": [("error", True, "call_A"), ("completed", False, "call_B")],
+            "entry_call_ids": ["call_A"],
+            "entry_written": True, "marker_written": False,
+            "prod_entry_count": 1, "review_count": 1, "review_decisions": ["allow"],
+        }
+        # entry-fail：目标调用 call_A 未 completed（call_B 的 completed 不借用）→ 通过（entry=1 completed=0）。
+        self.assertTrue(_v._pass("entry-fail", base))
+        # review-allow：目标调用 call_A 未 completed（call_B 借用）→ 失败。
+        self.assertFalse(_v._pass("review-allow", base))
 
     def test_pass_approval_cancelled_requires_prod_entry_zero(self):
         # req#138 node1647：取消入口 0 —— approval-cancelled 段 prod_entry_count>0 必须失败。
         from scripts import verify_dsh_auto_layers as _v
         base = {
-            "timed_out": False, "exit": 0, "tool_calls": ["mcp__marker_probe__probe"],
-            "tool_results": [("error", True)], "entry_written": False, "marker_written": False,
+            "timed_out": False, "exit": 0,
+            "tool_calls": [("mcp__marker_probe__probe", "call_A")],
+            "tool_results": [("error", True, "call_A")],
+            "entry_call_ids": [],
+            "entry_written": False, "marker_written": False,
             "prod_entry_count": 1, "review_count": 1, "review_decisions": ["deny"],
             "approval_lines": ["[approval-fixture] outcome=cancelled"],
         }
-        self.assertFalse(_v._pass("approval-cancelled", base))
+        self.assertFalse(_v._pass("approval-cancelled", base))  # prod_entry_count=1 取消应 0
         base["prod_entry_count"] = 0
         self.assertTrue(_v._pass("approval-cancelled", base))
 

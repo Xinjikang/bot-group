@@ -406,9 +406,11 @@ def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision:
             "entry_count": sum(1 for l in err.splitlines() if "[marker-probe] ENTRY" in l),
             "prod_entry_count": _last_state_entry(err),
             "marker_written": marker_file.is_file(),
-            "tool_calls": [e.get("tool") for e in events if e.get("type") == "tool_call"],
-            "tool_results": [(e.get("status"), bool(e.get("isError")))
+            "tool_calls": [(e.get("tool"), e.get("callId"))
+                           for e in events if e.get("type") == "tool_call"],
+            "tool_results": [(e.get("status"), bool(e.get("isError")), e.get("callId"))
                              for e in events if e.get("type") == "tool_result"],
+            "entry_call_ids": _entry_call_ids(err),
             "review_count": sum(1 for l in err.splitlines() if "[review-fixture] review" in l),
             "review_decisions": [l.split("decision=")[-1] for l in err.splitlines()
                                  if "[review-fixture] review" in l],
@@ -429,6 +431,17 @@ def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision:
             result["cleanup_ok"] = bool(cleanup) and all(v is True for v in cleanup.values())
 
 
+def _entry_call_ids(err: str) -> list:
+    """生产入口 callId 列表（adapter 的 [auto-enable] ENTRY ... callId=）。"""
+    ids = []
+    for line in (err or "").splitlines():
+        if "[auto-enable] ENTRY" in line:
+            m = re.search(r"callId=(\S+)", line)
+            if m:
+                ids.append(m.group(1))
+    return ids
+
+
 def _last_state_entry(err: str) -> int:
     """生产入口计数：adapter 末位 state 行的 entry=（tools/execute 主体入口），独立于 marker 日志 entry_count。
 
@@ -442,23 +455,29 @@ def _last_state_entry(err: str) -> int:
 
 
 def _pass(segment, r):
-    completed = any(s == "completed" for s, _ in r["tool_results"])
-    # 门禁：非崩溃（exit 0、未超时）+ 目标工具确实被请求（tool_call 非空）。
+    # 三态同一目标调用核对（manager 10043）：目标工具（marker probe）callId + 其 ENTRY/marker/completed
+    # 关联，禁止 any(completed) 借用其他调用。
+    target_calls = [call for tool, call in r["tool_calls"] if tool == "mcp__marker_probe__probe"]
+    target_call = target_calls[0] if target_calls else None
+    entry_has_target = target_call in r["entry_call_ids"]
+    completed = any(s == "completed" and call == target_call
+                    for s, _, call in r["tool_results"])
+    # 门禁：非崩溃（exit 0、未超时）+ 目标工具确实被请求（target callId 非空）。
     # 排除「进程崩溃 / 无调用 / marker 写失败」被误判为审批阻断。
-    gated = (not r["timed_out"] and r["exit"] == 0 and bool(r["tool_calls"]))
+    gated = (not r["timed_out"] and r["exit"] == 0 and target_call is not None)
     if not gated:
         return False
     if segment == "review-allow":
-        # 成功入口 1：body 进入（entry_written + [marker-probe] ENTRY）+ 副作用 marker + completed
-        # + 生产入口计数 entry=1。
-        return (r["entry_written"] and r["marker_written"] and completed
+        # 成功入口 1：目标调用 body 进入（entry_has_target + entry_written）+ 副作用 marker +
+        # 目标调用 completed + 生产入口计数 entry=1。
+        return (entry_has_target and r["entry_written"] and r["marker_written"] and completed
                 and r["prod_entry_count"] == 1
                 and r["review_count"] >= 1 and r["review_decisions"] == ["allow"])
     if segment == "review-deny":
-        # 工具主体未进入（取消入口 0）：无 entry + marker 缺失 + 无 completed + 生产入口 entry=0；
+        # 工具主体未进入（取消入口 0）：目标调用无 ENTRY + marker 缺失 + 无 completed + 生产入口 entry=0；
         # 审查命中且 decision=deny。
-        return (not r["entry_written"] and not r["marker_written"] and not completed
-                and r["prod_entry_count"] == 0
+        return (not entry_has_target and not r["entry_written"] and not r["marker_written"]
+                and not completed and r["prod_entry_count"] == 0
                 and r["review_count"] >= 1 and r["review_decisions"] == ["deny"])
     if segment == "review-rejected":
         return (not r["marker_written"] and not completed
@@ -491,17 +510,17 @@ def _pass(segment, r):
                 and any("wait-abort outcome=cancelled" in l for l in lines))
     if segment == "approval-cancelled":
         # 审批 cancelled → serviceAsk 映射 deny（approvalCancelled）→ 工具主体不执行（取消入口 0）：
-        # 无 entry + marker 缺失 + 无 completed + 生产入口 entry=0；审批夹具落 outcome=cancelled 证据。
-        return (not r["entry_written"] and not r["marker_written"] and not completed
-                and r["prod_entry_count"] == 0
+        # 目标调用无 ENTRY + marker 缺失 + 无 completed + 生产入口 entry=0；审批夹具落 outcome=cancelled。
+        return (not entry_has_target and not r["entry_written"] and not r["marker_written"]
+                and not completed and r["prod_entry_count"] == 0
                 and r["review_count"] >= 1 and r["review_decisions"] == ["deny"]
                 and any("outcome=cancelled" in l for l in r["approval_lines"]))
     if segment == "entry-fail":
-        # 进入后失败：body 进入（entry_written + [marker-probe] ENTRY 落行）+ 生产入口 entry=1 +
+        # 进入后失败：目标调用 body 进入（entry_has_target + entry_written）+ 生产入口 entry=1 +
         # 副作用 marker 写失败（marker_written=false，tool_result error，completed=0）——证明 entry
         # 独立于 completed（进入主体后失败 entry=1 completed=0）。
-        return (r["entry_written"] and not r["marker_written"] and not completed
-                and r["prod_entry_count"] == 1
+        return (entry_has_target and r["entry_written"] and not r["marker_written"]
+                and not completed and r["prod_entry_count"] == 1
                 and r["review_count"] >= 1 and r["review_decisions"] == ["allow"])
     if segment == "review-passthrough":
         # 「同前缀非审查」反例：review-fixture 精确前缀（REVIEW_POLICY 原文）不匹配非审查请求 →

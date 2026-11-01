@@ -8,6 +8,7 @@ manager node1642 固定断言：A 不存在（NoSuchProcess）与查询失败（
 import unittest
 from unittest import mock
 import tempfile
+from pathlib import PureWindowsPath
 
 import scripts.verify_dsh_stop_tree as v
 
@@ -109,45 +110,61 @@ class StartAndCaptureTests(unittest.TestCase):
         fx.post_msg.return_value = {}
         fx.live_run.side_effect = RuntimeError("db query failed")
         fx.engine.proc.pid = 9999
+        fx.scratch = r"C:\fixture\scratch-unique"
         return fx
 
-    def test_live_run_exception_compensates_dsh_descendants(self):
-        # B：补偿回收——反查到引擎后代（DSH 树）则登记 + 回收，不标 dsh_not_located。
+    def test_live_run_exception_compensates_via_snapshot(self):
+        # B：补偿回收——按私有 DB + scratch 反查到 DSH 树则登记 + 回收，不标 dsh_not_located。
         fx = self._fx()
         reg = v._ResourceRegistry()
-        with mock.patch.object(v, "_compensate_dsh_descendants", return_value=True) as comp:
+        with mock.patch.object(v, "_compensate_via_snapshot", return_value=True) as comp:
             cap = v._start_and_capture(fx, mock.Mock(), reg)
         self.assertFalse(cap["ok"])
-        self.assertFalse(reg.dsh_not_located)  # 补偿定位成功，不标未回收
+        self.assertFalse(reg.dsh_not_located)
         comp.assert_called_once_with(fx, reg)
 
     def test_live_run_exception_no_dsh_sets_not_located(self):
-        # B：补偿回收——反查不到 DSH 树（引擎已退出）则标 dsh_not_located 总失败，不假报回收。
+        # B：反查不到 DSH 树则标 dsh_not_located 总失败，不假报回收。
         fx = self._fx()
         reg = v._ResourceRegistry()
-        with mock.patch.object(v, "_compensate_dsh_descendants", return_value=False):
+        with mock.patch.object(v, "_compensate_via_snapshot", return_value=False):
             cap = v._start_and_capture(fx, mock.Mock(), reg)
         self.assertFalse(cap["ok"])
         self.assertTrue(reg.dsh_not_located)
 
-    def test_compensate_dsh_descendants_registers_engine_children(self):
-        # 实际调用 _compensate_dsh_descendants：引擎后代（DSH 树）登记进 registry。
-        fx = mock.Mock()
-        fx.engine.proc.pid = 100
-        reg = v._ResourceRegistry()
-        snap = {100: (1, "python.exe"), 200: (100, "cmd.exe"), 300: (200, "harness.exe")}
-        with mock.patch.object(v, "_process_tree", return_value=snap), \
-             mock.patch.object(v, "_process_identity", side_effect=[
-                 ("ok", "cmd.exe", 200), ("ok", "harness.exe", 300)]):
-            located = v._compensate_dsh_descendants(fx, reg)
-        self.assertTrue(located)
-        self.assertEqual(sorted(reg.pids()), [200, 300])
+    def test_owned_overlay_matches_private_scratch_and_run(self):
+        # manager 10047 样例：私有 scratch + 持久化 run 匹配；外部 session/profile 排除。
+        from engine.wake import _dsh_spawn_tag
+        scratch = r"C:\fixture\scratch-unique"
+        run = dict(session="work-test", started_at=123.25, profile="dsh-bot",
+                   project="bot-group", runtime="dsh")
+        overlay = (PureWindowsPath(scratch) / (_dsh_spawn_tag("work-test", 123.25) + "-random")
+                   / "overlay.yml")
+        argv = ["harness.exe", "--profile", "headless", "--patch", str(overlay), "--json", "-"]
+        self.assertTrue(v._owned_overlay(argv, scratch, [run]))
+        self.assertFalse(v._owned_overlay(argv, scratch, [dict(run, session="other")]))
+        self.assertFalse(v._owned_overlay(argv, scratch, [dict(run, profile="foreign")]))
 
-    def test_compensate_dsh_descendants_no_engine_pid(self):
-        fx = mock.Mock()
-        fx.engine.proc.pid = None
+    def test_recover_from_snapshot_registers_owned_and_keeps_foreign(self):
+        # manager 10047 样例：反查归属 DSH 根/后代登记，未知（argv=None）显式保留不注册。
+        from engine.wake import _dsh_spawn_tag
+        scratch = r"C:\fixture\scratch-unique"
+        run = dict(session="work-test", started_at=123.25, profile="dsh-bot",
+                   project="bot-group", runtime="dsh")
+        overlay = (PureWindowsPath(scratch) / (_dsh_spawn_tag("work-test", 123.25) + "-r")
+                   / "overlay.yml")
+        argv = ["harness.exe", "--profile", "headless", "--patch", str(overlay), "--json", "-"]
+        snapshot = {71001: (69999, "harness.exe"), 71002: (71001, "node.exe"),
+                    72001: (69998, "harness.exe")}
+        argv_by_pid = {71001: argv, 72001: None}
         reg = v._ResourceRegistry()
-        self.assertFalse(v._compensate_dsh_descendants(fx, reg))
+        with mock.patch.object(v, "_process_identity", side_effect=[
+            ("ok", "harness.exe", 71001), ("ok", "node.exe", 71002)]):
+            result = v._recover_from_snapshot(reg, scratch, [run], snapshot, argv_by_pid)
+        self.assertEqual(result["roots"], [71001])
+        self.assertEqual(result["registered"], [71001, 71002])
+        self.assertEqual(result["unknown"], [72001])
+        self.assertEqual(sorted(reg.pids()), [71001, 71002])
 
 
 class RunSegmentTests(unittest.TestCase):
