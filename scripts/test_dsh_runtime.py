@@ -37,6 +37,17 @@ def _register_dsh_bot(conn, project="bot-group", profile="dsh-bot", entry="C:/ds
     return bot_id
 
 
+def _register_dsh_member(conn, project="bot-group", profile="dsh-bot", entry="C:/dsh/dsh.cmd"):
+    """dsh Bot + members 行：existing_session_id 经 db._bot_id_of 按 members.profile 反查 bot_id。"""
+    bot_id = _register_dsh_bot(conn, project, profile, entry)
+    conn.execute(
+        "INSERT INTO members(profile, display_name, role, bot_id) VALUES(?,?,?,?)",
+        (profile, profile, '', bot_id),
+    )
+    conn.commit()
+    return bot_id
+
+
 class DshSessionBindingTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="t266_")
@@ -125,6 +136,43 @@ class DshSessionBindingTests(unittest.TestCase):
             (result["operation_id"],)).fetchone()
         self.assertEqual(op["status"], "committed")
         self.assertEqual(op["old_session_id"], "session-chat-1")
+
+    def test_existing_session_id_dsh_valid_binding(self):
+        # req#139 task#273：existing_session_id 对 dsh 显式分流，有效绑定返回原生 id。
+        bot_id = _register_dsh_member(self.conn)
+        session_adapter.dsh_save_session(self.conn, "bot-group", "dsh-bot", "work", None,
+                                         "native-sid-1", bot_id=bot_id)
+        self.assertEqual(session_adapter.existing_session_id(
+            self.conn, "bot-group", "dsh-bot", "work", None, "title"), "native-sid-1")
+
+    def test_existing_session_id_dsh_no_binding_no_hermes_fallback(self):
+        # 无绑定返回 None，且不落到 Hermes resolve_session_by_title（否则 hermes_home 抛 ValueError）。
+        _register_dsh_member(self.conn)
+        with patch.object(session_adapter, "resolve_session_by_title",
+                          side_effect=AssertionError("DSH fell through to Hermes fallback")) as fallback:
+            self.assertIsNone(session_adapter.existing_session_id(
+                self.conn, "bot-group", "dsh-bot", "work", None, "title"))
+        fallback.assert_not_called()
+
+    def test_existing_session_id_dsh_empty_binding(self):
+        # /new 清空后空绑定视为无会话，不返回空串。
+        bot_id = _register_dsh_member(self.conn)
+        session_adapter.dsh_save_session(self.conn, "bot-group", "dsh-bot", "work", None,
+                                         "native-sid-1", bot_id=bot_id)
+        session_adapter.dsh_new(self.conn, "bot-group", "dsh-bot", "work", None, "")
+        self.assertIsNone(session_adapter.existing_session_id(
+            self.conn, "bot-group", "dsh-bot", "work", None, "title"))
+
+    def test_existing_session_id_dsh_foreign_binding(self):
+        # 异种 runtime 绑定（hermes 残留）不得被当 dsh 有效会话。
+        bot_id = _register_dsh_member(self.conn)
+        self.conn.execute(
+            "INSERT INTO session_bindings(project,bot_id,profile,kind,thread_id,session_id,runtime,updated_at) "
+            "VALUES('bot-group',?,'dsh-bot','work',0,'hermes-sid','hermes',?)",
+            (bot_id, db.now_iso()))
+        self.conn.commit()
+        self.assertIsNone(session_adapter.existing_session_id(
+            self.conn, "bot-group", "dsh-bot", "work", None, "title"))
 
 
 class DshReasoningTests(unittest.TestCase):

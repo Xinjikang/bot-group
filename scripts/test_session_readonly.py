@@ -90,6 +90,23 @@ class ReadOnlySessionTests(unittest.TestCase):
         with patch.object(gateway, 'enabled', side_effect=AssertionError('bound lookup probed gateway')):
             self.assertEqual(self.lookup(member), 'bound')
 
+    def test_workspace_get_with_dsh_member_no_hermes_fallback(self):
+        # req#139 task#273：新增 DSH 成员后刷新不再 500；无绑定时 work_session_exists=False，
+        # 且 DSH 分流不触发 Hermes fallback（否则 hermes_home 对 dsh 抛 ValueError）。
+        from scripts import test_dsh_runtime
+        test_dsh_runtime._register_dsh_member(self.conn, project='p', profile='dsh-bot')
+        with patch.object(gateway, 'enabled', return_value=True), \
+             patch.object(gateway, 'ensure', side_effect=AssertionError('dsh read started gateway')), \
+             patch.object(adapter, 'resolve_session_by_title',
+                          side_effect=AssertionError('dsh fell through to Hermes')) as fallback:
+            response = self.client.get('/projects/p/workspaces')
+        self.assertEqual(response.status_code, 200, response.text)
+        members = response.json()['members']
+        self.assertIn('dsh-bot', [m['profile'] for m in members])
+        dsh = next(m for m in members if m['profile'] == 'dsh-bot')
+        self.assertIs(dsh['work_session_exists'], False)
+        fallback.assert_not_called()
+
     def test_gateway_failures_degrade_only_for_read_only_queries(self):
         from websockets.exceptions import WebSocketException
         failures = [transport.GatewayTransportError('offline'), transport.GatewayRefusal('unavailable'),

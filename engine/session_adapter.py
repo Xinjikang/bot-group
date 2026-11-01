@@ -318,6 +318,11 @@ def existing_session_id(conn, project: str, profile: str, kind: str,
             # Codex has no Hermes legacy title/state.db fallback. Empty reset
             # tombstones and bindings from another runtime are absent sessions.
             return codex_thread_id(conn, project, profile, kind, thread_id, bot_id=bot_id)
+        if bot and bot['runtime'] == 'dsh':
+            # DSH 宿主显式分流：复用 dsh_session_id（runtime 列逐行校验，防异种 ID 撞车）。
+            # 无绑定/空绑定（/new 清空）/异种 runtime 绑定均返回 None，不落到 Hermes 的
+            # resolve_session_by_title（避免 hermes_home 对 dsh 抛 ValueError → 刷新 500）。
+            return dsh_session_id(conn, project, profile, kind, thread_id, bot_id=bot_id)
         row = conn.execute('SELECT session_id FROM session_bindings '
                            'WHERE project=? AND bot_id=? AND kind=? AND thread_id=?',
                            (project, bot_id, kind, _bind_key(kind, thread_id))).fetchone()
