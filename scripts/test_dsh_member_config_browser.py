@@ -29,7 +29,7 @@ def main():
         runtime='dsh', member_profile='bot-dsh', description='DSH 描述',
         persona='你是 DSH 人格', instructions='先思考再回答',
         env='DEEPSEEK_API_KEY=test\n', model='deepseek-flash',
-        provider='deepseek-account', reasoning_effort='max',
+        provider='deepseek-account', reasoning_effort='max', auto_review='off',
         revision='a' * 64,
         config_path='C:/dsh/profiles/desktop/cordis.patch.yml',
     )
@@ -66,11 +66,11 @@ def main():
                         return
                     assert body['revision'] == config['revision']
                     for key in ('description', 'persona', 'instructions', 'env', 'model',
-                                'provider', 'reasoning_effort'):
+                                'provider', 'reasoning_effort', 'auto_review'):
                         assert key in body, key
                     config.update({key: body[key] for key in
                                    ('description', 'persona', 'instructions', 'env', 'model',
-                                    'provider', 'reasoning_effort')})
+                                    'provider', 'reasoning_effort', 'auto_review')})
                     config['revision'] = 'c' * 64
                     req.fulfill(json={'saved': True, 'backup': ['backup']})
                 else:
@@ -120,18 +120,22 @@ def main():
 
         # DSH fields, tabs and fixed effort levels.
         open_editor()
-        assert page.locator('#profile-tabs [role=tab]:visible').count() == 5
+        assert page.locator('#profile-tabs [role=tab]:visible').count() == 6
         assert page.locator('#profile-tab-soul').inner_text() == '人格'
         assert page.locator('#profile-tab-instructions').is_visible()
         assert page.locator('#profile-tab-env').is_visible()
         assert page.locator('#profile-tab-model').inner_text() == '模型'
+        assert page.locator('#profile-tab-auto').inner_text() == 'Auto'
         assert '.group-engine-description' in page.locator('#profile-panel-description .profile-help').inner_text()
         assert 'personaPrefix' in page.locator('#profile-panel-soul .profile-help').inner_text()
         assert 'AGENTS.md' in page.locator('#profile-panel-instructions .profile-help').inner_text()
         assert 'agent-default-model' in page.locator('#profile-panel-model .profile-help').first.inner_text()
+        assert '.group-engine-auto-review' in page.locator('#profile-auto-help').inner_text()
         assert page.locator('#profile-soul').input_value() == config['persona']
         assert page.locator('#profile-instructions').input_value() == config['instructions']
         assert page.locator('#profile-env').input_value() == config['env']
+        assert not page.locator('#profile-auto-review').is_checked()
+        assert page.locator('#profile-auto-text').inner_text() == '已关闭'
         choices = page.locator('#profile-reasoning_effort option').evaluate_all(
             '(options) => options.map(o => o.value)')
         assert choices == ['', 'minimal', 'low', 'medium', 'high', 'max', 'ultra'], choices
@@ -147,6 +151,10 @@ def main():
         page.locator('#profile-tab-model').click()
         page.locator('#profile-model').fill('deepseek-reasoner')
         page.locator('#profile-reasoning_effort').select_option('high')
+        page.locator('#profile-tab-auto').click()
+        page.locator('.profile-switch-track').click()
+        assert page.locator('#profile-auto-review').is_checked()
+        assert page.locator('#profile-auto-text').inner_text() == '已开启'
         page.locator('#profile-save').click()
         page.wait_for_function('!document.querySelector("#dlg-profile").open')
         path, body = writes[-1]
@@ -159,8 +167,22 @@ def main():
         assert body['model'] == 'deepseek-reasoner'
         assert body['provider'] == 'deepseek-account'
         assert body['reasoning_effort'] == 'high'
+        assert body['auto_review'] == 'on'
         assert 'soul' not in body
         assert 'config_path' not in body
+        page.wait_for_function('profileEditor === null')
+
+        # Auto readback: on is checked after reload; turning it off writes off.
+        open_editor()
+        page.locator('#profile-tab-auto').click()
+        assert page.locator('#profile-auto-review').is_checked()
+        assert page.locator('#profile-auto-text').inner_text() == '已开启'
+        page.locator('.profile-switch-track').click()
+        assert not page.locator('#profile-auto-review').is_checked()
+        page.locator('#profile-save').click()
+        page.wait_for_function('!document.querySelector("#dlg-profile").open')
+        off_body = writes[-1][1]
+        assert off_body['auto_review'] == 'off'
         page.wait_for_function('profileEditor === null')
 
         # Project scope: model fields go to the project; persona/instructions stay global.
@@ -169,7 +191,7 @@ def main():
         assert '模型与推理应用到全局' in page.locator('#profile-global-text').inner_text()
         page.locator('#profile-description').fill('全局描述已保存')
         page.locator('#profile-tab-model').click()
-        assert '人格、指令、描述和 .env 始终写入全局 profile' in page.locator('#profile-model-scope').inner_text()
+        assert '人格、指令、描述、.env 和 Auto 始终写入全局 profile' in page.locator('#profile-model-scope').inner_text()
         page.locator('#profile-model').fill('project-model')
         page.locator('#profile-save').click()
         page.wait_for_function('document.querySelector("#profile-status").textContent.includes("已保存全局字段")')
@@ -199,18 +221,23 @@ def main():
         state['config_conflict'] = False
 
         # Plugin missing/disabled/load failure: only the dependent fields are disabled.
-        state['plugins'] = real_plugins or {
-            'persona': {'state': 'disabled', 'plugin': 'system-prompt',
-                        'reason': '插件已禁用', 'path': 'cordis.patch.yml#system-prompt'},
-            'instructions': {'state': 'missing', 'plugin': 'dsh-agent-instructions',
-                             'reason': '未安装', 'path': 'cordis.patch.yml#dsh-agent-instructions'},
-            'model': {'state': 'load_failed', 'plugin': 'agent-default-model',
-                      'reason': '加载失败', 'path': 'cordis.patch.yml#agent-default-model'},
-            'provider': {'state': 'load_failed', 'plugin': 'agent-default-model',
-                         'reason': '加载失败', 'path': 'cordis.patch.yml#agent-default-model'},
-            'reasoning_effort': {'state': 'load_failed', 'plugin': 'agent-default-model',
-                                 'reason': '加载失败', 'path': 'cordis.patch.yml#agent-default-model'},
-        }
+        if real_plugins:
+            state['plugins'] = dict(real_plugins)
+        else:
+            state['plugins'] = {
+                'persona': {'state': 'disabled', 'plugin': 'system-prompt',
+                            'reason': '插件已禁用', 'path': 'cordis.patch.yml#system-prompt'},
+                'instructions': {'state': 'missing', 'plugin': 'dsh-agent-instructions',
+                                 'reason': '未安装', 'path': 'cordis.patch.yml#dsh-agent-instructions'},
+                'model': {'state': 'load_failed', 'plugin': 'agent-default-model',
+                          'reason': '加载失败', 'path': 'cordis.patch.yml#agent-default-model'},
+                'provider': {'state': 'load_failed', 'plugin': 'agent-default-model',
+                             'reason': '加载失败', 'path': 'cordis.patch.yml#agent-default-model'},
+                'reasoning_effort': {'state': 'load_failed', 'plugin': 'agent-default-model',
+                                     'reason': '加载失败', 'path': 'cordis.patch.yml#agent-default-model'},
+                'auto_review': {'state': 'disabled', 'plugin': 'auto-review',
+                                'reason': 'auto-review 插件已禁用', 'path': 'cordis.patch.yml#auto-review'},
+            }
         open_editor()
         plugin_status = page.locator('#profile-plugin-status')
         assert plugin_status.is_visible()
@@ -228,14 +255,19 @@ def main():
             # 未覆盖的 instructions 继承 bundle 默认插件，状态为 ok，保持可编辑。
             assert '指令' not in text
             assert page.locator('#profile-instructions').is_enabled()
+            assert 'Auto' not in text
+            assert page.locator('#profile-auto-review').is_enabled()
         else:
             assert '指令' in text and '未安装' in text and 'dsh-agent-instructions' in text
             assert page.locator('#profile-instructions').is_disabled()
+            assert 'Auto 审批' in text and 'auto-review' in text
+            assert page.locator('#profile-auto-review').is_disabled()
+        page.locator('#profile-description').fill('插件缺失下仍可保存描述')
+        page.locator('#profile-tab-auto').click()
         page.screenshot(path=str(evidence / 'dsh-config-plugins-1280-dark.png'))
         page.evaluate("applyTheme('light')")
         page.screenshot(path=str(evidence / 'dsh-config-plugins-1280-light.png'))
         page.evaluate("applyTheme('dark')")
-        page.locator('#profile-description').fill('插件缺失下仍可保存描述')
         page.locator('#profile-save').click()
         page.wait_for_function('!document.querySelector("#dlg-profile").open')
         plugin_write = writes[-1]
@@ -243,6 +275,7 @@ def main():
         assert plugin_write[1]['instructions'] == config['instructions']
         assert plugin_write[1]['provider'] == config['provider']
         assert plugin_write[1]['reasoning_effort'] == config['reasoning_effort']
+        assert plugin_write[1]['auto_review'] == config['auto_review']
         assert plugin_write[1]['description'] == '插件缺失下仍可保存描述'
         page.wait_for_function('profileEditor === null')
         state['plugins'] = {}
@@ -252,12 +285,16 @@ def main():
         open_editor()
         box = page.locator('#dlg-profile').bounding_box()
         assert box['x'] >= 0 and box['x'] + box['width'] <= 390
-        assert page.locator('#profile-tabs [role=tab]:visible').count() == 5
+        assert page.locator('#profile-tabs [role=tab]:visible').count() == 6
         overflow = page.locator('#profile-tabs').evaluate('(el) => el.scrollWidth - el.clientWidth')
         assert overflow <= 0, overflow
+        page.locator('#profile-tab-auto').click()
+        assert page.locator('.profile-switch-track').is_visible()
+        assert page.locator('#profile-auto-text').inner_text() in ('已关闭', '已开启')
         for theme in ('dark', 'light'):
             page.evaluate('(theme) => applyTheme(theme)', theme)
             page.screenshot(path=str(evidence / f'dsh-config-390-{theme}.png'))
+            page.screenshot(path=str(evidence / f'dsh-config-auto-390-{theme}.png'))
         page.evaluate("applyTheme('dark')")
         page.set_viewport_size({'width': 1280, 'height': 900})
         page.screenshot(path=str(evidence / 'dsh-config-1280-dark.png'))
@@ -265,8 +302,8 @@ def main():
 
         assert not errors, errors
         browser.close()
-    print('PASS: DSH member config fields, persona/instructions mapping, project scope, '
-          'partial failure, revision conflict, plugin status and 390px themes')
+    print('PASS: DSH member config fields, persona/instructions mapping, Auto on/off and plugin gate, '
+          'project scope, partial failure, revision conflict, plugin status and 390px themes')
 
 
 if __name__ == '__main__':

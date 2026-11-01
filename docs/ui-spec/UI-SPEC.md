@@ -127,7 +127,7 @@ Hermes 网关授权卡片位于消息列表与输入区之间，显示 Bot、项
 
 创建窗口的宿主入口固定显示 Hermes、Codex、DSH 三项。选择 DSH 后自动扫描；扫描成功列出 DSH profile 及绑定目录，扫描为空或异常时保留入口，显示“未发现 DSH 环境配置”或扫描失败原因，并提供“选择 HOME 目录”、手动填写 DSH HOME 与“重新扫描”。接入前调用引擎校验 config_root、目录权限及 profile patch，错误逐项展示并保留已填路径；创建只保存 config_root、profile 与 runtime 绑定，不复制认证文件、不改写宿主目录。已创建 DSH 成员的 HOME 或 profile 失效时，成员卡片显示“宿主绑定失效”，保留成员与历史。
 
-DSH 成员编辑窗口提供“描述、人格、指令、环境、模型”五个页签。字段映射：描述写入 `profiles/<name>/.group-engine-description`，人格写入 `cordis.patch.yml` 的 `system-prompt.personaPrefix`，指令写入 `DSH_HOME/AGENTS.md`，环境变量写入 `DSH_HOME/.env`，模型、供应商与推理强度写入 `agent-default-model`；页签帮助文字标出保存位置和“下一次启动生效”。项目范围只作用于模型、供应商和推理强度，人格、指令、描述与环境变量始终写入全局 profile；“模型与推理应用到全局”会清除当前项目的模型覆盖，清空字段沿用 DSH 原生 profile。保存回执区分“已保存全局字段：…；项目模型保存失败：…”与“保存失败（未保存任何字段）：…”；revision 冲突提示重新打开编辑窗口。配置接口返回按字段的 `plugins` 状态（`missing`/`disabled`/`load_failed`/`ok`，含插件名、原因与 `cordis.patch.yml` 路径）；依赖插件不可用的字段禁用保存并显示原因，其他字段（如描述、环境）保持可编辑。窄屏至少验证 390px 下五个页签不换行、不横向溢出。
+DSH 成员编辑窗口提供“描述、人格、指令、环境、模型、Auto”六个页签。字段映射：描述写入 `profiles/<name>/.group-engine-description`，人格写入 `cordis.patch.yml` 的 `system-prompt.personaPrefix`，指令写入 `DSH_HOME/AGENTS.md`，环境变量写入 `DSH_HOME/.env`，模型、供应商与推理强度写入 `agent-default-model`，Auto 开关写入 `profiles/<name>/.group-engine-auto-review`（`on`/`off`）；页签帮助文字标出保存位置和“下一次启动生效”。Auto 页签提供开关，开启后 DSH 在工具执行前进行审查，关闭时沿用原生审批策略。项目范围只作用于模型、供应商和推理强度，人格、指令、描述、环境变量与 Auto 始终写入全局 profile；“模型与推理应用到全局”会清除当前项目的模型覆盖，清空字段沿用 DSH 原生 profile。保存回执区分“已保存全局字段：…；项目模型保存失败：…”与“保存失败（未保存任何字段）：…”；revision 冲突提示重新打开编辑窗口。配置接口返回按字段的 `plugins` 状态（`disabled`/`load_failed`/`ok`，含插件名、原因与 `cordis.patch.yml` 路径）；依赖插件不可用的字段禁用保存并显示原因，Auto 插件不可用时开关禁用并列出原因，其他字段（如描述、环境）保持可编辑。窄屏至少验证 390px 下六个页签不换行、不横向溢出。
 
 前端变更按任务范围检查深浅主题、默认及自定义背景、长内容、关键组件状态、键盘焦点和窄屏。可访问性检查包括标签、对比度与操作可达性；本文记录源码基线，具体达标结论以实际验证证据为准。
 
@@ -152,3 +152,4 @@ Hermes 创建窗口自动继承模型凭证，配置来源下使用辅助文字�
 | 2.2 | Hermes 授权卡片、范围确认、失效状态和窄消息栏浮层 | 消息区与网关托管执行 |
 | 2.3 | DSH 宿主入口、扫描为空/异常的手动 HOME 与重扫、校验错误保留输入、绑定失效提示 | 成员创建窗口与项目成员卡片 |
 | 2.4 | DSH 成员编辑五页签、字段映射与作用域、部分保存回执、revision 冲突、真实 plugins 状态禁用 | 成员编辑窗口 |
+| 2.5 | DSH 成员编辑新增 Auto 页签与 on/off 开关、插件不可用禁用、保存与回读状态一致 | 成员编辑窗口 |
