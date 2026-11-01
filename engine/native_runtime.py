@@ -144,20 +144,40 @@ def dsh_overlay(bot, *, credentials_path=None, mcp_entry=None, project_overrides
 
 
 def _replace_or_append(entries: list, control: dict) -> None:
-    """同 id 就地覆盖，保留原条目位置；新 id 追加尾部（保持 cordis patch 顺序语义）。"""
+    """同 id 就地合并控制字段（disabled 等非 config 标量键），保留原条目 config。
+
+    req#138 返修：ruamel 载入的条目 config 含 !!js 动态表达式与未知字段，控制项经
+    dsh_auth 的 tolerant parse 已把 !!js 降级为 '[expression]'——整项替换会丢原生标签。
+    故只合并 disabled 等标量键，config 保留 ruamel 原值；唯 credentials 的 config 是本次
+    执行的凭据副本路径（spawn 专用，须覆盖）。新 id 追加尾部（保持 cordis patch 顺序）。
+    """
     cid = str(control.get('id') or '')
     for i, entry in enumerate(entries):
         if isinstance(entry, dict) and str(entry.get('id') or '') == cid:
-            entries[i] = control
+            for key, value in control.items():
+                if key == 'id':
+                    continue
+                if key == 'config':
+                    if cid == 'credentials' or 'config' not in entry or entry.get('config') is None:
+                        entry[key] = value
+                    # 其余情况保留 ruamel 原 config（含 !!js/未知字段），不覆盖。
+                    continue
+                entry[key] = value
             return
     entries.append(control)
 
 
 def _find_entry(entries: list, entry_id: str):
+    """返回 id 匹配的最后一个条目（cordis patch 顺序：后者覆盖前者，末位为有效条目）。
+
+    req#138 返修：重复 agent-default-model 时项目覆盖须落在末位（原生生效项），否则
+    认证路由（按最终 provider）与有效 provider 分裂。
+    """
+    found = None
     for entry in entries:
         if isinstance(entry, dict) and str(entry.get('id') or '') == entry_id:
-            return entry
-    return None
+            found = entry
+    return found
 
 
 def overlay_yaml(overlay: list) -> str:

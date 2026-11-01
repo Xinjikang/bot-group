@@ -110,6 +110,38 @@ class F3F4F5OverlayTests(unittest.TestCase):
         self.assertIn("reasoningEffort: low", text)
         self.assertNotIn("reasoning_effort", text)
 
+    def test_f4_deepseek_account_dynamic_config_preserved(self):
+        # req#138 返修①：deepseek-account 控制项不能整项替换丢 !!js 动态标签。
+        self.patch.write_text(
+            "- id: agent-default-model\n"
+            "  config:\n    provider: deepseek-account\n    model: deepseek-flash\n"
+            "- id: deepseek-account\n"
+            "  config:\n    accountId: !!js process.env.ACCOUNT_ID\n",
+            encoding="utf-8")
+        text = native_runtime.overlay_yaml(native_runtime.dsh_overlay(self._bot()))
+        self.assertIn("!!js process.env.ACCOUNT_ID", text)
+        self.assertNotIn("'[expression]'", text)
+        self.assertNotIn('"[expression]"', text)
+        # 控制字段 disabled 仍正确合并
+        self.assertIn("disabled: false", text)
+
+    def test_f4_duplicate_agent_default_model_project_override_on_last(self):
+        # req#138 返修②：重复 agent-default-model 时项目覆盖落在末位（原生生效项）。
+        self.patch.write_text(
+            "- id: agent-default-model\n"
+            "  config:\n    provider: deepseek-account\n    model: deepseek-flash\n"
+            "- id: agent-default-model\n"
+            "  config:\n    provider: deepseek-account\n    model: deepseek-chat\n",
+            encoding="utf-8")
+        overlay = native_runtime.dsh_overlay(
+            self._bot(), project_overrides={"provider": "deepseek-official"})
+        adm = [e for e in overlay if e.get("id") == "agent-default-model"]
+        self.assertEqual(len(adm), 2)
+        # 末位（生效项）为项目覆盖 provider，认证服务 disabled 一致
+        self.assertEqual(adm[-1]["config"]["provider"], "deepseek-official")
+        by_id = {e.get("id"): e for e in overlay}
+        self.assertTrue(by_id["deepseek-account"].get("disabled"))
+
 
 class F8BundledEntryTests(unittest.TestCase):
     def test_bundled_entry_from_registry(self):
