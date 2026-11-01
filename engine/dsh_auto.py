@@ -26,22 +26,40 @@ SIDE_FILE = '.group-engine-auto-review'
 ADAPTER_ID = 'auto-enable-adapter'
 ADAPTER_FILE = 'auto-enable-adapter.mjs'
 # 适配插件 stderr 证据行（引擎审计 + fail-closed 判读的唯一事实源）。
-_SESSION_MARKER = '[auto-enable] session/created'
-_PREEXEC_MARKER = '[auto-enable] tools/pre-execute'
-_PRESET_OK = 'auto'  # preset=(\S+) 捕获值须为 auto 才算会话预设生效
+# req#138 F6：改用「累积状态行」——每次事件输出一条 `[auto-enable] state preset=.. preexec=.. blocked=..`，
+# 末位状态行携带完整累计值；40 行滚动尾部截断不会丢 session/created 与早期 pre-execute 证据。
+_STATE_MARKER = '[auto-enable] state'
+_BLOCK_MARKER = '[auto-enable] BLOCK'
+_PRESET_OK = 'auto'  # state 行 preset= 捕获值须为 auto 才算会话预设生效
 
-# 适配插件源码（probe-auto2 的 ADAPTER 实测版：session/created 调原生 set；证据走 stderr，
-# 不与 stdout 的 --json 事件流混淆）。
+# 适配插件源码（probe-auto2 的 ADAPTER 实测版 + req#138 F2/F6/F7）：
+# - session/created 调原生 set 并记录 preset 确认（evidence 唯一事实源）；
+# - tools/pre-execute 累积 preexec 计数；current≠auto 时 fail-closed **阻断**（不 next，
+#   工具不执行，副作用不发生），并累加 blocked；current==auto 时 next() 放行交由原生
+#   auto-review 审查。证据走 stderr（累积状态行），不与 stdout --json 事件流混淆。
 ADAPTER_SOURCE = """export const name = "auto-enable-adapter";
 export const inject = ["permissionPresets"];
 export function apply(ctx) {
+    let presetConfirmed = false;
+    let preexec = 0;
+    let blocked = 0;
+    const state = () => console.error(
+        `[auto-enable] state preset=${presetConfirmed ? "auto" : "n/a"} preexec=${preexec} blocked=${blocked}`);
     ctx.on("session/created", (session) => {
         ctx.permissionPresets.set(session, "auto");
-        console.error(`[auto-enable] session/created -> preset=${ctx.permissionPresets.current(session)}`);
+        presetConfirmed = ctx.permissionPresets.current(session) === "auto";
+        state();
     });
     ctx.on("tools/pre-execute", (exec, next) => {
+        preexec += 1;
         const preset = exec.agent ? ctx.permissionPresets.current(exec.agent.session) : "n/a";
-        console.error(`[auto-enable] tools/pre-execute preset=${preset} name=${exec.name ?? "?"}`);
+        if (preset !== "auto") {
+            blocked += 1;
+            console.error(`[auto-enable] BLOCK preset=${preset} name=${exec.name ?? "?"}`);
+            state();
+            return;  // fail-closed：能力失效即阻断，不 next，工具不执行
+        }
+        state();
         return next();
     });
 }
@@ -120,23 +138,33 @@ def _pkg_installed(home: Path, profile: str, pkg_name: str) -> bool:
 
 
 def preset_evidence(stderr_lines) -> dict:
-    """从适配插件 stderr 证据行提取 Auto 会话状态与计数。
+    """从适配插件 stderr 累积状态行提取 Auto 会话状态与计数（req#138 F6/F7）。
 
-    返回 {session_preset, preexec_count, confirmed}：session/created 行报 preset=auto
-    才算会话预设生效（fail-closed 判读）；tools/pre-execute 行数即审查尝试数
-    （auto 预设下每个工具调用触发一次审查）。
+    读**末位** `[auto-enable] state` 行（每次事件都输出累计值，末位即最终状态），而非逐行
+    计数——这样 40 行滚动尾部截断不会丢 session/created 与早期 pre-execute 证据。
+    返回 {session_preset, preexec_count, blocked_count, confirmed}：
+    - preexec_count = tools/pre-execute 总触发次数（审查尝试数）；
+    - blocked_count = 适配插件在 current≠auto 时阻断的工具数（F2 fail-closed，副作用未发生）；
+    - confirmed = 末位状态 preset==auto 才算会话预设生效。
     """
     session_preset = None
     preexec = 0
+    blocked = 0
     for line in stderr_lines or ():
-        if _SESSION_MARKER in line:
-            match = re.search(r'preset=(\S+)', line)
-            if match:
-                session_preset = match.group(1)
-        elif _PREEXEC_MARKER in line:
-            preexec += 1
+        if _STATE_MARKER not in line:
+            continue
+        m_preset = re.search(r'preset=(\S+)', line)
+        m_preexec = re.search(r'preexec=(\d+)', line)
+        m_blocked = re.search(r'blocked=(\d+)', line)
+        if m_preset:
+            session_preset = m_preset.group(1)
+        if m_preexec:
+            preexec = int(m_preexec.group(1))
+        if m_blocked:
+            blocked = int(m_blocked.group(1))
     return {'session_preset': session_preset,
             'preexec_count': preexec,
+            'blocked_count': blocked,
             'confirmed': session_preset == _PRESET_OK}
 
 
@@ -147,13 +175,15 @@ AUDIT_FAIL_TEXT = (
 
 def audit(conn, *, session, wake_started_at, enabled, evidence, tool_calls,
           completed_results, ts) -> int:
-    """每轮 Auto 审计落库：审查尝试（tools/pre-execute）与工具主体执行独立计数。
+    """每轮 Auto 审计落库：审查尝试与工具主体执行独立计数（req#138 F7）。
 
-    blocked = 审查尝试数 - 工具主体执行成功数（allow 后执行才计 completed；deny/
-    unavailable/cancel 的工具结果不 completed）。"""
+    review_count = tools/pre-execute 触发次数（审查尝试）；executed_count = tool_result
+    completed 数（工具主体执行成功）；blocked_count = 适配插件在 current≠auto 时阻断的工具
+    数（F2 fail-closed，副作用未发生）——三者独立取证，不再用 tool_calls-completed 反推
+    blocked（那个口径把「审查拒绝」与「适配阻断」混为一谈）。"""
     review_count = int(evidence.get('preexec_count') or 0)
     executed = int(completed_results or 0)
-    blocked = max(0, int(tool_calls or 0) - executed)
+    blocked = int(evidence.get('blocked_count') or 0)
     cur = conn.execute(
         'INSERT INTO dsh_auto_audit(session,wake_started_at,enabled,preset_confirmed,'
         'review_count,executed_count,blocked_count,ts) VALUES(?,?,?,?,?,?,?,?)',

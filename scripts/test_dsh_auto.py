@@ -35,6 +35,19 @@ class AutoOverlayTests(unittest.TestCase):
         self.assertIn('permissionPresets.set(session, "auto")', src)
         self.assertIn('ctx.on("tools/pre-execute"', src)
         self.assertIn('[auto-enable]', src)
+        # req#138 F2：current≠auto 时阻断（不 next）；current==auto 时 next() 放行。
+        self.assertIn('return next()', src)
+        self.assertIn('blocked += 1', src)
+        self.assertIn('return;  // fail-closed', src)
+
+    def test_adapter_blocks_on_non_auto(self):
+        # req#138 F2 语义：适配插件在 current≠auto 分支必须阻断（不 next）。
+        src = dsh_auto.adapter_source()
+        # 非 auto 分支：先打 BLOCK 行，再 state()，再 return（无 next()）。
+        self.assertIn('[auto-enable] BLOCK preset=', src)
+        self.assertIn('preset !== "auto"', src)
+        # next() 只出现在 auto 放行分支（return next()），非 auto 分支无 next()。
+        self.assertEqual(src.count('next()'), 1)
 
     def test_dsh_overlay_appends_auto_when_enabled(self):
         bot = {"id": 1, "runtime": "dsh", "config_root": "C:/x", "profile": "desktop"}
@@ -57,27 +70,51 @@ class AutoOverlayTests(unittest.TestCase):
 class PresetEvidenceTests(unittest.TestCase):
     def test_confirmed(self):
         ev = dsh_auto.preset_evidence([
-            "[auto-enable] session/created -> preset=auto",
-            "[auto-enable] tools/pre-execute preset=auto name=mcp__group_list_members",
-            "[auto-enable] tools/pre-execute preset=auto name=mcp__group_send",
+            "[auto-enable] state preset=auto preexec=0 blocked=0",
+            "[auto-enable] state preset=auto preexec=1 blocked=0",
+            "[auto-enable] state preset=auto preexec=2 blocked=0",
         ])
         self.assertTrue(ev["confirmed"])
         self.assertEqual(ev["session_preset"], "auto")
         self.assertEqual(ev["preexec_count"], 2)
+        self.assertEqual(ev["blocked_count"], 0)
 
     def test_not_confirmed(self):
         ev = dsh_auto.preset_evidence([
-            "[auto-enable] session/created -> preset=workspace-write",
-            "[auto-enable] tools/pre-execute preset=workspace-write name=x",
+            "[auto-enable] state preset=workspace-write preexec=0 blocked=0",
+            "[auto-enable] state preset=workspace-write preexec=1 blocked=1",
         ])
         self.assertFalse(ev["confirmed"])
         self.assertEqual(ev["session_preset"], "workspace-write")
+        self.assertEqual(ev["blocked_count"], 1)
 
     def test_empty(self):
         ev = dsh_auto.preset_evidence([])
         self.assertFalse(ev["confirmed"])
         self.assertIsNone(ev["session_preset"])
         self.assertEqual(ev["preexec_count"], 0)
+        self.assertEqual(ev["blocked_count"], 0)
+
+    def test_truncated_tail_keeps_cumulative_state(self):
+        # req#138 F6：41 次工具日志挤掉 session/created 后，末位累积状态行仍保留完整计数
+        # 与 preset 确认（引擎只留 40 行滚动尾部，喂入尾部也能判 confirmed + preexec=41）。
+        full = ["[auto-enable] state preset=auto preexec=0 blocked=0"]
+        for i in range(1, 42):
+            full.append(f"[auto-enable] state preset=auto preexec={i} blocked=0")
+        tail = full[-40:]  # 模拟滚动尾部：丢掉开头 session/created 行
+        ev = dsh_auto.preset_evidence(tail)
+        self.assertTrue(ev["confirmed"])
+        self.assertEqual(ev["session_preset"], "auto")
+        self.assertEqual(ev["preexec_count"], 41)
+
+    def test_blocked_count_survives_truncation(self):
+        # req#138 F7：阻断计数同样来自末位累积状态，尾部截断不丢。
+        lines = ["[auto-enable] state preset=auto preexec=0 blocked=0"] + [
+            f"[auto-enable] state preset=auto preexec={i} blocked=0" for i in range(1, 3)
+        ] + ["[auto-enable] state preset=n/a preexec=3 blocked=1"]
+        ev = dsh_auto.preset_evidence(lines[-2:])
+        self.assertEqual(ev["blocked_count"], 1)
+        self.assertFalse(ev["confirmed"])
 
 
 class EnabledStateTests(unittest.TestCase):
@@ -156,7 +193,8 @@ class AuditTests(unittest.TestCase):
         conn = db.get_connection()
         try:
             rid = dsh_auto.audit(conn, session="s1", wake_started_at=123.0, enabled=True,
-                                 evidence={"preexec_count": 3, "confirmed": True},
+                                 evidence={"preexec_count": 3, "blocked_count": 1,
+                                           "confirmed": True},
                                  tool_calls=3, completed_results=2, ts=db.now_iso())
             conn.commit()
             row = conn.execute("SELECT * FROM dsh_auto_audit WHERE id=?", (rid,)).fetchone()
@@ -164,7 +202,25 @@ class AuditTests(unittest.TestCase):
             self.assertEqual(row["preset_confirmed"], 1)
             self.assertEqual(row["review_count"], 3)
             self.assertEqual(row["executed_count"], 2)
+            # req#138 F7：blocked_count 来自适配插件独立计数，非 tool_calls-completed 反推。
             self.assertEqual(row["blocked_count"], 1)
+        finally:
+            conn.close()
+
+    def test_blocked_from_evidence_not_derived(self):
+        # req#138 F7：blocked 不再由 tool_calls-completed 反推（否则审查拒绝与适配阻断混同）。
+        conn = db.get_connection()
+        try:
+            rid = dsh_auto.audit(conn, session="s3", wake_started_at=125.0, enabled=True,
+                                 evidence={"preexec_count": 5, "blocked_count": 0,
+                                           "confirmed": True},
+                                 tool_calls=5, completed_results=1, ts=db.now_iso())
+            conn.commit()
+            row = conn.execute("SELECT * FROM dsh_auto_audit WHERE id=?", (rid,)).fetchone()
+            # 旧口径 blocked = 5-1 = 4；新口径按适配插件独立计数 = 0（审查拒绝不计 blocked）。
+            self.assertEqual(row["blocked_count"], 0)
+            self.assertEqual(row["review_count"], 5)
+            self.assertEqual(row["executed_count"], 1)
         finally:
             conn.close()
 
@@ -172,7 +228,8 @@ class AuditTests(unittest.TestCase):
         conn = db.get_connection()
         try:
             rid = dsh_auto.audit(conn, session="s2", wake_started_at=124.0, enabled=True,
-                                 evidence={"preexec_count": 0, "confirmed": False},
+                                 evidence={"preexec_count": 0, "blocked_count": 0,
+                                           "confirmed": False},
                                  tool_calls=0, completed_results=5, ts=db.now_iso())
             conn.commit()
             row = conn.execute("SELECT * FROM dsh_auto_audit WHERE id=?", (rid,)).fetchone()
