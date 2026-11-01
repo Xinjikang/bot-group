@@ -442,92 +442,86 @@ def _entry_call_ids(err: str) -> list:
     return ids
 
 
-def _last_state_entry(err: str) -> int:
+def _last_state_entry(err: str):
     """生产入口计数：adapter 末位 state 行的 entry=（tools/execute 主体入口），独立于 marker 日志 entry_count。
 
-    manager node1647：verify 的 entry_count 来自 marker 日志，须另明确生产入口计数字段核验三态——
-    成功 entry=1、进入失败 entry=1、取消 entry=0；缺计数/错误计数必须失败。"""
+    manager node1647/1658：verify 的 entry_count 来自 marker 日志，须另明确生产入口计数字段核验三态——
+    成功 entry=1、进入失败 entry=1、取消 entry=0。**无状态行/无 entry 字段返回 None（未知），不能当取消 0**；
+    缺计数/错误计数必须失败。"""
     for line in reversed((err or "").splitlines()):
         if "[auto-enable] state" in line:
             m = re.search(r"entry=(\d+)", line)
-            return int(m.group(1)) if m else 0
-    return 0
+            return int(m.group(1)) if m else None
+    return None
 
 
 def _pass(segment, r):
-    # 三态同一目标调用核对（manager 10043）：目标工具（marker probe）callId + 其 ENTRY/marker/completed
-    # 关联，禁止 any(completed) 借用其他调用。
+    # 三态共享条件（manager 10043/10055/1658）：目标工具（marker-probe）callId → 终态存在 + 按 status
+    # 判 completed/error（isError 不作唯一依据）；生产 ENTRY(callId) + 主体 entry_count + 生产
+    # prod_entry_count 同时核 1/0，缺状态行/缺目标终态/缺计数均失败，禁止借用其他调用。
     target_calls = [call for tool, call in r["tool_calls"] if tool == "mcp__marker_probe__probe"]
     target_call = target_calls[0] if target_calls else None
+    target_results = [tr for tr in r["tool_results"] if tr[2] == target_call]
     entry_has_target = target_call in r["entry_call_ids"]
-    completed = any(s == "completed" and call == target_call
-                    for s, _, call in r["tool_results"])
+    has_target_result = bool(target_results)
+    completed = any(st == "completed" and not err for st, err, _ in target_results)
+    target_error = any(st == "error" for st, _, _ in target_results)
+    entry_count = r.get("entry_count", 0)
+    prod_entry = r.get("prod_entry_count")  # None = 缺状态行/字段（未知，不能当 0）
     # 门禁：非崩溃（exit 0、未超时）+ 目标工具确实被请求（target callId 非空）。
-    # 排除「进程崩溃 / 无调用 / marker 写失败」被误判为审批阻断。
     gated = (not r["timed_out"] and r["exit"] == 0 and target_call is not None)
     if not gated:
         return False
+    # 三态共享入口断言（marker entry_count 与生产 prod_entry 同时核 1/0，缺=失败）：
+    entry_one = (entry_has_target and r["entry_written"] and entry_count == 1 and prod_entry == 1)
+    entry_zero = (not entry_has_target and not r["entry_written"]
+                  and entry_count == 0 and prod_entry == 0)
     if segment == "review-allow":
-        # 成功入口 1：目标调用 body 进入（entry_has_target + entry_written）+ 副作用 marker +
-        # 目标调用 completed + 生产入口计数 entry=1。
-        return (entry_has_target and r["entry_written"] and r["marker_written"] and completed
-                and r["prod_entry_count"] == 1
+        # 成功：目标 body 进入 + marker + 目标 completed（status=completed 且非 error）+ entry=1。
+        return (entry_one and r["marker_written"] and completed
                 and r["review_count"] >= 1 and r["review_decisions"] == ["allow"])
     if segment == "review-deny":
-        # 工具主体未进入（取消入口 0）：目标调用无 ENTRY + marker 缺失 + 无 completed + 生产入口 entry=0；
-        # 审查命中且 decision=deny。
-        return (not entry_has_target and not r["entry_written"] and not r["marker_written"]
-                and not completed and r["prod_entry_count"] == 0
+        return (entry_zero and not r["marker_written"] and has_target_result and not completed
                 and r["review_count"] >= 1 and r["review_decisions"] == ["deny"])
     if segment == "review-rejected":
-        return (not r["marker_written"] and not completed
+        return (entry_zero and not r["marker_written"] and has_target_result and not completed
                 and r["review_count"] >= 1 and r["review_decisions"] == ["deny"]
                 and any("outcome=rejected" in l for l in r["approval_lines"]))
     if segment == "review-exception":
-        return (not r["marker_written"] and not completed
+        return (entry_zero and not r["marker_written"] and has_target_result and not completed
                 and r["review_count"] >= 1 and r["review_decisions"] == ["throw"])
     if segment == "review-abort":
-        return (not r["marker_written"] and not completed
+        return (entry_zero and not r["marker_written"] and has_target_result and not completed
                 and r["review_count"] >= 1 and r["review_decisions"] == ["abort"])
     if segment == "adapter-block":
-        return (not r["marker_written"] and not completed
+        return (entry_zero and not r["marker_written"] and has_target_result and not completed
                 and bool(r["adapter_block_lines"]))
     if segment == "policy-never":
-        # review deny + approval policy=never → 拒绝（dispatch 前，无 approval-fixture 行，
-        # 工具主体未进入）；policy-fixture 落 setPolicy 证据。
-        return (not r["marker_written"] and not completed
+        # review deny + approval policy=never → 拒绝（dispatch 前，无 approval-fixture 行，工具主体未进入）。
+        return (entry_zero and not r["marker_written"] and has_target_result and not completed
                 and r["review_count"] >= 1 and r["review_decisions"] == ["deny"]
                 and not r["approval_lines"]
                 and any("approval policy set to never" in l for l in r["stderr_tail"].splitlines()))
     if segment == "cancel-probe":
         # 主动调用原生 approval.request 两时序 cancelled：请求前 abort + answerer 进入后 abort
-        # 均 outcome=cancelled，就绪屏障 entered（非 timeout/伪造），工具仍正常执行（marker 写入
-        # + completed，cancel-probe 不阻断工具）。
+        # 均 outcome=cancelled，工具仍正常执行（marker 写入 + 目标 completed）。
         lines = r["cancel_probe_lines"]
         return (r["marker_written"] and completed
                 and any("pre-abort outcome=cancelled" in l for l in lines)
                 and any("wait-barrier=entered" in l for l in lines)
                 and any("wait-abort outcome=cancelled" in l for l in lines))
     if segment == "approval-cancelled":
-        # 审批 cancelled → serviceAsk 映射 deny（approvalCancelled）→ 工具主体不执行（取消入口 0）：
-        # 目标调用无 ENTRY + marker 缺失 + 无 completed + 生产入口 entry=0；审批夹具落 outcome=cancelled。
-        return (not entry_has_target and not r["entry_written"] and not r["marker_written"]
-                and not completed and r["prod_entry_count"] == 0
+        # 审批 cancelled → serviceAsk 映射 deny → 工具主体不执行（取消入口 0），审批夹具落 outcome=cancelled。
+        return (entry_zero and not r["marker_written"] and has_target_result and not completed
                 and r["review_count"] >= 1 and r["review_decisions"] == ["deny"]
                 and any("outcome=cancelled" in l for l in r["approval_lines"]))
     if segment == "entry-fail":
-        # 进入后失败：目标调用 body 进入（entry_has_target + entry_written）+ 生产入口 entry=1 +
-        # 副作用 marker 写失败（marker_written=false，tool_result error，completed=0）——证明 entry
-        # 独立于 completed（进入主体后失败 entry=1 completed=0）。
-        return (entry_has_target and r["entry_written"] and not r["marker_written"]
-                and not completed and r["prod_entry_count"] == 1
+        # 进入后失败：目标 body 进入 + 无 marker + 目标 error（status=error，isError 可为 False）+ entry=1。
+        return (entry_one and not r["marker_written"] and target_error
                 and r["review_count"] >= 1 and r["review_decisions"] == ["allow"])
     if segment == "review-passthrough":
-        # 「同前缀非审查」反例：review-fixture 精确前缀（REVIEW_POLICY 原文）不匹配非审查请求 →
-        # 透传（pass-through 日志），review_count 保持 1（仅 marker 工具的真实审查被拦截，非审查
-        # 请求未计）。精确前缀识别（原文前缀不匹配 REVIEW_POLICY_EXTRA）由单测
-        # test_review_fixture_exact_policy_prefix_not_bare 断言；真机段验证非审查透传不误增计数。
-        return (r["entry_written"] and r["marker_written"] and completed
+        # 「同前缀非审查」反例：非审查请求透传，review_count 保持 1（仅 marker 工具的真实审查被拦截）。
+        return (entry_one and r["marker_written"] and completed
                 and r["review_count"] == 1)
     return False
 

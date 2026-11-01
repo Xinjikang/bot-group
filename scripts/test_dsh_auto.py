@@ -311,8 +311,8 @@ class AuditTests(unittest.TestCase):
         self.assertNotIn('startsWith(\"REVIEW_POLICY\")', src)  # 不再裸前缀
 
     def test_pass_entry_fail_requires_prod_entry_count(self):
-        # req#138 node1647：三态门禁核验生产入口计数——entry-fail 段 prod_entry_count=0（缺计数）
-        # 必须失败，不能只看 marker 日志 entry_count。
+        # req#138 node1647/1658：三态门禁——entry-fail 段主体 entry_count 与生产 prod_entry_count
+        # 同时核 1；缺计数（prod=0）必须失败。
         from scripts import verify_dsh_auto_layers as _v
         base = {
             "timed_out": False, "exit": 0,
@@ -320,9 +320,10 @@ class AuditTests(unittest.TestCase):
             "tool_results": [("error", True, "call_A")],
             "entry_call_ids": ["call_A"],
             "entry_written": True, "marker_written": False,
-            "prod_entry_count": 0, "review_count": 1, "review_decisions": ["allow"],
+            "entry_count": 1, "prod_entry_count": 0,
+            "review_count": 1, "review_decisions": ["allow"],
         }
-        self.assertFalse(_v._pass("entry-fail", base))  # prod_entry_count=0 缺计数
+        self.assertFalse(_v._pass("entry-fail", base))  # prod_entry=0 缺计数
         base["prod_entry_count"] = 1  # 进入后失败 entry=1 → 通过
         self.assertTrue(_v._pass("entry-fail", base))
 
@@ -336,15 +337,45 @@ class AuditTests(unittest.TestCase):
             "tool_results": [("error", True, "call_A"), ("completed", False, "call_B")],
             "entry_call_ids": ["call_A"],
             "entry_written": True, "marker_written": False,
-            "prod_entry_count": 1, "review_count": 1, "review_decisions": ["allow"],
+            "entry_count": 1, "prod_entry_count": 1,
+            "review_count": 1, "review_decisions": ["allow"],
         }
-        # entry-fail：目标调用 call_A 未 completed（call_B 的 completed 不借用）→ 通过（entry=1 completed=0）。
+        # entry-fail：目标 call_A 是 error（call_B 的 completed 不借用）→ 通过（entry=1 completed=0）。
         self.assertTrue(_v._pass("entry-fail", base))
-        # review-allow：目标调用 call_A 未 completed（call_B 借用）→ 失败。
+        # review-allow：目标 call_A 非 completed（call_B 借用）→ 失败。
         self.assertFalse(_v._pass("review-allow", base))
 
+    def test_pass_missing_target_result_fails(self):
+        # manager 10055：目标终态必须存在——tool_results 只含其他 call_B、目标 call_A 缺结果 → 失败。
+        from scripts import verify_dsh_auto_layers as _v
+        base = {
+            "timed_out": False, "exit": 0,
+            "tool_calls": [("mcp__marker_probe__probe", "call_A"),
+                           ("group_list_members", "call_B")],
+            "tool_results": [("completed", False, "call_B")],  # 目标 call_A 结果缺失
+            "entry_call_ids": ["call_A"],
+            "entry_written": True, "marker_written": False,
+            "entry_count": 1, "prod_entry_count": 1,
+            "review_count": 1, "review_decisions": ["allow"],
+        }
+        self.assertFalse(_v._pass("entry-fail", base))  # 缺目标终态
+
+    def test_pass_entry_count_zero_fails(self):
+        # manager 10055：主体 entry_count=0（缺 marker 入口证据）→ entry-fail 失败。
+        from scripts import verify_dsh_auto_layers as _v
+        base = {
+            "timed_out": False, "exit": 0,
+            "tool_calls": [("mcp__marker_probe__probe", "call_A")],
+            "tool_results": [("error", True, "call_A")],
+            "entry_call_ids": ["call_A"],
+            "entry_written": True, "marker_written": False,
+            "entry_count": 0, "prod_entry_count": 1,
+            "review_count": 1, "review_decisions": ["allow"],
+        }
+        self.assertFalse(_v._pass("entry-fail", base))  # entry_count=0
+
     def test_pass_approval_cancelled_requires_prod_entry_zero(self):
-        # req#138 node1647：取消入口 0 —— approval-cancelled 段 prod_entry_count>0 必须失败。
+        # req#138 node1647/1658：取消入口 0——approval-cancelled 段主体/生产入口均须观测到 0。
         from scripts import verify_dsh_auto_layers as _v
         base = {
             "timed_out": False, "exit": 0,
@@ -352,12 +383,28 @@ class AuditTests(unittest.TestCase):
             "tool_results": [("error", True, "call_A")],
             "entry_call_ids": [],
             "entry_written": False, "marker_written": False,
-            "prod_entry_count": 1, "review_count": 1, "review_decisions": ["deny"],
+            "entry_count": 0, "prod_entry_count": 1,
+            "review_count": 1, "review_decisions": ["deny"],
             "approval_lines": ["[approval-fixture] outcome=cancelled"],
         }
-        self.assertFalse(_v._pass("approval-cancelled", base))  # prod_entry_count=1 取消应 0
+        self.assertFalse(_v._pass("approval-cancelled", base))  # prod_entry=1 取消应 0
         base["prod_entry_count"] = 0
         self.assertTrue(_v._pass("approval-cancelled", base))
+
+    def test_pass_cancel_missing_state_and_result_fails(self):
+        # manager 10055：取消段缺状态行（prod_entry=None，未知不能当 0）+ 缺目标结果 → 失败。
+        from scripts import verify_dsh_auto_layers as _v
+        base = {
+            "timed_out": False, "exit": 0,
+            "tool_calls": [("mcp__marker_probe__probe", "call_A")],
+            "tool_results": [],  # 缺目标结果
+            "entry_call_ids": [],
+            "entry_written": False, "marker_written": False,
+            "entry_count": 0, "prod_entry_count": None,  # 缺状态行 = 未知
+            "review_count": 1, "review_decisions": ["deny"],
+            "approval_lines": ["[approval-fixture] outcome=cancelled"],
+        }
+        self.assertFalse(_v._pass("approval-cancelled", base))
 
     def test_blocked_from_evidence_not_derived(self):
         # req#138 F7：blocked 不再由 tool_calls-completed 反推（否则审查拒绝与适配阻断混同）。
