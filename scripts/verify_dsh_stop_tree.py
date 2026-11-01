@@ -482,20 +482,33 @@ def _stop_pass(r: dict) -> bool:
             and all(r.get("protected_alive_after", {}).values()))
 
 
-class _ResourceRegistry:
-    """随启动/发现立即登记已拥有进程（PID → 创建身份 name_lower），capture 返回前异常也能取得。
+def _process_identity(pid) -> tuple:
+    """进程稳定实例身份 (name_lower, create_time_ms)；create_time 区分同名 PID 复用。"""
+    import psutil
+    try:
+        p = psutil.Process(pid)
+        return (p.name().lower(), int(p.create_time() * 1000))
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        return None
 
-    manager node1625：资源须在启动/发现时立即写入外层 registry，不能等 capture 返回才赋值
-    （返回前异常则外层拿不到已拥有进程、_kill_pids([]) 遗留独立 DSH 树）。
+
+class _ResourceRegistry:
+    """随启动/发现立即登记已拥有进程（PID → (name_lower, create_time_ms)），capture 返回前异常也能取得。
+
+    manager node1634：身份不能用 name（同名 PID 复用仍 taskkill 并记 killed），须采集 create_time
+    作稳定实例身份；随启动/发现立即登记（不等 capture 返回赋值）。
     """
 
     def __init__(self):
-        self._procs = {}  # pid -> name_lower（创建身份）
+        self._procs = {}  # pid -> (name_lower, create_time_ms)
 
     def register(self, pid, name=None):
         if pid is None:
             return
-        self._procs[int(pid)] = name
+        ident = _process_identity(pid)
+        name = ident[0] if ident is not None else name
+        ct = ident[1] if ident is not None else None
+        self._procs[int(pid)] = (name, ct)
 
     def register_many(self, pid_map):
         for pid, val in (pid_map or {}).items():
@@ -506,18 +519,21 @@ class _ResourceRegistry:
 
 
 def _kill_registered(registry: _ResourceRegistry) -> dict:
-    """按登记身份核验后 taskkill，返回 {pid: status}——已退出跳过、身份不符（PID 复用）拒杀、
-    returncode 非 0 记 kill_failed、杀后核验存活（killed/still_alive）。不按「调用次数」计成功。"""
-    live = _process_tree()
+    """按登记身份（name + create_time）核验后 taskkill，返回 {pid: status}——已退出跳过、
+    身份不符（PID 复用/身份变化）拒杀、returncode 非 0 记 kill_failed、杀后核验存活。"""
     report = {}
     for pid in registry.pids():
-        if pid not in live:
-            report[pid] = "already_exited"  # 已退出，跳过（不 taskkill 历史 PID）
+        ident = _process_identity(pid)
+        if ident is None:
+            report[pid] = "already_exited"  # 已退出/不可读，跳过（不 taskkill 历史 PID）
             continue
-        cur_name = live[pid][1]
-        reg_name = registry._procs.get(pid)
+        cur_name, cur_ct = ident
+        reg_name, reg_ct = registry._procs[pid]
+        if reg_ct is not None and cur_ct != reg_ct:
+            report[pid] = "identity_mismatch"  # create_time 不同 = PID 复用，拒杀
+            continue
         if reg_name is not None and cur_name != reg_name:
-            report[pid] = "identity_mismatch"  # PID 复用/身份变化，拒杀
+            report[pid] = "identity_mismatch"  # name 不同 = 身份变化，拒杀
             continue
         r = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -525,25 +541,29 @@ def _kill_registered(registry: _ResourceRegistry) -> dict:
             report[pid] = f"kill_failed_rc={r.returncode}"
             continue
         time.sleep(0.3)
-        after = _process_tree()
-        report[pid] = "killed" if pid not in after else "still_alive"
+        report[pid] = "killed" if _process_identity(pid) is None else "still_alive"
     return report
 
 
 def _run_segment(args, segment: str) -> dict:
-    # 唯一资源目录：mkdtemp 每次运行独立生成（验证归属，不固定目录无条件 rmtree）。
-    data_dir = Path(tempfile.mkdtemp(prefix=f"engine-272-{segment}-", dir=args.test_directory))
-    isolated_home = Path(tempfile.mkdtemp(prefix=f"home-272-{segment}-", dir=args.test_directory))
-    isolated_home_2 = Path(tempfile.mkdtemp(prefix=f"home2-272-{segment}-", dir=args.test_directory))
-    workdir = Path(tempfile.mkdtemp(prefix=f"work-272-{segment}-", dir=args.test_directory))
-    scratch = Path(tempfile.mkdtemp(prefix=f"scratch-272-{segment}-", dir=args.test_directory))
-    spawner_cjs = Path(args.test_directory) / f"spawner-272-{segment}.cjs"
-    spawner_pid_file = Path(args.test_directory) / f"spawn-pid-272-{segment}.txt"
-
     fx = None
     registry = _ResourceRegistry()  # 随启动/发现登记已拥有进程，异常路径 finally 也能回收
+    dirs = []  # 本次创建的隔离目录（逐个登记纳入 try，第二次 mkdtemp 失败也回收第一个）
+    spawner_cjs = Path(args.test_directory) / f"spawner-272-{segment}.cjs"
+    spawner_pid_file = Path(args.test_directory) / f"spawn-pid-272-{segment}.txt"
     result = {"segment": segment}
     try:
+        # D：唯一资源目录逐个 mkdtemp + 登记（分配目录纳入 try 范围，二次 mkdtemp 失败回收首个）。
+        data_dir = Path(tempfile.mkdtemp(prefix=f"engine-272-{segment}-", dir=args.test_directory))
+        dirs.append(data_dir)
+        isolated_home = Path(tempfile.mkdtemp(prefix=f"home-272-{segment}-", dir=args.test_directory))
+        dirs.append(isolated_home)
+        isolated_home_2 = Path(tempfile.mkdtemp(prefix=f"home2-272-{segment}-", dir=args.test_directory))
+        dirs.append(isolated_home_2)
+        workdir = Path(tempfile.mkdtemp(prefix=f"work-272-{segment}-", dir=args.test_directory))
+        dirs.append(workdir)
+        scratch = Path(tempfile.mkdtemp(prefix=f"scratch-272-{segment}-", dir=args.test_directory))
+        dirs.append(scratch)
         spawner_cjs.write_text(SPAWNER_MCP_SOURCE, encoding="utf-8")
         _copy_home(args.source_home, isolated_home)
         _copy_home(args.source_home, isolated_home_2)
@@ -552,6 +572,8 @@ def _run_segment(args, segment: str) -> dict:
         fx = EngineFixture(args.entry, isolated_home, isolated_home_2, args.test_directory,
                            segment, args.host, args.port, data_dir=data_dir,
                            workdir=workdir, scratch=scratch)
+        # B：引擎进程随启动立即登记（首次 PID 发现前异常仍按本次执行身份可回收）。
+        registry.register(fx.engine.proc.pid if fx.engine.proc else None)
         cap = _start_and_capture(fx, spawner_pid_file, registry)
         if not cap.get("ok"):
             result["result"] = cap
@@ -595,17 +617,21 @@ def _run_segment(args, segment: str) -> dict:
                                 and new_engine_pid != old_engine_pid and dsh_still_alive)
         return result
     finally:
-        # 异常后回收：按登记身份核验后 taskkill 独立 DSH/MCP 后代树（含另一 bot 树）——
-        # 已退出跳过、身份不符（PID 复用）拒杀、returncode 非 0 记 kill_failed、杀后核验存活。
-        kill_report = _kill_registered(registry)
+        # C：各清理步骤独立保护——快照/taskkill 异常仍尝试关闭自启引擎 + 释放本次资源，失败显式记录。
+        try:
+            kill_report = _kill_registered(registry)
+        except Exception as e:
+            kill_report = {"_error": f"{type(e).__name__}: {e}"}
         result["kill_report"] = kill_report
         if fx is not None:
-            fx.close()  # 无论成败都回收自启引擎进程
+            try:
+                fx.close()  # 无论成败都回收自启引擎进程（独立于 kill 步骤异常，不被其短路）
+            except Exception as e:
+                result["fx_close_error"] = f"{type(e).__name__}: {e}"
         time.sleep(1)  # 等 OS 释放引擎进程遗留的 SQLite -shm/-wal 句柄
         # 统一回收本次创建的隔离资源 + 核验清理结果（删除失败重试 + 显式报告，进入 passed）。
         cleanup = {}
-        for d in (data_dir, isolated_home, isolated_home_2, workdir, scratch,
-                  spawner_cjs, spawner_pid_file):
+        for d in dirs + [spawner_cjs, spawner_pid_file]:
             if not d.exists():
                 cleanup[str(d)] = True
                 continue
