@@ -707,17 +707,24 @@ def _run_segment(args, segment: str) -> dict:
                                 and new_engine_pid != old_engine_pid and dsh_still_alive)
         return result
     finally:
-        # C：各清理步骤独立保护——快照/taskkill 异常仍尝试关闭自启引擎 + 释放本次资源，失败显式记录。
+        # B（node1656 最终接入）+ C：先停引擎冻结新 spawn，再按私有 DB/scratch 恢复登记 DSH 树 → kill；
+        # 各清理步骤独立保护（快照/taskkill 异常仍释放资源），失败显式记录。
+        if fx is not None:
+            try:
+                fx.close()  # 先停引擎冻结新增 spawn（DSH 独立存活，随后按持久化 run 恢复）
+            except Exception as e:
+                result["fx_close_error"] = f"{type(e).__name__}: {e}"
+        # 引擎已停/已退出：按持久化 run + scratch 恢复登记本次 DSH 树（未知显式保留，不假报回收）。
+        if fx is not None:
+            try:
+                _compensate_via_snapshot(fx, registry)
+            except Exception:
+                pass
         try:
             kill_report = _kill_registered(registry)
         except Exception as e:
             kill_report = {"_error": f"{type(e).__name__}: {e}"}
         result["kill_report"] = kill_report
-        if fx is not None:
-            try:
-                fx.close()  # 无论成败都回收自启引擎进程（独立于 kill 步骤异常，不被其短路）
-            except Exception as e:
-                result["fx_close_error"] = f"{type(e).__name__}: {e}"
         time.sleep(1)  # 等 OS 释放引擎进程遗留的 SQLite -shm/-wal 句柄
         # 统一回收本次创建的隔离资源 + 核验清理结果（删除失败重试 + 显式报告，进入 passed）。
         cleanup = {}
