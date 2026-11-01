@@ -99,6 +99,10 @@ class ReadOnlySessionTests(unittest.TestCase):
         test_dsh_runtime._register_dsh_member(self.conn, project='p', profile='dsh-desktop')
         hermes = self.join(host='hermes', profile='hermes-bot')
         codex = self.join(host='codex', profile='codex-bot')
+        # 显式隔离（flaky 根因）：DSH 成员经 setUp 连接写入并 commit 后，强制 checkpoint 到主库文件，
+        # view 用独立 db.get_connection() 连接读同一文件，确保不读到 WAL 未落盘的旧快照。
+        self.conn.commit()
+        self.conn.execute("PRAGMA wal_checkpoint(FULL)")
         before = self.conn.total_changes
         bots_before = self.conn.execute('SELECT COUNT(*) FROM bots').fetchone()[0]
         bindings_before = self.conn.execute('SELECT COUNT(*) FROM session_bindings').fetchone()[0]
