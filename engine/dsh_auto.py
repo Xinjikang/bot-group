@@ -199,7 +199,12 @@ def audit(conn, *, session, wake_started_at, enabled, evidence, tool_calls,
     开头，非 tools/pre-execute 日志行近似）；executed_count = tool_result completed 数
     （工具主体执行成功）；blocked_count = 适配插件在 current≠auto 时阻断的工具数
     （F2 fail-closed，副作用未发生）——三者独立取证，不用 tool_calls-completed 反推 blocked。"""
-    review_count = int(evidence.get('review_count') or evidence.get('preexec_count') or 0)
+    # review_count 只在 review 字段缺失（旧证据格式无 llm/stream 计数）时才回退 preexec；
+    # review=0 是合法值（审查异常/跳过时实际审查数为 0），不得被 or 短路成 preexec。
+    review = evidence.get('review_count')
+    if review is None:
+        review = evidence.get('preexec_count') or 0
+    review_count = int(review)
     executed = int(completed_results or 0)
     blocked = int(evidence.get('blocked_count') or 0)
     cur = conn.execute(

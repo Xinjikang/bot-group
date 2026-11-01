@@ -246,6 +246,21 @@ class AuditTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_review_count_zero_not_fallback(self):
+        # req#138 node1603：review=0 是合法值（审查异常/跳过实际审查数为 0），不得被
+        # `or` 短路成 preexec（0 次审查写成 1 次）。
+        conn = db.get_connection()
+        try:
+            rid = dsh_auto.audit(conn, session="s5", wake_started_at=127.0, enabled=True,
+                                 evidence={"preexec_count": 3, "review_count": 0,
+                                           "blocked_count": 0, "confirmed": True},
+                                 tool_calls=3, completed_results=0, ts=db.now_iso())
+            conn.commit()
+            row = conn.execute("SELECT * FROM dsh_auto_audit WHERE id=?", (rid,)).fetchone()
+            self.assertEqual(row["review_count"], 0)  # 不回退 preexec=3
+        finally:
+            conn.close()
+
     def test_blocked_from_evidence_not_derived(self):
         # req#138 F7：blocked 不再由 tool_calls-completed 反推（否则审查拒绝与适配阻断混同）。
         conn = db.get_connection()

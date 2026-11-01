@@ -36,7 +36,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from engine import dsh_auth, dsh_auto  # noqa: E402
 
 SEGMENTS = ("review-allow", "review-deny", "review-rejected",
-            "review-exception", "review-abort", "adapter-block", "policy-never")
+            "review-exception", "review-abort", "adapter-block", "policy-never",
+            "cancel-probe")
 
 # 审查层夹具：拦截 llm/stream，识别 Auto 审查请求（system 以 REVIEW_POLICY 开头），
 # 返回固定决策流（text-delta + finish stop）；异常时 throw，abort 时 finish aborted。
@@ -117,6 +118,64 @@ export function apply(ctx) {
 }
 """
 
+# 审批层 cancelled 两时序主动夹具：在合法 open turn（tools/pre-execute）内**主动调用**
+# 原生 ctx.approval.request，传自有 AbortController 的 signal——请求前 abort（decide 首行
+# signal?.aborted→cancelled）与 answerer 已进入等待后 abort（decide abort 事件→cancelled），
+# 保留原生 asked/decided 审计。answerer（probe-wait）返回永不 resolve 的 promise + 就绪屏障
+# + 超时清理；禁止仅返回 cancelled 伪造信号测试。
+CANCEL_PROBE_FIXTURE = """export const name = "cancel-probe-fixture";
+export const inject = ["approval"];
+export function apply(ctx) {
+    let entered = false;
+    let resolveEntered;
+    const enteredPromise = new Promise(r => { resolveEntered = r; });
+
+    // answerer：probe-wait 进入时置就绪屏障并返回永不 resolve 的 promise（等 abort 触发 cancelled）。
+    ctx.on("approval/request", (req, fallback) => {
+        if (req && req.toolName === "probe-wait") {
+            if (!entered) { entered = true; resolveEntered(); }
+            return new Promise(() => {});
+        }
+        return fallback();
+    });
+
+    let ran = false;
+    ctx.on("tools/pre-execute", async (exec, next) => {
+        if (!ran && exec && exec.agent) {
+            ran = true;
+            try {
+                // ① 请求前 cancelled：先 abort 再 request → decide signal?.aborted → cancelled。
+                const c1 = new AbortController();
+                c1.abort(new Error("cancel-probe-pre"));
+                const o1 = await ctx.approval.request({
+                    agent: exec.agent, toolName: "probe-pre", callId: exec.callId,
+                    signal: c1.signal,
+                });
+                console.error("[cancel-probe] pre-abort outcome=" + o1);
+
+                // ② 等待中 cancelled：answerer 进入后 abort → decide abort 事件 → cancelled。
+                const c2 = new AbortController();
+                const pending = ctx.approval.request({
+                    agent: exec.agent, toolName: "probe-wait", callId: exec.callId,
+                    signal: c2.signal,
+                });
+                const barrier = await Promise.race([
+                    enteredPromise.then(() => "entered"),
+                    new Promise(r => setTimeout(() => r("timeout"), 5000)),
+                ]);
+                console.error("[cancel-probe] wait-barrier=" + barrier);
+                c2.abort(new Error("cancel-probe-wait"));
+                const o2 = await pending;
+                console.error("[cancel-probe] wait-abort outcome=" + o2);
+            } catch (e) {
+                console.error("[cancel-probe] error: " + (e && e.message));
+            }
+        }
+        return next();
+    });
+}
+"""
+
 # 取证层：marker MCP 工具（执行主体写文件 marker）。
 MARKER_PROBE = r"""const readline = require('node:readline');
 const fs = require('node:fs');
@@ -165,7 +224,8 @@ def _read_profile_selection(source_home: Path) -> list:
 
 
 def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision: str = "allow",
-         outcome: str = None, unload: bool = False, policy_never: bool = False) -> dict:
+         outcome: str = None, unload: bool = False, policy_never: bool = False,
+         cancel_probe: bool = False) -> dict:
     """一次真实 DSH 运行，返回结构化证据。"""
     private = Path(tempfile.mkdtemp(prefix="layers_", dir=test_dir))
     home = Path(tempfile.mkdtemp(prefix="layers_home_", dir=test_dir))
@@ -187,6 +247,8 @@ def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision:
     unload_fx.write_text(UNLOAD_FIXTURE, encoding="utf-8")
     policy_fx = private / "approval-policy-fixture.mjs"
     policy_fx.write_text(POLICY_FIXTURE, encoding="utf-8")
+    cancel_fx = private / "cancel-probe-fixture.mjs"
+    cancel_fx.write_text(CANCEL_PROBE_FIXTURE, encoding="utf-8")
     marker_probe = private / "marker-probe.cjs"
     marker_probe.write_text(MARKER_PROBE, encoding="utf-8")
     marker_file = private / "body-marker.txt"
@@ -202,6 +264,8 @@ def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision:
         insert_main.append({"id": "unload-fixture", "name": str(unload_fx)})
     if policy_never:
         insert_main.append({"id": "approval-policy-fixture", "name": str(policy_fx)})
+    if cancel_probe:
+        insert_main.append({"id": "cancel-probe-fixture", "name": str(cancel_fx)})
 
     overlay = [
         {"id": "credentials", "disabled": False, "config": {"path": str(cred), "watch": False}},
@@ -265,6 +329,7 @@ def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision:
         "approval_lines": [l for l in err.splitlines() if "[approval-fixture]" in l],
         "adapter_block_lines": [l for l in err.splitlines() if "[auto-enable] BLOCK" in l],
         "adapter_state_tail": [l for l in err.splitlines() if "[auto-enable] state" in l][-1:],
+        "cancel_probe_lines": [l for l in err.splitlines() if "[cancel-probe]" in l],
         "final": final.get("text", "") if "DSH_LAYERS" in final.get("text", "") else "[omitted]",
         "stderr_tail": err[-600:] if err else "",
     }
@@ -307,6 +372,15 @@ def _pass(segment, r):
                 and r["review_count"] >= 1 and r["review_decisions"] == ["deny"]
                 and not r["approval_lines"]
                 and any("approval policy set to never" in l for l in r["stderr_tail"].splitlines()))
+    if segment == "cancel-probe":
+        # 主动调用原生 approval.request 两时序 cancelled：请求前 abort + answerer 进入后 abort
+        # 均 outcome=cancelled，就绪屏障 entered（非 timeout/伪造），工具仍正常执行（marker 写入
+        # + completed，cancel-probe 不阻断工具）。
+        lines = r["cancel_probe_lines"]
+        return (r["marker_written"] and completed
+                and any("pre-abort outcome=cancelled" in l for l in lines)
+                and any("wait-barrier=entered" in l for l in lines)
+                and any("wait-abort outcome=cancelled" in l for l in lines))
     return False
 
 
@@ -334,12 +408,13 @@ def main() -> int:
     all_passed = True
     for seg in segs:
         r = _run(args.entry, args.source_home, args.test_directory, args.node,
-                 decision="allow" if seg == "review-allow" else
+                 decision="allow" if seg in ("review-allow", "cancel-probe") else
                           ("deny" if seg in ("review-deny", "review-rejected", "policy-never")
                            else ("abort" if seg == "review-abort" else "throw")),
                  outcome="rejected" if seg == "review-rejected" else None,
                  unload=(seg == "adapter-block"),
-                 policy_never=(seg == "policy-never"))
+                 policy_never=(seg == "policy-never"),
+                 cancel_probe=(seg == "cancel-probe"))
         outputs[seg] = r
         outputs[seg]["passed"] = _pass(seg, r)
         all_passed = all_passed and outputs[seg]["passed"]
