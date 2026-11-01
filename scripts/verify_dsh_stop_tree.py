@@ -321,6 +321,24 @@ class EngineFixture:
         self.engine.stop()
 
 
+def _compensate_dsh_descendants(fx, registry) -> bool:
+    """live_run 异常后按进程树身份反查引擎后代（DSH 树仍为引擎子进程）→ 登记，返回是否定位到。
+
+    manager node1642：首次根发现前异常时按本次归属定位 DSH 树（用已登记引擎 PID 反查后代），
+    补偿回收；找不到返回 False（调用方标 dsh_not_located 总失败，不假报回收）。"""
+    engine_pid = fx.engine.proc.pid if fx.engine.proc else None
+    if engine_pid is None:
+        return False
+    try:
+        snap = _process_tree()
+        desc = _descendants(snap, [engine_pid])
+        for pid, (_parent, name) in desc.items():
+            registry.register(pid, name)
+        return bool(desc)
+    except Exception:
+        return False
+
+
 def _start_and_capture(fx: EngineFixture, spawner_pid_file: Path,
                        registry: "_ResourceRegistry") -> dict:
     """起长 DSH 运行 + 独立核验根 + 逐 PID 后代（含 spawner 工具子进程）——不 /stop。
@@ -333,8 +351,10 @@ def _start_and_capture(fx: EngineFixture, spawner_pid_file: Path,
     try:
         run = fx.live_run()
     except Exception:
-        # B：live_run 查询异常（post 成功后、首次根发现前）→ DSH 树未定位，标记总失败（不假报回收）。
-        registry.dsh_not_located = True
+        # B：补偿回收——按进程树身份反查引擎后代（DSH 树）→ 登记 + finally 回收；找不到则
+        # dsh_not_located（总失败，不假报回收）。
+        if not _compensate_dsh_descendants(fx, registry):
+            registry.dsh_not_located = True
         return {"ok": False, "detail": "live_run query failed"}
     if run is None:
         return {"ok": False, "detail": "no live dsh run observed"}

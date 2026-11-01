@@ -104,15 +104,50 @@ class KillRegistryTests(unittest.TestCase):
 
 
 class StartAndCaptureTests(unittest.TestCase):
-    def test_live_run_exception_sets_dsh_not_located(self):
-        # B：实际调用 _start_and_capture，post 成功后 live_run 查询抛异常 → dsh_not_located=True。
+    def _fx(self):
         fx = mock.Mock()
         fx.post_msg.return_value = {}
         fx.live_run.side_effect = RuntimeError("db query failed")
+        fx.engine.proc.pid = 9999
+        return fx
+
+    def test_live_run_exception_compensates_dsh_descendants(self):
+        # B：补偿回收——反查到引擎后代（DSH 树）则登记 + 回收，不标 dsh_not_located。
+        fx = self._fx()
         reg = v._ResourceRegistry()
-        cap = v._start_and_capture(fx, mock.Mock(), reg)
+        with mock.patch.object(v, "_compensate_dsh_descendants", return_value=True) as comp:
+            cap = v._start_and_capture(fx, mock.Mock(), reg)
         self.assertFalse(cap["ok"])
-        self.assertTrue(reg.dsh_not_located)  # 隔离 DSH 树未定位 → 总失败
+        self.assertFalse(reg.dsh_not_located)  # 补偿定位成功，不标未回收
+        comp.assert_called_once_with(fx, reg)
+
+    def test_live_run_exception_no_dsh_sets_not_located(self):
+        # B：补偿回收——反查不到 DSH 树（引擎已退出）则标 dsh_not_located 总失败，不假报回收。
+        fx = self._fx()
+        reg = v._ResourceRegistry()
+        with mock.patch.object(v, "_compensate_dsh_descendants", return_value=False):
+            cap = v._start_and_capture(fx, mock.Mock(), reg)
+        self.assertFalse(cap["ok"])
+        self.assertTrue(reg.dsh_not_located)
+
+    def test_compensate_dsh_descendants_registers_engine_children(self):
+        # 实际调用 _compensate_dsh_descendants：引擎后代（DSH 树）登记进 registry。
+        fx = mock.Mock()
+        fx.engine.proc.pid = 100
+        reg = v._ResourceRegistry()
+        snap = {100: (1, "python.exe"), 200: (100, "cmd.exe"), 300: (200, "harness.exe")}
+        with mock.patch.object(v, "_process_tree", return_value=snap), \
+             mock.patch.object(v, "_process_identity", side_effect=[
+                 ("ok", "cmd.exe", 200), ("ok", "harness.exe", 300)]):
+            located = v._compensate_dsh_descendants(fx, reg)
+        self.assertTrue(located)
+        self.assertEqual(sorted(reg.pids()), [200, 300])
+
+    def test_compensate_dsh_descendants_no_engine_pid(self):
+        fx = mock.Mock()
+        fx.engine.proc.pid = None
+        reg = v._ResourceRegistry()
+        self.assertFalse(v._compensate_dsh_descendants(fx, reg))
 
 
 class RunSegmentTests(unittest.TestCase):
