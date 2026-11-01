@@ -204,6 +204,31 @@ class RunSegmentTests(unittest.TestCase):
         self.assertFalse(r["passed"])
         self.assertIn("fx_close_error", r)
 
+    def test_run_segment_capture_failure_kills_recovered_dsh(self):
+        # manager node1656：capture 失败（live_run 异常）后 finally 仍执行 _kill_registered 回收
+        # 已登记（补偿恢复）的 DSH 树，capture 失败保持 false。
+        fake_fx = mock.Mock()
+        fake_fx.engine.proc.pid = 9999
+        fake_fx.close.return_value = None
+        args = mock.Mock()
+        args.test_directory = tempfile.mkdtemp()
+        args.source_home = "E:/x"
+        args.entry = "dsh.cmd"
+        args.node = "node"
+        args.host = "127.0.0.1"
+        args.port = 18042
+        with mock.patch.object(v, "EngineFixture", return_value=fake_fx), \
+             mock.patch.object(v, "_copy_home"), \
+             mock.patch.object(v, "_inject_spawner"), \
+             mock.patch.object(v, "_process_identity", return_value=("ok", "python.exe", 5000)), \
+             mock.patch.object(v, "_start_and_capture",
+                               return_value={"ok": False, "detail": "live_run query failed"}), \
+             mock.patch.object(v, "_kill_registered", return_value={9999: "killed"}) as kill:
+            r = v._run_segment(args, "stop")
+        self.assertFalse(r["passed"])
+        self.assertEqual(r.get("kill_report"), {9999: "killed"})
+        kill.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
