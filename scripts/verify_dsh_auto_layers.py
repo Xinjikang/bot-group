@@ -50,9 +50,10 @@ export function apply(ctx) {
         const sys = options && options.system;
         const temp = options && options.temperature;
         // 精确识别 Auto 审查请求：system 以 REVIEW_POLICY 开头 + temperature 固定 0
-        // （classifyRisk 组装，非 agent-loop 请求——agent-loop 请求经 markAgentLoopRequest
-        // 进 WeakSet，审查请求不在，isAgentLoopRequest(options)===false；以 REVIEW_POLICY
-        // 前缀 + temperature 0 复合识别等价区分）。
+        // （classifyRisk 组装的审查请求；agent-loop 请求经 markAgentLoopRequest 进 WeakSet、
+        // 审查请求不在，isAgentLoopRequest===false——但该函数是 dsh-llm 模块级导出，
+        // 本地 .mjs 裸说明符 @deepseek-ai/dsh-llm 解析失败（同 @deepseek-ai/dsh-user-approval），
+        // 故以 REVIEW_POLICY 前缀 + temperature 0 复合识别等价区分）。
         if (typeof sys === "string" && sys.startsWith("REVIEW_POLICY") && temp === 0) {
             reviewCount += 1;
             const decision = process.env.REVIEW_DECISION || "allow";
@@ -252,119 +253,123 @@ def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision:
          outcome: str = None, unload: bool = False, policy_never: bool = False,
          cancel_probe: bool = False) -> dict:
     """一次真实 DSH 运行，返回结构化证据。"""
-    private = Path(tempfile.mkdtemp(prefix="layers_", dir=test_dir))
-    home = Path(tempfile.mkdtemp(prefix="layers_home_", dir=test_dir))
-    (home / "profiles" / "desktop").mkdir(parents=True)
-    identity = f'{os.environ.get("USERDOMAIN", "")}\\{os.environ.get("USERNAME", "")}'
-    subprocess.run(["icacls", str(private), "/inheritance:r", "/grant:r",
-                    identity + ":(OI)(CI)F"],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-    cred = dsh_auth.copy_credentials(str(source_home), str(private))
-    sel = _read_profile_selection(source_home)
-
-    adapter = private / "auto-enable-adapter.mjs"
-    adapter.write_text(dsh_auto.adapter_source(), encoding="utf-8")
-    review = private / "review-fixture.mjs"
-    review.write_text(REVIEW_FIXTURE, encoding="utf-8")
-    approval = private / "approval-fixture.mjs"
-    approval.write_text(APPROVAL_FIXTURE, encoding="utf-8")
-    unload_fx = private / "unload-fixture.mjs"
-    unload_fx.write_text(UNLOAD_FIXTURE, encoding="utf-8")
-    policy_fx = private / "approval-policy-fixture.mjs"
-    policy_fx.write_text(POLICY_FIXTURE, encoding="utf-8")
-    cancel_fx = private / "cancel-probe-fixture.mjs"
-    cancel_fx.write_text(CANCEL_PROBE_FIXTURE, encoding="utf-8")
-    marker_probe = private / "marker-probe.cjs"
-    marker_probe.write_text(MARKER_PROBE, encoding="utf-8")
-    marker_file = private / "body-marker.txt"
-
-    insert_main = [
-        {"id": "auto-review", "name": "@deepseek-ai/dsh-experimental-auto-review"},
-        {"id": "auto-enable-adapter", "name": str(adapter)},
-        {"id": "review-fixture", "name": str(review)},
-    ]
-    if outcome is not None:
-        insert_main.append({"id": "approval-fixture", "name": str(approval)})
-    if unload:
-        insert_main.append({"id": "unload-fixture", "name": str(unload_fx)})
-    if policy_never:
-        insert_main.append({"id": "approval-policy-fixture", "name": str(policy_fx)})
-    if cancel_probe:
-        insert_main.append({"id": "cancel-probe-fixture", "name": str(cancel_fx)})
-
-    overlay = [
-        {"id": "credentials", "disabled": False, "config": {"path": str(cred), "watch": False}},
-        {"id": "authorization", "disabled": False},
-        {"id": "deepseek-account", "disabled": False},
-        {"id": "session-log-deepseek", "disabled": True},
-        {"id": "session-telemetry-otel", "disabled": True},
-        *sel,
-        {"insert": insert_main},
-        {"insert": [{"id": "marker-mcp", "name": "@deepseek-ai/dsh-mcp-client", "config": {
-            "serverName": "marker_probe", "transport": "stdio", "command": node,
-            "args": [str(marker_probe)], "cwd": str(private),
-            "env": {"MARKER_FILE": str(marker_file)},
-            "failOnStartupError": True, "reconnect": {"enabled": False}, "toolCallTimeoutMs": 8000,
-        }}]},
-    ]
-    op = private / "overlay.json"
-    op.write_text(json.dumps(overlay, ensure_ascii=False), encoding="utf-8")
-
-    env = os.environ.copy()
-    _free_env_keys(env)
-    env.update(DSH_HOME=str(home), REVIEW_DECISION=decision)
-    if outcome is not None:
-        env["APPROVAL_OUTCOME"] = outcome
-    if policy_never:
-        env["APPROVAL_POLICY"] = "never"
-    prompt = ("Call the marker_probe probe tool exactly once with text LAYER_EVIDENCE. "
-              "After it, reply DSH_LAYERS_DONE. Do not use any other tool.")
-    cmd = [str(entry), "--profile", "headless", "--patch", str(op), "--json", "-"]
-    p = subprocess.Popen(cmd, cwd=str(private), env=env, stdin=subprocess.PIPE,
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                         encoding="utf-8", errors="replace",
-                         creationflags=subprocess.CREATE_NO_WINDOW)
-    timed_out = False
+    private = None
+    home = None
+    result = None
     try:
-        out, err = p.communicate(input=prompt, timeout=180)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        out, err = p.communicate(timeout=10)
-    events = []
-    for line in out.splitlines():
+        private = Path(tempfile.mkdtemp(prefix="layers_", dir=test_dir))
+        home = Path(tempfile.mkdtemp(prefix="layers_home_", dir=test_dir))
+        (home / "profiles" / "desktop").mkdir(parents=True)
+        identity = f'{os.environ.get("USERDOMAIN", "")}\\{os.environ.get("USERNAME", "")}'
+        subprocess.run(["icacls", str(private), "/inheritance:r", "/grant:r",
+                        identity + ":(OI)(CI)F"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        cred = dsh_auth.copy_credentials(str(source_home), str(private))
+        sel = _read_profile_selection(source_home)
+    
+        adapter = private / "auto-enable-adapter.mjs"
+        adapter.write_text(dsh_auto.adapter_source(), encoding="utf-8")
+        review = private / "review-fixture.mjs"
+        review.write_text(REVIEW_FIXTURE, encoding="utf-8")
+        approval = private / "approval-fixture.mjs"
+        approval.write_text(APPROVAL_FIXTURE, encoding="utf-8")
+        unload_fx = private / "unload-fixture.mjs"
+        unload_fx.write_text(UNLOAD_FIXTURE, encoding="utf-8")
+        policy_fx = private / "approval-policy-fixture.mjs"
+        policy_fx.write_text(POLICY_FIXTURE, encoding="utf-8")
+        cancel_fx = private / "cancel-probe-fixture.mjs"
+        cancel_fx.write_text(CANCEL_PROBE_FIXTURE, encoding="utf-8")
+        marker_probe = private / "marker-probe.cjs"
+        marker_probe.write_text(MARKER_PROBE, encoding="utf-8")
+        marker_file = private / "body-marker.txt"
+    
+        insert_main = [
+            {"id": "auto-review", "name": "@deepseek-ai/dsh-experimental-auto-review"},
+            {"id": "auto-enable-adapter", "name": str(adapter)},
+            {"id": "review-fixture", "name": str(review)},
+        ]
+        if outcome is not None:
+            insert_main.append({"id": "approval-fixture", "name": str(approval)})
+        if unload:
+            insert_main.append({"id": "unload-fixture", "name": str(unload_fx)})
+        if policy_never:
+            insert_main.append({"id": "approval-policy-fixture", "name": str(policy_fx)})
+        if cancel_probe:
+            insert_main.append({"id": "cancel-probe-fixture", "name": str(cancel_fx)})
+    
+        overlay = [
+            {"id": "credentials", "disabled": False, "config": {"path": str(cred), "watch": False}},
+            {"id": "authorization", "disabled": False},
+            {"id": "deepseek-account", "disabled": False},
+            {"id": "session-log-deepseek", "disabled": True},
+            {"id": "session-telemetry-otel", "disabled": True},
+            *sel,
+            {"insert": insert_main},
+            {"insert": [{"id": "marker-mcp", "name": "@deepseek-ai/dsh-mcp-client", "config": {
+                "serverName": "marker_probe", "transport": "stdio", "command": node,
+                "args": [str(marker_probe)], "cwd": str(private),
+                "env": {"MARKER_FILE": str(marker_file)},
+                "failOnStartupError": True, "reconnect": {"enabled": False}, "toolCallTimeoutMs": 8000,
+            }}]},
+        ]
+        op = private / "overlay.json"
+        op.write_text(json.dumps(overlay, ensure_ascii=False), encoding="utf-8")
+    
+        env = os.environ.copy()
+        _free_env_keys(env)
+        env.update(DSH_HOME=str(home), REVIEW_DECISION=decision)
+        if outcome is not None:
+            env["APPROVAL_OUTCOME"] = outcome
+        if policy_never:
+            env["APPROVAL_POLICY"] = "never"
+        prompt = ("Call the marker_probe probe tool exactly once with text LAYER_EVIDENCE. "
+                  "After it, reply DSH_LAYERS_DONE. Do not use any other tool.")
+        cmd = [str(entry), "--profile", "headless", "--patch", str(op), "--json", "-"]
+        p = subprocess.Popen(cmd, cwd=str(private), env=env, stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             encoding="utf-8", errors="replace",
+                             creationflags=subprocess.CREATE_NO_WINDOW)
+        timed_out = False
         try:
-            e = json.loads(line)
-            if isinstance(e, dict):
-                events.append(e)
-        except ValueError:
-            pass
-    final = next((e for e in reversed(events) if e.get("type") == "final"), {})
-    result = {
-        "exit": p.returncode,
-        "timed_out": timed_out,
-        "marker_written": marker_file.is_file(),
-        "tool_calls": [e.get("tool") for e in events if e.get("type") == "tool_call"],
-        "tool_results": [(e.get("status"), bool(e.get("isError")))
-                         for e in events if e.get("type") == "tool_result"],
-        "review_count": sum(1 for l in err.splitlines() if "[review-fixture] review" in l),
-        "review_decisions": [l.split("decision=")[-1] for l in err.splitlines()
-                             if "[review-fixture] review" in l],
-        "approval_lines": [l for l in err.splitlines() if "[approval-fixture]" in l],
-        "adapter_block_lines": [l for l in err.splitlines() if "[auto-enable] BLOCK" in l],
-        "adapter_state_tail": [l for l in err.splitlines() if "[auto-enable] state" in l][-1:],
-        "cancel_probe_lines": [l for l in err.splitlines() if "[cancel-probe]" in l],
-        "final": final.get("text", "") if "DSH_LAYERS" in final.get("text", "") else "[omitted]",
-        "stderr_tail": err[-600:] if err else "",
-    }
-    try:
+            out, err = p.communicate(input=prompt, timeout=180)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            out, err = p.communicate(timeout=10)
+        events = []
+        for line in out.splitlines():
+            try:
+                e = json.loads(line)
+                if isinstance(e, dict):
+                    events.append(e)
+            except ValueError:
+                pass
+        final = next((e for e in reversed(events) if e.get("type") == "final"), {})
+        result = {
+            "exit": p.returncode,
+            "timed_out": timed_out,
+            "marker_written": marker_file.is_file(),
+            "tool_calls": [e.get("tool") for e in events if e.get("type") == "tool_call"],
+            "tool_results": [(e.get("status"), bool(e.get("isError")))
+                             for e in events if e.get("type") == "tool_result"],
+            "review_count": sum(1 for l in err.splitlines() if "[review-fixture] review" in l),
+            "review_decisions": [l.split("decision=")[-1] for l in err.splitlines()
+                                 if "[review-fixture] review" in l],
+            "approval_lines": [l for l in err.splitlines() if "[approval-fixture]" in l],
+            "adapter_block_lines": [l for l in err.splitlines() if "[auto-enable] BLOCK" in l],
+            "adapter_state_tail": [l for l in err.splitlines() if "[auto-enable] state" in l][-1:],
+            "cancel_probe_lines": [l for l in err.splitlines() if "[cancel-probe]" in l],
+            "final": final.get("text", "") if "DSH_LAYERS" in final.get("text", "") else "[omitted]",
+            "stderr_tail": err[-600:] if err else "",
+        }
         return result
     finally:
-        # 统一回收自启资源/临时目录 + 核验清理结果（finally 保证异常路径也回收，不静默）。
-        result["cleanup"] = _cleanup_dirs([private, home])
-        result["cleanup_ok"] = bool(result["cleanup"]) and all(
-            v is True for v in result["cleanup"].values())
+        # 统一回收自启资源/临时目录 + 核验清理结果（覆盖初始化/Popen/通信异常，不静默）。
+        cleanup = _cleanup_dirs([d for d in (private, home) if d is not None])
+        if result is not None:
+            result["cleanup"] = cleanup
+            result["cleanup_ok"] = bool(cleanup) and all(v is True for v in cleanup.values())
 
 
 def _pass(segment, r):
@@ -453,7 +458,8 @@ def main() -> int:
                  policy_never=(seg == "policy-never"),
                  cancel_probe=(seg == "cancel-probe"))
         outputs[seg] = r
-        outputs[seg]["passed"] = _pass(seg, r)
+        # cleanup_ok 进入总 passed：清理失败（rmtree 后目录仍存在）不通过。
+        outputs[seg]["passed"] = _pass(seg, r) and bool(r.get("cleanup_ok", False))
         all_passed = all_passed and outputs[seg]["passed"]
     outputs["source_credentials_unchanged"] = (
         hashlib.sha256(cred.read_bytes()).hexdigest() if cred.is_file() else None) == src_hash

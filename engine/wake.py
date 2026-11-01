@@ -1236,6 +1236,7 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         dsh_corrupt = [0]
         dsh_tool_calls = [0]          # req#137 task#268：审查尝试数（auto 预设下每次工具调用一次审查）
         dsh_completed = [0]          # 工具主体执行成功数（tool_result completed，allow 后执行）
+        dsh_executed = [0]           # 工具主体入口数（tool_result completed+error，body 实际 dispatch，与 completed 独立）
         if runtime in ("codex", "dsh"):
             popen_kwargs["stdout"] = subprocess.PIPE
             popen_kwargs["text"] = True
@@ -1342,8 +1343,11 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                         dsh_had_final[0] = True
                     if ev.get("type") == "tool_call":
                         dsh_tool_calls[0] += 1
-                    elif ev.get("type") == "tool_result" and ev.get("status") == "completed":
-                        dsh_completed[0] += 1
+                    elif ev.get("type") == "tool_result":
+                        # 工具主体入口（body 已 dispatch + 返回）：completed 与 error 都计入口。
+                        dsh_executed[0] += 1
+                        if ev.get("status") == "completed":
+                            dsh_completed[0] += 1
                     if ev.get("type") == "session":
                         sid_val = ev.get("sessionId")
                         if sid_val:
@@ -1371,7 +1375,11 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                 for line in proc.stderr:
                     line = line.strip()
                     if line:
-                        if dsh_auto.STATE_MARKER in line:
+                        # 保留 state/ENTRY/BLOCK 三类 [auto-enable] 证据行（callId 关联不因
+                        # 40 行诊断尾部截断丢失——ENTRY/BLOCK 含 callId）。
+                        if (dsh_auto.STATE_MARKER in line
+                                or dsh_auto.ENTRY_MARKER in line
+                                or dsh_auto.BLOCK_MARKER in line):
                             dsh_auto_state_lines.append(line)
                         dsh_err_tail.append(line)
                         if len(dsh_err_tail) > 40:
@@ -1448,7 +1456,8 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                         dsh_auto.audit(conn, session=session, wake_started_at=wake_started_at,
                                        enabled=dsh_auto_enabled, evidence=auto_evidence,
                                        tool_calls=dsh_tool_calls[0],
-                                       completed_results=dsh_completed[0], ts=db.now_iso())
+                                       completed_results=dsh_completed[0],
+                                       executed_results=dsh_executed[0], ts=db.now_iso())
                         conn.commit()
                     except Exception:
                         logging.getLogger(__name__).exception(

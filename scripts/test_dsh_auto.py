@@ -271,19 +271,21 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(ev["entry_count"], 1)
         self.assertEqual(ev["call_ids"], ["c1", "c2"])
 
-    def test_audit_executed_from_entry_not_completed(self):
-        # req#138 node1609：executed_count = 工具主体入口（entry，body 进入），与执行结果
-        # completed 独立；entry=2 但 completed=1 时 executed 记 2（非 completed 反推）。
+    def test_audit_executed_from_executed_results_not_entry(self):
+        # req#138 node1615：executed_count = 工具主体入口（tool_result completed+error），
+        # 非 tools/pre-execute 的 entry（审批前，拒绝/取消的工具也被 entry 计，但 body 未 dispatch）。
+        # entry_count=3 但 executed_results=2（body 实际 dispatch 2 次）时 executed 记 2。
         conn = db.get_connection()
         try:
             rid = dsh_auto.audit(conn, session="s6", wake_started_at=128.0, enabled=True,
                                  evidence={"preexec_count": 3, "review_count": 1,
-                                           "entry_count": 2, "blocked_count": 0,
+                                           "entry_count": 3, "blocked_count": 0,
                                            "confirmed": True},
-                                 tool_calls=3, completed_results=1, ts=db.now_iso())
+                                 tool_calls=3, completed_results=1, executed_results=2,
+                                 ts=db.now_iso())
             conn.commit()
             row = conn.execute("SELECT * FROM dsh_auto_audit WHERE id=?", (rid,)).fetchone()
-            self.assertEqual(row["executed_count"], 2)  # entry=2，非 completed=1
+            self.assertEqual(row["executed_count"], 2)  # tool_result=2，非 entry=3
         finally:
             conn.close()
 
