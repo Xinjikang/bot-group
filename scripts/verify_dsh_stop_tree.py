@@ -330,7 +330,12 @@ def _start_and_capture(fx: EngineFixture, spawner_pid_file: Path,
     fx.post_msg("@dsh-bot 本次任务第一步（不可跳过）是调用名为 spawn_child 的 MCP 工具"
                 "（该工具 spawn 一个长活子进程用于停止清理验证，调用后必须等 tool_result 返回）；"
                 "之后再依次调用 group_list_members 工具至少 8 次，最后回复 DSH_STOP_272。")
-    run = fx.live_run()
+    try:
+        run = fx.live_run()
+    except Exception:
+        # B：live_run 查询异常（post 成功后、首次根发现前）→ DSH 树未定位，标记总失败（不假报回收）。
+        registry.dsh_not_located = True
+        return {"ok": False, "detail": "live_run query failed"}
     if run is None:
         return {"ok": False, "detail": "no live dsh run observed"}
     # 停止前找根 PID；finder 状态显式记录（None=未知，不是「已消失」）。
@@ -483,32 +488,40 @@ def _stop_pass(r: dict) -> bool:
 
 
 def _process_identity(pid) -> tuple:
-    """进程稳定实例身份 (name_lower, create_time_ms)；create_time 区分同名 PID 复用。"""
+    """进程稳定实例身份。返回 ('ok', name_lower, create_time_ms) / ('exited',) / ('unknown',)。
+
+    区分「不存在」（NoSuchProcess → 已退出，可算回收）与「查询失败」（AccessDenied/OSError →
+    未知，不假报回收，须总失败）。"""
     import psutil
     try:
         p = psutil.Process(pid)
-        return (p.name().lower(), int(p.create_time() * 1000))
-    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
-        return None
+        return ("ok", p.name().lower(), int(p.create_time() * 1000))
+    except psutil.NoSuchProcess:
+        return ("exited",)
+    except (psutil.AccessDenied, OSError):
+        return ("unknown",)
 
 
 class _ResourceRegistry:
-    """随启动/发现立即登记已拥有进程（PID → (name_lower, create_time_ms)），capture 返回前异常也能取得。
+    """随启动/发现立即登记已拥有进程（PID → (name_lower, create_time_ms, known)），capture 返回前异常也能取得。
 
-    manager node1634：身份不能用 name（同名 PID 复用仍 taskkill 并记 killed），须采集 create_time
-    作稳定实例身份；随启动/发现立即登记（不等 capture 返回赋值）。
+    manager node1634/1642：身份不能用 name（同名 PID 复用仍 taskkill 并记 killed），须采集 create_time
+    作稳定实例身份；登记时身份不可读（AccessDenied/OSError）→ known=False，杀时拒杀（不假报回收）。
     """
 
     def __init__(self):
-        self._procs = {}  # pid -> (name_lower, create_time_ms)
+        self._procs = {}  # pid -> (name_lower, create_time_ms, known)
+        self.dsh_not_located = False  # 隔离 DSH 树未定位（首次根发现前异常），须总失败
 
     def register(self, pid, name=None):
         if pid is None:
             return
         ident = _process_identity(pid)
-        name = ident[0] if ident is not None else name
-        ct = ident[1] if ident is not None else None
-        self._procs[int(pid)] = (name, ct)
+        if ident[0] == "ok":
+            self._procs[int(pid)] = (ident[1], ident[2], True)
+        else:
+            # 登记时身份不可读/已退出：known=False，杀时拒杀（身份未知明确失败）。
+            self._procs[int(pid)] = (name, None, False)
 
     def register_many(self, pid_map):
         for pid, val in (pid_map or {}).items():
@@ -519,20 +532,29 @@ class _ResourceRegistry:
 
 
 def _kill_registered(registry: _ResourceRegistry) -> dict:
-    """按登记身份（name + create_time）核验后 taskkill，返回 {pid: status}——已退出跳过、
-    身份不符（PID 复用/身份变化）拒杀、returncode 非 0 记 kill_failed、杀后核验存活。"""
+    """按登记身份（name + create_time）核验后 taskkill，返回 {pid: status}。
+
+    已退出（NoSuchProcess）跳过；查询失败（AccessDenied/OSError）identity_unknown（总失败）；
+    登记身份未知（known=False）拒杀；create_time/name 不符（PID 复用/身份变化）identity_mismatch
+    拒杀；returncode 非 0 记 kill_failed；杀后核验存活（killed/still_alive）。"""
     report = {}
     for pid in registry.pids():
+        reg_name, reg_ct, reg_known = registry._procs[pid]
         ident = _process_identity(pid)
-        if ident is None:
-            report[pid] = "already_exited"  # 已退出/不可读，跳过（不 taskkill 历史 PID）
+        if ident[0] == "exited":
+            report[pid] = "already_exited"  # 已退出，跳过（不 taskkill 历史 PID）
             continue
-        cur_name, cur_ct = ident
-        reg_name, reg_ct = registry._procs[pid]
-        if reg_ct is not None and cur_ct != reg_ct:
+        if ident[0] == "unknown":
+            report[pid] = "identity_unknown"  # 查询失败，不假报回收
+            continue
+        cur_name, cur_ct = ident[1], ident[2]
+        if not reg_known:
+            report[pid] = "identity_unknown"  # 登记身份未知，拒杀
+            continue
+        if cur_ct != reg_ct:
             report[pid] = "identity_mismatch"  # create_time 不同 = PID 复用，拒杀
             continue
-        if reg_name is not None and cur_name != reg_name:
+        if cur_name != reg_name:
             report[pid] = "identity_mismatch"  # name 不同 = 身份变化，拒杀
             continue
         r = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
@@ -541,7 +563,7 @@ def _kill_registered(registry: _ResourceRegistry) -> dict:
             report[pid] = f"kill_failed_rc={r.returncode}"
             continue
         time.sleep(0.3)
-        report[pid] = "killed" if _process_identity(pid) is None else "still_alive"
+        report[pid] = "killed" if _process_identity(pid)[0] == "exited" else "still_alive"
     return report
 
 
@@ -652,10 +674,13 @@ def _run_segment(args, segment: str) -> dict:
             cleanup[str(d)] = True if ok else f"delete error: {last_err}"
         result["cleanup"] = cleanup
         result["cleanup_ok"] = all(v is True for v in cleanup.values())
-        # kill 失败/身份不符/still_alive 显式记录并纳入总 passed（进程未真正退出不通过）。
-        kill_ok = all(s in ("killed", "already_exited") for s in kill_report.values())
+        # kill 失败/身份不符/still_alive/身份未知 显式记录并纳入总 passed（进程未真正退出不通过）。
+        kill_ok = (all(s in ("killed", "already_exited") for s in kill_report.values())
+                   and not registry.dsh_not_located)
         result["kill_ok"] = kill_ok
-        result["passed"] = bool(result.get("passed")) and result["cleanup_ok"] and kill_ok
+        # C：fx_close 异常（fx_close_error）及任意清理错误必须使总 passed=false。
+        result["passed"] = (bool(result.get("passed")) and result["cleanup_ok"] and kill_ok
+                            and "fx_close_error" not in result)
 
 
 def main() -> int:
