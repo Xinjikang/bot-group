@@ -1371,13 +1371,11 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                 for line in proc.stderr:
                     line = line.strip()
                     if line:
-                        # 保留 state/ENTRY/BLOCK 三类 [auto-enable] 证据行 + 合成工具主体入口
-                        # [marker-probe] ENTRY 行（callId 关联与主体入口计数不因 40 行诊断尾部
-                        # 截断丢失）。
+                        # 保留 state/ENTRY/BLOCK 三类 [auto-enable] 证据行（callId 关联与
+                        # tools/execute 主体入口计数不因 40 行诊断尾部截断丢失）。
                         if (dsh_auto.STATE_MARKER in line
                                 or dsh_auto.ENTRY_MARKER in line
-                                or dsh_auto.BLOCK_MARKER in line
-                                or dsh_auto.BODY_ENTRY_MARKER in line):
+                                or dsh_auto.BLOCK_MARKER in line):
                             dsh_auto_state_lines.append(line)
                         dsh_err_tail.append(line)
                         if len(dsh_err_tail) > 40:

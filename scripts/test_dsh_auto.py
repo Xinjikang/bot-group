@@ -34,6 +34,7 @@ class AutoOverlayTests(unittest.TestCase):
         self.assertIn('ctx.on("session/created"', src)
         self.assertIn('permissionPresets.set(session, "auto")', src)
         self.assertIn('ctx.on("tools/pre-execute"', src)
+        self.assertIn('ctx.on("tools/execute"', src)  # node1630：主体入口
         self.assertIn('[auto-enable]', src)
         # req#138 F2：current≠auto 时阻断（不 next）；current==auto 时 next() 放行。
         self.assertIn('return next()', src)
@@ -46,8 +47,9 @@ class AutoOverlayTests(unittest.TestCase):
         # 非 auto 分支：先打 BLOCK 行，再 state()，再 return（无 next()）。
         self.assertIn('[auto-enable] BLOCK preset=', src)
         self.assertIn('preset !== "auto"', src)
-        # next() 只出现在 auto 放行分支（return next()），非 auto 分支无 next()。
-        self.assertEqual(src.count('next()'), 1)
+        # next() 只出现在 tools/pre-execute 放行分支 + tools/execute 主体入口分支，
+        # 非 auto 阻断分支无 next()。
+        self.assertEqual(src.count('return next()'), 2)
 
     def test_dsh_overlay_appends_auto_when_enabled(self):
         bot = {"id": 1, "runtime": "dsh", "config_root": "C:/x", "profile": "desktop"}
@@ -264,15 +266,14 @@ class AuditTests(unittest.TestCase):
             conn.close()
 
     def test_entry_count_and_call_ids_from_adapter(self):
-        # req#138 node1621：主体入口计数（entry）从合成工具 [marker-probe] ENTRY 行提取
-        # （真实函数进入处），callId 关联从 [auto-enable] ENTRY/BLOCK 行提取（两者独立）。
+        # req#138 node1630：主体入口计数（entry）从 state 行 entry=（tools/execute 主体入口，
+        # 真实函数进入处）提取，callId 关联从 [auto-enable] ENTRY/BLOCK 行提取（两者独立）。
         ev = dsh_auto.preset_evidence([
-            "[marker-probe] ENTRY text=a",  # 主体入口（真实函数进入处）
-            "[auto-enable] ENTRY name=probe callId=c1",  # dispatch callId
+            "[auto-enable] ENTRY name=probe callId=c1",  # tools/execute 主体入口 callId
             "[auto-enable] BLOCK preset=n/a name=x callId=c2",
-            "[auto-enable] state preset=auto preexec=2 review=0 blocked=1",
+            "[auto-enable] state preset=auto preexec=2 review=0 entry=1 blocked=1",
         ])
-        self.assertEqual(ev["entry_count"], 1)  # 主体入口 1（[marker-probe] ENTRY）
+        self.assertEqual(ev["entry_count"], 1)  # 主体入口 1（state entry=，tools/execute）
         self.assertEqual(ev["call_ids"], ["c1", "c2"])
 
     def test_audit_executed_is_entry_not_completed(self):

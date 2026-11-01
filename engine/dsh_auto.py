@@ -33,8 +33,7 @@ _STATE_MARKER = '[auto-enable] state'
 STATE_MARKER = _STATE_MARKER  # wake.py 流式维护状态行用（公开别名）
 _BLOCK_MARKER = '[auto-enable] BLOCK'
 BLOCK_MARKER = _BLOCK_MARKER  # 公开别名（callId 证据行）
-ENTRY_MARKER = '[auto-enable] ENTRY'  # 工具主体入口 callId 证据行
-BODY_ENTRY_MARKER = '[marker-probe] ENTRY'  # 合成工具主体入口证据行（真实函数进入处，verify 夹具）
+ENTRY_MARKER = '[auto-enable] ENTRY'  # 工具主体入口 callId 证据行（tools/execute）
 _PRESET_OK = 'auto'  # state 行 preset= 捕获值须为 auto 才算会话预设生效
 
 # 适配插件源码（probe-auto2 的 ADAPTER 实测版 + req#138 F2/F6/F7）：
@@ -49,17 +48,27 @@ export function apply(ctx) {
     let presetConfirmed = false;
     let preexec = 0;
     let review = 0;
+    let entry = 0;
     let blocked = 0;
     const state = () => console.error(
-        `[auto-enable] state preset=${presetConfirmed ? "auto" : "n/a"} preexec=${preexec} review=${review} blocked=${blocked}`);
+        `[auto-enable] state preset=${presetConfirmed ? "auto" : "n/a"} preexec=${preexec} review=${review} entry=${entry} blocked=${blocked}`);
     ctx.on("session/created", (session) => {
         ctx.permissionPresets.set(session, "auto");
         presetConfirmed = ctx.permissionPresets.current(session) === "auto";
         state();
     });
     ctx.on("llm/stream", (options, fallback) => {
+        // 审查识别：REVIEW_POLICY 准确特征 + temperature===0 复合识别（classifyRisk 固定 temp0、
+        // 审查原文首行「REVIEW_POLICY」后接「You are the final authorization reviewer」）。
+        // isAgentLoopRequest 是 dsh-llm 模块级导出，本地 .mjs 裸说明符 @deepseek-ai/dsh-llm
+        // 解析失败（实测 module resolution error，同 review-fixture），故以准确特征 + temp0
+        // 等价区分：agent-loop 普通请求无 REVIEW_POLICY 准确特征 → 透传；REVIEW_POLICY_EXTRA
+        // 同前缀非审查（无准确特征）→ 透传，均不误计审查。
         const sys = options && options.system;
-        if (typeof sys === "string" && sys.startsWith("REVIEW_POLICY")) {
+        const temp = options && options.temperature;
+        if (typeof sys === "string"
+                && sys.startsWith("REVIEW_POLICY" + String.fromCharCode(10) + "You are the final authorization reviewer")
+                && temp === 0) {
             review += 1;
         }
         return fallback();
@@ -74,11 +83,19 @@ export function apply(ctx) {
             state();
             return;  // fail-closed：能力失效即阻断，不 next，工具不执行
         }
-        console.error(`[auto-enable] ENTRY name=${exec.name ?? "?"} callId=${callId}`);
+        state();
+        return next();
+    });
+    ctx.on("tools/execute", (exec, next) => {
+        // 主体入口（真实函数进入处）：审批 deny 在 tools/execute 之前 → 未到此处 entry=0；
+        // 进入后失败/成功均到此 entry=1（独立于 completed）。exec.callId 关联工具调用。
+        entry += 1;
+        console.error(`[auto-enable] ENTRY name=${exec.name ?? "?"} callId=${exec.callId ?? "?"}`);
         state();
         return next();
     });
 }
+
 """
 
 
@@ -108,7 +125,7 @@ def write_enabled(bot, enabled: bool) -> None:
 
 
 def adapter_source() -> str:
-    """受控适配插件源码（同 probe-auto2 实测语义）。"""
+    """受控适配插件源码（tools/execute 主体入口 + REVIEW_POLICY 准确特征 + temp0 审查识别）。"""
     return ADAPTER_SOURCE
 
 
@@ -158,10 +175,12 @@ def preset_evidence(stderr_lines) -> dict:
 
     读**末位** `[auto-enable] state` 行（每次事件都输出累计值，末位即最终状态），而非逐行
     计数——这样 40 行滚动尾部截断不会丢 session/created 与早期 pre-execute 证据。
-    返回 {session_preset, preexec_count, review_count, blocked_count, confirmed}：
+    返回 {session_preset, preexec_count, review_count, entry_count, blocked_count, confirmed}：
     - preexec_count = tools/pre-execute 总触发次数（审查尝试近似）；
-    - review_count = llm/stream 拦截到的 Auto 审查请求数（system 以 REVIEW_POLICY 开头，
-      实际审查请求，F7 独立取证）；
+    - review_count = llm/stream 拦截到的 Auto 审查请求数（isAgentLoopRequest===false +
+      REVIEW_POLICY 准确特征 + temperature 0，实际审查请求，F7 独立取证）；
+    - entry_count = tools/execute 主体入口数（真实函数进入处，独立于 completed；审批 deny
+      在 execute 前 → entry=0，进入后失败/成功 → entry=1）；
     - blocked_count = 适配插件在 current≠auto 时阻断的工具数（F2 fail-closed，副作用未发生）；
     - confirmed = 末位状态 preset==auto 才算会话预设生效。
     """
@@ -176,6 +195,7 @@ def preset_evidence(stderr_lines) -> dict:
             m_preset = re.search(r'preset=(\S+)', line)
             m_preexec = re.search(r'preexec=(\d+)', line)
             m_review = re.search(r'review=(\d+)', line)
+            m_entry = re.search(r'entry=(\d+)', line)
             m_blocked = re.search(r'blocked=(\d+)', line)
             if m_preset:
                 session_preset = m_preset.group(1)
@@ -183,13 +203,11 @@ def preset_evidence(stderr_lines) -> dict:
                 preexec = int(m_preexec.group(1))
             if m_review:
                 review = int(m_review.group(1))
+            if m_entry:
+                entry = int(m_entry.group(1))
             if m_blocked:
                 blocked = int(m_blocked.group(1))
-        elif BODY_ENTRY_MARKER in line:
-            # 主体入口（真实函数进入处）：合成工具 body 进入即落一行，独立于副作用 marker 与
-            # completed。审批取消/拒绝 body 未进入不落行 → entry=0；进入后失败/成功均落行。
-            entry += 1
-        elif '[auto-enable] ENTRY' in line or '[auto-enable] BLOCK' in line:
+        elif ENTRY_MARKER in line or BLOCK_MARKER in line:
             # 工具入口/阻断的 callId（入口计数按 callId 关联，非仅全局计数）。
             m_cid = re.search(r'callId=(\S+)', line)
             if m_cid:
