@@ -47,8 +47,9 @@ export function apply(ctx) {
     let preexec = 0;
     let review = 0;
     let blocked = 0;
+    let entry = 0;
     const state = () => console.error(
-        `[auto-enable] state preset=${presetConfirmed ? "auto" : "n/a"} preexec=${preexec} review=${review} blocked=${blocked}`);
+        `[auto-enable] state preset=${presetConfirmed ? "auto" : "n/a"} preexec=${preexec} review=${review} entry=${entry} blocked=${blocked}`);
     ctx.on("session/created", (session) => {
         ctx.permissionPresets.set(session, "auto");
         presetConfirmed = ctx.permissionPresets.current(session) === "auto";
@@ -64,12 +65,15 @@ export function apply(ctx) {
     ctx.on("tools/pre-execute", (exec, next) => {
         preexec += 1;
         const preset = exec.agent ? ctx.permissionPresets.current(exec.agent.session) : "n/a";
+        const callId = exec.callId ?? "?";
         if (preset !== "auto") {
             blocked += 1;
-            console.error(`[auto-enable] BLOCK preset=${preset} name=${exec.name ?? "?"}`);
+            console.error(`[auto-enable] BLOCK preset=${preset} name=${exec.name ?? "?"} callId=${callId}`);
             state();
             return;  // fail-closed：能力失效即阻断，不 next，工具不执行
         }
+        entry += 1;  // 工具主体入口计数（body 进入，与执行结果 completed 独立）
+        console.error(`[auto-enable] ENTRY name=${exec.name ?? "?"} callId=${callId}`);
         state();
         return next();
     });
@@ -164,25 +168,36 @@ def preset_evidence(stderr_lines) -> dict:
     preexec = 0
     review = 0
     blocked = 0
+    entry = 0
+    call_ids: list[str] = []
     for line in stderr_lines or ():
-        if _STATE_MARKER not in line:
-            continue
-        m_preset = re.search(r'preset=(\S+)', line)
-        m_preexec = re.search(r'preexec=(\d+)', line)
-        m_review = re.search(r'review=(\d+)', line)
-        m_blocked = re.search(r'blocked=(\d+)', line)
-        if m_preset:
-            session_preset = m_preset.group(1)
-        if m_preexec:
-            preexec = int(m_preexec.group(1))
-        if m_review:
-            review = int(m_review.group(1))
-        if m_blocked:
-            blocked = int(m_blocked.group(1))
+        if _STATE_MARKER in line:
+            m_preset = re.search(r'preset=(\S+)', line)
+            m_preexec = re.search(r'preexec=(\d+)', line)
+            m_review = re.search(r'review=(\d+)', line)
+            m_entry = re.search(r'entry=(\d+)', line)
+            m_blocked = re.search(r'blocked=(\d+)', line)
+            if m_preset:
+                session_preset = m_preset.group(1)
+            if m_preexec:
+                preexec = int(m_preexec.group(1))
+            if m_review:
+                review = int(m_review.group(1))
+            if m_entry:
+                entry = int(m_entry.group(1))
+            if m_blocked:
+                blocked = int(m_blocked.group(1))
+        elif '[auto-enable] ENTRY' in line or '[auto-enable] BLOCK' in line:
+            # 工具入口/阻断的 callId（入口计数按 callId 关联，非仅全局计数）。
+            m_cid = re.search(r'callId=(\S+)', line)
+            if m_cid:
+                call_ids.append(m_cid.group(1))
     return {'session_preset': session_preset,
             'preexec_count': preexec,
             'review_count': review,
+            'entry_count': entry,
             'blocked_count': blocked,
+            'call_ids': call_ids,
             'confirmed': session_preset == _PRESET_OK}
 
 
@@ -205,7 +220,12 @@ def audit(conn, *, session, wake_started_at, enabled, evidence, tool_calls,
     if review is None:
         review = evidence.get('preexec_count') or 0
     review_count = int(review)
-    executed = int(completed_results or 0)
+    # executed_count = 工具主体入口计数（entry，body 进入），与执行结果 completed 独立；
+    # 缺 entry 字段（旧证据格式）才回退 completed_results。
+    entry = evidence.get('entry_count')
+    if entry is None:
+        entry = completed_results
+    executed = int(entry or 0)
     blocked = int(evidence.get('blocked_count') or 0)
     cur = conn.execute(
         'INSERT INTO dsh_auto_audit(session,wake_started_at,enabled,preset_confirmed,'

@@ -37,7 +37,7 @@ from engine import dsh_auth, dsh_auto  # noqa: E402
 
 SEGMENTS = ("review-allow", "review-deny", "review-rejected",
             "review-exception", "review-abort", "adapter-block", "policy-never",
-            "cancel-probe")
+            "cancel-probe", "approval-cancelled")
 
 # 审查层夹具：拦截 llm/stream，识别 Auto 审查请求（system 以 REVIEW_POLICY 开头），
 # 返回固定决策流（text-delta + finish stop）；异常时 throw，abort 时 finish aborted。
@@ -45,9 +45,15 @@ REVIEW_FIXTURE = """export const name = "review-fixture";
 export const inject = ["llm"];
 export function apply(ctx) {
     let reviewCount = 0;
+    let passCount = 0;
     ctx.on("llm/stream", (options, fallback) => {
         const sys = options && options.system;
-        if (typeof sys === "string" && sys.startsWith("REVIEW_POLICY")) {
+        const temp = options && options.temperature;
+        // 精确识别 Auto 审查请求：system 以 REVIEW_POLICY 开头 + temperature 固定 0
+        // （classifyRisk 组装，非 agent-loop 请求——agent-loop 请求经 markAgentLoopRequest
+        // 进 WeakSet，审查请求不在，isAgentLoopRequest(options)===false；以 REVIEW_POLICY
+        // 前缀 + temperature 0 复合识别等价区分）。
+        if (typeof sys === "string" && sys.startsWith("REVIEW_POLICY") && temp === 0) {
             reviewCount += 1;
             const decision = process.env.REVIEW_DECISION || "allow";
             console.error(`[review-fixture] review #${reviewCount} decision=${decision}`);
@@ -67,6 +73,9 @@ export function apply(ctx) {
                 yield { type: "finish", reason: { kind: "stop" } };
             })();
         }
+        // 普通请求透传（不拦截）：累计 pass-through 计数证明不误拦截。
+        passCount += 1;
+        console.error(`[review-fixture] pass-through #${passCount} sys=${String(sys).slice(0, 24)} temp=${temp}`);
         return fallback();
     });
 }
@@ -81,6 +90,7 @@ export function apply(ctx) {
         console.error(`[approval-fixture] request tool=${req && req.toolName} outcome=${outcome}`);
         if (outcome === "rejected") return "rejected";
         if (outcome === "allowed-once") return "allowed-once";
+        if (outcome === "cancelled") return "cancelled";
         return fallback();
     });
 }
@@ -223,6 +233,21 @@ def _read_profile_selection(source_home: Path) -> list:
             ("agent-default-model", "llm-deepseek", "llm-pi-ai", "deepseek-account")]
 
 
+def _cleanup_dirs(dirs) -> dict:
+    """统一回收临时目录并核验清理结果（rmtree 后目录确实移除，失败明确报错不静默）。"""
+    report = {}
+    for d in dirs:
+        if not d.exists():
+            report[str(d)] = True  # 已不存在
+            continue
+        try:
+            shutil.rmtree(d)
+            report[str(d)] = not d.exists()
+        except OSError as e:
+            report[str(d)] = f"rmtree error: {e}"
+    return report
+
+
 def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision: str = "allow",
          outcome: str = None, unload: bool = False, policy_never: bool = False,
          cancel_probe: bool = False) -> dict:
@@ -333,9 +358,13 @@ def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision:
         "final": final.get("text", "") if "DSH_LAYERS" in final.get("text", "") else "[omitted]",
         "stderr_tail": err[-600:] if err else "",
     }
-    shutil.rmtree(private, ignore_errors=True)
-    shutil.rmtree(home, ignore_errors=True)
-    return result
+    try:
+        return result
+    finally:
+        # 统一回收自启资源/临时目录 + 核验清理结果（finally 保证异常路径也回收，不静默）。
+        result["cleanup"] = _cleanup_dirs([private, home])
+        result["cleanup_ok"] = bool(result["cleanup"]) and all(
+            v is True for v in result["cleanup"].values())
 
 
 def _pass(segment, r):
@@ -381,6 +410,12 @@ def _pass(segment, r):
                 and any("pre-abort outcome=cancelled" in l for l in lines)
                 and any("wait-barrier=entered" in l for l in lines)
                 and any("wait-abort outcome=cancelled" in l for l in lines))
+    if segment == "approval-cancelled":
+        # 审批 cancelled → serviceAsk 映射 deny（approvalCancelled）→ 工具主体不执行：
+        # marker 缺失 + 无 completed；审批夹具落 outcome=cancelled 证据。
+        return (not r["marker_written"] and not completed
+                and r["review_count"] >= 1 and r["review_decisions"] == ["deny"]
+                and any("outcome=cancelled" in l for l in r["approval_lines"]))
     return False
 
 
@@ -409,9 +444,11 @@ def main() -> int:
     for seg in segs:
         r = _run(args.entry, args.source_home, args.test_directory, args.node,
                  decision="allow" if seg in ("review-allow", "cancel-probe") else
-                          ("deny" if seg in ("review-deny", "review-rejected", "policy-never")
+                          ("deny" if seg in ("review-deny", "review-rejected", "policy-never",
+                                             "approval-cancelled")
                            else ("abort" if seg == "review-abort" else "throw")),
-                 outcome="rejected" if seg == "review-rejected" else None,
+                 outcome=("rejected" if seg == "review-rejected"
+                          else ("cancelled" if seg == "approval-cancelled" else None)),
                  unload=(seg == "adapter-block"),
                  policy_never=(seg == "policy-never"),
                  cancel_probe=(seg == "cancel-probe"))

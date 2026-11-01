@@ -261,6 +261,32 @@ class AuditTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_entry_count_and_call_ids_from_adapter(self):
+        # req#138 node1609：工具主体入口计数（entry）与 callId 关联从适配插件证据行提取。
+        ev = dsh_auto.preset_evidence([
+            "[auto-enable] ENTRY name=probe callId=c1",
+            "[auto-enable] BLOCK preset=n/a name=x callId=c2",
+            "[auto-enable] state preset=auto preexec=2 review=0 entry=1 blocked=1",
+        ])
+        self.assertEqual(ev["entry_count"], 1)
+        self.assertEqual(ev["call_ids"], ["c1", "c2"])
+
+    def test_audit_executed_from_entry_not_completed(self):
+        # req#138 node1609：executed_count = 工具主体入口（entry，body 进入），与执行结果
+        # completed 独立；entry=2 但 completed=1 时 executed 记 2（非 completed 反推）。
+        conn = db.get_connection()
+        try:
+            rid = dsh_auto.audit(conn, session="s6", wake_started_at=128.0, enabled=True,
+                                 evidence={"preexec_count": 3, "review_count": 1,
+                                           "entry_count": 2, "blocked_count": 0,
+                                           "confirmed": True},
+                                 tool_calls=3, completed_results=1, ts=db.now_iso())
+            conn.commit()
+            row = conn.execute("SELECT * FROM dsh_auto_audit WHERE id=?", (rid,)).fetchone()
+            self.assertEqual(row["executed_count"], 2)  # entry=2，非 completed=1
+        finally:
+            conn.close()
+
     def test_blocked_from_evidence_not_derived(self):
         # req#138 F7：blocked 不再由 tool_calls-completed 反推（否则审查拒绝与适配阻断混同）。
         conn = db.get_connection()
