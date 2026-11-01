@@ -49,12 +49,16 @@ export function apply(ctx) {
     ctx.on("llm/stream", (options, fallback) => {
         const sys = options && options.system;
         const temp = options && options.temperature;
-        // 精确识别 Auto 审查请求：system 以 REVIEW_POLICY 开头 + temperature 固定 0
-        // （classifyRisk 组装的审查请求；agent-loop 请求经 markAgentLoopRequest 进 WeakSet、
-        // 审查请求不在，isAgentLoopRequest===false——但该函数是 dsh-llm 模块级导出，
-        // 本地 .mjs 裸说明符 @deepseek-ai/dsh-llm 解析失败（同 @deepseek-ai/dsh-user-approval），
-        // 故以 REVIEW_POLICY 前缀 + temperature 0 复合识别等价区分）。
-        if (typeof sys === "string" && sys.startsWith("REVIEW_POLICY") && temp === 0) {
+        // 精确识别 Auto 审查请求：system 以 REVIEW_POLICY 原文开头（首行「REVIEW_POLICY」
+        // 后接「You are the final authorization reviewer...」，classifyRisk 组装的审查请求）
+        // + temperature 固定 0。与 isAgentLoopRequest 等价：审查请求未进 agent-loop WeakSet
+        // （false），普通 agent 请求进（true）——但 isAgentLoopRequest 是 dsh-llm 模块级导出，
+        // 本地 .mjs 裸说明符 @deepseek-ai/dsh-llm 解析失败（同 dsh-user-approval），故以
+        // REVIEW_POLICY 原文前缀 + temperature 0 复合识别等价区分；裸「REVIEW_POLICY」前缀
+        // 过宽（会误拦 REVIEW_POLICY_EXTRA 等非审查请求），须用原文精确前缀。
+        if (typeof sys === "string"
+                && sys.startsWith("REVIEW_POLICY" + String.fromCharCode(10) + "You are the final authorization reviewer")
+                && temp === 0) {
             reviewCount += 1;
             const decision = process.env.REVIEW_DECISION || "allow";
             console.error(`[review-fixture] review #${reviewCount} decision=${decision}`);
@@ -78,6 +82,27 @@ export function apply(ctx) {
         passCount += 1;
         console.error(`[review-fixture] pass-through #${passCount} sys=${String(sys).slice(0, 24)} temp=${temp}`);
         return fallback();
+    });
+}
+"""
+
+# 非审查探针：合成一个「REVIEW_POLICY 前缀 + temperature 0 但非审查原文」的普通请求，
+# 断言 review-fixture 不误拦（精确前缀「REVIEW_POLICY\nYou are the final authorization
+# reviewer」不匹配 REVIEW_POLICY_EXTRA）→ 透传（pass-through 日志 + review_count=0）。
+NON_REVIEW_PROBE = """export const name = "non-review-probe";
+export const inject = ["llm"];
+export function apply(ctx) {
+    ctx.on("session/created", () => {
+        const stream = ctx.llm.stream({
+            system: "REVIEW_POLICY_EXTRA", temperature: 0,
+            messages: [{ role: "user", content: "reply exactly ok" }],
+        });
+        (async () => {
+            try {
+                for await (const _ of stream) {}
+            } catch (e) {}
+            console.error("[non-review-probe] fired");
+        })();
     });
 }
 """
@@ -251,7 +276,7 @@ def _cleanup_dirs(dirs) -> dict:
 
 def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision: str = "allow",
          outcome: str = None, unload: bool = False, policy_never: bool = False,
-         cancel_probe: bool = False) -> dict:
+         cancel_probe: bool = False, passthrough: bool = False) -> dict:
     """一次真实 DSH 运行，返回结构化证据。"""
     private = None
     home = None
@@ -279,6 +304,8 @@ def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision:
         policy_fx.write_text(POLICY_FIXTURE, encoding="utf-8")
         cancel_fx = private / "cancel-probe-fixture.mjs"
         cancel_fx.write_text(CANCEL_PROBE_FIXTURE, encoding="utf-8")
+        passthrough_fx = private / "non-review-probe.mjs"
+        passthrough_fx.write_text(NON_REVIEW_PROBE, encoding="utf-8")
         marker_probe = private / "marker-probe.cjs"
         marker_probe.write_text(MARKER_PROBE, encoding="utf-8")
         marker_file = private / "body-marker.txt"
@@ -296,6 +323,8 @@ def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision:
             insert_main.append({"id": "approval-policy-fixture", "name": str(policy_fx)})
         if cancel_probe:
             insert_main.append({"id": "cancel-probe-fixture", "name": str(cancel_fx)})
+        if passthrough:
+            insert_main.append({"id": "non-review-probe", "name": str(passthrough_fx)})
     
         overlay = [
             {"id": "credentials", "disabled": False, "config": {"path": str(cred), "watch": False}},
@@ -421,6 +450,14 @@ def _pass(segment, r):
         return (not r["marker_written"] and not completed
                 and r["review_count"] >= 1 and r["review_decisions"] == ["deny"]
                 and any("outcome=cancelled" in l for l in r["approval_lines"]))
+    if segment == "review-passthrough":
+        # 「前缀+temp0 但非审查」反例：non-review-probe 合成 system=REVIEW_POLICY_EXTRA + temp0
+        # 请求，review-fixture 精确前缀（REVIEW_POLICY 原文）不匹配 → 透传（pass-through 日志
+        # 含 REVIEW_POLICY_EXTRA），不误拦为审查；marker 工具的真实审查（REVIEW_POLICY 原文）
+        # 仍被拦截（review_count==1）。证明前缀识别不误拦「同前缀非审查」请求。
+        return (r["marker_written"] and completed
+                and "REVIEW_POLICY_EXTRA" in r["stderr_tail"]
+                and r["review_count"] == 1)
     return False
 
 
@@ -448,7 +485,8 @@ def main() -> int:
     all_passed = True
     for seg in segs:
         r = _run(args.entry, args.source_home, args.test_directory, args.node,
-                 decision="allow" if seg in ("review-allow", "cancel-probe") else
+                 decision="allow" if seg in ("review-allow", "cancel-probe", "review-passthrough")
+                          else
                           ("deny" if seg in ("review-deny", "review-rejected", "policy-never",
                                              "approval-cancelled")
                            else ("abort" if seg == "review-abort" else "throw")),
@@ -456,7 +494,8 @@ def main() -> int:
                           else ("cancelled" if seg == "approval-cancelled" else None)),
                  unload=(seg == "adapter-block"),
                  policy_never=(seg == "policy-never"),
-                 cancel_probe=(seg == "cancel-probe"))
+                 cancel_probe=(seg == "cancel-probe"),
+                 passthrough=(seg == "review-passthrough"))
         outputs[seg] = r
         # cleanup_ok 进入总 passed：清理失败（rmtree 后目录仍存在）不通过。
         outputs[seg]["passed"] = _pass(seg, r) and bool(r.get("cleanup_ok", False))

@@ -271,23 +271,33 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(ev["entry_count"], 1)
         self.assertEqual(ev["call_ids"], ["c1", "c2"])
 
-    def test_audit_executed_from_executed_results_not_entry(self):
-        # req#138 node1615：executed_count = 工具主体入口（tool_result completed+error），
-        # 非 tools/pre-execute 的 entry（审批前，拒绝/取消的工具也被 entry 计，但 body 未 dispatch）。
-        # entry_count=3 但 executed_results=2（body 实际 dispatch 2 次）时 executed 记 2。
+    def test_audit_executed_is_completed_not_entry(self):
+        # req#138 node1618：executed_count = tool_result completed（body 真正 dispatch 且成功），
+        # 非 pre-execute entry（审批前，拒绝/取消也被 entry 计），也非 tool_result error
+        # （审批取消 body 未进入与执行出错无法区分）。entry_count=3 但 completed=1 时 executed 记 1。
         conn = db.get_connection()
         try:
             rid = dsh_auto.audit(conn, session="s6", wake_started_at=128.0, enabled=True,
                                  evidence={"preexec_count": 3, "review_count": 1,
                                            "entry_count": 3, "blocked_count": 0,
                                            "confirmed": True},
-                                 tool_calls=3, completed_results=1, executed_results=2,
-                                 ts=db.now_iso())
+                                 tool_calls=3, completed_results=1, ts=db.now_iso())
             conn.commit()
             row = conn.execute("SELECT * FROM dsh_auto_audit WHERE id=?", (rid,)).fetchone()
-            self.assertEqual(row["executed_count"], 2)  # tool_result=2，非 entry=3
+            self.assertEqual(row["executed_count"], 1)  # completed=1，非 entry=3
         finally:
             conn.close()
+
+    def test_review_fixture_exact_policy_prefix_not_bare(self):
+        # req#138 node1618：审查夹具识别用 REVIEW_POLICY 原文前缀（「REVIEW_POLICY\nYou are the
+        # final authorization reviewer...」），非裸「REVIEW_POLICY」（裸前缀会误拦 REVIEW_POLICY_EXTRA
+        # 等「同前缀+temp0 非审查」请求——isAgentLoopRequest 是 dsh-llm 模块级导出、本地 .mjs
+        # 裸说明符解析失败，故以原文前缀 + temperature 0 复合识别等价区分）。
+        from scripts import verify_dsh_auto_layers as _v
+        src = _v.REVIEW_FIXTURE
+        self.assertIn('"REVIEW_POLICY" + String.fromCharCode(10) + "You are the final authorization reviewer"',
+                      src)
+        self.assertNotIn('startsWith("REVIEW_POLICY")', src)  # 不再裸前缀
 
     def test_blocked_from_evidence_not_derived(self):
         # req#138 F7：blocked 不再由 tool_calls-completed 反推（否则审查拒绝与适配阻断混同）。

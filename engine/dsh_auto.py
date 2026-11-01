@@ -209,24 +209,24 @@ AUDIT_FAIL_TEXT = (
 
 
 def audit(conn, *, session, wake_started_at, enabled, evidence, tool_calls,
-          completed_results, executed_results=None, ts) -> int:
+          completed_results, ts) -> int:
     """每轮 Auto 审计落库：审查请求与工具主体执行独立计数（req#138 F7）。
 
     review_count = 适配插件 llm/stream 拦截到的实际审查请求数（system 以 REVIEW_POLICY
-    开头，非 tools/pre-execute 日志行近似）；executed_count = 工具主体入口（tool_result
-    completed+error，body 实际 dispatch 并返回，与 completed 独立）；blocked_count = 适配
-    插件在 current≠auto 时阻断的工具数（F2 fail-closed，副作用未发生）——三者独立取证，
-    不用 tool_calls-completed 反推 blocked，也不把 tools/pre-execute 的「工具尝试」当执行。"""
+    开头，非 tools/pre-execute 日志行近似）；executed_count = tool_result completed 数
+    （工具主体执行成功，allow 后 body 真正 dispatch 并完成）；blocked_count = 适配插件
+    在 current≠auto 时阻断的工具数（F2 fail-closed，副作用未发生）——三者独立取证，
+    不用 tool_calls-completed 反推 blocked。executed 只取 completed：tool_result error
+    无法区分「审批取消（body 未进入）」与「执行出错（body 进入）」，故 error 不计入口。"""
     # review_count 只在 review 字段缺失（旧证据格式无 llm/stream 计数）时才回退 preexec；
     # review=0 是合法值（审查异常/跳过时实际审查数为 0），不得被 or 短路成 preexec。
     review = evidence.get('review_count')
     if review is None:
         review = evidence.get('preexec_count') or 0
     review_count = int(review)
-    # executed_count = 工具主体入口（tool_result completed+error，body 实际 dispatch），
-    # 非适配插件 tools/pre-execute 的 entry（审批前，会把拒绝/取消/异常的工具也计入口）。
-    # 缺 executed_results（旧调用）回退 completed_results（tool_result completed）。
-    executed = int(executed_results if executed_results is not None else completed_results or 0)
+    # executed_count = tool_result completed（body 真正 dispatch 且成功），非 pre-execute
+    # entry（审批前）也非 tool_result error（审批取消 body 未进入与执行出错无法区分）。
+    executed = int(completed_results or 0)
     blocked = int(evidence.get('blocked_count') or 0)
     cur = conn.execute(
         'INSERT INTO dsh_auto_audit(session,wake_started_at,enabled,preset_confirmed,'
