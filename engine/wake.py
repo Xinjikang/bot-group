@@ -1363,12 +1363,16 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
             dsh_reader = _th.Thread(target=_dsh_reader, daemon=True, name=f"dsh-{profile}")
             dsh_reader.start()
             # stderr 单独收（CLI 诊断），只保留滚动尾部供退出判读；必须排空防止管道
-            # 写满阻塞子进程。
+            # 写满阻塞子进程。req#138 F6：Auto 状态行在读取线程内**流式维护**（独立于
+            # 40 行诊断尾部滚动），40 行截断不丢 session/created 与早期 pre-execute 证据。
             dsh_err_tail = []
+            dsh_auto_state_lines = []
             def _dsh_err_reader():
                 for line in proc.stderr:
                     line = line.strip()
                     if line:
+                        if dsh_auto.STATE_MARKER in line:
+                            dsh_auto_state_lines.append(line)
                         dsh_err_tail.append(line)
                         if len(dsh_err_tail) > 40:
                             del dsh_err_tail[:-40]
@@ -1434,7 +1438,9 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                 # 「session/created -> preset=auto」运行时证据，否则判能力失效——
                 # 阻止已启用审批的执行继续（插件卸载会把 Auto 会话迁移 Full access）。
                 if dsh_auto_enabled:
-                    auto_evidence = dsh_auto.preset_evidence(dsh_err_tail or [])
+                    # req#138 F6：用读取线程内流式维护的状态行（独立于 40 行诊断尾部），
+                    # 而非被截断的 dsh_err_tail。
+                    auto_evidence = dsh_auto.preset_evidence(dsh_auto_state_lines or [])
                     if not auto_evidence['confirmed']:
                         error = (dsh_auto.AUDIT_FAIL_TEXT + '; ' + (error or '')).strip()
                     conn = db.get_connection()

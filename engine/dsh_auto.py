@@ -26,29 +26,40 @@ SIDE_FILE = '.group-engine-auto-review'
 ADAPTER_ID = 'auto-enable-adapter'
 ADAPTER_FILE = 'auto-enable-adapter.mjs'
 # 适配插件 stderr 证据行（引擎审计 + fail-closed 判读的唯一事实源）。
-# req#138 F6：改用「累积状态行」——每次事件输出一条 `[auto-enable] state preset=.. preexec=.. blocked=..`，
-# 末位状态行携带完整累计值；40 行滚动尾部截断不会丢 session/created 与早期 pre-execute 证据。
+# req#138 F6：改用「累积状态行」——每次事件输出一条 `[auto-enable] state preset=.. preexec=.. review=.. blocked=..`，
+# 末位状态行携带完整累计值。引擎在 stderr 读取线程内**流式维护状态行**（独立于 40 行诊断尾部滚动），
+# 40 行截断不会丢 session/created 与早期 pre-execute 证据。
 _STATE_MARKER = '[auto-enable] state'
+STATE_MARKER = _STATE_MARKER  # wake.py 流式维护状态行用（公开别名）
 _BLOCK_MARKER = '[auto-enable] BLOCK'
 _PRESET_OK = 'auto'  # state 行 preset= 捕获值须为 auto 才算会话预设生效
 
 # 适配插件源码（probe-auto2 的 ADAPTER 实测版 + req#138 F2/F6/F7）：
 # - session/created 调原生 set 并记录 preset 确认（evidence 唯一事实源）；
+# - llm/stream 拦截识别 Auto 审查请求（system 以 REVIEW_POLICY 开头）累积 review 计数（F7 实际审查请求）；
 # - tools/pre-execute 累积 preexec 计数；current≠auto 时 fail-closed **阻断**（不 next，
 #   工具不执行，副作用不发生），并累加 blocked；current==auto 时 next() 放行交由原生
 #   auto-review 审查。证据走 stderr（累积状态行），不与 stdout --json 事件流混淆。
 ADAPTER_SOURCE = """export const name = "auto-enable-adapter";
-export const inject = ["permissionPresets"];
+export const inject = ["permissionPresets", "llm"];
 export function apply(ctx) {
     let presetConfirmed = false;
     let preexec = 0;
+    let review = 0;
     let blocked = 0;
     const state = () => console.error(
-        `[auto-enable] state preset=${presetConfirmed ? "auto" : "n/a"} preexec=${preexec} blocked=${blocked}`);
+        `[auto-enable] state preset=${presetConfirmed ? "auto" : "n/a"} preexec=${preexec} review=${review} blocked=${blocked}`);
     ctx.on("session/created", (session) => {
         ctx.permissionPresets.set(session, "auto");
         presetConfirmed = ctx.permissionPresets.current(session) === "auto";
         state();
+    });
+    ctx.on("llm/stream", (options, fallback) => {
+        const sys = options && options.system;
+        if (typeof sys === "string" && sys.startsWith("REVIEW_POLICY")) {
+            review += 1;
+        }
+        return fallback();
     });
     ctx.on("tools/pre-execute", (exec, next) => {
         preexec += 1;
@@ -142,28 +153,35 @@ def preset_evidence(stderr_lines) -> dict:
 
     读**末位** `[auto-enable] state` 行（每次事件都输出累计值，末位即最终状态），而非逐行
     计数——这样 40 行滚动尾部截断不会丢 session/created 与早期 pre-execute 证据。
-    返回 {session_preset, preexec_count, blocked_count, confirmed}：
-    - preexec_count = tools/pre-execute 总触发次数（审查尝试数）；
+    返回 {session_preset, preexec_count, review_count, blocked_count, confirmed}：
+    - preexec_count = tools/pre-execute 总触发次数（审查尝试近似）；
+    - review_count = llm/stream 拦截到的 Auto 审查请求数（system 以 REVIEW_POLICY 开头，
+      实际审查请求，F7 独立取证）；
     - blocked_count = 适配插件在 current≠auto 时阻断的工具数（F2 fail-closed，副作用未发生）；
     - confirmed = 末位状态 preset==auto 才算会话预设生效。
     """
     session_preset = None
     preexec = 0
+    review = 0
     blocked = 0
     for line in stderr_lines or ():
         if _STATE_MARKER not in line:
             continue
         m_preset = re.search(r'preset=(\S+)', line)
         m_preexec = re.search(r'preexec=(\d+)', line)
+        m_review = re.search(r'review=(\d+)', line)
         m_blocked = re.search(r'blocked=(\d+)', line)
         if m_preset:
             session_preset = m_preset.group(1)
         if m_preexec:
             preexec = int(m_preexec.group(1))
+        if m_review:
+            review = int(m_review.group(1))
         if m_blocked:
             blocked = int(m_blocked.group(1))
     return {'session_preset': session_preset,
             'preexec_count': preexec,
+            'review_count': review,
             'blocked_count': blocked,
             'confirmed': session_preset == _PRESET_OK}
 
@@ -175,13 +193,13 @@ AUDIT_FAIL_TEXT = (
 
 def audit(conn, *, session, wake_started_at, enabled, evidence, tool_calls,
           completed_results, ts) -> int:
-    """每轮 Auto 审计落库：审查尝试与工具主体执行独立计数（req#138 F7）。
+    """每轮 Auto 审计落库：审查请求与工具主体执行独立计数（req#138 F7）。
 
-    review_count = tools/pre-execute 触发次数（审查尝试）；executed_count = tool_result
-    completed 数（工具主体执行成功）；blocked_count = 适配插件在 current≠auto 时阻断的工具
-    数（F2 fail-closed，副作用未发生）——三者独立取证，不再用 tool_calls-completed 反推
-    blocked（那个口径把「审查拒绝」与「适配阻断」混为一谈）。"""
-    review_count = int(evidence.get('preexec_count') or 0)
+    review_count = 适配插件 llm/stream 拦截到的实际审查请求数（system 以 REVIEW_POLICY
+    开头，非 tools/pre-execute 日志行近似）；executed_count = tool_result completed 数
+    （工具主体执行成功）；blocked_count = 适配插件在 current≠auto 时阻断的工具数
+    （F2 fail-closed，副作用未发生）——三者独立取证，不用 tool_calls-completed 反推 blocked。"""
+    review_count = int(evidence.get('review_count') or evidence.get('preexec_count') or 0)
     executed = int(completed_results or 0)
     blocked = int(evidence.get('blocked_count') or 0)
     cur = conn.execute(

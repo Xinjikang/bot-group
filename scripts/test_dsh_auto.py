@@ -70,19 +70,20 @@ class AutoOverlayTests(unittest.TestCase):
 class PresetEvidenceTests(unittest.TestCase):
     def test_confirmed(self):
         ev = dsh_auto.preset_evidence([
-            "[auto-enable] state preset=auto preexec=0 blocked=0",
-            "[auto-enable] state preset=auto preexec=1 blocked=0",
-            "[auto-enable] state preset=auto preexec=2 blocked=0",
+            "[auto-enable] state preset=auto preexec=0 review=0 blocked=0",
+            "[auto-enable] state preset=auto preexec=1 review=1 blocked=0",
+            "[auto-enable] state preset=auto preexec=2 review=2 blocked=0",
         ])
         self.assertTrue(ev["confirmed"])
         self.assertEqual(ev["session_preset"], "auto")
         self.assertEqual(ev["preexec_count"], 2)
+        self.assertEqual(ev["review_count"], 2)
         self.assertEqual(ev["blocked_count"], 0)
 
     def test_not_confirmed(self):
         ev = dsh_auto.preset_evidence([
-            "[auto-enable] state preset=workspace-write preexec=0 blocked=0",
-            "[auto-enable] state preset=workspace-write preexec=1 blocked=1",
+            "[auto-enable] state preset=workspace-write preexec=0 review=0 blocked=0",
+            "[auto-enable] state preset=workspace-write preexec=1 review=0 blocked=1",
         ])
         self.assertFalse(ev["confirmed"])
         self.assertEqual(ev["session_preset"], "workspace-write")
@@ -93,25 +94,48 @@ class PresetEvidenceTests(unittest.TestCase):
         self.assertFalse(ev["confirmed"])
         self.assertIsNone(ev["session_preset"])
         self.assertEqual(ev["preexec_count"], 0)
+        self.assertEqual(ev["review_count"], 0)
         self.assertEqual(ev["blocked_count"], 0)
+
+    def test_review_count_from_llm_stream(self):
+        # req#138 F7：review_count 来自 llm/stream 拦截到的实际审查请求，非 preexec 近似。
+        ev = dsh_auto.preset_evidence([
+            "[auto-enable] state preset=auto preexec=3 review=2 blocked=0",
+        ])
+        self.assertEqual(ev["review_count"], 2)
+        self.assertEqual(ev["preexec_count"], 3)
 
     def test_truncated_tail_keeps_cumulative_state(self):
         # req#138 F6：41 次工具日志挤掉 session/created 后，末位累积状态行仍保留完整计数
         # 与 preset 确认（引擎只留 40 行滚动尾部，喂入尾部也能判 confirmed + preexec=41）。
-        full = ["[auto-enable] state preset=auto preexec=0 blocked=0"]
+        full = ["[auto-enable] state preset=auto preexec=0 review=0 blocked=0"]
         for i in range(1, 42):
-            full.append(f"[auto-enable] state preset=auto preexec={i} blocked=0")
+            full.append(f"[auto-enable] state preset=auto preexec={i} review={i} blocked=0")
         tail = full[-40:]  # 模拟滚动尾部：丢掉开头 session/created 行
         ev = dsh_auto.preset_evidence(tail)
         self.assertTrue(ev["confirmed"])
         self.assertEqual(ev["session_preset"], "auto")
         self.assertEqual(ev["preexec_count"], 41)
 
+    def test_state_line_survives_ordinary_tail(self):
+        # req#138 F6（manager node1593 探针）：state 行后跟 41 条普通日志，40 行诊断尾部
+        # 会把 state 行截掉——必须用读取线程内流式维护的 state_lines，而非截断尾部。
+        state_lines = ["[auto-enable] state preset=auto preexec=41 review=41 blocked=0"]
+        ordinary_tail = ["ordinary diagnostic line"] * 41
+        ev_state = dsh_auto.preset_evidence(state_lines)
+        self.assertTrue(ev_state["confirmed"])
+        self.assertEqual(ev_state["preexec_count"], 41)
+        self.assertEqual(ev_state["review_count"], 41)
+        # 误用截断尾部 → 无 state 行 → 不 confirmed（证明必须用流式维护的 state_lines）
+        ev_tail = dsh_auto.preset_evidence(ordinary_tail)
+        self.assertFalse(ev_tail["confirmed"])
+        self.assertEqual(ev_tail["preexec_count"], 0)
+
     def test_blocked_count_survives_truncation(self):
         # req#138 F7：阻断计数同样来自末位累积状态，尾部截断不丢。
-        lines = ["[auto-enable] state preset=auto preexec=0 blocked=0"] + [
-            f"[auto-enable] state preset=auto preexec={i} blocked=0" for i in range(1, 3)
-        ] + ["[auto-enable] state preset=n/a preexec=3 blocked=1"]
+        lines = ["[auto-enable] state preset=auto preexec=0 review=0 blocked=0"] + [
+            f"[auto-enable] state preset=auto preexec={i} review=0 blocked=0" for i in range(1, 3)
+        ] + ["[auto-enable] state preset=n/a preexec=3 review=0 blocked=1"]
         ev = dsh_auto.preset_evidence(lines[-2:])
         self.assertEqual(ev["blocked_count"], 1)
         self.assertFalse(ev["confirmed"])
@@ -193,17 +217,32 @@ class AuditTests(unittest.TestCase):
         conn = db.get_connection()
         try:
             rid = dsh_auto.audit(conn, session="s1", wake_started_at=123.0, enabled=True,
-                                 evidence={"preexec_count": 3, "blocked_count": 1,
-                                           "confirmed": True},
+                                 evidence={"preexec_count": 3, "review_count": 2,
+                                           "blocked_count": 1, "confirmed": True},
                                  tool_calls=3, completed_results=2, ts=db.now_iso())
             conn.commit()
             row = conn.execute("SELECT * FROM dsh_auto_audit WHERE id=?", (rid,)).fetchone()
             self.assertEqual(row["enabled"], 1)
             self.assertEqual(row["preset_confirmed"], 1)
-            self.assertEqual(row["review_count"], 3)
+            # req#138 F7：review_count 来自 llm/stream 实际审查请求（2），非 preexec 近似（3）。
+            self.assertEqual(row["review_count"], 2)
             self.assertEqual(row["executed_count"], 2)
             # req#138 F7：blocked_count 来自适配插件独立计数，非 tool_calls-completed 反推。
             self.assertEqual(row["blocked_count"], 1)
+        finally:
+            conn.close()
+
+    def test_review_count_falls_back_to_preexec(self):
+        # 旧 state 行无 review=（兼容）：review_count 回退 preexec。
+        conn = db.get_connection()
+        try:
+            rid = dsh_auto.audit(conn, session="s4", wake_started_at=126.0, enabled=True,
+                                 evidence={"preexec_count": 4, "blocked_count": 0,
+                                           "confirmed": True},
+                                 tool_calls=4, completed_results=4, ts=db.now_iso())
+            conn.commit()
+            row = conn.execute("SELECT * FROM dsh_auto_audit WHERE id=?", (rid,)).fetchone()
+            self.assertEqual(row["review_count"], 4)
         finally:
             conn.close()
 

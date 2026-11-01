@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from engine import dsh_auth, dsh_auto  # noqa: E402
 
 SEGMENTS = ("review-allow", "review-deny", "review-rejected",
-            "review-exception", "review-abort", "adapter-block")
+            "review-exception", "review-abort", "adapter-block", "policy-never")
 
 # 审查层夹具：拦截 llm/stream，识别 Auto 审查请求（system 以 REVIEW_POLICY 开头），
 # 返回固定决策流（text-delta + finish stop）；异常时 throw，abort 时 finish aborted。
@@ -97,6 +97,26 @@ export function apply(ctx) {
 }
 """
 
+# 审批层 policy=never 夹具：tools/pre-execute 时把会话 approval policy 切 never
+# （auto-review 门 overrideOf==="never"→denied 或 approval decide effectivePolicy==="never"→
+# rejected，dispatch 前拒绝，不派发 approval/request）。
+POLICY_FIXTURE = """export const name = "approval-policy-fixture";
+export const inject = ["approval"];
+export function apply(ctx) {
+    ctx.on("tools/pre-execute", (exec, next) => {
+        if (process.env.APPROVAL_POLICY === "never" && exec && exec.agent) {
+            try {
+                ctx.approval.setPolicy(exec.agent, "never");
+                console.error("[policy-fixture] approval policy set to never");
+            } catch (e) {
+                console.error("[policy-fixture] setPolicy failed: " + (e && e.message));
+            }
+        }
+        return next();
+    });
+}
+"""
+
 # 取证层：marker MCP 工具（执行主体写文件 marker）。
 MARKER_PROBE = r"""const readline = require('node:readline');
 const fs = require('node:fs');
@@ -129,7 +149,7 @@ input.on('line', line => {
 
 def _free_env_keys(env):
     for k in ("DEEPSEEK_API_KEY", "DSH_PROFILE", "DSH_BIN", "REVIEW_DECISION",
-              "APPROVAL_OUTCOME", "MARKER_FILE"):
+              "APPROVAL_OUTCOME", "APPROVAL_POLICY", "MARKER_FILE"):
         env.pop(k, None)
 
 
@@ -144,10 +164,9 @@ def _read_profile_selection(source_home: Path) -> list:
             ("agent-default-model", "llm-deepseek", "llm-pi-ai", "deepseek-account")]
 
 
-def _run(entry: Path, source_home: Path, test_dir: Path, *, decision: str = "allow",
-         outcome: str = None, unload: bool = False) -> dict:
+def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision: str = "allow",
+         outcome: str = None, unload: bool = False, policy_never: bool = False) -> dict:
     """一次真实 DSH 运行，返回结构化证据。"""
-    node = r"D:\nodejs\node.exe"
     private = Path(tempfile.mkdtemp(prefix="layers_", dir=test_dir))
     home = Path(tempfile.mkdtemp(prefix="layers_home_", dir=test_dir))
     (home / "profiles" / "desktop").mkdir(parents=True)
@@ -166,6 +185,8 @@ def _run(entry: Path, source_home: Path, test_dir: Path, *, decision: str = "all
     approval.write_text(APPROVAL_FIXTURE, encoding="utf-8")
     unload_fx = private / "unload-fixture.mjs"
     unload_fx.write_text(UNLOAD_FIXTURE, encoding="utf-8")
+    policy_fx = private / "approval-policy-fixture.mjs"
+    policy_fx.write_text(POLICY_FIXTURE, encoding="utf-8")
     marker_probe = private / "marker-probe.cjs"
     marker_probe.write_text(MARKER_PROBE, encoding="utf-8")
     marker_file = private / "body-marker.txt"
@@ -179,6 +200,8 @@ def _run(entry: Path, source_home: Path, test_dir: Path, *, decision: str = "all
         insert_main.append({"id": "approval-fixture", "name": str(approval)})
     if unload:
         insert_main.append({"id": "unload-fixture", "name": str(unload_fx)})
+    if policy_never:
+        insert_main.append({"id": "approval-policy-fixture", "name": str(policy_fx)})
 
     overlay = [
         {"id": "credentials", "disabled": False, "config": {"path": str(cred), "watch": False}},
@@ -203,6 +226,8 @@ def _run(entry: Path, source_home: Path, test_dir: Path, *, decision: str = "all
     env.update(DSH_HOME=str(home), REVIEW_DECISION=decision)
     if outcome is not None:
         env["APPROVAL_OUTCOME"] = outcome
+    if policy_never:
+        env["APPROVAL_POLICY"] = "never"
     prompt = ("Call the marker_probe probe tool exactly once with text LAYER_EVIDENCE. "
               "After it, reply DSH_LAYERS_DONE. Do not use any other tool.")
     cmd = [str(entry), "--profile", "headless", "--patch", str(op), "--json", "-"]
@@ -250,26 +275,38 @@ def _run(entry: Path, source_home: Path, test_dir: Path, *, decision: str = "all
 
 def _pass(segment, r):
     completed = any(s == "completed" for s, _ in r["tool_results"])
+    # 门禁：非崩溃（exit 0、未超时）+ 目标工具确实被请求（tool_call 非空）。
+    # 排除「进程崩溃 / 无调用 / marker 写失败」被误判为审批阻断。
+    gated = (not r["timed_out"] and r["exit"] == 0 and bool(r["tool_calls"]))
+    if not gated:
+        return False
     if segment == "review-allow":
-        return (not r["timed_out"] and r["marker_written"] and completed
+        return (r["marker_written"] and completed
                 and r["review_count"] >= 1 and r["review_decisions"] == ["allow"])
     if segment == "review-deny":
         # 工具主体未进入：marker 缺失 + 无 completed 结果；审查命中且 decision=deny。
-        return (not r["timed_out"] and not r["marker_written"] and not completed
+        return (not r["marker_written"] and not completed
                 and r["review_count"] >= 1 and r["review_decisions"] == ["deny"])
     if segment == "review-rejected":
-        return (not r["timed_out"] and not r["marker_written"] and not completed
+        return (not r["marker_written"] and not completed
                 and r["review_count"] >= 1 and r["review_decisions"] == ["deny"]
                 and any("outcome=rejected" in l for l in r["approval_lines"]))
     if segment == "review-exception":
-        return (not r["timed_out"] and not r["marker_written"] and not completed
+        return (not r["marker_written"] and not completed
                 and r["review_count"] >= 1 and r["review_decisions"] == ["throw"])
     if segment == "review-abort":
-        return (not r["timed_out"] and not r["marker_written"] and not completed
+        return (not r["marker_written"] and not completed
                 and r["review_count"] >= 1 and r["review_decisions"] == ["abort"])
     if segment == "adapter-block":
-        return (not r["timed_out"] and not r["marker_written"] and not completed
+        return (not r["marker_written"] and not completed
                 and bool(r["adapter_block_lines"]))
+    if segment == "policy-never":
+        # review deny + approval policy=never → 拒绝（dispatch 前，无 approval-fixture 行，
+        # 工具主体未进入）；policy-fixture 落 setPolicy 证据。
+        return (not r["marker_written"] and not completed
+                and r["review_count"] >= 1 and r["review_decisions"] == ["deny"]
+                and not r["approval_lines"]
+                and any("approval policy set to never" in l for l in r["stderr_tail"].splitlines()))
     return False
 
 
@@ -280,11 +317,15 @@ def main() -> int:
     ap.add_argument("--test-directory", type=Path, required=True)
     ap.add_argument("--evidence", type=Path, required=True)
     ap.add_argument("--segment", default="all", choices=[*SEGMENTS, "all"])
+    ap.add_argument("--node", default=shutil.which("node") or "node",
+                    help="node 可执行文件（MCP 夹具 stdio 服务器）；默认 PATH 发现")
     args = ap.parse_args()
     if not args.entry.is_file():
         raise ValueError(f"--entry 不是文件：{args.entry}")
     if not args.source_home.is_dir():
         raise ValueError(f"--source-home 不是目录：{args.source_home}")
+    if shutil.which(args.node) is None and not Path(args.node).is_file():
+        raise ValueError(f"--node 不可执行：{args.node}（需 PATH 发现或显式绝对路径）")
 
     cred = args.source_home / ".credentials.yaml"
     src_hash = hashlib.sha256(cred.read_bytes()).hexdigest() if cred.is_file() else None
@@ -292,12 +333,13 @@ def main() -> int:
     outputs = {}
     all_passed = True
     for seg in segs:
-        r = _run(args.entry, args.source_home, args.test_directory,
+        r = _run(args.entry, args.source_home, args.test_directory, args.node,
                  decision="allow" if seg == "review-allow" else
-                          ("deny" if seg in ("review-deny", "review-rejected") else
-                           ("abort" if seg == "review-abort" else "throw")),
+                          ("deny" if seg in ("review-deny", "review-rejected", "policy-never")
+                           else ("abort" if seg == "review-abort" else "throw")),
                  outcome="rejected" if seg == "review-rejected" else None,
-                 unload=(seg == "adapter-block"))
+                 unload=(seg == "adapter-block"),
+                 policy_never=(seg == "policy-never"))
         outputs[seg] = r
         outputs[seg]["passed"] = _pass(seg, r)
         all_passed = all_passed and outputs[seg]["passed"]
