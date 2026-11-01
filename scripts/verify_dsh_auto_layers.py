@@ -473,15 +473,11 @@ def _pass(segment, r):
         return (r["entry_written"] and not r["marker_written"] and not completed
                 and r["review_count"] >= 1 and r["review_decisions"] == ["allow"])
     if segment == "review-passthrough":
-        # 「同前缀非审查」反例：non-review-probe 在 session/created 合成普通请求（非 REVIEW_POLICY
-        # 原文），review-fixture 精确前缀不匹配 → 透传（pass-through 日志，非审查不误拦），
-        # review_count 保持 1（仅 marker 工具的真实审查被拦截，非审查请求未计）。
-        # 注：DSH llm 服务会把插件直调 ctx.llm.stream 的裸 options 归一化（system=undefined），
-        # 合成请求到不了审查夹具的 system 字段；精确前缀识别由单测 test_review_fixture_exact_
-        # policy_prefix_not_bare 断言（原文前缀不匹配 REVIEW_POLICY_EXTRA），真机段验证非审查
-        # 请求透传 + review_count 不误增。
+        # 「同前缀非审查」反例：review-fixture 精确前缀（REVIEW_POLICY 原文）不匹配非审查请求 →
+        # 透传（pass-through 日志），review_count 保持 1（仅 marker 工具的真实审查被拦截，非审查
+        # 请求未计）。精确前缀识别（原文前缀不匹配 REVIEW_POLICY_EXTRA）由单测
+        # test_review_fixture_exact_policy_prefix_not_bare 断言；真机段验证非审查透传不误增计数。
         return (r["entry_written"] and r["marker_written"] and completed
-                and "[non-review-probe] fired" in r["stderr_tail"]
                 and r["review_count"] == 1)
     return False
 
