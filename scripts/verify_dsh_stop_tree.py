@@ -321,8 +321,11 @@ class EngineFixture:
         self.engine.stop()
 
 
-def _start_and_capture(fx: EngineFixture, spawner_pid_file: Path) -> dict:
-    """起长 DSH 运行 + 独立核验根 + 逐 PID 后代（含 spawner 工具子进程）——不 /stop。"""
+def _start_and_capture(fx: EngineFixture, spawner_pid_file: Path,
+                       registry: "_ResourceRegistry") -> dict:
+    """起长 DSH 运行 + 独立核验根 + 逐 PID 后代（含 spawner 工具子进程）——不 /stop。
+
+    registry：随发现立即登记已拥有进程（PID → name），capture 返回前异常也能在 finally 取得。"""
     from engine import wake
     fx.post_msg("@dsh-bot 本次任务第一步（不可跳过）是调用名为 spawn_child 的 MCP 工具"
                 "（该工具 spawn 一个长活子进程用于停止清理验证，调用后必须等 tool_result 返回）；"
@@ -347,6 +350,8 @@ def _start_and_capture(fx: EngineFixture, spawner_pid_file: Path) -> dict:
         return {"ok": False, "detail": "no independently-live root pid",
                 "roots": roots, "finder_before": finder_before}
     root_identity_before = {p: snap_root[p][1] for p in live_roots}
+    # 随发现立即登记根（创建身份 name），异常路径 finally 仍能回收。
+    registry.register_many({p: snap_root[p] for p in live_roots})
     # 持续轮询后代并集（逐 PID 记录 parent+name；MCP 服务器/工具子进程在模型调工具后才
     # spawn 且可能短命，并集避免单次快照漏采）。
     seen: dict[int, tuple] = {}
@@ -355,6 +360,7 @@ def _start_and_capture(fx: EngineFixture, spawner_pid_file: Path) -> dict:
         snap = _process_tree()
         for pid, (parent, name) in _descendants(snap, live_roots).items():
             seen.setdefault(pid, (parent, name))
+            registry.register(pid, name)  # 随发现登记后代
         names = {name for (_p, name) in seen.values()}
         # 早退：spawner 子进程已 spawn（PID 文件已写）且已采到 Electron + MCP python 后代。
         if spawner_pid_file.is_file() and any("harness" in n for n in names) \
@@ -363,6 +369,7 @@ def _start_and_capture(fx: EngineFixture, spawner_pid_file: Path) -> dict:
             snap = _process_tree()
             for pid, (parent, name) in _descendants(snap, live_roots).items():
                 seen.setdefault(pid, (parent, name))
+                registry.register(pid, name)  # 随发现登记后代
             break
         time.sleep(0.3)
     # spawner 工具子进程：PID 文件存 {pid, call_id} JSON（工具 body 创建）。
@@ -409,6 +416,7 @@ def _start_and_capture(fx: EngineFixture, spawner_pid_file: Path) -> dict:
         time.sleep(0.5)
     snap_other = _process_tree()
     other_live_roots = [p for p in other_roots if p in snap_other]
+    registry.register_many({p: snap_other[p] for p in other_live_roots})
     return {"ok": True, "run": run, "live_roots": live_roots,
             "root_identity_before": root_identity_before, "finder_before": finder_before,
             "seen": seen, "spawner_child_pid": spawner_child_pid,
@@ -474,19 +482,52 @@ def _stop_pass(r: dict) -> bool:
             and all(r.get("protected_alive_after", {}).values()))
 
 
-def _kill_pids(pids) -> int:
-    """taskkill /T /F 终止给定 PID 及其进程树（DSH 根 + 后代），返回杀掉的数量。"""
-    killed = 0
-    for pid in pids:
+class _ResourceRegistry:
+    """随启动/发现立即登记已拥有进程（PID → 创建身份 name_lower），capture 返回前异常也能取得。
+
+    manager node1625：资源须在启动/发现时立即写入外层 registry，不能等 capture 返回才赋值
+    （返回前异常则外层拿不到已拥有进程、_kill_pids([]) 遗留独立 DSH 树）。
+    """
+
+    def __init__(self):
+        self._procs = {}  # pid -> name_lower（创建身份）
+
+    def register(self, pid, name=None):
         if pid is None:
+            return
+        self._procs[int(pid)] = name
+
+    def register_many(self, pid_map):
+        for pid, val in (pid_map or {}).items():
+            self.register(pid, val[1] if isinstance(val, tuple) else val)
+
+    def pids(self):
+        return list(self._procs.keys())
+
+
+def _kill_registered(registry: _ResourceRegistry) -> dict:
+    """按登记身份核验后 taskkill，返回 {pid: status}——已退出跳过、身份不符（PID 复用）拒杀、
+    returncode 非 0 记 kill_failed、杀后核验存活（killed/still_alive）。不按「调用次数」计成功。"""
+    live = _process_tree()
+    report = {}
+    for pid in registry.pids():
+        if pid not in live:
+            report[pid] = "already_exited"  # 已退出，跳过（不 taskkill 历史 PID）
             continue
-        try:
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-            killed += 1
-        except OSError:
-            pass
-    return killed
+        cur_name = live[pid][1]
+        reg_name = registry._procs.get(pid)
+        if reg_name is not None and cur_name != reg_name:
+            report[pid] = "identity_mismatch"  # PID 复用/身份变化，拒杀
+            continue
+        r = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if r.returncode != 0:
+            report[pid] = f"kill_failed_rc={r.returncode}"
+            continue
+        time.sleep(0.3)
+        after = _process_tree()
+        report[pid] = "killed" if pid not in after else "still_alive"
+    return report
 
 
 def _run_segment(args, segment: str) -> dict:
@@ -500,9 +541,7 @@ def _run_segment(args, segment: str) -> dict:
     spawner_pid_file = Path(args.test_directory) / f"spawn-pid-272-{segment}.txt"
 
     fx = None
-    live_roots = []   # 捕获到的 DSH 根（异常后独立 DSH/MCP 树回收用）
-    seen = {}         # 捕获到的后代（异常后回收用）
-    other_live_roots = []  # 另一 bot（dsh-bot-2）的根（异常后回收用）
+    registry = _ResourceRegistry()  # 随启动/发现登记已拥有进程，异常路径 finally 也能回收
     result = {"segment": segment}
     try:
         spawner_cjs.write_text(SPAWNER_MCP_SOURCE, encoding="utf-8")
@@ -513,10 +552,7 @@ def _run_segment(args, segment: str) -> dict:
         fx = EngineFixture(args.entry, isolated_home, isolated_home_2, args.test_directory,
                            segment, args.host, args.port, data_dir=data_dir,
                            workdir=workdir, scratch=scratch)
-        cap = _start_and_capture(fx, spawner_pid_file)
-        live_roots = cap.get("live_roots", [])
-        seen = cap.get("seen", {})
-        other_live_roots = cap.get("other_live_roots", [])
+        cap = _start_and_capture(fx, spawner_pid_file, registry)
         if not cap.get("ok"):
             result["result"] = cap
             result["passed"] = False
@@ -559,9 +595,10 @@ def _run_segment(args, segment: str) -> dict:
                                 and new_engine_pid != old_engine_pid and dsh_still_alive)
         return result
     finally:
-        # 异常后回收：先终止独立 DSH/MCP 后代进程树（引擎退出后 DSH 独立存活，停引擎≠回收
-        # DSH 树，capture/stop 异常路径也回收），再停引擎，最后清理唯一目录。
-        _kill_pids(list(seen.keys()) + list(live_roots) + list(other_live_roots))
+        # 异常后回收：按登记身份核验后 taskkill 独立 DSH/MCP 后代树（含另一 bot 树）——
+        # 已退出跳过、身份不符（PID 复用）拒杀、returncode 非 0 记 kill_failed、杀后核验存活。
+        kill_report = _kill_registered(registry)
+        result["kill_report"] = kill_report
         if fx is not None:
             fx.close()  # 无论成败都回收自启引擎进程
         time.sleep(1)  # 等 OS 释放引擎进程遗留的 SQLite -shm/-wal 句柄
@@ -589,7 +626,10 @@ def _run_segment(args, segment: str) -> dict:
             cleanup[str(d)] = True if ok else f"delete error: {last_err}"
         result["cleanup"] = cleanup
         result["cleanup_ok"] = all(v is True for v in cleanup.values())
-        result["passed"] = bool(result.get("passed")) and result["cleanup_ok"]
+        # kill 失败/身份不符/still_alive 显式记录并纳入总 passed（进程未真正退出不通过）。
+        kill_ok = all(s in ("killed", "already_exited") for s in kill_report.values())
+        result["kill_ok"] = kill_ok
+        result["passed"] = bool(result.get("passed")) and result["cleanup_ok"] and kill_ok
 
 
 def main() -> int:
