@@ -34,6 +34,7 @@ STATE_MARKER = _STATE_MARKER  # wake.py 流式维护状态行用（公开别名�
 _BLOCK_MARKER = '[auto-enable] BLOCK'
 BLOCK_MARKER = _BLOCK_MARKER  # 公开别名（callId 证据行）
 ENTRY_MARKER = '[auto-enable] ENTRY'  # 工具主体入口 callId 证据行
+BODY_ENTRY_MARKER = '[marker-probe] ENTRY'  # 合成工具主体入口证据行（真实函数进入处，verify 夹具）
 _PRESET_OK = 'auto'  # state 行 preset= 捕获值须为 auto 才算会话预设生效
 
 # 适配插件源码（probe-auto2 的 ADAPTER 实测版 + req#138 F2/F6/F7）：
@@ -49,9 +50,8 @@ export function apply(ctx) {
     let preexec = 0;
     let review = 0;
     let blocked = 0;
-    let entry = 0;
     const state = () => console.error(
-        `[auto-enable] state preset=${presetConfirmed ? "auto" : "n/a"} preexec=${preexec} review=${review} entry=${entry} blocked=${blocked}`);
+        `[auto-enable] state preset=${presetConfirmed ? "auto" : "n/a"} preexec=${preexec} review=${review} blocked=${blocked}`);
     ctx.on("session/created", (session) => {
         ctx.permissionPresets.set(session, "auto");
         presetConfirmed = ctx.permissionPresets.current(session) === "auto";
@@ -74,7 +74,6 @@ export function apply(ctx) {
             state();
             return;  // fail-closed：能力失效即阻断，不 next，工具不执行
         }
-        entry += 1;  // 工具主体入口计数（body 进入，与执行结果 completed 独立）
         console.error(`[auto-enable] ENTRY name=${exec.name ?? "?"} callId=${callId}`);
         state();
         return next();
@@ -177,7 +176,6 @@ def preset_evidence(stderr_lines) -> dict:
             m_preset = re.search(r'preset=(\S+)', line)
             m_preexec = re.search(r'preexec=(\d+)', line)
             m_review = re.search(r'review=(\d+)', line)
-            m_entry = re.search(r'entry=(\d+)', line)
             m_blocked = re.search(r'blocked=(\d+)', line)
             if m_preset:
                 session_preset = m_preset.group(1)
@@ -185,10 +183,12 @@ def preset_evidence(stderr_lines) -> dict:
                 preexec = int(m_preexec.group(1))
             if m_review:
                 review = int(m_review.group(1))
-            if m_entry:
-                entry = int(m_entry.group(1))
             if m_blocked:
                 blocked = int(m_blocked.group(1))
+        elif BODY_ENTRY_MARKER in line:
+            # 主体入口（真实函数进入处）：合成工具 body 进入即落一行，独立于副作用 marker 与
+            # completed。审批取消/拒绝 body 未进入不落行 → entry=0；进入后失败/成功均落行。
+            entry += 1
         elif '[auto-enable] ENTRY' in line or '[auto-enable] BLOCK' in line:
             # 工具入口/阻断的 callId（入口计数按 callId 关联，非仅全局计数）。
             m_cid = re.search(r'callId=(\S+)', line)
@@ -213,20 +213,20 @@ def audit(conn, *, session, wake_started_at, enabled, evidence, tool_calls,
     """每轮 Auto 审计落库：审查请求与工具主体执行独立计数（req#138 F7）。
 
     review_count = 适配插件 llm/stream 拦截到的实际审查请求数（system 以 REVIEW_POLICY
-    开头，非 tools/pre-execute 日志行近似）；executed_count = tool_result completed 数
-    （工具主体执行成功，allow 后 body 真正 dispatch 并完成）；blocked_count = 适配插件
-    在 current≠auto 时阻断的工具数（F2 fail-closed，副作用未发生）——三者独立取证，
-    不用 tool_calls-completed 反推 blocked。executed 只取 completed：tool_result error
-    无法区分「审批取消（body 未进入）」与「执行出错（body 进入）」，故 error 不计入口。"""
+    开头，非 tools/pre-execute 日志行近似）；executed_count = 主体入口数（entry_count，
+    合成工具 body 真实函数进入处落行，独立于副作用 marker 与 completed）——审批取消/拒绝
+    body 未进入 entry=0，进入后失败/成功 entry=1；blocked_count = 适配插件在 current≠auto
+    时阻断的工具数（F2 fail-closed，副作用未发生）。三者独立取证，不用 tool_calls-completed
+    反推 blocked。executed 取 entry（主体入口），不取 completed（会漏「进入主体后失败」）。"""
     # review_count 只在 review 字段缺失（旧证据格式无 llm/stream 计数）时才回退 preexec；
     # review=0 是合法值（审查异常/跳过时实际审查数为 0），不得被 or 短路成 preexec。
     review = evidence.get('review_count')
     if review is None:
         review = evidence.get('preexec_count') or 0
     review_count = int(review)
-    # executed_count = tool_result completed（body 真正 dispatch 且成功），非 pre-execute
-    # entry（审批前）也非 tool_result error（审批取消 body 未进入与执行出错无法区分）。
-    executed = int(completed_results or 0)
+    # executed_count = 主体入口（entry_count，真实函数进入处），非 pre-execute 也非
+    # completed（completed 会漏掉「进入主体后失败 entry=1 completed=0」）。
+    executed = int(evidence.get('entry_count') or 0)
     blocked = int(evidence.get('blocked_count') or 0)
     cur = conn.execute(
         'INSERT INTO dsh_auto_audit(session,wake_started_at,enabled,preset_confirmed,'

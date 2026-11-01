@@ -37,7 +37,7 @@ from engine import dsh_auth, dsh_auto  # noqa: E402
 
 SEGMENTS = ("review-allow", "review-deny", "review-rejected",
             "review-exception", "review-abort", "adapter-block", "policy-never",
-            "cancel-probe", "approval-cancelled")
+            "cancel-probe", "approval-cancelled", "entry-fail", "review-passthrough")
 
 # 审查层夹具：拦截 llm/stream，识别 Auto 审查请求（system 以 REVIEW_POLICY 开头），
 # 返回固定决策流（text-delta + finish stop）；异常时 throw，abort 时 finish aborted。
@@ -88,15 +88,19 @@ export function apply(ctx) {
 
 # 非审查探针：合成一个「REVIEW_POLICY 前缀 + temperature 0 但非审查原文」的普通请求，
 # 断言 review-fixture 不误拦（精确前缀「REVIEW_POLICY\nYou are the final authorization
-# reviewer」不匹配 REVIEW_POLICY_EXTRA）→ 透传（pass-through 日志 + review_count=0）。
+# reviewer」不匹配 REVIEW_POLICY_EXTRA）→ 透传（pass-through 日志 + review_count 不变）。
+# options 形状对齐 classifyRisk（provider/model/system/messages/temperature），否则 llm
+# 服务把缺 provider/model 的裸 options 归一化为 system=undefined、到不了审查夹具。
 NON_REVIEW_PROBE = """export const name = "non-review-probe";
 export const inject = ["llm"];
 export function apply(ctx) {
     ctx.on("session/created", () => {
-        const stream = ctx.llm.stream({
+        const options = {
+            provider: "deepseek", model: "deepseek-chat",
             system: "REVIEW_POLICY_EXTRA", temperature: 0,
-            messages: [{ role: "user", content: "reply exactly ok" }],
-        });
+            messages: [{ role: "user", content: [{ type: "text", text: "reply exactly ok" }] }],
+        };
+        const stream = ctx.llm.stream(options);
         (async () => {
             try {
                 for await (const _ of stream) {}
@@ -227,6 +231,11 @@ input.on('line', line => {
   } else if (m.method === 'tools/list') {
     result = { tools: [{ name: 'probe', description: 'Write a side-effect marker on execution.', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } }] };
   } else if (m.method === 'tools/call') {
+    // 真实函数入口：进入 body 即记录（独立于副作用 marker 写入 + completed）。
+    try {
+      if (process.env.ENTRY_FILE) fs.writeFileSync(process.env.ENTRY_FILE, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+    } catch (e) {}
+    console.error('[marker-probe] ENTRY text=' + (m.params.arguments && m.params.arguments.text));
     try {
       fs.writeFileSync(process.env.MARKER_FILE, JSON.stringify({ text: m.params.arguments.text, pid: process.pid, ts: Date.now() }));
       result = { content: [{ type: 'text', text: 'marker-written' }] };
@@ -276,7 +285,8 @@ def _cleanup_dirs(dirs) -> dict:
 
 def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision: str = "allow",
          outcome: str = None, unload: bool = False, policy_never: bool = False,
-         cancel_probe: bool = False, passthrough: bool = False) -> dict:
+         cancel_probe: bool = False, passthrough: bool = False,
+         fail_marker: bool = False) -> dict:
     """一次真实 DSH 运行，返回结构化证据。"""
     private = None
     home = None
@@ -309,6 +319,7 @@ def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision:
         marker_probe = private / "marker-probe.cjs"
         marker_probe.write_text(MARKER_PROBE, encoding="utf-8")
         marker_file = private / "body-marker.txt"
+        entry_file = private / "body-entry.txt"
     
         insert_main = [
             {"id": "auto-review", "name": "@deepseek-ai/dsh-experimental-auto-review"},
@@ -337,7 +348,9 @@ def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision:
             {"insert": [{"id": "marker-mcp", "name": "@deepseek-ai/dsh-mcp-client", "config": {
                 "serverName": "marker_probe", "transport": "stdio", "command": node,
                 "args": [str(marker_probe)], "cwd": str(private),
-                "env": {"MARKER_FILE": str(marker_file)},
+                "env": {"MARKER_FILE": str(marker_file) if not fail_marker
+                        else str(private / "missing-dir" / "body-marker.txt"),
+                        "ENTRY_FILE": str(entry_file)},
                 "failOnStartupError": True, "reconnect": {"enabled": False}, "toolCallTimeoutMs": 8000,
             }}]},
         ]
@@ -378,6 +391,8 @@ def _run(entry: Path, source_home: Path, test_dir: Path, node: str, *, decision:
         result = {
             "exit": p.returncode,
             "timed_out": timed_out,
+            "entry_written": entry_file.is_file(),
+            "entry_count": sum(1 for l in err.splitlines() if "[marker-probe] ENTRY" in l),
             "marker_written": marker_file.is_file(),
             "tool_calls": [e.get("tool") for e in events if e.get("type") == "tool_call"],
             "tool_results": [(e.get("status"), bool(e.get("isError")))
@@ -409,11 +424,12 @@ def _pass(segment, r):
     if not gated:
         return False
     if segment == "review-allow":
-        return (r["marker_written"] and completed
+        # 成功入口 1：body 进入（entry_written + [marker-probe] ENTRY）+ 副作用 marker + completed。
+        return (r["entry_written"] and r["marker_written"] and completed
                 and r["review_count"] >= 1 and r["review_decisions"] == ["allow"])
     if segment == "review-deny":
-        # 工具主体未进入：marker 缺失 + 无 completed 结果；审查命中且 decision=deny。
-        return (not r["marker_written"] and not completed
+        # 工具主体未进入（取消入口 0）：无 entry + marker 缺失 + 无 completed；审查命中且 decision=deny。
+        return (not r["entry_written"] and not r["marker_written"] and not completed
                 and r["review_count"] >= 1 and r["review_decisions"] == ["deny"])
     if segment == "review-rejected":
         return (not r["marker_written"] and not completed
@@ -445,18 +461,27 @@ def _pass(segment, r):
                 and any("wait-barrier=entered" in l for l in lines)
                 and any("wait-abort outcome=cancelled" in l for l in lines))
     if segment == "approval-cancelled":
-        # 审批 cancelled → serviceAsk 映射 deny（approvalCancelled）→ 工具主体不执行：
-        # marker 缺失 + 无 completed；审批夹具落 outcome=cancelled 证据。
-        return (not r["marker_written"] and not completed
+        # 审批 cancelled → serviceAsk 映射 deny（approvalCancelled）→ 工具主体不执行（取消入口 0）：
+        # 无 entry + marker 缺失 + 无 completed；审批夹具落 outcome=cancelled 证据。
+        return (not r["entry_written"] and not r["marker_written"] and not completed
                 and r["review_count"] >= 1 and r["review_decisions"] == ["deny"]
                 and any("outcome=cancelled" in l for l in r["approval_lines"]))
+    if segment == "entry-fail":
+        # 进入后失败：body 进入（entry_written + [marker-probe] ENTRY 落行，entry=1）+ 副作用
+        # marker 写失败（marker_written=false，tool_result error，completed=0）——证明 entry
+        # 独立于 completed（进入主体后失败 entry=1 completed=0）。
+        return (r["entry_written"] and not r["marker_written"] and not completed
+                and r["review_count"] >= 1 and r["review_decisions"] == ["allow"])
     if segment == "review-passthrough":
-        # 「前缀+temp0 但非审查」反例：non-review-probe 合成 system=REVIEW_POLICY_EXTRA + temp0
-        # 请求，review-fixture 精确前缀（REVIEW_POLICY 原文）不匹配 → 透传（pass-through 日志
-        # 含 REVIEW_POLICY_EXTRA），不误拦为审查；marker 工具的真实审查（REVIEW_POLICY 原文）
-        # 仍被拦截（review_count==1）。证明前缀识别不误拦「同前缀非审查」请求。
-        return (r["marker_written"] and completed
-                and "REVIEW_POLICY_EXTRA" in r["stderr_tail"]
+        # 「同前缀非审查」反例：non-review-probe 在 session/created 合成普通请求（非 REVIEW_POLICY
+        # 原文），review-fixture 精确前缀不匹配 → 透传（pass-through 日志，非审查不误拦），
+        # review_count 保持 1（仅 marker 工具的真实审查被拦截，非审查请求未计）。
+        # 注：DSH llm 服务会把插件直调 ctx.llm.stream 的裸 options 归一化（system=undefined），
+        # 合成请求到不了审查夹具的 system 字段；精确前缀识别由单测 test_review_fixture_exact_
+        # policy_prefix_not_bare 断言（原文前缀不匹配 REVIEW_POLICY_EXTRA），真机段验证非审查
+        # 请求透传 + review_count 不误增。
+        return (r["entry_written"] and r["marker_written"] and completed
+                and "[non-review-probe] fired" in r["stderr_tail"]
                 and r["review_count"] == 1)
     return False
 
@@ -485,7 +510,8 @@ def main() -> int:
     all_passed = True
     for seg in segs:
         r = _run(args.entry, args.source_home, args.test_directory, args.node,
-                 decision="allow" if seg in ("review-allow", "cancel-probe", "review-passthrough")
+                 decision="allow" if seg in ("review-allow", "cancel-probe", "review-passthrough",
+                                             "entry-fail")
                           else
                           ("deny" if seg in ("review-deny", "review-rejected", "policy-never",
                                              "approval-cancelled")
@@ -495,7 +521,8 @@ def main() -> int:
                  unload=(seg == "adapter-block"),
                  policy_never=(seg == "policy-never"),
                  cancel_probe=(seg == "cancel-probe"),
-                 passthrough=(seg == "review-passthrough"))
+                 passthrough=(seg == "review-passthrough"),
+                 fail_marker=(seg == "entry-fail"))
         outputs[seg] = r
         # cleanup_ok 进入总 passed：清理失败（rmtree 后目录仍存在）不通过。
         outputs[seg]["passed"] = _pass(seg, r) and bool(r.get("cleanup_ok", False))

@@ -218,7 +218,8 @@ class AuditTests(unittest.TestCase):
         try:
             rid = dsh_auto.audit(conn, session="s1", wake_started_at=123.0, enabled=True,
                                  evidence={"preexec_count": 3, "review_count": 2,
-                                           "blocked_count": 1, "confirmed": True},
+                                           "entry_count": 2, "blocked_count": 1,
+                                           "confirmed": True},
                                  tool_calls=3, completed_results=2, ts=db.now_iso())
             conn.commit()
             row = conn.execute("SELECT * FROM dsh_auto_audit WHERE id=?", (rid,)).fetchone()
@@ -226,6 +227,7 @@ class AuditTests(unittest.TestCase):
             self.assertEqual(row["preset_confirmed"], 1)
             # req#138 F7：review_count 来自 llm/stream 实际审查请求（2），非 preexec 近似（3）。
             self.assertEqual(row["review_count"], 2)
+            # executed_count = 主体入口 entry（真实函数进入处），非 completed_results。
             self.assertEqual(row["executed_count"], 2)
             # req#138 F7：blocked_count 来自适配插件独立计数，非 tool_calls-completed 反推。
             self.assertEqual(row["blocked_count"], 1)
@@ -262,19 +264,21 @@ class AuditTests(unittest.TestCase):
             conn.close()
 
     def test_entry_count_and_call_ids_from_adapter(self):
-        # req#138 node1609：工具主体入口计数（entry）与 callId 关联从适配插件证据行提取。
+        # req#138 node1621：主体入口计数（entry）从合成工具 [marker-probe] ENTRY 行提取
+        # （真实函数进入处），callId 关联从 [auto-enable] ENTRY/BLOCK 行提取（两者独立）。
         ev = dsh_auto.preset_evidence([
-            "[auto-enable] ENTRY name=probe callId=c1",
+            "[marker-probe] ENTRY text=a",  # 主体入口（真实函数进入处）
+            "[auto-enable] ENTRY name=probe callId=c1",  # dispatch callId
             "[auto-enable] BLOCK preset=n/a name=x callId=c2",
-            "[auto-enable] state preset=auto preexec=2 review=0 entry=1 blocked=1",
+            "[auto-enable] state preset=auto preexec=2 review=0 blocked=1",
         ])
-        self.assertEqual(ev["entry_count"], 1)
+        self.assertEqual(ev["entry_count"], 1)  # 主体入口 1（[marker-probe] ENTRY）
         self.assertEqual(ev["call_ids"], ["c1", "c2"])
 
-    def test_audit_executed_is_completed_not_entry(self):
-        # req#138 node1618：executed_count = tool_result completed（body 真正 dispatch 且成功），
-        # 非 pre-execute entry（审批前，拒绝/取消也被 entry 计），也非 tool_result error
-        # （审批取消 body 未进入与执行出错无法区分）。entry_count=3 但 completed=1 时 executed 记 1。
+    def test_audit_executed_is_entry_not_completed(self):
+        # req#138 node1621：executed_count = 主体入口 entry（真实函数进入处），非 completed
+        # （completed 漏「进入主体后失败 entry=1 completed=0」）。entry=3 但 completed=1 时
+        # executed 记 entry=3。
         conn = db.get_connection()
         try:
             rid = dsh_auto.audit(conn, session="s6", wake_started_at=128.0, enabled=True,
@@ -284,7 +288,7 @@ class AuditTests(unittest.TestCase):
                                  tool_calls=3, completed_results=1, ts=db.now_iso())
             conn.commit()
             row = conn.execute("SELECT * FROM dsh_auto_audit WHERE id=?", (rid,)).fetchone()
-            self.assertEqual(row["executed_count"], 1)  # completed=1，非 entry=3
+            self.assertEqual(row["executed_count"], 3)  # entry=3（主体入口），非 completed=1
         finally:
             conn.close()
 
@@ -304,15 +308,15 @@ class AuditTests(unittest.TestCase):
         conn = db.get_connection()
         try:
             rid = dsh_auto.audit(conn, session="s3", wake_started_at=125.0, enabled=True,
-                                 evidence={"preexec_count": 5, "blocked_count": 0,
-                                           "confirmed": True},
+                                 evidence={"preexec_count": 5, "entry_count": 1,
+                                           "blocked_count": 0, "confirmed": True},
                                  tool_calls=5, completed_results=1, ts=db.now_iso())
             conn.commit()
             row = conn.execute("SELECT * FROM dsh_auto_audit WHERE id=?", (rid,)).fetchone()
             # 旧口径 blocked = 5-1 = 4；新口径按适配插件独立计数 = 0（审查拒绝不计 blocked）。
             self.assertEqual(row["blocked_count"], 0)
             self.assertEqual(row["review_count"], 5)
-            self.assertEqual(row["executed_count"], 1)
+            self.assertEqual(row["executed_count"], 1)  # entry=1（主体入口）
         finally:
             conn.close()
 
