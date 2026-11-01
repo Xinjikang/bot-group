@@ -150,21 +150,28 @@ def _replace_or_append(entries: list, control: dict) -> None:
     dsh_auth 的 tolerant parse 已把 !!js 降级为 '[expression]'——整项替换会丢原生标签。
     故只合并 disabled 等标量键，config 保留 ruamel 原值；唯 credentials 的 config 是本次
     执行的凭据副本路径（spawn 专用，须覆盖）。新 id 追加尾部（保持 cordis patch 顺序）。
+
+    认证控制（deepseek-account/credentials/authorization/telemetry 等）是最终有效状态：
+    须应用到**所有**同 id 条目（而非首个），否则重复 id 的末项仍保留旧启停状态，导致
+    认证路由与最终 provider 分裂（如两个 deepseek-account 只禁首项，末项仍启用）。
     """
     cid = str(control.get('id') or '')
-    for i, entry in enumerate(entries):
-        if isinstance(entry, dict) and str(entry.get('id') or '') == cid:
-            for key, value in control.items():
-                if key == 'id':
-                    continue
-                if key == 'config':
-                    if cid == 'credentials' or 'config' not in entry or entry.get('config') is None:
-                        entry[key] = value
-                    # 其余情况保留 ruamel 原 config（含 !!js/未知字段），不覆盖。
-                    continue
-                entry[key] = value
-            return
-    entries.append(control)
+    matched = False
+    for entry in entries:
+        if not isinstance(entry, dict) or str(entry.get('id') or '') != cid:
+            continue
+        matched = True
+        for key, value in control.items():
+            if key == 'id':
+                continue
+            if key == 'config':
+                if cid == 'credentials' or 'config' not in entry or entry.get('config') is None:
+                    entry[key] = value
+                # 其余情况保留 ruamel 原 config（含 !!js/未知字段），不覆盖。
+                continue
+            entry[key] = value
+    if not matched:
+        entries.append(control)
 
 
 def _find_entry(entries: list, entry_id: str):

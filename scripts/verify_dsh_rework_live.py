@@ -130,7 +130,9 @@ def _segment_overlay(entry: Path, source_home: Path, test_dir: Path) -> dict:
         '    - id: rework-probe\n'
         '      name: ' + str(plugin) + '\n',
         encoding="utf-8")
-    # 凭据副本（账号路由）+ 限权
+    # 凭据副本（账号路由）+ 限权；记录源凭据 hash（证明源 home 未被改写）。
+    src_cred = source_home / '.credentials.yaml'
+    src_hash = fingerprint(src_cred)
     cred = dsh_auth.copy_credentials(str(source_home), str(private))
     bot = {"runtime": "dsh", "config_root": str(home), "profile": "desktop"}
     overlay = native_runtime.dsh_overlay(bot, credentials_path=cred)
@@ -182,8 +184,11 @@ def _segment_overlay(entry: Path, source_home: Path, test_dir: Path) -> dict:
                         and result["overlay_preserves_insert"] and result["exit_code"] == 0
                         and result["persona_hit"] and result["insert_marker_written"]
                         and not timed_out)
+    # 源凭据 hash 回读（证明源 home 未被改写）+ 清理核验。
+    result["source_credentials_unchanged"] = fingerprint(src_cred) == src_hash
     shutil.rmtree(private, ignore_errors=True)
     shutil.rmtree(home, ignore_errors=True)
+    result["cleanup_ok"] = (not private.exists() and not home.exists())
     return result
 
 

@@ -142,6 +142,67 @@ class F3F4F5OverlayTests(unittest.TestCase):
         by_id = {e.get("id"): e for e in overlay}
         self.assertTrue(by_id["deepseek-account"].get("disabled"))
 
+    def test_f4_duplicate_control_all_disabled_on_provider_switch(self):
+        # req#138 返修③：重复 deepseek-account（均 disabled:false）项目切 official → 全部禁用。
+        self.patch.write_text(
+            "- id: agent-default-model\n"
+            "  config:\n    provider: deepseek-account\n    model: deepseek-flash\n"
+            "- id: deepseek-account\n  disabled: false\n"
+            "- id: deepseek-account\n  disabled: false\n",
+            encoding="utf-8")
+        overlay = native_runtime.dsh_overlay(
+            self._bot(), project_overrides={"provider": "deepseek-official"})
+        accounts = [e for e in overlay if e.get("id") == "deepseek-account"]
+        self.assertEqual(len(accounts), 2)
+        self.assertEqual([e.get("disabled") for e in accounts], [True, True])
+
+    def test_f4_duplicate_control_all_enabled_on_account(self):
+        # req#138 返修③：反向 official→account，重复 deepseek-account 全部启用（最终 provider）。
+        self.patch.write_text(
+            "- id: agent-default-model\n"
+            "  config:\n    provider: deepseek-official\n    model: deepseek-flash\n"
+            "- id: deepseek-account\n  disabled: true\n"
+            "- id: deepseek-account\n  disabled: true\n",
+            encoding="utf-8")
+        overlay = native_runtime.dsh_overlay(
+            self._bot(), project_overrides={"provider": "deepseek-account"})
+        accounts = [e for e in overlay if e.get("id") == "deepseek-account"]
+        self.assertEqual(len(accounts), 2)
+        self.assertEqual([e.get("disabled") for e in accounts], [False, False])
+
+    def test_f4_duplicate_control_js_config_preserved_on_disable(self):
+        # req#138 返修③：重复 deepseek-account 带 !!js config，禁用时 !!js 逐条保留 + 全部禁用。
+        self.patch.write_text(
+            "- id: agent-default-model\n"
+            "  config:\n    provider: deepseek-account\n    model: deepseek-flash\n"
+            "- id: deepseek-account\n"
+            "  config:\n    accountId: !!js process.env.ACCOUNT_ID\n"
+            "- id: deepseek-account\n"
+            "  config:\n    accountId: !!js process.env.ACCOUNT_ID\n",
+            encoding="utf-8")
+        overlay = native_runtime.dsh_overlay(
+            self._bot(), project_overrides={"provider": "deepseek-official"})
+        accounts = [e for e in overlay if e.get("id") == "deepseek-account"]
+        self.assertEqual(len(accounts), 2)
+        self.assertEqual([e.get("disabled") for e in accounts], [True, True])
+        text = native_runtime.overlay_yaml(overlay)
+        self.assertEqual(text.count("!!js process.env.ACCOUNT_ID"), 2)
+
+    def test_f4_duplicate_credentials_all_get_copy_path(self):
+        # req#138 返修③：重复 credentials 时凭据副本路径落到全部条目（不被后项覆盖）。
+        self.patch.write_text(
+            "- id: agent-default-model\n"
+            "  config:\n    provider: deepseek-account\n    model: deepseek-flash\n"
+            "- id: credentials\n  config:\n    path: /orig/path\n    watch: true\n"
+            "- id: credentials\n  config:\n    path: /orig/path\n    watch: true\n",
+            encoding="utf-8")
+        overlay = native_runtime.dsh_overlay(
+            self._bot(), credentials_path="/tmp/cred-copy.yaml")
+        creds = [e for e in overlay if e.get("id") == "credentials"]
+        self.assertEqual(len(creds), 2)
+        for c in creds:
+            self.assertEqual(c["config"]["path"], "/tmp/cred-copy.yaml")
+
 
 class F8BundledEntryTests(unittest.TestCase):
     def test_bundled_entry_from_registry(self):
