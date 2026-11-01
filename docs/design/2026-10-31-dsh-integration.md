@@ -248,3 +248,9 @@ llm/stream 拦截属于测试夹具，生产侧采用原生审查。夹具先核
 ### 证据口径
 
 F7/F9/F10 当前为源码调用链确认，其他相关项有合成探针；已有 113 项隔离回归全绿不覆盖这些缺口。各新任务（#269—#272）内部开发/审查/返修/复审沿用各自 task_id，原 #137 与 #263—#268 保留历史记录。
+
+## DSH 成员会话分流修复（req#139）
+
+新增 DSH 成员后项目详情成员/目录页刷新 500：`project_workspaces.view` 对每成员调 `session_adapter.existing_session_id`（engine/project_workspaces.py:182），该函数只有 codex 分支（engine/session_adapter.py:317），DSH 成员无绑定时落到 `resolve_session_by_title`（:326）的 Hermes legacy 兜底，`bot_identity.hermes_home`（engine/bot_identity.py:39）对 runtime!='hermes' 抛 ValueError，且 project_workspaces 的 except 元组未含 ValueError，异常穿透为 500。
+
+修复：`existing_session_id` 按 `bots.runtime` 显式分流，dsh 分支调用现有 `dsh_session_id(conn, project, profile, kind, thread_id, bot_id=...)`（engine/session_adapter.py:604，已提供 runtime 逐行校验、空 session_id 转 None、绑定范围隔离）。有效 DSH 绑定返回真实原生 ID；无绑定、/new 后空绑定、异种 runtime 绑定返回 None；DSH 查询全程不触 Hermes 配置/状态/网关。保持只读，不无条件返回空而隐藏真实会话，不用宽泛异常捕获掩盖错误分流。Hermes/Codex 查询、原生会话与既有成员配置行为不变。
