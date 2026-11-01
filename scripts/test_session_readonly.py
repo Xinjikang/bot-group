@@ -91,21 +91,42 @@ class ReadOnlySessionTests(unittest.TestCase):
             self.assertEqual(self.lookup(member), 'bound')
 
     def test_workspace_get_with_dsh_member_no_hermes_fallback(self):
-        # req#139 task#273：新增 DSH 成员后刷新不再 500；无绑定时 work_session_exists=False，
-        # 且 DSH 分流不触发 Hermes fallback（否则 hermes_home 对 dsh 抛 ValueError）。
+        # req#139 task#273 验收①②④：隔离项目加入两个 DSH profile 并混合 Hermes/Codex，
+        # 真实 GET /projects/p/workspaces 返回 200 + 完整成员列表；DSH 无绑定 work_session_exists=False、
+        # 全程不触发 Hermes fallback；GET 前后 DB 行不变（只读、不创建配置/会话）。
         from scripts import test_dsh_runtime
-        test_dsh_runtime._register_dsh_member(self.conn, project='p', profile='dsh-bot')
+        test_dsh_runtime._register_dsh_member(self.conn, project='p', profile='dsh-headless')
+        test_dsh_runtime._register_dsh_member(self.conn, project='p', profile='dsh-desktop')
+        hermes = self.join(host='hermes', profile='hermes-bot')
+        codex = self.join(host='codex', profile='codex-bot')
+        before = self.conn.total_changes
+        bots_before = self.conn.execute('SELECT COUNT(*) FROM bots').fetchone()[0]
+        bindings_before = self.conn.execute('SELECT COUNT(*) FROM session_bindings').fetchone()[0]
+
+        def _fallback(profile, title, **kw):
+            # Hermes 成员可正常走 legacy 兜底；DSH 成员不得落到 Hermes（否则 hermes_home 抛 ValueError）。
+            self.assertNotIn(profile, ('dsh-headless', 'dsh-desktop'), f'dsh fell through to Hermes: {profile}')
+            return None
+
         with patch.object(gateway, 'enabled', return_value=True), \
              patch.object(gateway, 'ensure', side_effect=AssertionError('dsh read started gateway')), \
-             patch.object(adapter, 'resolve_session_by_title',
-                          side_effect=AssertionError('dsh fell through to Hermes')) as fallback:
+             patch.object(adapter, 'resolve_session_by_title', side_effect=_fallback) as fallback:
             response = self.client.get('/projects/p/workspaces')
         self.assertEqual(response.status_code, 200, response.text)
         members = response.json()['members']
-        self.assertIn('dsh-bot', [m['profile'] for m in members])
-        dsh = next(m for m in members if m['profile'] == 'dsh-bot')
-        self.assertIs(dsh['work_session_exists'], False)
-        fallback.assert_not_called()
+        profiles = [m['profile'] for m in members]
+        for expected in ('dsh-headless', 'dsh-desktop', hermes, codex):
+            self.assertIn(expected, profiles)
+        # 两个 DSH 无绑定 → work_session_exists=False，不误判为有效会话。
+        for prof in ('dsh-headless', 'dsh-desktop'):
+            m = next(x for x in members if x['profile'] == prof)
+            self.assertIs(m['work_session_exists'], False)
+        # Hermes 成员经 legacy 兜底（无绑定 → False），DSH 成员全程不触发 Hermes fallback。
+        self.assertTrue(any(c.args and c.args[0] == hermes for c in fallback.call_args_list))
+        # GET 前后 DB 行不变（只读查询，不创建/修改 Bot、会话或绑定）。
+        self.assertEqual(self.conn.total_changes, before)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM bots').fetchone()[0], bots_before)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM session_bindings').fetchone()[0], bindings_before)
 
     def test_gateway_failures_degrade_only_for_read_only_queries(self):
         from websockets.exceptions import WebSocketException
