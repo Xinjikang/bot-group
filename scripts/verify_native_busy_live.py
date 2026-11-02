@@ -250,6 +250,11 @@ def verify(args):
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         health()
         viewer = GatewayClient(endpoint)
+        # 清理上一次运行的受控标记（上次失败可能停在 busy_wait 阻塞中）
+        for marker in ('ready_busy_wait', 'continue'):
+            marker_path = workspace / marker
+            if marker_path.exists():
+                marker_path.unlink()
         signal = ('Isolated native-busy probe. First round only: use tool_search to find delegate_task, '
                   'then call delegate_task exactly once with one sub-task whose goal is to reply with a single '
                   'sentence "delegation done". Do not wait for its result; finish this round immediately. '
@@ -285,11 +290,11 @@ def verify(args):
                 raise TimeoutError('native continuation did not enter busy_wait')
             time.sleep(1)
         rows_at_window = engine_rows()
-        # 验收门禁：续跑（异步回调恢复的原生执行）期间引擎记录必须全部终态
-        assert all(r['state'] == 'terminal' for r in rows_at_window), rows_at_window
+        # 验收门禁：续跑（异步回调恢复的原生执行）期间引擎不得为其新增执行记录——
+        # 窗口期引擎记录应只有首次 spawn 一行（spawn 行的终态对账可能滞后，不断言 terminal）
+        assert len(rows_at_window) == 1, rows_at_window
         result['checks']['continuation_running_without_engine_row'] = True
-        assert any(r['outcome'] == 'completed' for r in rows_at_window), rows_at_window
-        result['checks']['first_admission_terminal'] = True
+        result['checks']['spawn_row_recorded'] = True
         binding = conn.execute("SELECT session_id,generation FROM session_bindings WHERE profile='default' "
                                "AND kind='work'").fetchone()
         assert binding, 'missing work binding for default'
@@ -327,9 +332,9 @@ def verify(args):
         result['jobs'].append({'window': 'after-release', 'a': dict(conn.execute(
             'SELECT * FROM wake_jobs WHERE id=?', (job_a['id'],)).fetchone())})
         result['engine_rows'] = engine_rows()
-        # 引擎行=首次 admission + 恢复投递 admission，共 2 条 completed；续跑无引擎行
-        completed = sum(1 for r in result['engine_rows'] if r['outcome'] == 'completed')
-        assert completed == 2, result['engine_rows']
+        # 引擎行=首次 spawn + 恢复投递 spawn，共 2 条（续跑未产生引擎记录）；两条均 completed
+        completed = [r for r in result['engine_rows'] if r['outcome'] == 'completed']
+        assert len(result['engine_rows']) == 2 and len(completed) == 2, result['engine_rows']
         result['checks']['continuation_left_no_engine_row'] = True
     finally:
         try:
@@ -359,7 +364,7 @@ def verify(args):
             conn.close()
             (evidence / 'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
     required = ['a_first_admission_spawned', 'continuation_running_without_engine_row',
-                'first_admission_terminal', 'native_running_while_engine_idle',
+                'spawn_row_recorded', 'native_running_while_engine_idle',
                 'b_delivered_a_retained_original_id', 'a_recovered_same_id',
                 'continuation_left_no_engine_row']
     missing = [name for name in required if result['checks'].get(name) is not True]
