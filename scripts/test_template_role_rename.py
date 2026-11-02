@@ -77,7 +77,7 @@ class TemplateRoleRenameTests(unittest.TestCase):
         agents = (self.root / 'AGENTS.md').read_text(encoding='utf-8')
         self.assertIn('QualityLead每次初审或复审交接前', agents)
         self.assertNotIn('审查员', agents)
-        for text in ('result 写明', '被审提交 ID', '问题位置、影响、修订要求和复审条件',
+        for text in ('result 写明', '被审提交 ID', '问题位置、预期与实际及判断依据、影响、修订要求和复审条件',
                      '保留当前任务归属', 'logged=true'):
             self.assertIn(text, agents)
 

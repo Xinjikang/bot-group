@@ -8,7 +8,7 @@
   "roles": [
     {
       "id": "lead", "name": "测试负责人",
-      "responsibilities": "确认测试依据、版本、范围与标准，制定计划、管理需求和任务、协调资源与阻塞、汇总报告并验收关闭",
+      "responsibilities": "确认测试依据、版本、范围与标准，制定计划、管理需求和任务、协调资源与阻塞、汇总报告并验收关闭、统筹整体效率、实质支持、跟踪解除结果",
       "permissions": ["req.create", "req.update", "req.resume", "req.complete", "req.cancel", "task.create", "task.update", "task.resume", "task.complete", "task.cancel"],
       "required": true, "soul_reference": "references/souls/lead.md"
     },
@@ -19,7 +19,7 @@
     },
     {
       "id": "reviewer", "name": "测试评审员",
-      "responsibilities": "独立评审需求覆盖、用例和脚本断言，核验缺陷、执行证据及报告统计，复审修订并说明质量结论的边界",
+      "responsibilities": "独立评审需求覆盖、用例和脚本断言，核验缺陷、执行证据及报告统计，复审修订并说明质量结论的边界、修订指导",
       "permissions": [], "required": true, "soul_reference": "references/souls/reviewer.md"
     }
   ],

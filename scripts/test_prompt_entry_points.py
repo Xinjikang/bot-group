@@ -24,7 +24,7 @@ class PromptEntryPointTests(unittest.TestCase):
                 self.assertLess(prompt.index('requirement → task → node'), prompt.index('## 协作规则'))
                 for contract in ('├─ task A', '│  ├─ node 1', '└─ task B',
                                  '始终保持同一个 task_id', '指定第一个接手人',
-                                 '后续 node 随工作发生逐条产生', '领取同一个 task',
+                                 '后续 node 随工作逐条产生', '领取同一个 task',
                                  'prerequisites 表达不同 task 之间的成果依赖'):
                     self.assertIn(contract, prompt)
                 self.assertEqual(prompt.count('指定第一个接手人'), 1)

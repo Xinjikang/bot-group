@@ -9,7 +9,7 @@
     {
       "id": "pm",
       "name": "产品经理",
-      "responsibilities": "澄清目标与范围、编写 PRD 和验收标准、管理需求与任务、协调成员和阻塞、组织用户确认与走查、验收关闭",
+      "responsibilities": "澄清目标与范围、编写 PRD 和验收标准、管理需求与任务、协调成员和阻塞、组织用户确认与走查、验收关闭、统筹整体效率、实质支持、跟踪解除结果",
       "permissions": [
         "req.create",
         "req.update",
@@ -44,7 +44,7 @@
     {
       "id": "reviewer",
       "name": "原型评审员",
-      "responsibilities": "独立操作验证需求覆盖、业务规则、交互和 UI 规范一致性及可用性，记录问题与证据，复审修改并给出结论",
+      "responsibilities": "独立操作验证需求覆盖、业务规则、交互和 UI 规范一致性及可用性，记录问题与证据，复审修改并给出结论、返修指导",
       "permissions": [],
       "required": true,
       "soul_reference": "references/souls/reviewer.md"
