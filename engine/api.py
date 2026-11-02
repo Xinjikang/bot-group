@@ -821,10 +821,24 @@ class ProfileCreateBody(BaseModel):
     profile: str = Field(min_length=1, max_length=64)
     display_name: str = Field(default='', max_length=100)
     model: str = Field(default='', max_length=200, pattern=r'^[^\r\n]*$')
+    provider: str | None = Field(default=None, max_length=200, pattern=r'^[^\r\n\x00]*$')
     instructions: str = Field(default='', max_length=32000)
     source: ProfileSource | None = None
     reuse_auth: bool = False
     request_id: str = Field(min_length=1, max_length=64)
+
+
+class ProfileSourceSettingsBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    host_type: str = Field(pattern='^(hermes|dsh)$')
+    source: ProfileSource | None = None
+
+
+@router_api.post('/profiles/source-settings')
+def post_profile_source_settings(body: ProfileSourceSettingsBody, identity=Depends(_resolve_identity)):
+    _admin_only(identity, '仅管理员可读取创建配置来源')
+    from . import profile_create
+    return profile_create.source_settings(body.model_dump())
 
 
 @router_api.post('/profiles/create')

@@ -3,6 +3,7 @@ import argparse
 import mimetypes
 import os
 import sys
+import yaml
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlparse
@@ -43,7 +44,7 @@ def main():
     errors, creates, enrollments = [], [], []
     state = {'fail': True, 'lose': False, 'join_fail': False}
     host = fixture.base / 'host'; host.mkdir()
-    (host / 'config.yaml').write_text('model:\n  default: base-model\n')
+    (host / 'config.yaml').write_text('model:\n  default: base-model\n  provider: openai\n')
     (host / '.env').write_text('OPENAI_API_KEY=synthetic-key\n')
     from scripts.test_profile_credentials import seed_catalog
     seed_catalog(host)
@@ -191,7 +192,15 @@ def main():
             assert page.locator('#member-create-auth').count() == 0
             assert '主 profile' in page.locator('#member-create-auth-help').inner_text()
             page.locator('#member-create-source').select_option('')
+            page.wait_for_function('!memberAdd.sourceLoading')
+            assert page.locator('#member-create-model').input_value() == 'base-model'
+            assert page.locator('#member-create-provider').input_value() == 'openai'
             page.locator('#member-create-profile').fill('wizard-hermes')
+            page.locator('#member-create-model').fill('wizard-model')
+            page.locator('#member-create-provider').fill('')
+            assert page.locator('#member-add-join').is_disabled()
+            page.locator('#member-create-provider').fill('openai')
+            page.locator('#dlg-member-add').screenshot(path=str(output / 'hermes-model-provider.png'))
             page.locator('.profile-soul-template-open').last.click()
             page.locator('#profile-soul-template-apply').wait_for(state='visible')
             page.wait_for_function('!document.querySelector("#profile-soul-template-apply").disabled')
@@ -205,6 +214,10 @@ def main():
             assert fixture.conn.execute('SELECT COUNT(*) FROM project_members').fetchone()[0] == count
             wizard.locator('input[data-profile="wizard-hermes"]').uncheck()
             assert (host / 'profiles/wizard-hermes').is_dir()
+            config = yaml.safe_load((host / 'profiles/wizard-hermes/config.yaml').read_text(encoding='utf-8'))
+            assert config['model']['default'] == 'wizard-model'
+            assert config['model']['provider'] == 'openai'
+            assert creates[-1]['provider'] == 'openai'
             wizard.locator('input[data-profile="wizard-hermes"]').check()
             page.locator('#import-next').click()
             page.locator('#import-resource-step').wait_for(state='visible')

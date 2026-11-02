@@ -55,6 +55,13 @@ def run(evidence):
             request.fulfill(json={'bot_id': 77, 'created': True, 'profile': body['profile'],
                                   'host_type': body['host_type'], 'config_root': DSH_ROOT,
                                   'member_profile': None, 'project': None}); return
+        if path == '/profiles/source-settings':
+            body = request.request.post_data_json
+            source = body.get('source') or {}
+            if body['host_type'] == 'hermes':
+                request.fulfill(json={'model': 'hermes-model', 'provider': 'openrouter'}); return
+            request.fulfill(json={'model': 'deepseek-flash', 'provider': 'deepseek-account'}
+                            if source.get('profile') == 'desktop' else {'model': '', 'provider': ''}); return
         if path == '/profiles/candidates':
             request.fulfill(json={'candidates': state['candidates']}); return
         if path == '/projects/p/workspaces':
@@ -112,18 +119,33 @@ def run(evidence):
         assert status(page) == ''
         assert '已发现' not in page.locator('#dlg-member-add').inner_text()
         assert page.locator('#member-create-source option').count() == 3
-        assert page.locator('#member-create-source').input_value() == '1'
+        assert page.locator('#member-create-source').input_value() == '0'
+        assert page.locator('#member-create-model').input_value() == 'deepseek-flash'
+        assert page.locator('#member-create-provider').input_value() == 'deepseek-account'
         profile.press_sequentially('new-headless')
+        page.locator('#member-create-source').select_option('1')
+        page.wait_for_function('!memberAdd.sourceLoading')
+        assert page.locator('#member-create-model').input_value() == ''
+        assert page.locator('#member-create-provider').input_value() == ''
+        assert page.locator('#member-add-join').is_disabled()
         page.locator('#member-create-source').select_option('0')
+        page.wait_for_function('!memberAdd.sourceLoading')
         assert profile.input_value() == 'new-headless'
         assert profile.is_editable()
         page.locator('[name="member-add-host"][value="codex"]').check()
         page.wait_for_function('!memberAdd.scanning')
+        assert page.locator('#member-create-provider').is_hidden()
         assert profile.input_value() == 'new-headless'
         select_dsh(page)
         assert profile.input_value() == 'new-headless'
         page.locator('#member-add-steps details summary').click()
         page.locator('#member-create-model').fill('chosen-model')
+        page.locator('#member-create-provider').fill('')
+        assert page.locator('#member-add-join').is_disabled()
+        page.locator('#member-create-provider').fill('deepseek-official')
+        page.locator('#member-create-source').select_option('1')
+        assert page.locator('#member-create-model').input_value() == 'chosen-model'
+        assert page.locator('#member-create-provider').input_value() == 'deepseek-official'
         page.locator('#member-create-instructions').fill('独立个人指令')
         state['create_ok'] = False
         page.locator('#member-add-join').click()
@@ -146,6 +168,7 @@ def run(evidence):
         assert creates[-1]['host_type'] == 'dsh'
         assert creates[-1]['source'] == {'profile': 'headless', 'config_root': DSH_ROOT}
         assert creates[-1]['model'] == 'chosen-model'
+        assert creates[-1]['provider'] == 'deepseek-official'
         assert creates[-1]['instructions'] == '独立个人指令'
         assert not registers and not validates
 
@@ -159,10 +182,50 @@ def run(evidence):
             if scan == 'error':
                 assert '模拟扫描失败' in status(page)
             profile.fill('default-agent')
+            assert page.locator('#member-add-join').is_disabled()
+            page.locator('#member-create-model').fill('manual-model')
+            page.locator('#member-create-provider').fill('deepseek-account')
             page.locator('#member-add-join').click()
             page.wait_for_function('window.__created !== null')
             assert creates[-1]['source'] is None
         page.set_viewport_size({'width': 1280, 'height': 900})
+
+        # Late source responses cannot overwrite the latest source or a manually edited pair.
+        state['scan'] = 'ok'
+        open_dialog(page)
+        select_dsh(page)
+        page.evaluate('''() => {
+            window.__sourceApi = api; window.__pendingSources = [];
+            api = (path, options) => path === '/profiles/source-settings'
+                ? new Promise(resolve => window.__pendingSources.push(resolve))
+                : window.__sourceApi(path, options);
+        }''')
+        page.locator('#member-create-source').select_option('1')
+        page.locator('#member-create-source').select_option('0')
+        assert page.evaluate('window.__pendingSources.length') == 2
+        page.evaluate('window.__pendingSources[1]({model:"latest-model", provider:"latest-provider"})')
+        page.wait_for_function('!memberAdd.sourceLoading')
+        page.evaluate('window.__pendingSources[0]({model:"stale-model", provider:"stale-provider"})')
+        assert page.locator('#member-create-model').input_value() == 'latest-model'
+        assert page.locator('#member-create-provider').input_value() == 'latest-provider'
+        page.locator('#member-create-source').select_option('1')
+        profile.fill('race-agent')
+        page.locator('#member-create-model').fill('manual-model')
+        page.locator('#member-create-provider').fill('manual-provider')
+        page.evaluate('window.__pendingSources[2]({model:"late-model", provider:"late-provider"})')
+        page.wait_for_function('!memberAdd.sourceLoading')
+        assert page.locator('#member-create-model').input_value() == 'manual-model'
+        assert page.locator('#member-create-provider').input_value() == 'manual-provider'
+        assert page.locator('#member-add-join').is_enabled()
+        page.evaluate('() => { api = window.__sourceApi; }')
+        page.locator('[name="member-add-host"][value="hermes"]').check()
+        page.wait_for_function('!memberAdd.scanning')
+        assert page.locator('#member-create-model').input_value() == 'hermes-model'
+        assert page.locator('#member-create-provider').input_value() == 'openrouter'
+        select_dsh(page)
+        assert page.locator('#member-create-model').input_value() == 'manual-model'
+        assert page.locator('#member-create-provider').input_value() == 'manual-provider'
+        page.locator('#member-add-close').click()
 
         # ---- ④ 已创建 dsh Bot 的绑定资源失效 ----
         state['candidates'] = []

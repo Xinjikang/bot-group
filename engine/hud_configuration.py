@@ -232,7 +232,7 @@ def _profile_options(item):
 def _create_profile(item, changes):
     from . import api
     from pydantic import ValidationError
-    allowed = {'host_type', 'profile', 'display_name', 'model', 'source', 'instructions'}
+    allowed = {'host_type', 'profile', 'display_name', 'model', 'provider', 'source', 'instructions'}
     if not isinstance(changes, dict) or set(changes) - allowed:
         raise HTTPException(400, '创建 profile 参数无效')
     try:

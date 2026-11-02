@@ -20,12 +20,15 @@ def content(home, body):
     parser, source = dsh_profile_config._yaml(raw)
     # Keep runtime routing; UI services and source identity belong to the source profile.
     patch = [item for item in source if isinstance(item, dict) and item.get('id') in _INHERITED]
-    if body['model']:
-        model = next((item for item in patch if item['id'] == 'agent-default-model'), None)
+    if body['model'] or body.get('provider'):
+        model = next((item for item in reversed(patch) if item['id'] == 'agent-default-model'), None)
         if model is None:
             model = {'id': 'agent-default-model', 'config': {}}
             patch.append(model)
-        model.setdefault('config', {})['model'] = body['model']
+        if body['model']:
+            model.setdefault('config', {})['model'] = body['model']
+        if body.get('provider'):
+            model.setdefault('config', {})['provider'] = body['provider']
     instructions = body['instructions'] or f"# {body['display_name'] or body['profile']}\n\n按当前项目的职责、权限和协作约定完成工作。\n"
     patch.append({'id': 'system-prompt', 'config': {'personaPrefix': instructions}})
     package = {'name': 'dsh-profile-' + body['profile'], 'private': True,

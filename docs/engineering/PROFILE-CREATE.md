@@ -13,7 +13,7 @@ Hermes profile 创建、宿主 profile 注册及按已有 Bot ID 入组会校验
 兼容规则集中在 `engine/hermes_profile_names.py`，与 Hermes `hermes_cli/profiles.py` 的 `_RESERVED_NAMES` 及 `default` 例外保持一致。校验使用本地规则，避免在创建与候选扫描时加载宿主运行时模块；升级适配时核对上游列表与验证函数。
 
 - 填写显示名称和 profile 标识；标识使用 1–64 位小写字母、数字、短横线、下划线。默认选择该宿主的 default 作为配置来源，否则选择第一个可用来源；也可选择“使用默认设置”。已加入当前项目的 profile 也可作为来源。
-- “更多设置”可填写模型和个人指令。空模型沿用来源或宿主默认设置；空个人指令生成基础工作约定。
+- Hermes/DSH 的模型与供应商位于来源下方，同组必填；来源读取自动带入，手动编辑后保留整组，切换宿主分别恢复草稿。Codex 显示可选模型，空模型沿用来源或宿主默认设置。“更多设置”填写个人指令，留空生成基础工作约定。
 - Codex 自动复制引擎主账户目录（`CODEX_HOME`，默认 `~/.codex`）的 `auth.json`。配置来源用于继承模型与运行设置，创建界面省去认证选择。使用默认设置或选择其他 profile 作为配置来源时，文件认证仍来自主账户。
 - 新建 Codex Bot 统一使用智能审批（“帮我审批”）及工作区写入沙箱，加入项目时获得项目工作目录授权；创建规则独立于配置来源。创建表单显示该规则。
 - Hermes 自动继承来源的模型配置与凭证。“使用默认设置”读取主 profile 的 `config.yaml` 和 `.env`；指定来源读取该 profile 自身文件。界面说明默认继承行为，OAuth 登录需在新 home 中完成。
@@ -22,7 +22,7 @@ Hermes profile 创建、宿主 profile 注册及按已有 Bot ID 入组会校验
 
 ## DSH 独立创建
 
-DSH 与 Hermes/Codex 共用创建表单和 `POST /profiles/create`。Profile 标识初始为空，由用户填写；配置来源优先 headless，扫描和切换来源保留标识。成功扫描省去数量及目录提示。已有 DSH profile 在成员候选列表选择。
+DSH 与 Hermes/Codex 共用创建表单和 `POST /profiles/create`。Profile 标识初始为空，由用户填写；配置来源优先 desktop，扫描和切换来源保留标识。供应商与模型从来源带入，空来源需手动填写两项。成功扫描省去数量及目录提示。已有 DSH profile 在成员候选列表选择。
 
 新目录为 `DSH_HOME/profiles/<新标识>/`，包含原生 base/headless bundle 声明、空 cordis.yml 和独立 cordis.patch.yml。来源按白名单继承模型、供应商及认证路由；模型覆盖写入 agent-default-model，个人指令写入该 profile 的 system-prompt.config.personaPrefix，可在成员“人格”页继续编辑。共享 HOME 的认证、AGENTS.md 和源 profile 保持原值。创建时检查运行入口；发布后校验目录并注册，支持同请求重试、冲突拒绝和失败回滚，入组沿用调用方确认。设计见 [DSH 独立创建](../design/2026-11-02-dsh-profile-create.md)。
 
@@ -68,6 +68,8 @@ Windows 新 home 保留来源中有效的 `windows.sandbox` 选择（`elevated`�
 - 提醒沿用现有入组请求与目录授权流程，保留已有 Bot 的沙箱实现及审批策略。Hermes 沿用原流程。
 
 ## 创建接口与文件布局
+
+管理员只读接口 `POST /profiles/source-settings` 接收 Hermes/DSH 的 host_type 和可选 source，经扫描匹配后仅返回 model/provider。动态或无效配置返回通用提示，凭据正文保持在宿主。创建接口增加可选 provider：Hermes/DSH 新表单显式提交 model/provider，服务端校验两项均为非空单行文本；旧客户端省略 provider 时保留继承语义和请求恢复指纹。Hermes 写入 model.default/model.provider，DSH 写入 agent-default-model.config.model/provider；Codex 界面省略 provider，程序调用可显式覆盖 model_provider。详见 [字段组设计](../design/2026-11-02-profile-provider-pair.md)。
 
 `POST /profiles/create` 仅供管理员。请求包含 `host_type`、`profile`、`display_name`、可选 `source: {profile, config_root}`、`reuse_auth`、`model`、`instructions` 和 `request_id`。来源必须匹配当前宿主扫描结果。`project` 可省略或为 null/空字符串，此时只创建并注册 Bot，响应 `member_profile` 和 `project` 为 null。提供有效 `project` 的旧调用继续创建并入组；非空无效、归档或已移除项目返回错误，纯空白标识返回 400。响应补充 `host_type`、`config_root` 供列表选择复用。
 

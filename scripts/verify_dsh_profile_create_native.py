@@ -22,6 +22,7 @@ def main():
     fixture.setUp()
     try:
         root, source, body = fixture.fixture()
+        body['provider'] = 'deepseek-official'
         with patch.dict(os.environ, {'DSH_BIN': str(entry)}):
             response = fixture.client.post('/profiles/create', json=body)
             assert response.status_code == 200, response.text
@@ -33,12 +34,13 @@ def main():
         (args.evidence / 'native-stderr.txt').write_text(result.stderr, encoding='utf-8')
         assert result.returncode == 0, result.stderr
         assert 'chosen-model' in result.stdout, 'Model override missing'
+        assert 'provider: deepseek-official' in result.stdout, 'Provider override missing'
         assert '独立个人指令' in result.stdout, 'Profile persona missing'
         assert 'headless' in result.stdout, 'Headless bundle missing'
         assert (source / 'cordis.patch.yml').is_file()
         (args.evidence / 'native-result.json').write_text(json.dumps({
             'exit_code': result.returncode, 'profile': body['profile'],
-            'model_override': True, 'persona': True, 'headless': True,
+            'model_override': True, 'provider_override': True, 'persona': True, 'headless': True,
             'model_requests': 0}, indent=2), encoding='utf-8')
         print('PASS: real API creation and native DSH composed new profile/model/persona/headless; no model requests')
     finally:

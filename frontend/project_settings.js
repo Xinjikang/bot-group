@@ -130,10 +130,10 @@ $('#pj-members-refresh').addEventListener('click', () => loadProjectMembers());
 // Shared profile creation keeps enrollment in the caller's member selection flow.
 let memberAdd = null;
 function memberAddReset(options) {
-  memberAdd = {host: 'hermes', sources: [], scanning: false, error: '',
+  memberAdd = {host: 'hermes', sources: [], scanning: false, sourceLoading: false, error: '', routes: {},
     busy: false, project: options.project || '', template: options.template,
     onCreated: options.onCreated,
-    draft: {profile: '', display_name: '', model: '', instructions: '', source: ''},
+    draft: {profile: '', display_name: '', model: '', provider: '', routeEdited: false, instructions: '', source: ''},
     requestId: [...crypto.getRandomValues(new Uint8Array(16))].map(n => n.toString(16).padStart(2, '0')).join('')};
 }
 function memberProfileError(value) {
@@ -143,7 +143,8 @@ function memberProfileError(value) {
   return '';
 }
 function memberCreateValid() {
-  return !memberProfileError(memberAdd.draft.profile);
+  return !memberAdd.sourceLoading && !memberProfileError(memberAdd.draft.profile)
+    && (memberAdd.host === 'codex' || !!(memberAdd.draft.model.trim() && memberAdd.draft.provider.trim()));
 }
 function renderMemberCreate(steps) {
   const dsh = memberAdd.host === 'dsh';
@@ -157,9 +158,15 @@ function renderMemberCreate(steps) {
       <label for="member-create-source">配置来源</label><select id="member-create-source"><option value="">使用默认设置</option></select>
     </div>
     <p class="profile-help" id="member-create-auth-help"></p>
+    <div class="member-create-route${memberAdd.host === 'codex' ? ' single' : ''}">
+      <div><label for="member-create-model">模型${memberAdd.host === 'codex' ? '' : ' <span class="profile-help">必填</span>'}</label>
+        <input id="member-create-model" maxlength="200" placeholder="${memberAdd.host === 'codex' ? '留空沿用来源或运行时默认模型' : '填写模型标识'}"></div>
+      <div id="member-create-provider-block"><label for="member-create-provider">供应商 <span class="profile-help">必填</span></label>
+        <input id="member-create-provider" maxlength="200" placeholder="填写对应供应商标识"></div>
+    </div>
+    <p class="profile-help" id="member-create-route-help">模型和供应商从配置来源带入；手动修改后保留整组输入。</p>
     <div id="member-create-soul-templates"></div>
     <details><summary>更多设置</summary>
-      <label for="member-create-model">模型</label><input id="member-create-model" maxlength="200" placeholder="留空沿用来源或运行时默认模型">
       <label for="member-create-instructions">个人指令</label><textarea id="member-create-instructions" rows="4" maxlength="32000" placeholder="填写性格、专长或工作偏好；项目职责在加入后设置。"></textarea>
     </details>`;
   const draft = memberAdd.draft;
@@ -168,15 +175,24 @@ function renderMemberCreate(steps) {
     : '使用 1–64 位小写英文字母、数字、短横线或下划线，以小写英文字母或数字开头。系统会自动准备独立目录。';
   const profileInput = form.querySelector('#member-create-profile');
   profileInput.dialogValidation = memberProfileError;
+  const paired = memberAdd.host !== 'codex';
+  form.querySelector('#member-create-provider-block').hidden = !paired;
+  form.querySelector('#member-create-route-help').hidden = !paired;
+  for (const field of ['model', 'provider']) {
+    const input = form.querySelector('#member-create-' + field);
+    input.required = paired;
+    input.dialogValidation = value => paired && !value.trim() ? '请同时填写模型和供应商。' : '';
+  }
   const details = form.querySelector('details');
   details.open = !!draft.expanded;
   details.addEventListener('toggle', () => { draft.expanded = details.open; });
-  for (const [id, key] of [['name', 'display_name'], ['profile', 'profile'], ['model', 'model'], ['instructions', 'instructions']]) {
+  for (const [id, key] of [['name', 'display_name'], ['profile', 'profile'], ['model', 'model'], ['provider', 'provider'], ['instructions', 'instructions']]) {
     const input = form.querySelector('#member-create-' + id);
     input.value = draft[key];
     input.addEventListener('input', () => {
       draft[key] = input.value;
       if (key === 'profile') draft.profileTouched = true;
+      if (key === 'model' || key === 'provider') draft.routeEdited = true;
       $('#member-add-join').disabled = !memberCreateValid() || memberAdd.busy || memberAdd.scanning;
     });
   }
@@ -186,7 +202,7 @@ function renderMemberCreate(steps) {
   source.value = draft.source;
   const updateAuth = () => {
     if (memberAdd.host === 'dsh') {
-      form.querySelector('#member-create-auth-help').textContent = '继承来源的模型与认证路由，沿用 DSH HOME 的账号认证。新 profile 使用独立名称与后台运行配置；个人指令保存到该 profile 的人格配置。';
+      form.querySelector('#member-create-auth-help').textContent = '新 profile 使用填写的模型与供应商，凭据沿用同一 DSH HOME 的共享配置。个人指令保存到该 profile 的人格配置。';
       return;
     }
     if (memberAdd.host === 'codex') {
@@ -197,6 +213,7 @@ function renderMemberCreate(steps) {
   };
   source.addEventListener('change', () => {
     draft.source = source.value;
+    loadMemberSourceSettings();
     updateAuth();
   });
   updateAuth();
@@ -233,7 +250,13 @@ function renderMemberAdd() {
     const choice = document.createElement('label'), input = document.createElement('input');
     input.type = 'radio'; input.name = 'member-add-host'; input.value = value;
     input.checked = memberAdd.host === value;
-    input.addEventListener('change', () => { memberAdd.host = value; loadMemberCreateSources(); });
+    input.addEventListener('change', () => {
+      const draft = memberAdd.draft;
+      memberAdd.routes[memberAdd.host] = {model: draft.model, provider: draft.provider, routeEdited: draft.routeEdited};
+      Object.assign(draft, memberAdd.routes[value] || {model: '', provider: '', routeEdited: false});
+      memberAdd.host = value;
+      loadMemberCreateSources();
+    });
     const title = document.createElement('span'); title.textContent = label;
     choice.append(input, title); host.append(choice);
   }
@@ -255,14 +278,17 @@ $('#dlg-member-add').addEventListener('cancel', e => { if (memberAdd?.busy) e.pr
 $('#dlg-member-add').addEventListener('close', () => { if (!$('#dlg-member-add').open) memberAdd = null; });
 async function loadMemberCreateSources() {
   const current = memberAdd, scanVersion = current.scanVersion = (current.scanVersion || 0) + 1;
+  current.sourceVersion = (current.sourceVersion || 0) + 1;
+  current.sourceLoading = false;
   current.scanning = true; current.sources = []; current.draft.source = ''; current.error = '';
   renderMemberAdd();
   try {
     const result = await api(`/discovery/scan?project=${encodeURIComponent(current.project)}`);
     if (memberAdd !== current || current.scanVersion !== scanVersion) return;
     current.sources = (result.candidates || []).filter(p => p.host_type === current.host);
-    const defaultSource = current.sources.findIndex(p => p.profile === (current.host === 'dsh' ? 'headless' : 'default'));
+    const defaultSource = current.sources.findIndex(p => p.profile === (current.host === 'dsh' ? 'desktop' : 'default'));
     current.draft.source = defaultSource >= 0 ? String(defaultSource) : current.sources.length ? '0' : '';
+    await loadMemberSourceSettings();
   } catch (err) {
     if (memberAdd === current && current.scanVersion === scanVersion) {
       current.error = `配置来源读取失败：${err.message}。可切换宿主重试，或使用默认设置。`;
@@ -270,6 +296,49 @@ async function loadMemberCreateSources() {
   } finally {
     if (memberAdd === current && current.scanVersion === scanVersion) {
       current.scanning = false; renderMemberAdd();
+    }
+  }
+}
+
+async function loadMemberSourceSettings() {
+  const current = memberAdd;
+  if (!current) return;
+  const version = current.sourceVersion = (current.sourceVersion || 0) + 1;
+  current.sourceLoading = false;
+  if (current.host === 'codex' || current.draft.routeEdited) {
+    $('#member-add-join').disabled = current.busy || current.scanning || !memberCreateValid();
+    $('#member-add-status').textContent = current.error;
+    $('#member-add-status').dataset.error = String(!!current.error);
+    return;
+  }
+  const source = current.draft.source === '' ? null : current.sources[Number(current.draft.source)];
+  current.sourceLoading = true;
+  current.error = '';
+  // Clear inherited values together before loading another source.
+  current.draft.model = ''; current.draft.provider = '';
+  for (const field of ['model', 'provider']) $('#member-create-' + field).value = '';
+  $('#member-add-join').disabled = true;
+  $('#member-add-status').textContent = '正在读取模型与供应商…';
+  $('#member-add-status').dataset.error = 'false';
+  try {
+    const result = await api('/profiles/source-settings', {method: 'POST', body: JSON.stringify({
+      host_type: current.host, source: source ? {profile: source.profile, config_root: source.config_root} : null})});
+    if (memberAdd !== current || current.sourceVersion !== version) return;
+    if (!current.draft.routeEdited) {
+      for (const field of ['model', 'provider']) {
+        current.draft[field] = typeof result[field] === 'string' ? result[field] : '';
+        $('#member-create-' + field).value = current.draft[field];
+      }
+    }
+  } catch (err) {
+    if (memberAdd !== current || current.sourceVersion !== version) return;
+    current.error = `来源读取失败：${err.message}。请填写模型与供应商。`;
+  } finally {
+    if (memberAdd === current && current.sourceVersion === version) {
+      current.sourceLoading = false;
+      $('#member-add-join').disabled = current.busy || current.scanning || !memberCreateValid();
+      $('#member-add-status').textContent = current.error;
+      $('#member-add-status').dataset.error = String(!!current.error);
     }
   }
 }
@@ -288,6 +357,7 @@ async function submitMemberCreate() {
     display_name: draft.display_name.trim(), model: draft.model.trim(), instructions: draft.instructions,
     source: draft.source !== '' && source ? {profile: source.profile, config_root: source.config_root} : null,
     request_id: current.requestId};
+  if (current.host !== 'codex') payload.provider = draft.provider.trim();
   try {
     const result = await api('/profiles/create', {method: 'POST', body: JSON.stringify(payload)});
     if (memberAdd !== current) return;

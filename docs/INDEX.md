@@ -34,6 +34,8 @@ Profile 凭证继承与异常可见性见 [设计依据](design/2026-10-25-profi
 
 DSH 的统一创建表单、独立标识、配置继承及发布回滚见 [DSH 独立 profile 创建](design/2026-11-02-dsh-profile-create.md)。
 
+Hermes/DSH 成对填写模型与供应商、来源带入和 Codex 界面规则见 [模型供应商字段组](design/2026-11-02-profile-provider-pair.md)。
+
 成员候选的配置识别、失效登记过滤与历史保留规则见 [成员候选识别](engineering/PROFILE-CREATE.md#成员候选识别)。
 
 项目成员更多菜单、移出与状态保留契约见 [项目成员移除](engineering/PROJECT-MEMBER-REMOVAL.md)。

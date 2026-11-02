@@ -57,6 +57,41 @@ def _merge(base, override):
             base[key] = value
 
 
+def source_settings(body):
+    """Read only the source model/provider pair without returning credentials."""
+    try:
+        home, _ = _source(body)
+        if body['host_type'] == 'dsh':
+            from . import dsh_profile_config
+            raw = _read(home, 'cordis.patch.yml') if home else None
+            _, entries = dsh_profile_config._yaml(raw)
+            config = next((entry.get('config') or {} for entry in reversed(entries)
+                           if isinstance(entry, dict) and entry.get('id') == 'agent-default-model'), {})
+            model, provider = config.get('model', ''), config.get('provider', '')
+        else:
+            _, config = files._yaml(_read(home, 'config.yaml') if home else None)
+            selected = config.get('model') or {}
+            if isinstance(selected, str):
+                model, provider = selected, ''
+            else:
+                model = selected.get('default') or selected.get('model') or selected.get('name') or ''
+                provider = selected.get('provider') or ''
+                if isinstance(model, dict):
+                    provider = provider or model.get('provider') or ''
+                    model = model.get('model') or model.get('default') or ''
+        if not isinstance(model, str) or not isinstance(provider, str):
+            raise ValueError('Model settings must be strings')
+        if any(c in value for value in (model, provider) for c in '\r\n\0'):
+            raise ValueError('Model settings must be single-line')
+        return {'model': model.strip(), 'provider': provider.strip()}
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            raise
+        raise HTTPException(400, '无法读取来源的模型与供应商，请检查配置格式或手动填写') from None
+    except Exception:
+        raise HTTPException(400, '无法读取来源的模型与供应商，请检查配置格式或手动填写') from None
+
+
 def _codex(home, selector, body):
     config = tomlkit.document()
     if home:
@@ -96,6 +131,8 @@ def _codex(home, selector, body):
             config.pop('features', None)
     if body['model']:
         config['model'] = body['model']
+    if body.get('provider'):
+        config['model_provider'] = body['provider']
     result = {}
     from . import codex_auth
     raw, _ = codex_auth.read_auth(discovery._codex_root())
@@ -118,8 +155,13 @@ def _hermes(home, body, member):
     # Seed model/runtime settings only; channels and personal history belong to the source.
     config = {key: source[key] for key in ('model', 'providers', 'custom_providers', 'model_aliases',
                                          'terminal', 'compression', 'max_turns') if key in source}
-    if body['model']:
-        config.setdefault('model', {})['default'] = body['model']
+    if body['model'] or body.get('provider'):
+        if not isinstance(config.get('model'), dict):
+            config['model'] = {'default': config.get('model') or ''}
+        if body['model']:
+            config['model']['default'] = body['model']
+        if body.get('provider'):
+            config['model']['provider'] = body['provider']
     env = b''
     provisioned = False
     if home and body['reuse_auth']:
@@ -139,6 +181,16 @@ def create(conn, body):
     # Independent homes inherit provider configuration by default, including older clients.
     body = {**body, 'reuse_auth': True}
     name, host = body['profile'], body['host_type']
+    # Omitted provider keeps existing clients and recovery fingerprints compatible.
+    if body.get('provider') is None:
+        body.pop('provider', None)
+    else:
+        body['provider'] = body['provider'].strip()
+        body['model'] = body['model'].strip()
+        if any(c in value for value in (body['model'], body['provider']) for c in '\r\n\0'):
+            raise HTTPException(400, '模型和供应商必须是单行文本')
+        if host != 'codex' and (not body['model'] or not body['provider']):
+            raise HTTPException(400, '请同时填写模型和供应商')
     raw_project = body.get('project')
     project = (raw_project or '').strip()
     if raw_project and not project:
