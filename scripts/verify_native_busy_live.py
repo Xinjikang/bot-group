@@ -193,6 +193,10 @@ def verify(args):
                       GROUP_ADMIN_PASSWORD='isolated-native-busy', GROUP_SECRET=secrets.token_hex(32),
                       GROUP_ENGINE_KEY=secrets.token_hex(32), NATIVE_BUSY_PROBE_WORK=str(workspace),
                       NATIVE_BUSY_PROBE_COMMAND=json.dumps(command), GROUP_MCP_PYTHON=sys.executable)
+    if args.hermes_bin:
+        # 引擎恢复投递需从 Hermes 入口定位会话源码（隔离 home 无 bin/hermes.exe），
+        # 用注入的入口解析（如生产 home 的 launcher，与 --hermes-source 同源）
+        engine_env['HERMES_BIN'] = args.hermes_bin
     os.environ.update(engine_env)
     subprocess.run([sys.executable, str(ROOT / 'tools' / 'install.py'), 'repair'],
                    cwd=ROOT, env=engine_env, check=True, stdout=subprocess.DEVNULL,
@@ -381,6 +385,7 @@ if __name__ == '__main__':
     parser.add_argument('--run-dir')
     parser.add_argument('--hermes-python')
     parser.add_argument('--hermes-source')
+    parser.add_argument('--hermes-bin')
     parser.add_argument('--serve', action='store_true')
     parser.add_argument('--mcp', action='store_true')
     args = parser.parse_args()
