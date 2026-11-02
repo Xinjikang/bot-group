@@ -35,6 +35,24 @@ def check_member_cards(page, container, output, name):
     page.evaluate('applyTheme', 'dark')
 
 
+def check_instruction_layout(page, output, host):
+    for theme in ('dark', 'light'):
+        for width in (1280, 390):
+            page.evaluate('applyTheme', theme)
+            page.set_viewport_size({'width': width, 'height': 900})
+            assert page.locator('.member-create-fields .profile-soul-heading').evaluate('''heading => {
+                const label = heading.querySelector('label').getBoundingClientRect();
+                const button = heading.querySelector('button').getBoundingClientRect();
+                const hint = heading.querySelector('.profile-help').getBoundingClientRect();
+                const model = document.querySelector('.member-create-route').getBoundingClientRect();
+                return label.top >= model.bottom + 20 && button.top >= label.bottom + 7
+                    && hint.top >= button.bottom && Math.abs(button.left - label.left) < 1;
+            }''')
+            page.locator('#dlg-member-add').screenshot(path=str(output / f'{host}-instructions-{width}-{theme}.png'))
+    page.set_viewport_size({'width': 1280, 'height': 900})
+    page.evaluate('applyTheme', 'dark')
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--evidence', type=Path, required=True)
@@ -119,6 +137,7 @@ def main():
             profile.fill('new-codex')
             page.locator('#member-create-name').fill('新建成员')
             page.locator('.member-create-fields summary').click()
+            check_instruction_layout(page, output, 'codex')
             page.locator('#member-create-instructions').fill('核对证据。')
             page.locator('#member-add-join').click()
             page.get_by_text('创建失败：模拟创建失败。填写内容已保留，可修改后重试。', exact=True).wait_for()
@@ -200,6 +219,7 @@ def main():
             assert page.locator('#member-create-model').is_hidden()
             assert page.locator('#member-create-provider').is_hidden()
             page.locator('.member-create-fields summary').click()
+            check_instruction_layout(page, output, 'hermes')
             page.locator('#member-create-model').fill('wizard-model')
             page.locator('#member-create-provider').fill('')
             assert page.locator('#member-add-join').is_enabled()
