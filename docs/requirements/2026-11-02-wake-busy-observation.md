@@ -29,7 +29,7 @@ Hermes 收到异步子任务完成回调后，可在其原生会话中自动续�
 
 ## 方案
 
-见设计文档 [`docs/design/2026-11-02-queue-starvation-fix.md`](../design/2026-11-02-queue-starvation-fix.md)。要点：
+见设计文档 [`docs/design/2026-11-02-wake-busy-observation.md`](../design/2026-11-02-wake-busy-observation.md)。要点：
 
 - 按 runtime 与会话绑定接入 Hermes 原生状态；内存已知占用快速判忙，引擎执行记录与原生 running/pending 任一表明占用均按忙碌处理。
 - 原生查询失败或未知时暂缓目标会话，其他独立会话继续获得调度机会；查询设超时与明确性能边界。

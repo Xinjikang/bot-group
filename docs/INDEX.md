@@ -67,7 +67,7 @@ Hermes/DSH 成对填写模型与供应商、来源带入和 Codex 界面规则�
 | [Codex 驱动设计](design/CODEX-DRIVER-DESIGN-2026-09-29.md) | 宿主、Bot 与项目成员分层 |
 | [DeepSeek Harness 接入需求](requirements/2026-10-31-dsh-integration.md) / [设计](design/2026-10-31-dsh-integration.md) | dsh 第三运行时、headless 接入、认证与会话契约 |
 | [DSH 刷新与会话误判修复](requirements/2026-11-01-dsh-refresh-fix.md) | 新增 DSH 成员刷新 500 及会话异种绑定误判 |
-| [队列饥饿与自发执行状态修复](requirements/2026-11-02-queue-starvation-fix.md) / [设计](design/2026-11-02-queue-starvation-fix.md) | 网关原生忙闲预检查、按会话保序调度与 /thinking 自发执行展示 |
+| [队列饥饿与自发执行状态修复](requirements/2026-11-02-wake-busy-observation.md) / [设计](design/2026-11-02-wake-busy-observation.md) | 网关原生忙闲预检查、按会话保序调度与 /thinking 自发执行展示 |
 | [进程查询兼容性](design/2026-10-25-process-query.md) | Windows 进程探测、三态保护与依赖交付 |
 | [维护代码命名空间](design/2026-10-25-maintenance-namespace.md) | Hermes 包共存、命令入口与独立安装器 |
 | [常驻执行后端方案](design/SERVE-RESIDENT-SOLUTION-2026-10-08.md) | 方案与实施前验证条件 |
