@@ -84,24 +84,19 @@ def serve(url):
 
     gateway.connection = lambda *a, **k: (DirectLease(GatewayClient(endpoint)), home, command)
 
-    # 注入 busy_wait 工具（会话级 editor MCP），供续跑第一动作受控阻塞
-    original_configure = gateway.sessions.configure_tracked
+    # busy_wait 随引擎自带 task_queue 服务器注册（args 指向包装器）：编辑器 MCP 列表
+    # 与恢复投递的 resume 分支保持引擎原样，避免 editor_mcp 指纹失配（acp_mcp_policy_conflict）
+    original_configure_tracked = gateway.sessions.configure_tracked
 
-    def configure(conn, project, client, snapshot, **kwargs):
-        snapshot = original_configure(conn, project, client, snapshot, **kwargs)
-        # 追加 busy_wait 工具（保留原有 editor MCP 如 task_queue），供续跑第一动作受控阻塞；
-        # 已有则不重复追加——重复条目会改变 fingerprint，触发网关 acp_mcp_policy_conflict
-        current = snapshot.get('editor_mcp') or {}
-        specs = list(current.get('mcp_servers') or [])
-        if not any(s.get('name') == 'native_busy_probe' for s in specs):
-            specs.append({'name': 'native_busy_probe', 'command': sys.executable,
-                          'args': [__file__, '--mcp'],
-                          'env': [{'name': 'NATIVE_BUSY_PROBE_WORK',
-                                   'value': os.environ['NATIVE_BUSY_PROBE_WORK']}]})
-        gateway.sessions.mutate(client, snapshot, 'editor_mcp', {'mcp_servers': specs})
-        return gateway.sessions.attach(client, snapshot['session_id'])
+    def configure_tracked(conn, project, client, snapshot, **kwargs):
+        server = dict(kwargs.get('server') or {})
+        server['args'] = [str(Path(__file__).resolve().parent / 'native_busy_mcp_wrapper.py')]
+        server['env'] = dict(server.get('env') or {})
+        server['env']['NATIVE_BUSY_PROBE_WORK'] = os.environ['NATIVE_BUSY_PROBE_WORK']
+        kwargs['server'] = server
+        return original_configure_tracked(conn, project, client, snapshot, **kwargs)
 
-    gateway.sessions.configure_tracked = configure
+    gateway.sessions.configure_tracked = configure_tracked
 
     # B 的投递记录层：真实引擎队列 worker 走到 deliver 即证明「其他独立会话继续推进」；
     # B 不拉真实模型回合（真实 spawn 链路由既有网关真机探针覆盖）
