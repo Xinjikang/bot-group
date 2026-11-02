@@ -89,13 +89,15 @@ def serve(url):
 
     def configure(conn, project, client, snapshot, **kwargs):
         snapshot = original_configure(conn, project, client, snapshot, **kwargs)
-        # 追加 busy_wait 工具（保留原有 editor MCP 如 task_queue），供续跑第一动作受控阻塞
+        # 追加 busy_wait 工具（保留原有 editor MCP 如 task_queue），供续跑第一动作受控阻塞；
+        # 已有则不重复追加——重复条目会改变 fingerprint，触发网关 acp_mcp_policy_conflict
         current = snapshot.get('editor_mcp') or {}
         specs = list(current.get('mcp_servers') or [])
-        specs.append({'name': 'native_busy_probe', 'command': sys.executable,
-                      'args': [__file__, '--mcp'],
-                      'env': [{'name': 'NATIVE_BUSY_PROBE_WORK',
-                               'value': os.environ['NATIVE_BUSY_PROBE_WORK']}]})
+        if not any(s.get('name') == 'native_busy_probe' for s in specs):
+            specs.append({'name': 'native_busy_probe', 'command': sys.executable,
+                          'args': [__file__, '--mcp'],
+                          'env': [{'name': 'NATIVE_BUSY_PROBE_WORK',
+                                   'value': os.environ['NATIVE_BUSY_PROBE_WORK']}]})
         gateway.sessions.mutate(client, snapshot, 'editor_mcp', {'mcp_servers': specs})
         return gateway.sessions.attach(client, snapshot['session_id'])
 
