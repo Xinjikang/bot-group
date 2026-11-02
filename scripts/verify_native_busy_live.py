@@ -169,7 +169,9 @@ def verify(args):
     config = yaml.safe_load((probe.HERMES_HOME / 'config.yaml').read_text(encoding='utf-8'))
     config.update(mcp_servers={}, approvals={'mode': 'smart'},
                   terminal={'backend': 'local', 'cwd': str(workspace), 'timeout': 150})
-    config['platform_toolsets'] = {'acp': ['todo']}
+    # acp 会话工具集：todo + delegation（生产 config.yaml cli 平台同款；只给 todo 会缺
+    # delegate_task，异步回调场景无法触发——上一轮真机证据已确认）
+    config['platform_toolsets'] = {'acp': ['todo', 'delegation']}
     config.setdefault('agent', {})['max_turns'] = 24
     (home / 'config.yaml').write_text(json.dumps(config), encoding='utf-8')
     shutil.copy2(probe.HERMES_HOME / '.env', home / '.env')
