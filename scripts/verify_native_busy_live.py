@@ -157,7 +157,7 @@ def verify(args):
         raise ValueError('--run-dir 必须指向已存在的预热 run 目录')
     home, workspace, data = run / 'home', run / 'workspace', run / 'engine'
     for directory in (home, workspace, data):
-        directory.mkdir(parents=True)
+        directory.mkdir(parents=True, exist_ok=True)
     config = yaml.safe_load((probe.HERMES_HOME / 'config.yaml').read_text(encoding='utf-8'))
     config.update(mcp_servers={}, approvals={'mode': 'smart'},
                   terminal={'backend': 'local', 'cwd': str(workspace), 'timeout': 150})
@@ -183,7 +183,8 @@ def verify(args):
     db.init_schema(conn)
     conn.execute("INSERT OR IGNORE INTO members(profile,display_name,role) VALUES('default','probe-a','dev')")
     conn.execute("INSERT OR IGNORE INTO members(profile,display_name,role) VALUES('probe-b','probe-b','dev')")
-    conn.execute("INSERT INTO projects(name,root,created_at) VALUES('alpha',?,?)", (str(workspace), db.now_iso()))
+    conn.execute("INSERT OR IGNORE INTO projects(name,root,created_at) VALUES('alpha',?,?)",
+                 (str(workspace), db.now_iso()))
     enable_members(conn, ('alpha',), ('default', 'probe-b', 'user'))
     conn.commit()
     headers = {'Authorization': 'Bearer ' + auth.login('isolated-native-busy')['token']}
@@ -237,9 +238,11 @@ def verify(args):
                 raise TimeoutError('native continuation did not enter busy_wait')
             time.sleep(1)
         rows_at_window = engine_rows()
-        result['checks']['continuation_running_without_engine_row'] = \
-            all(r['state'] == 'terminal' for r in rows_at_window)
-        result['checks']['first_admission_terminal'] = any(r['outcome'] == 'completed' for r in rows_at_window)
+        # 验收门禁：续跑（异步回调恢复的原生执行）期间引擎记录必须全部终态
+        assert all(r['state'] == 'terminal' for r in rows_at_window), rows_at_window
+        result['checks']['continuation_running_without_engine_row'] = True
+        assert any(r['outcome'] == 'completed' for r in rows_at_window), rows_at_window
+        result['checks']['first_admission_terminal'] = True
         binding = conn.execute("SELECT session_id,generation FROM session_bindings WHERE profile='default' "
                                "AND kind='work'").fetchone()
         assert binding, 'missing work binding for default'
@@ -278,8 +281,9 @@ def verify(args):
             'SELECT * FROM wake_jobs WHERE id=?', (job_a['id'],)).fetchone())})
         result['engine_rows'] = engine_rows()
         # 引擎行=首次 admission + 恢复投递 admission，共 2 条 completed；续跑无引擎行
-        result['checks']['continuation_left_no_engine_row'] = \
-            sum(1 for r in result['engine_rows'] if r['outcome'] == 'completed') == 2
+        completed = sum(1 for r in result['engine_rows'] if r['outcome'] == 'completed')
+        assert completed == 2, result['engine_rows']
+        result['checks']['continuation_left_no_engine_row'] = True
     finally:
         try:
             from engine.maintenance.stop_engine import stop
@@ -289,17 +293,29 @@ def verify(args):
                 initial.wait(timeout=10)
             if viewer is not None:
                 viewer.close()
-            if endpoint:
-                ended = subprocess.run(command + ['gateway', 'stop', '--yes'], env=env,
-                    capture_output=True, text=True, encoding='utf-8', timeout=60,
-                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-                result['gateway_stop'] = ended.returncode
+            # ensure 超时/失败（endpoint 为空）同样按隔离 home 回收可能残留的网关
+            ended = subprocess.run(command + ['gateway', 'stop', '--yes'], env=env,
+                capture_output=True, text=True, encoding='utf-8', timeout=120,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            result['gateway_stop'] = ended.returncode
+            residue = subprocess.run(
+                ['wmic', 'process', 'where', 'name="python.exe"', 'get', 'ProcessId,CommandLine'],
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            result['gateway_home_clean'] = str(home) not in (residue.stdout or '')
             with socket.socket() as check:
                 result['resources_released'] = check.connect_ex((target.hostname, target.port)) != 0
             client.close()
             conn.close()
             (evidence / 'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
-    assert result['resources_released'] and result['gateway_stop'] == 0
+    required = ['a_first_admission_spawned', 'continuation_running_without_engine_row',
+                'first_admission_terminal', 'native_running_while_engine_idle',
+                'b_delivered_a_retained_original_id', 'a_recovered_same_id',
+                'continuation_left_no_engine_row']
+    missing = [name for name in required if result['checks'].get(name) is not True]
+    assert not missing, f'required checks not all true: {missing}'
+    assert result['gateway_home_clean'], 'isolated home still holds gateway processes'
+    assert result['resources_released'], f'engine port not released: {url}'
     print(json.dumps(result['checks'], ensure_ascii=False), flush=True)
 
 
