@@ -89,10 +89,13 @@ def serve(url):
 
     def configure(conn, project, client, snapshot, **kwargs):
         snapshot = original_configure(conn, project, client, snapshot, **kwargs)
-        specs = [{'name': 'native_busy_probe', 'command': sys.executable,
-                  'args': [__file__, '--mcp'],
-                  'env': [{'name': 'NATIVE_BUSY_PROBE_WORK',
-                           'value': os.environ['NATIVE_BUSY_PROBE_WORK']}]}]
+        # 追加 busy_wait 工具（保留原有 editor MCP 如 task_queue），供续跑第一动作受控阻塞
+        current = snapshot.get('editor_mcp') or {}
+        specs = list(current.get('mcp_servers') or [])
+        specs.append({'name': 'native_busy_probe', 'command': sys.executable,
+                      'args': [__file__, '--mcp'],
+                      'env': [{'name': 'NATIVE_BUSY_PROBE_WORK',
+                               'value': os.environ['NATIVE_BUSY_PROBE_WORK']}]})
         gateway.sessions.mutate(client, snapshot, 'editor_mcp', {'mcp_servers': specs})
         return gateway.sessions.attach(client, snapshot['session_id'])
 
@@ -152,9 +155,14 @@ def verify(args):
     record, detail = probe.install_record()
     if not record:
         raise RuntimeError(f'preflight 拒绝：{detail}')
-    run = Path(args.run_dir) if args.run_dir else probe.PROBE_DATA / 'task-276' / uuid.uuid4().hex
-    if args.run_dir and not run.is_dir():
-        raise ValueError('--run-dir 必须指向已存在的预热 run 目录')
+    if args.run_dir:
+        run = Path(args.run_dir)
+        if not run.is_dir():
+            raise ValueError('--run-dir 必须指向已存在的预热 run 目录')
+    else:
+        # run 目录必须短：home/installs/<id>/environments/<hash>/venv/.../psutil/_psutil_windows.*.pyd
+        # 是 DLL 加载路径，Windows 260 字符限制内才可导入（task-276/<uuid32> 实测 269 字符超限失败）
+        run = probe.PROBE_DATA / ('t' + uuid.uuid4().hex[:12])
     home, workspace, data = run / 'home', run / 'workspace', run / 'engine'
     for directory in (home, workspace, data):
         directory.mkdir(parents=True, exist_ok=True)
@@ -215,6 +223,14 @@ def verify(args):
         endpoint = ensure(command, home, env=env, timeout=600)
         env['NATIVE_BUSY_PROBE_ENDPOINT'] = json.dumps(endpoint)
         result['endpoint'] = endpoint
+        # preflight：新 home 环境下 psutil 必须可导入（Windows 260 路径限制，超长即失败快报）
+        home_pythons = list((home / 'installs').rglob('python.exe'))
+        if home_pythons:
+            check = subprocess.run([str(home_pythons[0]), '-c', 'import psutil; print(psutil.__version__)'],
+                                   capture_output=True, text=True, encoding='utf-8',
+                                   errors='replace', timeout=120)
+            if check.returncode != 0:
+                raise RuntimeError(f'isolated home psutil import failed: {check.stderr.strip()}')
         with (evidence / 'engine.log').open('wb') as log:
             initial = subprocess.Popen([sys.executable, '-X', 'utf8', '-B', __file__, '--serve', '--backend', url],
                 cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
@@ -235,6 +251,24 @@ def verify(args):
         deadline = time.monotonic() + 300
         while not (workspace / 'ready_busy_wait').exists():
             if time.monotonic() > deadline:
+                # 超时落盘会话证据（模型未按信号调用 delegate_task/busy_wait 时可定位实际行为）
+                binding = conn.execute("SELECT session_id FROM session_bindings WHERE profile='default' "
+                                       "AND kind='work'").fetchone()
+                if binding:
+                    try:
+                        snapshot = viewer.rpc('session.resume', session_id=binding['session_id'], timeout=10)
+                        snapshot = {'revision': snapshot.get('revision'), 'running': snapshot.get('running'),
+                                    'pending': snapshot.get('pending'),
+                                    'messages': [{'role': m.get('role'), 'content': str(m.get('content'))[:300]}
+                                                 for m in (snapshot.get('messages') or [])[-8:]]}
+                    except Exception as exc:  # noqa: BLE001
+                        snapshot = {'resume_error': str(exc)}
+                else:
+                    snapshot = {'binding': None}
+                (evidence / 'timeout-session.json').write_text(
+                    json.dumps({'snapshot': snapshot,
+                                'workspace': [p.name for p in workspace.iterdir()]},
+                               ensure_ascii=False, indent=2, default=str), encoding='utf-8')
                 raise TimeoutError('native continuation did not enter busy_wait')
             time.sleep(1)
         rows_at_window = engine_rows()
@@ -302,7 +336,10 @@ def verify(args):
                 ['wmic', 'process', 'where', 'name="python.exe"', 'get', 'ProcessId,CommandLine'],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-            result['gateway_home_clean'] = str(home) not in (residue.stdout or '')
+            # 残留判据用 run 目录（网关进程命令行含 runtime 路径而非 home 路径，gateway stop 失败时
+            # 仍可能有进程持有 home 锁），并核对 gateway.pid 文件
+            result['gateway_home_clean'] = (str(run) not in (residue.stdout or '')
+                                            and not (home / 'gateway.pid').exists())
             with socket.socket() as check:
                 result['resources_released'] = check.connect_ex((target.hostname, target.port)) != 0
             client.close()
