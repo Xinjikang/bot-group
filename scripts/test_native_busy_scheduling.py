@@ -39,8 +39,10 @@ class SlowFailure:
 class FakeHermesClient:
     """按原生 session_id 返回可控 running/pending 状态的假网关租约。
 
-    生产代码经 lease.client.rpc 直连底层客户端并在 finally 释放租约（lease.close），
-    夹具按同一契约记录调用与释放次数。
+    生产代码经 lease.rpc 查询并在 finally 释放租约（lease.close），
+    夹具按同一契约记录调用与释放次数；不镜像底层 client.rpc 直连路径——
+    gate 序列化/订阅登记/pool.failed 契约由 NativeObserverPoolContractTests
+    （真实 Pool/Lease）覆盖，假夹具保留 client 属性只会掩盖直连回归。
     """
 
     def __init__(self, states, calls, closes, clock=None):
@@ -48,7 +50,6 @@ class FakeHermesClient:
         self.calls = calls    # 记录 (method, params, timeout)
         self.closes = closes  # 记录 close() 调用
         self.clock = clock    # [t] 可推进的假时钟（None=真实时间）
-        self.client = self
         self.closed = False
 
     def rpc(self, method, *, timeout=None, **params):
