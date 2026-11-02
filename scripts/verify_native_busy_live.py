@@ -173,19 +173,27 @@ def verify(args):
     config.setdefault('agent', {})['max_turns'] = 24
     (home / 'config.yaml').write_text(json.dumps(config), encoding='utf-8')
     shutil.copy2(probe.HERMES_HOME / '.env', home / '.env')
-    command = [str(record['python']), '-X', 'utf8', '-B', '-m', 'hermes_cli.main']
-    env = probe.probe_env()
-    env.update(HERMES_HOME=str(home), HERMES_RUNTIME_DIR=str(run / 'runtime'),
-               PYTHONPATH=os.pathsep.join((str(ROOT), str(probe.WORKTREE_SRC))),
-               GROUP_DATA_DIR=str(data), GROUP_DB=str(data / 'group.db'),
-               GROUP_ENGINE_HOST=target.hostname, GROUP_ENGINE_PORT=str(target.port),
-               GROUP_ENGINE_URL=url, GROUP_ATTACHMENTS_DIR=str(data / 'attachments'),
-               GROUP_ADMIN_PASSWORD='isolated-native-busy', GROUP_SECRET=secrets.token_hex(32),
-               GROUP_ENGINE_KEY=secrets.token_hex(32), NATIVE_BUSY_PROBE_WORK=str(workspace),
-               NATIVE_BUSY_PROBE_COMMAND=json.dumps(command), GROUP_MCP_PYTHON=sys.executable)
-    os.environ.update(env)
+    # 解释器/源码经命令行注入（默认 gw_probe 安装与 worktree；真机异步回调场景需带
+    # delegate_task 的生产 Hermes 时用 --hermes-python/--hermes-source 注入，禁止写死路径）
+    hermes_python = args.hermes_python or str(record['python'])
+    hermes_source = args.hermes_source or str(probe.WORKTREE_SRC)
+    command = [hermes_python, '-X', 'utf8', '-B', '-m', 'hermes_cli.main']
+    # 网关环境与引擎环境分离：网关只拿白名单 + 隔离 home/source（不带 GROUP_* 管理域配置，
+    # 防止生产版网关心跳引擎/连接托管配置）；引擎环境另加隔离引擎配置
+    gateway_env = probe.probe_env()
+    gateway_env.update(HERMES_HOME=str(home), HERMES_RUNTIME_DIR=str(run / 'runtime'),
+                       PYTHONPATH=hermes_source)
+    engine_env = dict(gateway_env)
+    engine_env.update(PYTHONPATH=str(ROOT),
+                      GROUP_DATA_DIR=str(data), GROUP_DB=str(data / 'group.db'),
+                      GROUP_ENGINE_HOST=target.hostname, GROUP_ENGINE_PORT=str(target.port),
+                      GROUP_ENGINE_URL=url, GROUP_ATTACHMENTS_DIR=str(data / 'attachments'),
+                      GROUP_ADMIN_PASSWORD='isolated-native-busy', GROUP_SECRET=secrets.token_hex(32),
+                      GROUP_ENGINE_KEY=secrets.token_hex(32), NATIVE_BUSY_PROBE_WORK=str(workspace),
+                      NATIVE_BUSY_PROBE_COMMAND=json.dumps(command), GROUP_MCP_PYTHON=sys.executable)
+    os.environ.update(engine_env)
     subprocess.run([sys.executable, str(ROOT / 'tools' / 'install.py'), 'repair'],
-                   cwd=ROOT, env=env, check=True, stdout=subprocess.DEVNULL,
+                   cwd=ROOT, env=engine_env, check=True, stdout=subprocess.DEVNULL,
                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     conn = db.get_connection()
     db.init_schema(conn)
@@ -220,9 +228,12 @@ def verify(args):
         return [dict(r) for r in conn.execute('SELECT * FROM hermes_executions ORDER BY started_at')]
 
     try:
-        endpoint = ensure(command, home, env=env, timeout=600)
-        env['NATIVE_BUSY_PROBE_ENDPOINT'] = json.dumps(endpoint)
+        endpoint = ensure(command, home, env=gateway_env, timeout=600)
+        engine_env['NATIVE_BUSY_PROBE_ENDPOINT'] = json.dumps(endpoint)
         result['endpoint'] = endpoint
+        # 隔离归属门禁：网关必须绑定隔离 home（生产版启动器可能改写 HERMES_HOME）
+        profile_home = Path(endpoint.get('profile_id') or '')
+        assert profile_home == home, f'gateway bound unexpected home: {profile_home}'
         # preflight：新 home 环境下 psutil 必须可导入（Windows 260 路径限制，超长即失败快报）
         home_pythons = list((home / 'installs').rglob('python.exe'))
         if home_pythons:
@@ -233,7 +244,7 @@ def verify(args):
                 raise RuntimeError(f'isolated home psutil import failed: {check.stderr.strip()}')
         with (evidence / 'engine.log').open('wb') as log:
             initial = subprocess.Popen([sys.executable, '-X', 'utf8', '-B', __file__, '--serve', '--backend', url],
-                cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
+                cwd=ROOT, env=engine_env, stdout=log, stderr=subprocess.STDOUT,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         health()
         viewer = GatewayClient(endpoint)
@@ -328,7 +339,7 @@ def verify(args):
             if viewer is not None:
                 viewer.close()
             # ensure 超时/失败（endpoint 为空）同样按隔离 home 回收可能残留的网关
-            ended = subprocess.run(command + ['gateway', 'stop', '--yes'], env=env,
+            ended = subprocess.run(command + ['gateway', 'stop', '--yes'], env=gateway_env,
                 capture_output=True, text=True, encoding='utf-8', timeout=120,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             result['gateway_stop'] = ended.returncode
@@ -361,6 +372,8 @@ if __name__ == '__main__':
     parser.add_argument('--backend')
     parser.add_argument('--evidence')
     parser.add_argument('--run-dir')
+    parser.add_argument('--hermes-python')
+    parser.add_argument('--hermes-source')
     parser.add_argument('--serve', action='store_true')
     parser.add_argument('--mcp', action='store_true')
     args = parser.parse_args()
