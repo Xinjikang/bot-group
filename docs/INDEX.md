@@ -72,7 +72,7 @@ Hermes/DSH 成对填写模型与供应商、来源带入和 Codex 界面规则�
 | [常驻执行后端方案](design/SERVE-RESIDENT-SOLUTION-2026-10-08.md) | 方案与实施前验证条件 |
 | [网关取消与清理方案](design/2026-10-28-hermes-gateway-cancel-cleanup.md) | 执行终态与清理分离、取消有界、清理可恢复 |
 | [规则维护边界](design/bot-group-copy-edit-checklist.md) | 提示词、AGENTS、角色参考及成员查询职责 |
-| [模板管理支持职责与重复返修触发](design/2026-11-02-template-management-responsibility.md) | 六模板角色职责增量、管理行为正文、审查要求去重及 L2 话题触发提示词 |
+| [模板管理支持职责与重复返修触发](design/2026-11-02-template-management-support.md) | 六模板角色职责增量、管理行为正文、审查要求去重及 L2 话题触发提示词 |
 | [维护经验](PITFALLS.md) | 调度、身份、前端与生命周期边界 |
 
 ## 工程与运行
