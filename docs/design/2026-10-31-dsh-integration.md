@@ -254,3 +254,11 @@ F7/F9/F10 当前为源码调用链确认，其他相关项有合成探针；已�
 新增 DSH 成员后项目详情成员/目录页刷新 500：`project_workspaces.view` 对每成员调 `session_adapter.existing_session_id`（engine/project_workspaces.py:182），该函数只有 codex 分支（engine/session_adapter.py:317），DSH 成员无绑定时落到 `resolve_session_by_title`（:326）的 Hermes legacy 兜底，`bot_identity.hermes_home`（engine/bot_identity.py:39）对 runtime!='hermes' 抛 ValueError，且 project_workspaces 的 except 元组未含 ValueError，异常穿透为 500。
 
 修复：`existing_session_id` 按 `bots.runtime` 显式分流，dsh 分支调用现有 `dsh_session_id(conn, project, profile, kind, thread_id, bot_id=...)`（engine/session_adapter.py:604，已提供 runtime 逐行校验、空 session_id 转 None、绑定范围隔离）。有效 DSH 绑定返回真实原生 ID；无绑定、/new 后空绑定、异种 runtime 绑定返回 None；DSH 查询全程不触 Hermes 配置/状态/网关。保持只读，不无条件返回空而隐藏真实会话，不用宽泛异常捕获掩盖错误分流。Hermes/Codex 查询、原生会话与既有成员配置行为不变。
+
+## DSH 思考记录接口分流修复（req#140）
+
+desktop 已回复但思考气泡仍显示「正在思考」，GET /reasoning 持续 500。根因：`engine/api.py:get_reasoning`（L1366）仅对 Codex 分流（L1389），有 `runtime_session_id` 的 DSH 进入 `session_adapter.compression_tip`（L1394）→ Hermes connection，抛 `ValueError('Hermes state is unavailable for this runtime')`；bot-42（认证失败 exit_code=1）与 bot-43（正常结束 exit_code=0）两个 DSH profile 的思考记录均无法读取。
+
+修复：`get_reasoning` 在 codex 分支后、Hermes `runtime_session_id` 分支前增 dsh 分支，调用现有 `dsh_reasoning.read(session, wake_started_at, after_id, wake_ended_at)`（engine/dsh_reasoning.py:60，按 session+wake_started_at+id>after_id 精确隔离，返回 {entries, latest_id}）。DSH 即使原生会话 ID 为空，也按执行记录身份读 `dsh_run_events`。公共尾部 `process_ended_at`/`exit_code`/`replies` 继续由共同代码填充，结束时间、退出码、回复关联契约不变；成功/运行中/失败、有/无 session ID、增量/跨轮隔离、只读、Hermes/Codex 及未知 run 原有行为保持不变。headless 认证配置修复在范围外，仅覆盖其失败终态展示。
+
+验收：1. 隔离真实 GET /reasoning 对 DSH 返回 200（含 thinking/tool_call/tool_result/final），有/无 runtime_session_id 均通过，Hermes compression_tip/配置/网关/legacy 均未被调用；2. after_id 增量无重复遗漏、latest_id 正确，session+started_at 精确隔离两轮及不同成员，保留 wake_ended_at 契约与晚落库读取语义；3. 正常结束带真实 process_ended_at+exit_code=0+final，失败/无 final 已结束带非零 exit_code+结束时间，运行中结束时间为空；4. group_send 回执与 message_execution.replies 关联返回回复，浏览器实际 DSH 响应验证气泡收口/失败状态；5. 查询前后隔离 DB/HOME 不变无副作用，Hermes/Codex 及未知 run 回归通过；6. 更新 TEST_INDEX.md、报告置 reports/tests 记录被测提交/命令/结果/清理；7. 验收通过通知用户手动重启，现场刷新原 desktop 过程面板确认恢复。
