@@ -817,7 +817,7 @@ class ProfileSource(BaseModel):
 class ProfileCreateBody(BaseModel):
     model_config = ConfigDict(extra='forbid')
     project: str | None = Field(default=None, max_length=200)
-    host_type: str = Field(pattern='^(codex|hermes)$')
+    host_type: str = Field(pattern='^(codex|hermes|dsh)$')
     profile: str = Field(min_length=1, max_length=64)
     display_name: str = Field(default='', max_length=100)
     model: str = Field(default='', max_length=200, pattern=r'^[^\r\n]*$')

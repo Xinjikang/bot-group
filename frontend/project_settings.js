@@ -131,7 +131,6 @@ $('#pj-members-refresh').addEventListener('click', () => loadProjectMembers());
 let memberAdd = null;
 function memberAddReset(options) {
   memberAdd = {host: 'hermes', sources: [], scanning: false, error: '',
-    scanIssue: '', scanDetail: '', dshRoot: '',
     busy: false, project: options.project || '', template: options.template,
     onCreated: options.onCreated,
     draft: {profile: '', display_name: '', model: '', instructions: '', source: ''},
@@ -144,61 +143,7 @@ function memberProfileError(value) {
   return '';
 }
 function memberCreateValid() {
-  if (memberAdd.host === 'dsh') {
-    const source = memberAdd.draft.source !== '' ? memberAdd.sources[Number(memberAdd.draft.source)] : null;
-    // DSH 绑定已有 profile：HOME 与 profile 都必填，创建前还会再走引擎校验。
-    if (!(memberAdd.dshRoot || source?.config_root || '').trim()) return false;
-  }
   return !memberProfileError(memberAdd.draft.profile);
-}
-function renderDshHomePanel(container) {
-  container.replaceChildren();
-  if (memberAdd.host !== 'dsh' || memberAdd.scanning) return;
-  if (memberAdd.scanIssue === 'ok') {
-    const info = document.createElement('p');
-    info.className = 'profile-help';
-    const root = memberAdd.dshRoot || memberAdd.sources[0]?.config_root || '';
-    info.textContent = `已发现 ${memberAdd.sources.length} 个 DSH profile；扫描目录：${root}`;
-    container.append(info);
-    return;
-  }
-  const label = document.createElement('label');
-  label.htmlFor = 'member-create-dsh-home';
-  label.textContent = 'DSH HOME 目录';
-  const row = document.createElement('div');
-  row.className = 'member-create-path';
-  const input = document.createElement('input');
-  input.id = 'member-create-dsh-home';
-  input.value = memberAdd.dshRoot || '';
-  input.placeholder = '例如：C:/Users/you/.dsh';
-  input.autocomplete = 'off';
-  input.spellcheck = false;
-  input.setAttribute('aria-describedby', 'member-create-dsh-help');
-  input.addEventListener('input', () => {
-    memberAdd.dshRoot = input.value;
-    $('#member-add-join').disabled = memberAdd.busy || memberAdd.scanning || !memberCreateValid();
-  });
-  const pick = document.createElement('button');
-  pick.type = 'button';
-  pick.className = 'directory-picker-button';
-  pick.title = '选择 DSH HOME 目录（服务器目录）';
-  pick.setAttribute('aria-label', '选择 DSH HOME 目录');
-  pick.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v2M3 7v12a1 1 0 0 0 1 1h15l3-10H7L4 20"/></svg>';
-  pick.addEventListener('click', () => selectProjectDirectory(input, pick));
-  const rescan = document.createElement('button');
-  rescan.type = 'button';
-  rescan.id = 'member-create-dsh-rescan';
-  rescan.textContent = '重新扫描';
-  rescan.title = '重新扫描自动发现：进程 DSH_HOME、用户级 DSH_HOME、~/.dsh';
-  rescan.addEventListener('click', () => loadMemberCreateSources());
-  row.append(input, pick, rescan);
-  const help = document.createElement('p');
-  help.className = 'profile-help';
-  help.id = 'member-create-dsh-help';
-  help.textContent = memberAdd.scanIssue === 'error'
-    ? '自动扫描失败，可选择或填写 DSH HOME 后校验并接入；不会自动绑定到其他账号或 profile。'
-    : '未发现 DSH profile，可选择或填写 DSH HOME 后校验并接入；目录应包含 profiles/<profile>/cordis.patch.yml。';
-  container.append(label, row, help);
 }
 function renderMemberCreate(steps) {
   const dsh = memberAdd.host === 'dsh';
@@ -212,7 +157,6 @@ function renderMemberCreate(steps) {
       <label for="member-create-source">配置来源</label><select id="member-create-source"><option value="">使用默认设置</option></select>
     </div>
     <p class="profile-help" id="member-create-auth-help"></p>
-    <div id="member-create-dsh"></div>
     <div id="member-create-soul-templates"></div>
     <details><summary>更多设置</summary>
       <label for="member-create-model">模型</label><input id="member-create-model" maxlength="200" placeholder="留空沿用来源或运行时默认模型">
@@ -220,13 +164,12 @@ function renderMemberCreate(steps) {
     </details>`;
   const draft = memberAdd.draft;
   form.querySelector('#member-create-profile-help').textContent = dsh
-    ? '填写 DSH HOME 下已有的 profile 名称（profiles/<名称>/cordis.patch.yml）；接入不会新建或改写该目录。'
+    ? '使用 1–64 位小写英文字母、数字、短横线或下划线，以小写英文字母或数字开头。系统会在 DSH HOME 下创建独立 profile 目录。'
     : '使用 1–64 位小写英文字母、数字、短横线或下划线，以小写英文字母或数字开头。系统会自动准备独立目录。';
   const profileInput = form.querySelector('#member-create-profile');
   profileInput.dialogValidation = memberProfileError;
   const details = form.querySelector('details');
-  details.hidden = dsh;
-  details.open = !dsh && !!draft.expanded;
+  details.open = !!draft.expanded;
   details.addEventListener('toggle', () => { draft.expanded = details.open; });
   for (const [id, key] of [['name', 'display_name'], ['profile', 'profile'], ['model', 'model'], ['instructions', 'instructions']]) {
     const input = form.querySelector('#member-create-' + id);
@@ -238,20 +181,12 @@ function renderMemberCreate(steps) {
     });
   }
   const source = form.querySelector('#member-create-source');
-  if (dsh) source.querySelector('option[value=""]')?.remove();
   memberAdd.sources.forEach((p, i) => source.add(new Option(
-    dsh ? `${p.profile} · ${p.config_root}` : `${p.display_name || p.profile}（${p.profile}）`, String(i))));
+    `${p.display_name || p.profile}（${p.profile}）`, String(i))));
   source.value = draft.source;
-  if (dsh && memberAdd.sources.length && !draft.profile) {
-    const picked = memberAdd.sources[Number(draft.source)] || memberAdd.sources[0];
-    draft.profile = picked.profile;
-    profileInput.value = picked.profile;
-  }
-  profileInput.readOnly = dsh && memberAdd.sources.length > 0;
-  form.querySelector('#member-create-source-block').hidden = dsh && !memberAdd.sources.length;
   const updateAuth = () => {
     if (memberAdd.host === 'dsh') {
-      form.querySelector('#member-create-auth-help').textContent = 'DSH 使用自身账号与模型配置；接入只保存 HOME 与 profile 绑定，不会复制认证文件或修改系统环境变量。';
+      form.querySelector('#member-create-auth-help').textContent = '继承来源的模型与认证路由，沿用 DSH HOME 的账号认证。新 profile 使用独立名称与后台运行配置；个人指令保存到该 profile 的人格配置。';
       return;
     }
     if (memberAdd.host === 'codex') {
@@ -262,23 +197,12 @@ function renderMemberCreate(steps) {
   };
   source.addEventListener('change', () => {
     draft.source = source.value;
-    if (dsh) {
-      const picked = memberAdd.sources[Number(source.value)];
-      if (picked) {
-        draft.profile = picked.profile;
-        profileInput.value = picked.profile;
-        profileInput.readOnly = true;
-        memberAdd.dshRoot = picked.config_root;
-      }
-      $('#member-add-join').disabled = memberAdd.busy || memberAdd.scanning || !memberCreateValid();
-    }
     updateAuth();
   });
   updateAuth();
-  renderDshHomePanel(form.querySelector('#member-create-dsh'));
   steps.appendChild(form);
   if (draft.profileTouched) validateDialogField(profileInput);
-  if (!dsh) {
+  {
     const current = memberAdd;
     mountProjectSoulTemplates(form.querySelector('#member-create-soul-templates'), {
       project: current.project, template: current.template, maxLength: 32000, disabled: current.scanning,
@@ -292,19 +216,15 @@ function renderMemberCreate(steps) {
   }
 }
 function renderMemberAdd() {
-  const dsh = memberAdd.host === 'dsh';
   const steps = $('#member-add-steps'), status = $('#member-add-status');
-  status.dataset.error = String(!!memberAdd.error || (dsh && memberAdd.scanIssue === 'error'));
+  status.dataset.error = String(!!memberAdd.error);
   const join = $('#member-add-join');
   join.disabled = memberAdd.busy || memberAdd.scanning || !memberCreateValid();
-  join.textContent = dsh ? '校验并接入' : '创建 profile';
+  join.textContent = '创建 profile';
   steps.replaceChildren();
-  $('#member-add-title').textContent = dsh ? '接入 DSH profile' : '创建 profile';
+  $('#member-add-title').textContent = '创建 profile';
   if (memberAdd.scanning) status.textContent = '正在读取配置来源…';
   else if (memberAdd.error) status.textContent = memberAdd.error;
-  else if (dsh && memberAdd.scanIssue === 'error') status.textContent = `DSH 扫描失败：${memberAdd.scanDetail}`;
-  else if (dsh && memberAdd.scanIssue === 'empty') status.textContent = `未发现 DSH 环境配置：${memberAdd.scanDetail}`;
-  else if (dsh && memberAdd.scanIssue === 'ok') status.textContent = `已发现 ${memberAdd.sources.length} 个 DSH profile`;
   else status.textContent = '';
   const host = document.createElement('div');
   host.className = 'project-mode-options';
@@ -336,35 +256,16 @@ $('#dlg-member-add').addEventListener('close', () => { if (!$('#dlg-member-add')
 async function loadMemberCreateSources() {
   const current = memberAdd, scanVersion = current.scanVersion = (current.scanVersion || 0) + 1;
   current.scanning = true; current.sources = []; current.draft.source = ''; current.error = '';
-  current.scanIssue = ''; current.scanDetail = '';
   renderMemberAdd();
   try {
     const result = await api(`/discovery/scan?project=${encodeURIComponent(current.project)}`);
     if (memberAdd !== current || current.scanVersion !== scanVersion) return;
     current.sources = (result.candidates || []).filter(p => p.host_type === current.host);
-    const defaultSource = current.sources.findIndex(p => p.profile === 'default');
+    const defaultSource = current.sources.findIndex(p => p.profile === (current.host === 'dsh' ? 'headless' : 'default'));
     current.draft.source = defaultSource >= 0 ? String(defaultSource) : current.sources.length ? '0' : '';
-    if (current.host === 'dsh') {
-      if (current.sources.length) {
-        const picked = current.sources[Number(current.draft.source)] || current.sources[0];
-        current.scanIssue = 'ok';
-        current.dshRoot = picked.config_root;
-        current.scanDetail = picked.config_root;
-        current.draft.profile = picked.profile;
-        current.draft.profileTouched = true;
-      } else {
-        current.scanIssue = 'empty';
-        current.scanDetail = '进程 DSH_HOME、用户级 DSH_HOME 与 ~/.dsh 下均未找到带有效 cordis.patch.yml 的 profile。';
-      }
-    }
   } catch (err) {
     if (memberAdd === current && current.scanVersion === scanVersion) {
-      if (current.host === 'dsh') {
-        current.scanIssue = 'error';
-        current.scanDetail = err.message;
-      } else {
-        current.error = `配置来源读取失败：${err.message}。可切换宿主重试，或使用默认设置。`;
-      }
+      current.error = `配置来源读取失败：${err.message}。可切换宿主重试，或使用默认设置。`;
     }
   } finally {
     if (memberAdd === current && current.scanVersion === scanVersion) {
@@ -377,7 +278,6 @@ $('#member-add-join').addEventListener('click', submitMemberCreate);
 async function submitMemberCreate() {
   const current = memberAdd;
   if (!current || current.busy || current.scanning || !memberCreateValid()) return;
-  if (current.host === 'dsh') return submitDshMember(current);
   current.busy = true;
   const dialog = $('#dlg-member-add');
   dialog.querySelectorAll('input, select, textarea, button').forEach(el => el.disabled = true);
@@ -400,56 +300,6 @@ async function submitMemberCreate() {
   } catch (err) {
     if (memberAdd !== current) return;
     current.error = `创建失败：${err.message}。填写内容已保留，可修改后重试。`;
-    current.busy = false;
-    renderMemberAdd();
-  } finally {
-    $('#member-add-close').disabled = false;
-  }
-}
-
-async function submitDshMember(current) {
-  const dialog = $('#dlg-member-add');
-  const draft = current.draft;
-  const source = draft.source !== '' ? current.sources[Number(draft.source)] : null;
-  const configRoot = (current.dshRoot || source?.config_root || '').trim();
-  const profile = draft.profile.trim();
-  if (!configRoot || !profile) {
-    current.error = '请选择或填写 DSH HOME 目录，并填写 profile 标识。';
-    renderMemberAdd();
-    return;
-  }
-  current.busy = true;
-  current.error = '';
-  dialog.querySelectorAll('input, select, textarea, button').forEach(el => el.disabled = true);
-  $('#member-add-status').textContent = '正在校验 DSH HOME…';
-  $('#member-add-status').dataset.error = 'false';
-  try {
-    // 创建前复核：目录、权限与 profile patch 以引擎侧为准，不复用扫描结果作最终判断。
-    const check = await api('/bots/validate-dsh', {method: 'POST',
-      body: JSON.stringify({config_root: configRoot, profile})});
-    if (memberAdd !== current) return;
-    if (!check.ok) {
-      current.error = `校验失败：${(check.errors || ['未知原因']).join('；')}。已保留填写的路径与 profile。`;
-      current.busy = false;
-      renderMemberAdd();
-      return;
-    }
-    const root = (check.config_root || configRoot).trim();
-    $('#member-add-status').textContent = '正在接入 DSH profile…';
-    // 走既有 register_bot：保存 config_root、profile 与 runtime=dsh 绑定；入组仍由调用方完成。
-    const result = await api('/bots/register', {method: 'POST', body: JSON.stringify({
-      host_type: 'dsh', profile, config_root: root, display_name: draft.display_name.trim()})});
-    if (memberAdd !== current) return;
-    current.busy = false;
-    dialog.close();
-    await current.onCreated({
-      ...result, host_type: 'dsh', runtime: 'dsh',
-      profile, host_profile: profile, config_root: root,
-      display_name: draft.display_name.trim() || profile, bound: true,
-    });
-  } catch (err) {
-    if (memberAdd !== current) return;
-    current.error = `接入失败：${err.message}。填写内容已保留，可修改后重试。`;
     current.busy = false;
     renderMemberAdd();
   } finally {

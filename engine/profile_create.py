@@ -35,7 +35,8 @@ def _source(body):
     selected = body.get('source')
     if not selected:
         return (Path(discovery._hermes_root()).resolve(), None) if body['host_type'] == 'hermes' else (None, None)
-    candidates = discovery._scan_codex() if body['host_type'] == 'codex' else discovery._scan_hermes()
+    scan = {'codex': discovery._scan_codex, 'hermes': discovery._scan_hermes, 'dsh': discovery._scan_dsh}
+    candidates = scan[body['host_type']]()
     match = next((c for c in candidates if c['profile'] == selected['profile']
                   and c['config_root'] == selected['config_root']), None)
     if not match:
@@ -44,7 +45,8 @@ def _source(body):
     if body['host_type'] == 'codex':
         home, selector = bot_identity.codex_settings(match)
         return Path(home).resolve(), selector
-    return (root if match['profile'] == 'default' else root / 'profiles' / match['profile']), None
+    return (root if body['host_type'] == 'hermes' and match['profile'] == 'default'
+            else root / 'profiles' / match['profile']), None
 
 
 def _merge(base, override):
@@ -150,7 +152,8 @@ def create(conn, body):
             hermes_profile_names.validate(name)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
-    root = discovery._codex_root().resolve() if host == 'codex' else Path(discovery._hermes_root()).resolve()
+    roots = {'codex': discovery._codex_root, 'hermes': discovery._hermes_root, 'dsh': discovery._dsh_root}
+    root = Path(roots[host]()).resolve()
     container = root / 'profiles'
     target = container / name
     if container.resolve() != container or target.resolve() != target:
@@ -173,10 +176,14 @@ def create(conn, body):
             else:
                 home, selector = _source(body)
                 config_root = str(target) if host == 'codex' else str(root)
-                reg = discovery.register_bot(conn, host, name, config_root, body['display_name'])
-                member = bot_identity.enroll(conn, reg['bot_id'], project) if project else None
-                content, provisioned = (_codex(home, selector, body) if host == 'codex'
-                                        else _hermes(home, body, member))
+                if host == 'dsh':
+                    from . import dsh_profile_create
+                    content, provisioned = dsh_profile_create.content(home, body)
+                else:
+                    reg = discovery.register_bot(conn, host, name, config_root, body['display_name'])
+                    member = bot_identity.enroll(conn, reg['bot_id'], project) if project else None
+                    content, provisioned = (_codex(home, selector, body) if host == 'codex'
+                                            else _hermes(home, body, member))
                 if host == 'codex' and project:
                     from . import codex_project_access as access, project_workspaces as ws
                     config = tomlkit.parse(content['config.toml'].decode('utf-8'))
@@ -210,10 +217,12 @@ def create(conn, body):
             return {'created': True, 'bot_id': reg['bot_id'], 'member_profile': member,
                     'host_type': host, 'config_root': config_root, 'project': project or None,
                     'profile': name, 'home': str(target), 'auth_copied': provisioned,
-                    'notice': notice + ('；已复制认证配置，实际可用性以首次运行结果为准。' if provisioned
+                    'notice': notice + ('；沿用 DSH HOME 的账号认证，实际可用性以首次运行结果为准。' if host == 'dsh'
+                               else '；已复制认证配置，实际可用性以首次运行结果为准。' if provisioned
                                else '；请完成主账户登录并提供文件认证后再唤醒。' if host == 'codex'
                                else '；请完成该 profile 的登录或模型认证后再唤醒。'),
-                    'setup_command': _setup_command(host, root if host == 'codex' else target, name) if not provisioned else ''}
+                    'setup_command': _setup_command(host, root if host == 'codex' else target, name)
+                                     if not provisioned and host != 'dsh' else ''}
         except Exception as exc:
             conn.rollback()
             # Remove only files made by this request; never recursively delete a user home.

@@ -1,13 +1,4 @@
-"""Real Chrome, synthetic HTTP: DSH host entry, scan feedback and HOME fallback (req#137 task#263).
-
-覆盖：
-- 宿主固定三项 Hermes/Codex/DSH；选择 DSH 自动扫描。
-- 扫描成功：只列 dsh 候选、自动带出 profile，创建前调用 /bots/validate-dsh，再走 /bots/register。
-- 扫描为空/异常：保留入口，提示原因，提供选目录、手动 HOME、重新扫描；空态可继续校验接入。
-- 校验错误逐项展示并保留已填 HOME/profile；不会自动绑定到其他 profile。
-- 已创建 dsh Bot 的目录/profile 失效时，成员卡片显示绑定失效。
-- 深色/浅色 × 390px：三项宿主与手动路径不溢出。
-"""
+"""Real Chrome, synthetic HTTP: editable DSH creation and existing member availability."""
 import argparse
 import mimetypes
 from pathlib import Path
@@ -17,11 +8,10 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 DSH_ROOT = 'C:/dsh-home'
-MANUAL_ROOT = 'C:/manual-dsh'
 
 
 def run(evidence):
-    state = {'scan': 'ok', 'validate_ok': True, 'candidates': []}
+    state = {'scan': 'ok', 'create_ok': True, 'candidates': []}
     scans, validates, registers, creates = [], [], [], []
 
     def route(request):
@@ -42,12 +32,13 @@ def run(evidence):
                 request.fulfill(status=503, json={'detail': '模拟扫描失败'}); return
             candidates = [{'host_type': 'hermes', 'profile': 'default', 'config_root': 'C:/hermes'}]
             if state['scan'] == 'ok':
-                candidates.append({'host_type': 'dsh', 'profile': 'dsh-a', 'config_root': DSH_ROOT})
+                candidates.extend([{'host_type': 'dsh', 'profile': name, 'config_root': DSH_ROOT}
+                                   for name in ('desktop', 'headless')])
             request.fulfill(json={'candidates': candidates}); return
         if path == '/bots/validate-dsh':
             body = request.request.post_data_json
             validates.append(body)
-            errors = [] if state['validate_ok'] else ['目录不存在', 'profile 目录不存在']
+            errors = []
             request.fulfill(json={'ok': not errors, 'errors': errors,
                                   'config_root': body.get('config_root', ''),
                                   'profile': body.get('profile', '')}); return
@@ -57,8 +48,13 @@ def run(evidence):
             request.fulfill(json={'bot_id': 77, 'created': True, 'profile': body.get('profile'),
                                   'member_profile': None, 'project': None}); return
         if path == '/profiles/create':
-            creates.append(request.request.post_data_json)
-            request.fulfill(status=500, json={'detail': '不应走 profile_create'}); return
+            body = request.request.post_data_json
+            creates.append(body)
+            if not state['create_ok']:
+                request.fulfill(status=409, json={'detail': '同名 profile 已存在，请更换标识'}); return
+            request.fulfill(json={'bot_id': 77, 'created': True, 'profile': body['profile'],
+                                  'host_type': body['host_type'], 'config_root': DSH_ROOT,
+                                  'member_profile': None, 'project': None}); return
         if path == '/profiles/candidates':
             request.fulfill(json={'candidates': state['candidates']}); return
         if path == '/projects/p/workspaces':
@@ -105,81 +101,68 @@ def run(evidence):
         hosts = page.locator('[name="member-add-host"]')
         assert hosts.count() == 3
         assert [hosts.nth(i).get_attribute('value') for i in range(3)] == ['hermes', 'codex', 'dsh']
+        page.locator('#member-create-name').fill('新成员')
         select_dsh(page)
-        assert '已发现 1 个 DSH profile' in status(page), status(page)
-        assert page.locator('#member-create-source option').count() == 1
-        assert 'dsh-a' in page.locator('#member-create-source').inner_text()
-        assert page.locator('#member-create-profile').input_value() == 'dsh-a'
-        assert page.locator('#member-create-profile').evaluate('e => e.readOnly')
-        assert page.locator('#member-create-dsh-home').count() == 0
-        assert page.locator('#member-add-join').inner_text() == '校验并接入'
-        assert not page.locator('#member-add-join').is_disabled()
-        page.locator('#member-add-join').click()
-        page.wait_for_function('window.__created !== null')
-        assert validates == [{'config_root': DSH_ROOT, 'profile': 'dsh-a'}], validates
-        assert registers == [{'host_type': 'dsh', 'profile': 'dsh-a',
-                              'config_root': DSH_ROOT, 'display_name': ''}], registers
-        assert not creates, creates
-        created = page.evaluate('window.__created')
-        assert created['bot_id'] == 77 and created['host_type'] == 'dsh'
-        assert created['profile'] == 'dsh-a' and created['config_root'] == DSH_ROOT
-        assert page.locator('#dlg-member-add').is_hidden()
-
-        # ---- ② 扫描为空：提示原因、手动 HOME + 重新扫描、校验失败保留输入 ----
-        state['scan'] = 'empty'
-        state['validate_ok'] = False
-        open_dialog(page)
-        select_dsh(page)
-        assert '未发现 DSH 环境配置' in status(page) and 'DSH_HOME' in status(page), status(page)
-        assert page.locator('#member-create-source-block').is_hidden()
-        assert page.locator('#member-create-dsh-home').count() == 1
-        assert page.locator('#member-create-dsh-home').input_value() == ''
-        assert page.locator('[aria-label="选择 DSH HOME 目录"]').count() == 1
+        profile = page.locator('#member-create-profile')
+        assert profile.input_value() == ''
+        assert profile.is_editable()
+        assert page.locator('#member-add-title').inner_text() == '创建 profile'
+        assert page.locator('#member-add-join').inner_text() == '创建 profile'
         assert page.locator('#member-add-join').is_disabled()
-        before = len(scans)
-        page.locator('#member-create-dsh-rescan').click()
+        assert status(page) == ''
+        assert '已发现' not in page.locator('#dlg-member-add').inner_text()
+        assert page.locator('#member-create-source option').count() == 3
+        assert page.locator('#member-create-source').input_value() == '1'
+        profile.press_sequentially('new-headless')
+        page.locator('#member-create-source').select_option('0')
+        assert profile.input_value() == 'new-headless'
+        assert profile.is_editable()
+        page.locator('[name="member-add-host"][value="codex"]').check()
         page.wait_for_function('!memberAdd.scanning')
-        assert len(scans) == before + 1
-        page.locator('#member-create-dsh-home').fill(MANUAL_ROOT)
-        page.locator('#member-create-profile').fill('manual-a')
-        assert not page.locator('#member-add-join').is_disabled()
+        assert profile.input_value() == 'new-headless'
+        select_dsh(page)
+        assert profile.input_value() == 'new-headless'
+        page.locator('#member-add-steps details summary').click()
+        page.locator('#member-create-model').fill('chosen-model')
+        page.locator('#member-create-instructions').fill('独立个人指令')
+        state['create_ok'] = False
         page.locator('#member-add-join').click()
-        page.wait_for_function('document.querySelector("#member-add-status").textContent.includes("校验失败")')
-        fail_text = status(page)
-        assert '目录不存在' in fail_text and 'profile 目录不存在' in fail_text, fail_text
-        assert '已保留' in fail_text, fail_text
-        assert page.locator('#member-create-dsh-home').input_value() == MANUAL_ROOT
-        assert page.locator('#member-create-profile').input_value() == 'manual-a'
-        assert validates[-1] == {'config_root': MANUAL_ROOT, 'profile': 'manual-a'}, validates
-        assert len(registers) == 1, registers
-        page.locator('#dlg-member-add').screenshot(path=str(evidence / 'dsh-scan-empty-validation.png'))
-
-        # 校验通过后继续接入，使用手动路径。
-        state['validate_ok'] = True
+        page.wait_for_function('document.querySelector("#member-add-status").textContent.includes("创建失败")')
+        assert '同名 profile 已存在' in status(page)
+        assert profile.input_value() == 'new-headless'
+        assert profile.is_editable()
+        assert page.locator('#member-create-instructions').input_value() == '独立个人指令'
+        profile.fill('new-agent')
+        for theme in ('dark', 'light'):
+            page.evaluate('applyTheme', theme)
+            for width in (1280, 390):
+                page.set_viewport_size({'width': width, 'height': 900})
+                assert page.locator('#dlg-member-add').evaluate('e => e.scrollWidth <= e.clientWidth + 1')
+                page.locator('#dlg-member-add').screenshot(path=str(evidence / f'dsh-create-{width}-{theme}.png'))
+        state['create_ok'] = True
         page.locator('#member-add-join').click()
         page.wait_for_function('window.__created !== null')
-        assert validates[-1] == {'config_root': MANUAL_ROOT, 'profile': 'manual-a'}, validates
-        assert registers[-1] == {'host_type': 'dsh', 'profile': 'manual-a',
-                                 'config_root': MANUAL_ROOT, 'display_name': ''}, registers
-        assert page.evaluate('window.__created')['config_root'] == MANUAL_ROOT
+        assert creates[-1]['profile'] == 'new-agent'
+        assert creates[-1]['host_type'] == 'dsh'
+        assert creates[-1]['source'] == {'profile': 'headless', 'config_root': DSH_ROOT}
+        assert creates[-1]['model'] == 'chosen-model'
+        assert creates[-1]['instructions'] == '独立个人指令'
+        assert not registers and not validates
 
-        # ---- ③ 扫描异常：保留入口并给出异常原因 ----
-        state['scan'] = 'error'
-        open_dialog(page)
-        select_dsh(page)
-        assert 'DSH 扫描失败' in status(page) and '模拟扫描失败' in status(page), status(page)
-        assert page.locator('#member-create-dsh-home').count() == 1
-        assert page.locator('#member-add-join').is_disabled()
-        for theme in ('dark', 'light'):
-            page.evaluate('theme => { document.documentElement.dataset.theme = theme }', theme)
-            page.set_viewport_size({'width': 390, 'height': 844})
-            page.wait_for_timeout(120)
-            assert page.locator('#dlg-member-add').evaluate('e => e.scrollWidth <= e.clientWidth + 1')
-            assert page.locator('[name="member-add-host"]').count() == 3
-            assert page.locator('#member-create-dsh-home').count() == 1
-            page.locator('#dlg-member-add').screenshot(path=str(evidence / f'dsh-scan-error-390-{theme}.png'))
+        for scan in ('empty', 'error'):
+            state['scan'] = scan
+            open_dialog(page)
+            select_dsh(page)
+            assert profile.input_value() == '' and profile.is_editable()
+            assert page.locator('#member-create-source').input_value() == ''
+            assert page.locator('#member-create-dsh-home').count() == 0
+            if scan == 'error':
+                assert '模拟扫描失败' in status(page)
+            profile.fill('default-agent')
+            page.locator('#member-add-join').click()
+            page.wait_for_function('window.__created !== null')
+            assert creates[-1]['source'] is None
         page.set_viewport_size({'width': 1280, 'height': 900})
-        page.locator('#member-add-close').click()
 
         # ---- ④ 已创建 dsh Bot 的绑定资源失效 ----
         state['candidates'] = []
@@ -209,8 +192,7 @@ def run(evidence):
         assert not errors, errors
         browser.close()
 
-    print('PASS: DSH host entry, scan success/empty/error, manual HOME + rescan, validate-before-create, '
-          'input retention, register payload, binding invalidation, 390px dark/light')
+    print('PASS: editable unique DSH profile, common form, source and host switch preservation, conflict retry, defaults, payload, binding invalidation, desktop/390px themes')
 
 
 if __name__ == '__main__':

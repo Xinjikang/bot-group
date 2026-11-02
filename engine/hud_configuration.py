@@ -242,9 +242,16 @@ def _create_profile(item, changes):
         raise HTTPException(400, '请提供有效的 profile、宿主类型和初始角色说明') from None
     result = api.post_create_profile(body, identity=('project-assistant', 'user'))
     from . import profile_config
-    filename = 'SOUL.md' if body.host_type == 'hermes' else 'AGENTS.md'
+    filename = {'hermes': 'SOUL.md', 'codex': 'AGENTS.md', 'dsh': 'cordis.patch.yml'}[body.host_type]
     raw = profile_config._snapshot(Path(result['home']), [filename])[filename]
-    verified = raw is not None and raw.decode('utf-8-sig').rstrip('\r\n') == body.instructions.rstrip('\r\n')
+    if body.host_type == 'dsh':
+        from . import dsh_profile_config
+        entries = dsh_profile_config._parse(profile_config._text(raw))
+        instructions = next((entry.get('config', {}).get('personaPrefix', '') for entry in entries
+                             if isinstance(entry, dict) and entry.get('id') == 'system-prompt'), '')
+    else:
+        instructions = raw.decode('utf-8-sig') if raw is not None else ''
+    verified = raw is not None and instructions.rstrip('\r\n') == body.instructions.rstrip('\r\n')
     if body.instructions and not verified:
         raise HTTPException(409, {'message': 'profile 已创建，初始说明文件核验失败，请检查实际文件', 'created': result})
     return {**result, 'instructions_file': str(Path(result['home']) / filename),

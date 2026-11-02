@@ -1,6 +1,6 @@
 # 创建 profile 与选择项目成员
 
-项目创建/导入第 5 步“选择成员与负责人”和 **项目详情 → 成员与目录 → 添加成员** 使用同一套勾选列表，顶部均提供“创建 profile”。创建窗口独立于项目详情窗口，内部选择 Hermes / Codex 并填写配置。
+项目创建/导入第 5 步“选择成员与负责人”和 **项目详情 → 成员与目录 → 添加成员** 使用同一套勾选列表，顶部均提供“创建 profile”。创建窗口独立于项目详情窗口，内部选择 Hermes / Codex / DSH 并填写配置。
 
 `frontend/member_picker.js` 共用候选展示、选择、刷新及创建回调。`GET /profiles/candidates` 合并宿主扫描结果与已注册 Bot，标记已入组成员；选择列表仅展示尚未加入当前项目的 Bot。同名 profile 通过宿主、配置根目录与 Bot ID 区分。选中尚未注册的宿主 profile 时只注册 Bot。新建成功返回原列表并自动勾选，其他选择与向导角色草稿保留。详情点击“加入项目”才入组；向导最终确认时统一入组和授权。批量加入部分成功后，成功成员从候选列表移除，失败及未处理成员仍可重试；没有可加入成员时保留创建和刷新入口。
 
@@ -19,6 +19,12 @@ Hermes profile 创建、宿主 profile 注册及按已有 Bot ID 入组会校验
 - Hermes 自动继承来源的模型配置与凭证。“使用默认设置”读取主 profile 的 `config.yaml` 和 `.env`；指定来源读取该 profile 自身文件。界面说明默认继承行为，OAuth 登录需在新 home 中完成。
 - 创建后注册 Bot，待显式确认选择后加入项目。取消成员选择或整个项目向导时，已创建 profile 与 Bot 保留；窗口在创建前说明此行为。缺少可复制认证时显示宿主对应的登录/配置命令，并明确目标 home；Codex 指向主账户目录，并提示提供文件认证。系统钥匙串中的凭据保持原生管理方式。
 - “认证已复制”仅说明本地配置准备完成。实际账号权限、模型可用性和认证有效期以运行结果为准；创建过程不发起付费模型调用。
+
+## DSH 独立创建
+
+DSH 与 Hermes/Codex 共用创建表单和 `POST /profiles/create`。Profile 标识初始为空，由用户填写；配置来源优先 headless，扫描和切换来源保留标识。成功扫描省去数量及目录提示。已有 DSH profile 在成员候选列表选择。
+
+新目录为 `DSH_HOME/profiles/<新标识>/`，包含原生 base/headless bundle 声明、空 cordis.yml 和独立 cordis.patch.yml。来源按白名单继承模型、供应商及认证路由；模型覆盖写入 agent-default-model，个人指令写入该 profile 的 system-prompt.config.personaPrefix，可在成员“人格”页继续编辑。共享 HOME 的认证、AGENTS.md 和源 profile 保持原值。创建时检查运行入口；发布后校验目录并注册，支持同请求重试、冲突拒绝和失败回滚，入组沿用调用方确认。设计见 [DSH 独立创建](../design/2026-11-02-dsh-profile-create.md)。
 
 ## 成员候选识别
 
