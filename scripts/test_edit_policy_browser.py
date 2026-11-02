@@ -65,7 +65,7 @@ def run(evidence):
 
         open_dialog()
         selected('workspace_session')
-        assert 'Codex' in page.locator('#edit-policy-scope').inner_text()
+        expect(page.locator('#edit-policy-scope')).to_have_text('全局设置 · 所有项目的 Hermes ACP Bot 共用。其它宿主沿用自身审批配置。')
         expect(page.locator('#app-settings-menu')).to_be_hidden()
         page.locator('input[value=session]').check()
         page.locator('#edit-policy-cancel').click()
