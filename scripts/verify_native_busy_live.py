@@ -152,7 +152,9 @@ def verify(args):
     record, detail = probe.install_record()
     if not record:
         raise RuntimeError(f'preflight 拒绝：{detail}')
-    run = probe.PROBE_DATA / 'task-276' / uuid.uuid4().hex
+    run = Path(args.run_dir) if args.run_dir else probe.PROBE_DATA / 'task-276' / uuid.uuid4().hex
+    if args.run_dir and not run.is_dir():
+        raise ValueError('--run-dir 必须指向已存在的预热 run 目录')
     home, workspace, data = run / 'home', run / 'workspace', run / 'engine'
     for directory in (home, workspace, data):
         directory.mkdir(parents=True)
@@ -209,7 +211,7 @@ def verify(args):
         return [dict(r) for r in conn.execute('SELECT * FROM hermes_executions ORDER BY started_at')]
 
     try:
-        endpoint = ensure(command, home, env=env, timeout=120)
+        endpoint = ensure(command, home, env=env, timeout=600)
         env['NATIVE_BUSY_PROBE_ENDPOINT'] = json.dumps(endpoint)
         result['endpoint'] = endpoint
         with (evidence / 'engine.log').open('wb') as log:
@@ -305,6 +307,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--backend')
     parser.add_argument('--evidence')
+    parser.add_argument('--run-dir')
     parser.add_argument('--serve', action='store_true')
     parser.add_argument('--mcp', action='store_true')
     args = parser.parse_args()
