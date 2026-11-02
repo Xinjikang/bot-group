@@ -757,7 +757,8 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 .member-create-fields summary{cursor:pointer;color:var(--fg-2);font-size:13px}
 .member-create-fields .profile-soul-heading{display:flex;flex-direction:column;gap:8px;margin-top:20px}
 .member-create-fields .profile-soul-heading>label{margin:0}
-#member-create-soul-templates{flex-direction:column;align-items:flex-start;margin:0;gap:4px}
+#member-create-soul-templates{flex-direction:row;flex-wrap:nowrap;align-items:center;margin:0;gap:8px}
+#member-create-soul-templates>*{flex-shrink:0;white-space:nowrap}
 .member-create-route{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .member-create-route.single{grid-template-columns:1fr}
 @media(max-width:520px){.member-create-route{grid-template-columns:1fr;gap:0}}

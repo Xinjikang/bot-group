@@ -46,7 +46,10 @@ def check_instruction_layout(page, output, host):
                 const hint = heading.querySelector('.profile-help').getBoundingClientRect();
                 const model = document.querySelector('.member-create-route').getBoundingClientRect();
                 return label.top >= model.bottom + 20 && button.top >= label.bottom + 7
-                    && hint.top >= button.bottom && Math.abs(button.left - label.left) < 1;
+                    && hint.left >= button.right + 7
+                    && Math.abs((hint.top + hint.bottom - button.top - button.bottom) / 2) < 1
+                    && hint.right <= heading.getBoundingClientRect().right + 1
+                    && Math.abs(button.left - label.left) < 1;
             }''')
             page.locator('#dlg-member-add').screenshot(path=str(output / f'{host}-instructions-{width}-{theme}.png'))
     page.set_viewport_size({'width': 1280, 'height': 900})
