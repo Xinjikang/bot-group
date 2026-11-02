@@ -28,22 +28,45 @@ from engine import process_query  # noqa: E402
 PROJECT = 'p'
 
 
-class FakeHermesClient:
-    """按原生 session_id 返回可控 running/pending 状态的假网关客户端。"""
+class SlowFailure:
+    """模拟耗时失败：时钟推进 delay 秒后抛 exc（验证退避从失败完成时起算）。"""
 
-    def __init__(self, states, calls):
-        self.states = states  # {session_id: dict | Exception}
+    def __init__(self, delay, exc):
+        self.delay, self.exc = delay, exc
+
+
+class FakeHermesClient:
+    """按原生 session_id 返回可控 running/pending 状态的假网关租约。
+
+    生产代码经 lease.client.rpc 直连底层客户端并在 finally 释放租约（lease.close），
+    夹具按同一契约记录调用与释放次数。
+    """
+
+    def __init__(self, states, calls, closes, clock=None):
+        self.states = states  # {session_id: dict | Exception | SlowFailure}
         self.calls = calls    # 记录 (method, params, timeout)
+        self.closes = closes  # 记录 close() 调用
+        self.clock = clock    # [t] 可推进的假时钟（None=真实时间）
+        self.client = self
+        self.closed = False
 
     def rpc(self, method, *, timeout=None, **params):
         self.calls.append((method, params, timeout))
         if method != 'session.resume':
             raise AssertionError(f'unexpected rpc {method}')
         state = self.states.get(params['session_id'])
+        if isinstance(state, SlowFailure):
+            if self.clock is not None:
+                self.clock[0] += state.delay
+            raise state.exc
         if isinstance(state, Exception):
             raise state
         return {'running': state.get('running', False),
                 'pending': state.get('pending', False)}
+
+    def close(self):
+        self.closed = True
+        self.closes.append(True)
 
 
 class FakeOwnedProc:
@@ -83,11 +106,14 @@ class NativeBusySchedulingTests(unittest.TestCase):
         # 状态夹具
         self.native_states = {}
         self.gateway_calls = []
+        self.lease_closes = []
+        self.clock = None
         self.delivered = []
 
         def fake_connection(profile, *, home=None, command=None, read_only=False,
                             on_event=None, history=False):
-            return FakeHermesClient(self.native_states, self.gateway_calls), home, command or []
+            return FakeHermesClient(self.native_states, self.gateway_calls,
+                                    self.lease_closes, clock=self.clock), home, command or []
 
         patcher = patch.object(hermes_gateway, 'connection', side_effect=fake_connection)
         patcher.start()
@@ -215,16 +241,21 @@ class NativeBusySchedulingTests(unittest.TestCase):
         with patch.object(wake, 'deliver', side_effect=deliver_with_attach_busy):
             # 第一次投递：attach 才发现原生 running → busy 退回
             self.assertTrue(queue.process_one(self.conn))
-            # attach 发现的原生忙状态：下一轮预检查即命中（模拟真实时序）
-            self.native_states['native-a'] = {'running': True, 'pending': False}
-            self._clear_native_cache()
-            # a 退回后 busy，B 获得调度
+            # 生产更新路径：spawn attach 确认原生忙后调用 _native_busy_feedback 回写
+            # 观察缓存（deliver 在本测试为记录器，反馈函数与 spawn 调用的是同一实现）；
+            # 不做任何手工清缓存/翻转状态
+            hermes_gateway._native_busy_feedback(self.conn, 'native-a')
+            # 退回后同一 TTL 窗口内：预检查命中 busy 缓存 → A 跳过，B 获得调度
             self.assertTrue(queue.process_one(self.conn))
         row_a = self.conn.execute('SELECT id,status,started_at FROM wake_jobs WHERE id=?',
                                   (job_a['id'],)).fetchone()
         self.assertEqual(row_a['status'], 'queued')     # 原逻辑退回
         self.assertEqual(row_a['id'], job_a['id'])      # 保留原 ID
         self.assertIsNone(row_a['started_at'])
+        self.assertEqual(self.delivered, [('hermes-a', 'work', None), ('hermes-b', 'work', None)])
+        # 原生仍空闲（缓存 busy 驱动跳过）：窗口内不再重投 A（20 轮 A 零重投、B 零重复）
+        for _ in range(20):
+            self.assertFalse(queue.process_one(self.conn))
         self.assertEqual(self.delivered, [('hermes-a', 'work', None), ('hermes-b', 'work', None)])
 
     # ---- 验收 4：查询失败/未知只暂缓对应会话；退避缓存；绑定代次失效 ----
@@ -248,6 +279,43 @@ class NativeBusySchedulingTests(unittest.TestCase):
         self.assertTrue(queue.process_one(self.conn))
         self.assertEqual(self.delivered[-1][0], 'hermes-a')
 
+    def test_observation_lease_released_on_success_and_failure(self):
+        # manager ①：观察租约成功/异常路径均须 finally 释放（Pool.sweep 依赖 leases 空集）
+        self._bind('hermes-a', session_id='native-a')
+        session = wake.session_name('hermes-a', 'work', None, PROJECT)
+        self.native_states['native-a'] = {'running': False, 'pending': False}
+        self.assertIs(hermes_gateway.process_state(session, profile='hermes-a'), False)
+        self.assertEqual(self.lease_closes, [True])
+        hermes_gateway._native_cache.clear()
+        self.native_states['native-a'] = GatewayTransportError('Hermes connection interrupted')
+        self.assertIsNone(hermes_gateway.process_state(session, profile='hermes-a'))
+        self.assertEqual(self.lease_closes, [True, True])
+
+    def test_failure_backoff_starts_at_failure_completion(self):
+        # manager ③：退避从失败完成时起算——5 秒超时失败完成于 t105，首档 3s 退避过期须 108
+        self._bind('hermes-a', session_id='native-a')
+        self.clock = [100.0]
+        self.native_states['native-a'] = SlowFailure(5.0, GatewayTransportError('slow timeout'))
+        session = wake.session_name('hermes-a', 'work', None, PROJECT)
+        with patch.object(hermes_gateway.time, 'monotonic', side_effect=lambda: self.clock[0]):
+            self.assertIsNone(hermes_gateway.process_state(session, profile='hermes-a'))
+            state, expiry, fails = hermes_gateway._native_cache[('native-a', 0)]
+            self.assertEqual(state, 'busy')
+            self.assertEqual(expiry, 108.0)  # 105 完成 + 3 退避，而非 103（从查询开始算）
+            self.assertEqual(fails, 1)
+            # 失败完成后的退避窗口内重复检查：不新增 RPC（查询/连接耗时与退避分开计）
+            calls_before = len(self.gateway_calls)
+            self.clock[0] = 106.0
+            self.assertIsNone(hermes_gateway.process_state(session, profile='hermes-a'))
+            self.assertEqual(len(self.gateway_calls), calls_before)
+            # 退避过期后重新查询，失败计数递增（6s 档）
+            self.clock[0] = 109.0
+            self.assertIsNone(hermes_gateway.process_state(session, profile='hermes-a'))
+            self.assertEqual(len(self.gateway_calls), calls_before + 1)
+            _, expiry2, fails2 = hermes_gateway._native_cache[('native-a', 0)]
+            self.assertEqual(expiry2, 120.0)  # 109 开始 + 5 完成于 114 + 6 退避
+            self.assertEqual(fails2, 2)
+
     def test_unknown_snapshot_defers_session(self):
         # resume 返回缺 running/pending 键 → 未知 → 暂缓，不按空闲放行
         self._bind('hermes-a', session_id='native-a')
@@ -258,12 +326,14 @@ class NativeBusySchedulingTests(unittest.TestCase):
                 return {'revision': 1}
 
         with patch.object(hermes_gateway, 'connection',
-                          return_value=(UnknownClient(self.native_states, self.gateway_calls), None, [])):
+                          return_value=(UnknownClient(self.native_states, self.gateway_calls,
+                                                      self.lease_closes, clock=self.clock), None, [])):
             self._job('hermes-a', 'work')
             self._job('hermes-b', 'work')
             self.assertTrue(queue.process_one(self.conn))
             self.assertFalse(queue.process_one(self.conn))
         self.assertEqual(self.delivered, [('hermes-b', 'work', None)])
+        self.assertEqual(self.lease_closes, [True])  # 未知分支同样释放租约
 
     def test_binding_generation_switch_invalidates_idle_cache(self):
         # 空闲结果入缓存后绑定代次提升（/new 或绑定切换）：旧缓存不得掩盖新执行

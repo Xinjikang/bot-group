@@ -150,6 +150,10 @@ def _native_session_state(conn, profile, session):
     返回 False=原生空闲（沿用既有判空闲路径）；None=原生忙或查询失败/未知（只暂缓
     本会话，调用方按 busy 跳过本次调度；其他会话不受影响）。非 Hermes 托管会话
     无绑定行，返回 False 沿用既有进程查询。
+
+    只读观察租约在 finally 释放（Pool.sweep 依赖 entry.leases 空集做空闲回收），
+    共享物理连接保持池契约；观察走底层客户端 RPC（Lease.rpc 不带超时参数），
+    超时/断连只暂缓本会话。
     """
     binding = _binding_for_engine_session(conn, profile, session)
     if binding is None:
@@ -157,38 +161,58 @@ def _native_session_state(conn, profile, session):
     if binding['switching']:
         return None  # /new 切换进行中：暂缓投递
     key = (binding['session_id'], binding['generation'])
-    now = time.monotonic()
     with _native_cache_lock:
         hit = _native_cache.get(key)
-    if hit is not None and hit[1] > now:
+    if hit is not None and hit[1] > time.monotonic():
         return False if hit[0] == 'idle' else None
+    lease = None
     try:
-        client, _, _ = connection(profile, read_only=True)
-        snapshot = client.rpc('session.resume', session_id=binding['session_id'],
-                              timeout=_NATIVE_QUERY_TIMEOUT)
+        lease, _, _ = connection(profile, read_only=True)
+        snapshot = lease.client.rpc('session.resume', session_id=binding['session_id'],
+                                    timeout=_NATIVE_QUERY_TIMEOUT)
         running = snapshot.get('running')
         pending = snapshot.get('pending')
         if running is None and pending is None:
-            return _native_cache_failure(key, now, 'native session state unknown')
+            return _native_cache_failure(key, 'native session state unknown')
         state = 'busy' if (running or pending) else 'idle'
     except (GatewayTransportError, GatewayRefusal) as exc:
         # 超时/断连/会话不存在：只暂缓本会话，不按空闲放行
-        return _native_cache_failure(key, now, str(exc))
+        return _native_cache_failure(key, str(exc))
     except Exception as exc:  # noqa: BLE001
         logger.exception('native session state query failed for %s', session)
-        return _native_cache_failure(key, now, str(exc))
+        return _native_cache_failure(key, str(exc))
+    finally:
+        if lease is not None:
+            lease.close()
     with _native_cache_lock:
-        _native_cache[key] = (state, now + _NATIVE_CACHE_TTL, 0)
+        _native_cache[key] = (state, time.monotonic() + _NATIVE_CACHE_TTL, 0)
     return False if state == 'idle' else None
 
 
-def _native_cache_failure(key, now, detail):
-    """查询失败：按失败次数指数退避缓存「暂缓」，成功即清零。"""
+def _native_cache_failure(key, detail):
+    """查询失败：退避从失败完成时起算（查询超时可能长于首档退避），成功即清零。"""
+    now = time.monotonic()
     with _native_cache_lock:
         fails = (_native_cache[key][2] if key in _native_cache else 0) + 1
         ttl = min(_NATIVE_FAIL_BACKOFF_BASE * (2 ** (fails - 1)), _NATIVE_FAIL_BACKOFF_CAP)
         _native_cache[key] = ('busy', now + ttl, fails)
     return None
+
+
+def _native_busy_feedback(conn, session_id):
+    """attach 复核发现原生 running/pending：回写观察缓存，下一轮预检查直接判忙。
+
+    预检查缓存仍持空闲时 spawn attach 才会发现原生忙（空闲窗口内新执行启动的竞态）；
+    回写使退回后同一 TTL 窗口内的调度立即跳过本会话，不再反复占队首（req#142）。
+    """
+    rows = conn.execute('SELECT session_id,generation FROM session_bindings WHERE session_id=?',
+                        (session_id,)).fetchall()
+    if not rows:
+        return
+    now = time.monotonic()
+    with _native_cache_lock:
+        for row in rows:
+            _native_cache[(row['session_id'], row['generation'])] = ('busy', now + _NATIVE_CACHE_TTL, 0)
 
 
 def _publish(row):
@@ -225,6 +249,8 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
             raise GatewayRefusal('gateway_capabilities_unavailable')
         snapshot = _binding(conn, client, bot, project, profile, kind, thread_id, session, workdir, model_args)
         if snapshot['running'] or snapshot['pending']:
+            # attach 复核发现原生忙：回写观察缓存，退回后同一 TTL 窗口内不再反复占队首
+            _native_busy_feedback(conn, snapshot['session_id'])
             return {'ok': False, 'busy': True, 'detail': 'native session has pending execution'}
         grant = hermes_session_auth.grant(conn, project=project, profile=profile, bot_id=bot['id'],
             kind=kind, thread_id=thread_id, session=session, home=home, command=command,
