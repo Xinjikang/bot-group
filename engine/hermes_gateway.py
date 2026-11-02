@@ -199,6 +199,28 @@ def _native_cache_failure(key, detail):
     return None
 
 
+def _native_observation_state(conn, profile, session):
+    """/thinking 原生执行观察（req#142 成果 2）：复用调度预检查的原生状态缓存。
+
+    返回 'native_running'（原生 running/pending）、'idle'（原生空闲）或 None
+    （查询失败/未知/切换中——无证据不显示）。与 _native_session_state 共用
+    缓存与退避，观察不额外放大 RPC 频率；失败退避缓存以失败计数区分
+    （state 同为 'busy'，fails>0 是失败暂缓而非原生忙）。
+    """
+    verdict = _native_session_state(conn, profile, session)
+    if verdict is False:
+        return 'idle'
+    binding = _binding_for_engine_session(conn, profile, session)
+    if binding is None:
+        return None
+    key = (binding['session_id'], binding['generation'])
+    with _native_cache_lock:
+        cached = _native_cache.get(key)
+    if cached is not None and cached[0] == 'busy' and cached[2] == 0:
+        return 'native_running'
+    return None
+
+
 def _native_busy_feedback(conn, session_id):
     """attach 复核发现原生 running/pending：回写观察缓存，下一轮预检查直接判忙。
 
