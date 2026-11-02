@@ -1389,6 +1389,11 @@ def get_reasoning(profile: str, session: str, wake_started_at: float, after_id: 
     if run and run['runtime'] == 'codex':
         from . import codex_reasoning
         result = codex_reasoning.read(session, wake_started_at, after_id, wake_ended_at)
+    elif run and run['runtime'] == 'dsh':
+        # DSH 宿主显式分流：按执行记录身份读 dsh_run_events（原生会话 ID 为空也照读），
+        # 不落 Hermes compression_tip（否则对 runtime!='hermes' 抛 ValueError → /reasoning 500）。
+        from . import dsh_reasoning
+        result = dsh_reasoning.read(session, wake_started_at, after_id, wake_ended_at)
     elif run and run['runtime_session_id']:
         from . import session_adapter
         options['hermes_session_id'] = session_adapter.compression_tip(profile, run['runtime_session_id'])
