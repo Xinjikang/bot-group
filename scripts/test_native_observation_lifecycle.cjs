@@ -1,12 +1,16 @@
 // Run: node scripts/test_native_observation_lifecycle.cjs
-// #277 验收 5：用本任务真实接口载荷（/thinking 观察条目）验证现有
-// loadThinking/startThinkBubble/applyExecutionState 的归属、活动状态与结束清除。
-// 观察条目形状来自 engine/native_observation.py _entry；结束载荷为 /reasoning
-// 在观察批次结束后返回的 process_ended_at。纯 vm 执行生产函数，无网络与文件写入。
+// #277 验收 5 + node1715：消费隔离 API 实际生成的 /thinking 与 /reasoning 响应
+// （scripts/native_observation_payloads.py 经真实 api.get_thinking/get_reasoning 产生，
+// 覆盖 t1000 busy→t1005 idle→t1006 busy→t1010 idle 反例时序），驱动现有
+// loadThinking/startThinkBubble/applyExecutionState/pollReasoning 生产函数（vm 执行），
+// 验证：观察条目归属、旧批折叠（迟到 /reasoning 终态 1005）时新批仍活跃、新批结束折叠。
+// 渲染为桩（无真实 DOM），无网络请求；payload 采集走隔离 API（临时 SQLite + 打桩状态）。
 const fs = require('node:fs');
+const path = require('node:path');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
-const html = fs.readFileSync('frontend/index.html', 'utf8');
+const child = require('node:child_process');
+const html = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'index.html'), 'utf8');
 const section = (from, to) => html.slice(html.indexOf(from), html.indexOf(to, html.indexOf(from)));
 function harness() {
   const requests = [];
@@ -31,48 +35,53 @@ function harness() {
   ctx.renderThinkBubbles = () => {};
   return {ctx, requests, timers};
 }
-const START = 1234567.89;
-const observation = {profile: 'hermes-a', session: 'hermes-a-p-work', thread_id: null,
-  project: 'p', kind: 'work', state: 'native_running', observed: true,
-  wake_started_at: START, spawned_at: '2026-11-03T10:00:00'};
 const tick = () => new Promise(resolve => setImmediate(resolve));
+// 隔离 API 实采载荷（真实 get_thinking/get_reasoning 输出，非手工字面量）
+const payloads = JSON.parse(child.execFileSync(
+  path.join(__dirname, '..', '.venv', 'Scripts', 'python.exe'),
+  ['-X', 'utf8', '-B', path.join(__dirname, 'native_observation_payloads.py')],
+  {cwd: path.join(__dirname, '..'), env: {...process.env, PYTHONPATH: ''}, encoding: 'utf8'}));
+const firstEntry = payloads.first_thinking.runs.find(e => e.observed === true);
+const secondEntry = payloads.second_thinking.runs.find(e => e.observed === true);
+assert.ok(firstEntry && secondEntry, 'payloads carry observed entries');
+assert.notEqual(secondEntry.wake_started_at, firstEntry.wake_started_at, 'second batch is a new epoch');
+assert.equal(payloads.old_reasoning.process_ended_at, 1005, 'isolated API keeps the old terminal');
 async function main() {
   const h = harness(), {ctx, requests} = h;
-  ctx.snapshot = {runs: [observation], thinking: []};
+  // 第一批：/thinking 实采载荷 → 气泡创建与归属
+  ctx.snapshot = payloads.first_thinking;
   await ctx.loadThinking();
-  assert.equal(ctx.S.thinkRuns.size, 1, 'observation entry creates a collector run');
-  const source = [...ctx.S.thinkRuns.values()][0];
-  assert.equal(source.profile, 'hermes-a', 'profile ownership');
-  assert.equal(source.session, 'hermes-a-p-work', 'work session ownership');
-  assert.equal(source.thread_id, null, 'work binding has no thread');
-  assert.equal(source.project, 'p', 'project ownership');
-  assert.equal(source.state, 'native_running', 'observation state lands on the run');
-  assert.equal(ctx.applyExecutionState(source), '', 'observation is not an execution stall state');
-  assert.equal([...ctx.S.thinkBubbles.values()][0].status, 'thinking', 'bubble active while observed');
-  // 话题归属：chat 绑定条目同样落在现有渲染路径
-  const chat = {...observation, session: 'hermes-a-p-chat-42', thread_id: 42, kind: 'chat',
-    wake_started_at: START + 1000};
-  ctx.startThinkBubble(chat);
-  const chatSource = [...ctx.S.thinkRuns.values()].find(r => r.thread_id === 42);
-  assert.equal(chatSource.session, 'hermes-a-p-chat-42', 'chat thread ownership');
-  assert.equal([...ctx.S.thinkBubbles.values()].length, 2, 'chat observation renders separately');
-  // 结束清除：/reasoning 在观察批次结束后返回 process_ended_at（真实结束载荷）
-  const poll = ctx.pollReasoning(source);
-  requests.shift().resolve({entries: [], latest_id: 0, replies: [], process_ended_at: START + 30});
-  await poll;
-  assert.equal(source.finished, true, 'observation end folds the run');
-  assert.equal([...ctx.S.thinkBubbles.values()][0].status, 'inactive',
-    'ended observation clears the active state');
-  // 话题观察同样按结束载荷折叠，之后快照轮询不再复活任何已结束观察
-  const chatPoll = ctx.pollReasoning(chatSource);
-  requests.shift().resolve({entries: [], latest_id: 0, replies: [], process_ended_at: START + 1030});
-  await chatPoll;
-  assert.equal(chatSource.finished, true);
-  ctx.snapshot = {runs: [], thinking: []};
-  await ctx.loadThinking();
-  assert.equal(requests.length, 0, 'periodic snapshot does not revive ended observations');
-  assert.equal([...ctx.S.thinkRuns.values()].filter(r => !r.finished).length, 0,
-    'all observation runs ended after the payload clears');
-  console.log('PASS: observation payload ownership, active state and end clearing via existing frontend functions');
+  assert.equal(ctx.S.thinkRuns.size, 1, 'first batch creates a collector run');
+  const run1 = [...ctx.S.thinkRuns.values()][0];
+  assert.equal(run1.profile, firstEntry.profile, 'profile ownership from payload');
+  assert.equal(run1.session, firstEntry.session, 'session ownership from payload');
+  assert.equal(run1.project, firstEntry.project, 'project ownership from payload');
+  assert.equal(run1.state, 'native_running', 'observation state lands on the run');
+  assert.equal(ctx.applyExecutionState(run1), '', 'observation is not an execution stall state');
+  assert.equal([...ctx.S.thinkBubbles.values()][0].status, 'thinking', 'first batch bubble active');
+  // 第二批启动（同绑定新批次）→ 新气泡；旧批展示窗口被新批次封口
+  ctx.startThinkBubble(secondEntry);
+  assert.equal(ctx.S.thinkRuns.size, 2, 'second batch is a separate run');
+  const run2 = [...ctx.S.thinkRuns.values()].find(r => r !== run1);
+  assert.ok(run1.wake_ended_at != null, 'new batch closes the old display window');
+  assert.equal([...ctx.S.thinkBubbles.values()][1].status, 'thinking', 'second batch bubble active');
+  // startThinkBubble 为第二批自动排队的轮询：实采响应（process_ended_at=null）→ 保持活跃
+  requests.shift().resolve(payloads.new_reasoning);
+  await tick();
+  assert.equal(run2.finished, false, 'new batch stays active on its own poll');
+  assert.equal([...ctx.S.thinkBubbles.values()][1].status, 'thinking', 'new batch bubble still thinking');
+  // 旧批迟到查询：/reasoning 实采响应（process_ended_at=1005）→ 旧批折叠
+  const poll1 = ctx.pollReasoning(run1);
+  requests.shift().resolve(payloads.old_reasoning);
+  await poll1;
+  assert.equal(run1.finished, true, 'late old-batch reasoning folds the run');
+  assert.equal([...ctx.S.thinkBubbles.values()][0].status, 'inactive', 'old batch cleared despite new batch');
+  // 新批结束：/reasoning 实采响应（process_ended_at=1010）→ 折叠
+  const poll3 = ctx.pollReasoning(run2);
+  requests.shift().resolve(payloads.new_reasoning_ended);
+  await poll3;
+  assert.equal(run2.finished, true, 'second batch end folds the run');
+  assert.equal([...ctx.S.thinkBubbles.values()][1].status, 'inactive', 'second batch cleared on end');
+  console.log('PASS: isolated-API payloads drive ownership, old-batch fold with new batch active, end clearing');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

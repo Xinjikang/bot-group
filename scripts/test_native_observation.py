@@ -24,7 +24,7 @@ class NativeObservationTests(unittest.TestCase):
                                side_effect=lambda conn, profile, session: self.states.get(session))
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.addCleanup(native_observation._epochs.clear)
+        self.addCleanup(native_observation._batches.clear)
 
     def bind(self, profile, kind='work', thread_id=0, project='p', session_id=None,
              generation=0, switching=0):
@@ -144,7 +144,7 @@ class NativeObservationTests(unittest.TestCase):
             self.thinking()
         self.assertIsNone(native_observation.ended_for('dev-1-p-work', started))
 
-    def test_reobserve_after_end_starts_new_batch(self):
+    def test_reobserve_after_end_starts_new_batch_and_keeps_old_terminal(self):
         self.bind('dev-1', session_id='nat-a')
         self.states['dev-1-p-work'] = 'native_running'
         first = self.thinking()['runs'][0]['wake_started_at']
@@ -153,6 +153,69 @@ class NativeObservationTests(unittest.TestCase):
         self.states['dev-1-p-work'] = 'native_running'
         second = self.thinking()['runs'][0]['wake_started_at']
         self.assertGreater(second, first)
+        # 旧批次终态保留（node1715）：新批次启动后旧 /reasoning 仍可折叠
+        self.assertIsNotNone(native_observation.ended_for('dev-1-p-work', first))
+
+    def test_previous_batch_terminal_survives_new_batch(self):
+        """node1715 反例：t1000 busy→t1005 idle→t1006 busy——旧批 /reasoning 终态保留 1005。"""
+        self.bind('dev-1', session_id='nat-a')
+        now = [1000.0]
+        with patch.object(native_observation.time, 'time', side_effect=lambda: now[0]), \
+                patch.object(api, '_conn', side_effect=db.get_connection), \
+                patch.object(heartbeat, 'active_entries', return_value=[]), \
+                patch.object(wake, '_running_wakes', {}), \
+                patch.object(reasoning, 'read_reasoning',
+                             side_effect=lambda *a, **kw: {'entries': [], 'latest_id': 0}):
+            self.states['dev-1-p-work'] = 'native_running'
+            first = api.get_thinking()['runs'][0]
+            self.assertEqual(first['wake_started_at'], 1000.0)
+            now[0] = 1005.0
+            self.states['dev-1-p-work'] = 'idle'
+            api.get_thinking()
+            now[0] = 1006.0
+            self.states['dev-1-p-work'] = 'native_running'
+            second = api.get_thinking()['runs'][0]
+            self.assertEqual(second['wake_started_at'], 1006.0)
+            # 新批启动后，旧批 /reasoning 仍按自己的终态折叠（迟到查询不丢 1005）
+            old = api.get_reasoning('dev-1', 'dev-1-p-work', 1000.0)
+            self.assertEqual(old['process_ended_at'], 1005.0)
+            new = api.get_reasoning('dev-1', 'dev-1-p-work', 1006.0)
+            self.assertIsNone(new['process_ended_at'])  # 新批仍活跃
+            # 第二批结束 → 两批终态并存，各自可折叠
+            now[0] = 1010.0
+            self.states['dev-1-p-work'] = 'idle'
+            api.get_thinking()
+            self.assertEqual(api.get_reasoning('dev-1', 'dev-1-p-work', 1000.0)['process_ended_at'], 1005.0)
+            self.assertEqual(api.get_reasoning('dev-1', 'dev-1-p-work', 1006.0)['process_ended_at'], 1010.0)
+
+    def test_two_ended_batches_expire_independently(self):
+        """两批终态各自保留期：第一批到期清除，第二批仍在期；再各自到期。"""
+        self.bind('dev-1', session_id='nat-a')
+        now = [1000.0]
+        with patch.object(native_observation.time, 'time', side_effect=lambda: now[0]), \
+                patch.object(api, '_conn', side_effect=db.get_connection), \
+                patch.object(heartbeat, 'active_entries', return_value=[]), \
+                patch.object(wake, '_running_wakes', {}):
+            self.states['dev-1-p-work'] = 'native_running'
+            api.get_thinking()
+            now[0] = 1005.0
+            self.states['dev-1-p-work'] = 'idle'
+            api.get_thinking()
+            now[0] = 1006.0
+            self.states['dev-1-p-work'] = 'native_running'
+            api.get_thinking()
+            now[0] = 1010.0
+            self.states['dev-1-p-work'] = 'idle'
+            api.get_thinking()
+            # 第一批到期（1005+120=1125 < 1130），第二批仍在期（1010+120=1130 ≥ 1130）
+            now[0] = 1130.0
+            api.get_thinking()
+            self.assertIsNone(native_observation.ended_for('dev-1-p-work', 1000.0))
+            self.assertEqual(native_observation.ended_for('dev-1-p-work', 1006.0), 1010.0)
+            # 第二批到期（1140-1010 > 120）
+            now[0] = 1140.0
+            api.get_thinking()
+            self.assertIsNone(native_observation.ended_for('dev-1-p-work', 1006.0))
 
     def test_failed_or_unknown_query_not_displayed(self):
         self.bind('dev-1', session_id='nat-a')
