@@ -69,7 +69,11 @@ def serve(url):
     home = Path(os.environ['HERMES_HOME'])
 
     class DirectLease:
-        """租约契约包装：探针直连客户端 + close 释放（预检查与 spawn 共用）。"""
+        """租约契约包装：探针直连客户端 + close 释放（预检查与 spawn 共用）。
+
+        与生产 Pool 的 Lease 契约对齐：含上下文管理器协议
+        （/reasoning 等路径经 `with connection(...) as lease` 使用）。
+        """
 
         def __init__(self, client):
             self.client = client
@@ -84,6 +88,12 @@ def serve(url):
 
         def close(self):
             self.closed = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            self.close()
 
     gateway.connection = lambda *a, **k: (DirectLease(GatewayClient(endpoint)), home, command)
 
