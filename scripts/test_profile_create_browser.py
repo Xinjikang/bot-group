@@ -211,10 +211,11 @@ def main():
             page.wait_for_function('!memberAdd.scanning')
             assert page.locator('#member-create-auth').count() == 0
             assert '主 profile' in page.locator('#member-create-auth-help').inner_text()
+            assert page.locator('#member-create-model').input_value() == ''
+            assert page.locator('#member-create-provider').input_value() == ''
             page.locator('#member-create-source').select_option('')
-            page.wait_for_function('!memberAdd.sourceLoading')
-            assert page.locator('#member-create-model').input_value() == 'base-model'
-            assert page.locator('#member-create-provider').input_value() == 'openai'
+            assert page.locator('#member-create-model').input_value() == ''
+            assert page.locator('#member-create-provider').input_value() == ''
             page.locator('#member-create-profile').fill('wizard-hermes')
             assert page.locator('#member-create-model').is_hidden()
             assert page.locator('#member-create-provider').is_hidden()

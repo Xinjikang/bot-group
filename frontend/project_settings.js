@@ -130,10 +130,10 @@ $('#pj-members-refresh').addEventListener('click', () => loadProjectMembers());
 // Shared profile creation keeps enrollment in the caller's member selection flow.
 let memberAdd = null;
 function memberAddReset(options) {
-  memberAdd = {host: 'hermes', sources: [], scanning: false, sourceLoading: false, error: '', routes: {},
+  memberAdd = {host: 'hermes', sources: [], scanning: false, error: '', routes: {},
     busy: false, project: options.project || '', template: options.template,
     onCreated: options.onCreated,
-    draft: {profile: '', display_name: '', model: '', provider: '', routeEdited: false, instructions: '', source: ''},
+    draft: {profile: '', display_name: '', model: '', provider: '', instructions: '', source: ''},
     requestId: [...crypto.getRandomValues(new Uint8Array(16))].map(n => n.toString(16).padStart(2, '0')).join('')};
 }
 function memberProfileError(value) {
@@ -143,7 +143,7 @@ function memberProfileError(value) {
   return '';
 }
 function memberCreateValid() {
-  return !memberAdd.sourceLoading && !memberProfileError(memberAdd.draft.profile);
+  return !memberProfileError(memberAdd.draft.profile);
 }
 function renderMemberCreate(steps) {
   const dsh = memberAdd.host === 'dsh';
@@ -189,7 +189,6 @@ function renderMemberCreate(steps) {
     input.addEventListener('input', () => {
       draft[key] = input.value;
       if (key === 'profile') draft.profileTouched = true;
-      if (key === 'model' || key === 'provider') draft.routeEdited = true;
       $('#member-add-join').disabled = !memberCreateValid() || memberAdd.busy || memberAdd.scanning;
     });
   }
@@ -210,7 +209,6 @@ function renderMemberCreate(steps) {
   };
   source.addEventListener('change', () => {
     draft.source = source.value;
-    loadMemberSourceSettings();
     updateAuth();
   });
   updateAuth();
@@ -249,8 +247,8 @@ function renderMemberAdd() {
     input.checked = memberAdd.host === value;
     input.addEventListener('change', () => {
       const draft = memberAdd.draft;
-      memberAdd.routes[memberAdd.host] = {model: draft.model, provider: draft.provider, routeEdited: draft.routeEdited};
-      Object.assign(draft, memberAdd.routes[value] || {model: '', provider: '', routeEdited: false});
+      memberAdd.routes[memberAdd.host] = {model: draft.model, provider: draft.provider};
+      Object.assign(draft, memberAdd.routes[value] || {model: '', provider: ''});
       memberAdd.host = value;
       loadMemberCreateSources();
     });
@@ -275,8 +273,6 @@ $('#dlg-member-add').addEventListener('cancel', e => { if (memberAdd?.busy) e.pr
 $('#dlg-member-add').addEventListener('close', () => { if (!$('#dlg-member-add').open) memberAdd = null; });
 async function loadMemberCreateSources() {
   const current = memberAdd, scanVersion = current.scanVersion = (current.scanVersion || 0) + 1;
-  current.sourceVersion = (current.sourceVersion || 0) + 1;
-  current.sourceLoading = false;
   current.scanning = true; current.sources = []; current.draft.source = ''; current.error = '';
   renderMemberAdd();
   try {
@@ -285,7 +281,6 @@ async function loadMemberCreateSources() {
     current.sources = (result.candidates || []).filter(p => p.host_type === current.host);
     const defaultSource = current.sources.findIndex(p => p.profile === (current.host === 'dsh' ? 'desktop' : 'default'));
     current.draft.source = defaultSource >= 0 ? String(defaultSource) : current.sources.length ? '0' : '';
-    await loadMemberSourceSettings();
   } catch (err) {
     if (memberAdd === current && current.scanVersion === scanVersion) {
       current.error = `配置来源读取失败：${err.message}。可切换宿主重试，或使用默认设置。`;
@@ -297,48 +292,6 @@ async function loadMemberCreateSources() {
   }
 }
 
-async function loadMemberSourceSettings() {
-  const current = memberAdd;
-  if (!current) return;
-  const version = current.sourceVersion = (current.sourceVersion || 0) + 1;
-  current.sourceLoading = false;
-  if (current.host === 'codex' || current.draft.routeEdited) {
-    $('#member-add-join').disabled = current.busy || current.scanning || !memberCreateValid();
-    $('#member-add-status').textContent = current.error;
-    $('#member-add-status').dataset.error = String(!!current.error);
-    return;
-  }
-  const source = current.draft.source === '' ? null : current.sources[Number(current.draft.source)];
-  current.sourceLoading = true;
-  current.error = '';
-  // Clear inherited values together before loading another source.
-  current.draft.model = ''; current.draft.provider = '';
-  for (const field of ['model', 'provider']) $('#member-create-' + field).value = '';
-  $('#member-add-join').disabled = true;
-  $('#member-add-status').textContent = '正在读取模型与供应商…';
-  $('#member-add-status').dataset.error = 'false';
-  try {
-    const result = await api('/profiles/source-settings', {method: 'POST', body: JSON.stringify({
-      host_type: current.host, source: source ? {profile: source.profile, config_root: source.config_root} : null})});
-    if (memberAdd !== current || current.sourceVersion !== version) return;
-    if (!current.draft.routeEdited) {
-      for (const field of ['model', 'provider']) {
-        current.draft[field] = typeof result[field] === 'string' ? result[field] : '';
-        $('#member-create-' + field).value = current.draft[field];
-      }
-    }
-  } catch (err) {
-    if (memberAdd !== current || current.sourceVersion !== version) return;
-    current.error = `来源预览读取失败：${err.message}。可重试读取，或留空沿用来源配置。`;
-  } finally {
-    if (memberAdd === current && current.sourceVersion === version) {
-      current.sourceLoading = false;
-      $('#member-add-join').disabled = current.busy || current.scanning || !memberCreateValid();
-      $('#member-add-status').textContent = current.error;
-      $('#member-add-status').dataset.error = String(!!current.error);
-    }
-  }
-}
 $('#member-add-join').addEventListener('click', submitMemberCreate);
 
 async function submitMemberCreate() {

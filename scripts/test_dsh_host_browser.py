@@ -12,7 +12,7 @@ DSH_ROOT = 'C:/dsh-home'
 
 def run(evidence):
     state = {'scan': 'ok', 'create_ok': True, 'candidates': []}
-    scans, validates, registers, creates = [], [], [], []
+    scans, validates, registers, creates, previews = [], [], [], [], []
 
     def route(request):
         path = urlparse(request.request.url).path
@@ -57,6 +57,7 @@ def run(evidence):
                                   'member_profile': None, 'project': None}); return
         if path == '/profiles/source-settings':
             body = request.request.post_data_json
+            previews.append(body)
             source = body.get('source') or {}
             if body['host_type'] == 'hermes':
                 request.fulfill(json={'model': 'hermes-model', 'provider': 'openrouter'}); return
@@ -120,20 +121,18 @@ def run(evidence):
         assert '已发现' not in page.locator('#dlg-member-add').inner_text()
         assert page.locator('#member-create-source option').count() == 3
         assert page.locator('#member-create-source').input_value() == '0'
-        assert page.locator('#member-create-model').input_value() == 'deepseek-flash'
-        assert page.locator('#member-create-provider').input_value() == 'deepseek-account'
+        assert page.locator('#member-create-model').input_value() == ''
+        assert page.locator('#member-create-provider').input_value() == ''
         assert page.locator('#member-create-model').is_hidden()
         assert page.locator('#member-create-provider').is_hidden()
         assert page.locator('#member-create-model').get_attribute('required') is None
         assert page.locator('#member-create-provider').get_attribute('required') is None
         profile.press_sequentially('new-headless')
         page.locator('#member-create-source').select_option('1')
-        page.wait_for_function('!memberAdd.sourceLoading')
         assert page.locator('#member-create-model').input_value() == ''
         assert page.locator('#member-create-provider').input_value() == ''
         assert page.locator('#member-add-join').is_enabled()
         page.locator('#member-create-source').select_option('0')
-        page.wait_for_function('!memberAdd.sourceLoading')
         assert profile.input_value() == 'new-headless'
         assert profile.is_editable()
         page.locator('[name="member-add-host"][value="codex"]').check()
@@ -193,42 +192,36 @@ def run(evidence):
             assert creates[-1]['model'] == '' and creates[-1]['provider'] == ''
         page.set_viewport_size({'width': 1280, 'height': 900})
 
-        # Late source responses cannot overwrite the latest source or a manually edited pair.
+        # Source changes preserve empty overrides and each host's manual draft.
         state['scan'] = 'ok'
         open_dialog(page)
         select_dsh(page)
-        page.evaluate('''() => {
-            window.__sourceApi = api; window.__pendingSources = [];
-            api = (path, options) => path === '/profiles/source-settings'
-                ? new Promise(resolve => window.__pendingSources.push(resolve))
-                : window.__sourceApi(path, options);
-        }''')
         page.locator('#member-create-source').select_option('1')
         page.locator('#member-create-source').select_option('0')
-        assert page.evaluate('window.__pendingSources.length') == 2
-        page.evaluate('window.__pendingSources[1]({model:"latest-model", provider:"latest-provider"})')
-        page.wait_for_function('!memberAdd.sourceLoading')
-        page.evaluate('window.__pendingSources[0]({model:"stale-model", provider:"stale-provider"})')
-        assert page.locator('#member-create-model').input_value() == 'latest-model'
-        assert page.locator('#member-create-provider').input_value() == 'latest-provider'
+        assert page.locator('#member-create-model').input_value() == ''
+        assert page.locator('#member-create-provider').input_value() == ''
         page.locator('#member-create-source').select_option('1')
-        profile.fill('race-agent')
+        profile.fill('manual-agent')
         page.locator('#member-add-steps details summary').click()
         page.locator('#member-create-model').fill('manual-model')
         page.locator('#member-create-provider').fill('manual-provider')
-        page.evaluate('window.__pendingSources[2]({model:"late-model", provider:"late-provider"})')
-        page.wait_for_function('!memberAdd.sourceLoading')
+        page.locator('#member-create-source').select_option('0')
         assert page.locator('#member-create-model').input_value() == 'manual-model'
         assert page.locator('#member-create-provider').input_value() == 'manual-provider'
         assert page.locator('#member-add-join').is_enabled()
-        page.evaluate('() => { api = window.__sourceApi; }')
         page.locator('[name="member-add-host"][value="hermes"]').check()
         page.wait_for_function('!memberAdd.scanning')
-        assert page.locator('#member-create-model').input_value() == 'hermes-model'
-        assert page.locator('#member-create-provider').input_value() == 'openrouter'
+        assert page.locator('#member-create-model').input_value() == ''
+        assert page.locator('#member-create-provider').input_value() == ''
         select_dsh(page)
         assert page.locator('#member-create-model').input_value() == 'manual-model'
         assert page.locator('#member-create-provider').input_value() == 'manual-provider'
+        page.locator('#member-create-model').fill('')
+        page.locator('#member-create-provider').fill('')
+        page.locator('#member-create-source').select_option('1')
+        assert page.locator('#member-create-model').input_value() == ''
+        assert page.locator('#member-create-provider').input_value() == ''
+        assert not previews
         page.locator('#member-add-close').click()
 
         # ---- ④ 已创建 dsh Bot 的绑定资源失效 ----
