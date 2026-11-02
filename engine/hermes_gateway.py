@@ -82,24 +82,113 @@ def active(session):
         conn.close()
 
 
-def process_state(session):
-    """Gateway ownership has no per-execution OS process to terminate."""
+def process_state(session, profile=None):
+    """Gateway ownership has no per-execution OS process to terminate.
+
+    profile 传入时（调度路径），引擎记录判空闲的两条路径（无记录继续进程查询 /
+    terminal 清空判空闲）均先核对 Hermes 原生 running/pending——异步子任务回调驱动的
+    自发续跑没有 hermes_executions 记录，仅按引擎记录会漏判 busy，投递 attach 才发现
+    原生占用导致任务反复退回、后方会话饥饿（req#142）。
+    """
     conn = db.get_connection()
     try:
         row = conn.execute('SELECT state,cleanup_pending,started_at FROM hermes_executions '
                            'WHERE session=? ORDER BY started_at DESC LIMIT 1', (session,)).fetchone()
         if row is None:
-            return False
-        latest = conn.execute('SELECT MAX(started_at) FROM wake_runs WHERE session=?', (session,)).fetchone()[0]
-        if latest is not None and latest > row['started_at']:
-            return False
-        return [] if row['state'] == 'terminal' and not row['cleanup_pending'] else None
+            idle = False
+        else:
+            latest = conn.execute('SELECT MAX(started_at) FROM wake_runs WHERE session=?', (session,)).fetchone()[0]
+            if latest is not None and latest > row['started_at']:
+                idle = False
+            elif row['state'] == 'terminal' and not row['cleanup_pending']:
+                idle = []
+            else:
+                return None
+        if profile is not None:
+            native = _native_session_state(conn, profile, session)
+            if native is not False:
+                return native
+        return idle
     except sqlite3.OperationalError as exc:
         if 'no such table' in str(exc):
             return False
         raise
     finally:
         conn.close()
+
+
+# 原生状态预检查的查询超时与缓存边界（req#142）：短 TTL 按原生会话 + 绑定代次隔离，
+# /new 换 session_id、绑定切换升 generation 均自然失效；空闲缓存期间的竞态由
+# spawn 阶段 attach 复核兜底。查询失败按指数退避缓存「暂缓」，避免网关不可用时
+# 每次队列 tick 都吃满查询超时拖垮其他 runtime 的调度。
+_NATIVE_QUERY_TIMEOUT = 5.0        # 秒：单次原生状态查询超时（超时/断连只暂缓目标会话）
+_NATIVE_CACHE_TTL = 3.0            # 秒：idle/busy 结果缓存有效期
+_NATIVE_FAIL_BACKOFF_BASE = 3.0    # 秒：查询失败退避基数（3,6,12,24…）
+_NATIVE_FAIL_BACKOFF_CAP = 30.0    # 秒：查询失败退避上限（网关恢复后至多延迟 30s 恢复调度）
+_native_cache = {}                 # {(session_id, generation): (state, expires_at, fails)}
+_native_cache_lock = threading.Lock()
+
+
+def _binding_for_engine_session(conn, profile, session):
+    """按引擎会话名反查 Hermes 绑定行（profile 过滤，行数有限）。
+
+    引擎会话名由 (profile, kind, thread_id, project) 派生，绑定行携带同一组字段，
+    重建会话名逐一比对即可，无需解析字符串。
+    """
+    from . import wake
+    rows = conn.execute("SELECT * FROM session_bindings WHERE profile=? AND runtime='hermes'",
+                        (profile,)).fetchall()
+    for row in rows:
+        if wake.session_name(row['profile'], row['kind'], row['thread_id'] or None, row['project']) == session:
+            return row
+    return None
+
+
+def _native_session_state(conn, profile, session):
+    """Hermes 原生 running/pending 预检查（req#142）。
+
+    返回 False=原生空闲（沿用既有判空闲路径）；None=原生忙或查询失败/未知（只暂缓
+    本会话，调用方按 busy 跳过本次调度；其他会话不受影响）。非 Hermes 托管会话
+    无绑定行，返回 False 沿用既有进程查询。
+    """
+    binding = _binding_for_engine_session(conn, profile, session)
+    if binding is None:
+        return False
+    if binding['switching']:
+        return None  # /new 切换进行中：暂缓投递
+    key = (binding['session_id'], binding['generation'])
+    now = time.monotonic()
+    with _native_cache_lock:
+        hit = _native_cache.get(key)
+    if hit is not None and hit[1] > now:
+        return False if hit[0] == 'idle' else None
+    try:
+        client, _, _ = connection(profile, read_only=True)
+        snapshot = client.rpc('session.resume', session_id=binding['session_id'],
+                              timeout=_NATIVE_QUERY_TIMEOUT)
+        running = snapshot.get('running')
+        pending = snapshot.get('pending')
+        if running is None and pending is None:
+            return _native_cache_failure(key, now, 'native session state unknown')
+        state = 'busy' if (running or pending) else 'idle'
+    except (GatewayTransportError, GatewayRefusal) as exc:
+        # 超时/断连/会话不存在：只暂缓本会话，不按空闲放行
+        return _native_cache_failure(key, now, str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception('native session state query failed for %s', session)
+        return _native_cache_failure(key, now, str(exc))
+    with _native_cache_lock:
+        _native_cache[key] = (state, now + _NATIVE_CACHE_TTL, 0)
+    return False if state == 'idle' else None
+
+
+def _native_cache_failure(key, now, detail):
+    """查询失败：按失败次数指数退避缓存「暂缓」，成功即清零。"""
+    with _native_cache_lock:
+        fails = (_native_cache[key][2] if key in _native_cache else 0) + 1
+        ttl = min(_NATIVE_FAIL_BACKOFF_BASE * (2 ** (fails - 1)), _NATIVE_FAIL_BACKOFF_CAP)
+        _native_cache[key] = ('busy', now + ttl, fails)
+    return None
 
 
 def _publish(row):

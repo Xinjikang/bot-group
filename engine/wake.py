@@ -149,7 +149,7 @@ def find_bot_processes(profile: str, session: str | None = None) -> "list[int] |
         return native
     if session is not None:
         from . import hermes_gateway
-        managed = hermes_gateway.process_state(session)
+        managed = hermes_gateway.process_state(session, profile=profile)
         if managed is not False:
             return managed
     physical_profile = profile
