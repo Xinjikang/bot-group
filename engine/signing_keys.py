@@ -118,6 +118,10 @@ def _state(conn):
         columns = {r[1] for r in conn.execute('PRAGMA table_info(hermes_executions)')}
         field = 'signing_generation' if 'signing_generation' in columns else 'NULL'
         rows = conn.execute(f"SELECT {field} FROM hermes_executions WHERE state!='terminal'").fetchall()
+    if 'hermes_session_grants' in tables:
+        rows += conn.execute('SELECT signing_generation FROM hermes_session_grants WHERE revoked=0').fetchall()
+        rows += conn.execute('SELECT pending_generation FROM hermes_session_grants '
+                             'WHERE revoked=0 AND pending_generation IS NOT NULL').fetchall()
     return initialized, [r[0] for r in rows]
 
 

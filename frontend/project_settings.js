@@ -3,6 +3,18 @@ let profileProjectReturn = null;
 const projectMembersCache = new Map(), projectMembersPending = new Map(), projectMembersVersions = new Map();
 let workspaceEditor = null;
 let projectPermissionsEditor = null, projectPermissionsVersion = 0;
+window.refreshProjectSettingsFromAssistant = (project) => {
+  if(!$('#dlg-project-detail').open||$('#pj-detail-form').dataset.origName!==project)return;
+  const tab=$('#pj-detail-tabs [aria-selected="true"]')?.dataset.tab;
+  if(tab==='roles'&&!$('#pj-role-list').querySelector('.pj-role-rename'))loadProjectRoles();
+  if(tab==='members')loadProjectMembers();
+  if(tab==='permissions'&&projectPermissionsEditor){
+    const dirty=[...$('#pj-permissions-list').querySelectorAll('[data-permission]')].some(row=>
+      [...row.querySelectorAll('input')].some(input=>input.checked!==(projectPermissionsEditor.grants[row.dataset.permission]||[]).includes(input.value)));
+    if(dirty)$('#pj-permissions-status').textContent='助手已更新服务端配置，当前未保存的权限选择已保留。';
+    else loadProjectPermissions(true);
+  }
+};
 function resetProjectPermissions() {
   projectPermissionsVersion++;
   projectPermissionsEditor = null;
@@ -118,10 +130,10 @@ $('#pj-members-refresh').addEventListener('click', () => loadProjectMembers());
 // Shared profile creation keeps enrollment in the caller's member selection flow.
 let memberAdd = null;
 function memberAddReset(options) {
-  memberAdd = {host: 'hermes', sources: [], scanning: false, error: '',
+  memberAdd = {host: 'hermes', sources: [], scanning: false, sourceLoading: false, error: '', routes: {},
     busy: false, project: options.project || '', template: options.template,
     onCreated: options.onCreated,
-    draft: {profile: '', display_name: '', model: '', instructions: '', source: ''},
+    draft: {profile: '', display_name: '', model: '', provider: '', routeEdited: false, instructions: '', source: ''},
     requestId: [...crypto.getRandomValues(new Uint8Array(16))].map(n => n.toString(16).padStart(2, '0')).join('')};
 }
 function memberProfileError(value) {
@@ -131,60 +143,94 @@ function memberProfileError(value) {
   return '';
 }
 function memberCreateValid() {
-  return !memberProfileError(memberAdd.draft.profile);
+  return !memberAdd.sourceLoading && !memberProfileError(memberAdd.draft.profile)
+    && (memberAdd.host === 'codex' || !!(memberAdd.draft.model.trim() && memberAdd.draft.provider.trim()));
 }
 function renderMemberCreate(steps) {
+  const dsh = memberAdd.host === 'dsh';
   const form = document.createElement('div');
   form.className = 'member-create-fields';
   form.innerHTML = `<label for="member-create-name">显示名称</label><input id="member-create-name" maxlength="100" placeholder="例如：小夏">
     <label for="member-create-profile">Profile 标识 <span class="profile-help">必填</span></label>
     <input id="member-create-profile" required maxlength="64" placeholder="例如：dev-01" autocomplete="off" spellcheck="false" aria-describedby="member-create-profile-help">
     <p class="profile-help" id="member-create-profile-help">使用 1–64 位小写英文字母、数字、短横线或下划线，以小写英文字母或数字开头。系统会自动准备独立目录。</p>
-    <label for="member-create-source">配置来源</label><select id="member-create-source"><option value="">使用默认设置</option></select>
+    <div id="member-create-source-block">
+      <label for="member-create-source">配置来源</label><select id="member-create-source"><option value="">使用默认设置</option></select>
+    </div>
     <p class="profile-help" id="member-create-auth-help"></p>
+    <div class="member-create-route${memberAdd.host === 'codex' ? ' single' : ''}">
+      <div><label for="member-create-model">模型${memberAdd.host === 'codex' ? '' : ' <span class="profile-help">必填</span>'}</label>
+        <input id="member-create-model" maxlength="200" placeholder="${memberAdd.host === 'codex' ? '留空沿用来源或运行时默认模型' : '填写模型标识'}"></div>
+      <div id="member-create-provider-block"><label for="member-create-provider">供应商 <span class="profile-help">必填</span></label>
+        <input id="member-create-provider" maxlength="200" placeholder="填写对应供应商标识"></div>
+    </div>
+    <p class="profile-help" id="member-create-route-help">模型和供应商从配置来源带入；手动修改后保留整组输入。</p>
     <div id="member-create-soul-templates"></div>
     <details><summary>更多设置</summary>
-      <label for="member-create-model">模型</label><input id="member-create-model" maxlength="200" placeholder="留空沿用来源或运行时默认模型">
       <label for="member-create-instructions">个人指令</label><textarea id="member-create-instructions" rows="4" maxlength="32000" placeholder="填写性格、专长或工作偏好；项目职责在加入后设置。"></textarea>
     </details>`;
   const draft = memberAdd.draft;
-  form.querySelector('#member-create-profile').dialogValidation = memberProfileError;
+  form.querySelector('#member-create-profile-help').textContent = dsh
+    ? '使用 1–64 位小写英文字母、数字、短横线或下划线，以小写英文字母或数字开头。系统会在 DSH HOME 下创建独立 profile 目录。'
+    : '使用 1–64 位小写英文字母、数字、短横线或下划线，以小写英文字母或数字开头。系统会自动准备独立目录。';
+  const profileInput = form.querySelector('#member-create-profile');
+  profileInput.dialogValidation = memberProfileError;
+  const paired = memberAdd.host !== 'codex';
+  form.querySelector('#member-create-provider-block').hidden = !paired;
+  form.querySelector('#member-create-route-help').hidden = !paired;
+  for (const field of ['model', 'provider']) {
+    const input = form.querySelector('#member-create-' + field);
+    input.required = paired;
+    input.dialogValidation = value => paired && !value.trim() ? '请同时填写模型和供应商。' : '';
+  }
   const details = form.querySelector('details');
   details.open = !!draft.expanded;
   details.addEventListener('toggle', () => { draft.expanded = details.open; });
-  for (const [id, key] of [['name', 'display_name'], ['profile', 'profile'], ['model', 'model'], ['instructions', 'instructions']]) {
+  for (const [id, key] of [['name', 'display_name'], ['profile', 'profile'], ['model', 'model'], ['provider', 'provider'], ['instructions', 'instructions']]) {
     const input = form.querySelector('#member-create-' + id);
     input.value = draft[key];
     input.addEventListener('input', () => {
       draft[key] = input.value;
       if (key === 'profile') draft.profileTouched = true;
+      if (key === 'model' || key === 'provider') draft.routeEdited = true;
       $('#member-add-join').disabled = !memberCreateValid() || memberAdd.busy || memberAdd.scanning;
     });
   }
   const source = form.querySelector('#member-create-source');
-  memberAdd.sources.forEach((p, i) => source.add(new Option(`${p.display_name || p.profile}（${p.profile}）`, String(i))));
+  memberAdd.sources.forEach((p, i) => source.add(new Option(
+    `${p.display_name || p.profile}（${p.profile}）`, String(i))));
   source.value = draft.source;
   const updateAuth = () => {
+    if (memberAdd.host === 'dsh') {
+      form.querySelector('#member-create-auth-help').textContent = '新 profile 使用填写的模型与供应商，凭据沿用同一 DSH HOME 的共享配置。个人指令保存到该 profile 的人格配置。';
+      return;
+    }
     if (memberAdd.host === 'codex') {
       form.querySelector('#member-create-auth-help').textContent = '自动使用主账户认证；新 Bot 统一开启智能审批（帮我审批）和沙箱，加入项目时获得项目目录授权。';
       return;
     }
     form.querySelector('#member-create-auth-help').textContent = '自动继承来源的模型配置与凭证；使用默认设置时读取主 profile。消息渠道独立配置，OAuth 登录需单独完成。';
   };
-  source.addEventListener('change', () => { draft.source = source.value; updateAuth(); });
+  source.addEventListener('change', () => {
+    draft.source = source.value;
+    loadMemberSourceSettings();
+    updateAuth();
+  });
   updateAuth();
   steps.appendChild(form);
-  if (draft.profileTouched) validateDialogField(form.querySelector('#member-create-profile'));
-  const current = memberAdd;
-  mountProjectSoulTemplates(form.querySelector('#member-create-soul-templates'), {
-    project: current.project, template: current.template, maxLength: 32000, disabled: current.scanning,
-    isActive: () => memberAdd === current && !current.busy,
-    getValue: () => draft.instructions,
-    setValue: value => {
-      draft.instructions = value; draft.expanded = true; details.open = true;
-      form.querySelector('#member-create-instructions').value = value;
-    },
-  });
+  if (draft.profileTouched) validateDialogField(profileInput);
+  {
+    const current = memberAdd;
+    mountProjectSoulTemplates(form.querySelector('#member-create-soul-templates'), {
+      project: current.project, template: current.template, maxLength: 32000, disabled: current.scanning,
+      isActive: () => memberAdd === current && !current.busy,
+      getValue: () => draft.instructions,
+      setValue: value => {
+        draft.instructions = value; draft.expanded = true; details.open = true;
+        form.querySelector('#member-create-instructions').value = value;
+      },
+    });
+  }
 }
 function renderMemberAdd() {
   const steps = $('#member-add-steps'), status = $('#member-add-status');
@@ -194,15 +240,23 @@ function renderMemberAdd() {
   join.textContent = '创建 profile';
   steps.replaceChildren();
   $('#member-add-title').textContent = '创建 profile';
-  status.textContent = memberAdd.scanning ? '正在读取配置来源…' : memberAdd.error;
+  if (memberAdd.scanning) status.textContent = '正在读取配置来源…';
+  else if (memberAdd.error) status.textContent = memberAdd.error;
+  else status.textContent = '';
   const host = document.createElement('div');
   host.className = 'project-mode-options';
   host.setAttribute('role', 'radiogroup'); host.setAttribute('aria-label', '宿主类型');
-  for (const [value, label] of [['hermes', 'Hermes'], ['codex', 'Codex']]) {
+  for (const [value, label] of [['hermes', 'Hermes'], ['codex', 'Codex'], ['dsh', 'DSH']]) {
     const choice = document.createElement('label'), input = document.createElement('input');
     input.type = 'radio'; input.name = 'member-add-host'; input.value = value;
     input.checked = memberAdd.host === value;
-    input.addEventListener('change', () => { memberAdd.host = value; loadMemberCreateSources(); });
+    input.addEventListener('change', () => {
+      const draft = memberAdd.draft;
+      memberAdd.routes[memberAdd.host] = {model: draft.model, provider: draft.provider, routeEdited: draft.routeEdited};
+      Object.assign(draft, memberAdd.routes[value] || {model: '', provider: '', routeEdited: false});
+      memberAdd.host = value;
+      loadMemberCreateSources();
+    });
     const title = document.createElement('span'); title.textContent = label;
     choice.append(input, title); host.append(choice);
   }
@@ -224,19 +278,67 @@ $('#dlg-member-add').addEventListener('cancel', e => { if (memberAdd?.busy) e.pr
 $('#dlg-member-add').addEventListener('close', () => { if (!$('#dlg-member-add').open) memberAdd = null; });
 async function loadMemberCreateSources() {
   const current = memberAdd, scanVersion = current.scanVersion = (current.scanVersion || 0) + 1;
+  current.sourceVersion = (current.sourceVersion || 0) + 1;
+  current.sourceLoading = false;
   current.scanning = true; current.sources = []; current.draft.source = ''; current.error = '';
   renderMemberAdd();
   try {
     const result = await api(`/discovery/scan?project=${encodeURIComponent(current.project)}`);
     if (memberAdd !== current || current.scanVersion !== scanVersion) return;
     current.sources = (result.candidates || []).filter(p => p.host_type === current.host);
-    const defaultSource = current.sources.findIndex(p => p.profile === 'default');
+    const defaultSource = current.sources.findIndex(p => p.profile === (current.host === 'dsh' ? 'desktop' : 'default'));
     current.draft.source = defaultSource >= 0 ? String(defaultSource) : current.sources.length ? '0' : '';
+    await loadMemberSourceSettings();
   } catch (err) {
-    if (memberAdd === current && current.scanVersion === scanVersion) current.error = `配置来源读取失败：${err.message}。可切换宿主重试，或使用默认设置。`;
+    if (memberAdd === current && current.scanVersion === scanVersion) {
+      current.error = `配置来源读取失败：${err.message}。可切换宿主重试，或使用默认设置。`;
+    }
   } finally {
     if (memberAdd === current && current.scanVersion === scanVersion) {
       current.scanning = false; renderMemberAdd();
+    }
+  }
+}
+
+async function loadMemberSourceSettings() {
+  const current = memberAdd;
+  if (!current) return;
+  const version = current.sourceVersion = (current.sourceVersion || 0) + 1;
+  current.sourceLoading = false;
+  if (current.host === 'codex' || current.draft.routeEdited) {
+    $('#member-add-join').disabled = current.busy || current.scanning || !memberCreateValid();
+    $('#member-add-status').textContent = current.error;
+    $('#member-add-status').dataset.error = String(!!current.error);
+    return;
+  }
+  const source = current.draft.source === '' ? null : current.sources[Number(current.draft.source)];
+  current.sourceLoading = true;
+  current.error = '';
+  // Clear inherited values together before loading another source.
+  current.draft.model = ''; current.draft.provider = '';
+  for (const field of ['model', 'provider']) $('#member-create-' + field).value = '';
+  $('#member-add-join').disabled = true;
+  $('#member-add-status').textContent = '正在读取模型与供应商…';
+  $('#member-add-status').dataset.error = 'false';
+  try {
+    const result = await api('/profiles/source-settings', {method: 'POST', body: JSON.stringify({
+      host_type: current.host, source: source ? {profile: source.profile, config_root: source.config_root} : null})});
+    if (memberAdd !== current || current.sourceVersion !== version) return;
+    if (!current.draft.routeEdited) {
+      for (const field of ['model', 'provider']) {
+        current.draft[field] = typeof result[field] === 'string' ? result[field] : '';
+        $('#member-create-' + field).value = current.draft[field];
+      }
+    }
+  } catch (err) {
+    if (memberAdd !== current || current.sourceVersion !== version) return;
+    current.error = `来源读取失败：${err.message}。请填写模型与供应商。`;
+  } finally {
+    if (memberAdd === current && current.sourceVersion === version) {
+      current.sourceLoading = false;
+      $('#member-add-join').disabled = current.busy || current.scanning || !memberCreateValid();
+      $('#member-add-status').textContent = current.error;
+      $('#member-add-status').dataset.error = String(!!current.error);
     }
   }
 }
@@ -255,6 +357,7 @@ async function submitMemberCreate() {
     display_name: draft.display_name.trim(), model: draft.model.trim(), instructions: draft.instructions,
     source: draft.source !== '' && source ? {profile: source.profile, config_root: source.config_root} : null,
     request_id: current.requestId};
+  if (current.host !== 'codex') payload.provider = draft.provider.trim();
   try {
     const result = await api('/profiles/create', {method: 'POST', body: JSON.stringify(payload)});
     if (memberAdd !== current) return;
@@ -271,6 +374,25 @@ async function submitMemberCreate() {
     renderMemberAdd();
   } finally {
     $('#member-add-close').disabled = false;
+  }
+}
+
+async function loadDshBindingAvailability(project, data) {
+  if (!data.members.some(m => m.runtime === 'dsh' && m.bot_id != null)) return null;
+  try {
+    // 候选扫描按 candidate_available 过滤：仍可用的已注册 dsh Bot 会出现在结果中。
+    const result = await api(`/profiles/candidates?project=${encodeURIComponent(project)}`);
+    return new Set((result.candidates || []).map(c => c.bot_id).filter(id => id != null));
+  } catch {
+    // 可用性查询失败时保留未知状态，不误报绑定失效。
+    return null;
+  }
+}
+function markDshBindings(data, available) {
+  if (!available) return;
+  for (const member of data.members) {
+    if (member.runtime !== 'dsh' || member.bot_id == null) continue;
+    member.binding_invalid = !available.has(member.bot_id);
   }
 }
 
@@ -291,6 +413,9 @@ async function loadProjectMembers(options = {}) {
       if (projectMembersVersions.get(project) !== version) return;
       const previous = projectMembersCache.get(project);
       const merged = suffix && previous ? {...data, members: previous.members.map(m => data.members.find(n => n.profile === m.profile) || m)} : data;
+      const dshAvailable = await loadDshBindingAvailability(project, merged);
+      if (projectMembersVersions.get(project) !== version) return;
+      markDshBindings(merged, dshAvailable);
       projectMembersCache.set(project, merged);
       if ($('#pj-detail-form').dataset.origName !== project) return;
       renderProjectMembers(project, merged);
@@ -403,7 +528,8 @@ function renderProjectMembers(project, data) {
       </div></div></div>
       <div class="project-member-workspace ${state.valid && !state.head ? 'compact-status' : ''}"><span class="project-member-caption">${independent ? '独立 worktree' : '项目主目录'}</span>
       <div class="project-member-path" title="${esc(path)}">${esc(path)}</div>
-      <p class="project-member-state ${state.valid ? 'valid' : 'invalid'}">${state.valid ? esc(state.head ? `${state.detached ? 'detached' : state.branch} · ${state.head.slice(0, 12)}${state.dirty ? ' · 有未提交改动' : ' · 工作区干净'}` : '目录可用') : esc(state.error || '目录不可用')}</p></div>`;
+      <p class="project-member-state ${state.valid ? 'valid' : 'invalid'}">${state.valid ? esc(state.head ? `${state.detached ? 'detached' : state.branch} · ${state.head.slice(0, 12)}${state.dirty ? ' · 有未提交改动' : ' · 工作区干净'}` : '目录可用') : esc(state.error || '目录不可用')}</p></div>
+      ${member.binding_invalid ? '<p class="project-member-state invalid" data-binding-invalid="true">宿主绑定失效：DSH HOME 目录或 profile 配置不可用；成员与历史保留。</p>' : ''}`;
     bindMemberNameEditor(row, member);
     row.querySelector('.edit').addEventListener('click', () => {
       profileProjectReturn = project;

@@ -1,0 +1,9 @@
+{
+  "inputs": ["业务目标、需求来源及验收标准", "现有工程、技术栈、运行条件与保护边界", "界面范围与品牌或组件规范"],
+  "configuration": "新建与详情共用名称、简介、主目录和协作方式知识。软件项目核对 Git 基线及共享目录串行写入或 worktree 分支约定；角色、权限、成员和工作区资源按实际花名册指导配置。",
+  "documents": [
+    {"path": "docs/engineering/ENGINEERING.md", "purpose": "工程约定中的用户选择、测试身份、环境与版本范围"},
+    {"path": "docs/ui-spec/UI-SPEC.md", "purpose": "界面适用范围、现有品牌和组件规则；纯后端可登记当前不适用"},
+    {"path": "docs/requirements/README.md", "purpose": "需求入口及权威来源；具体需求按现有结构整理并保留验收依据"}
+  ]
+}

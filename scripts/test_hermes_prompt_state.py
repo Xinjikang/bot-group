@@ -4,7 +4,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
-from engine import db, hermes_gateway as gateway, hermes_gateway_ledger as ledger
+from engine import auth, db, hermes_gateway as gateway, hermes_gateway_ledger as ledger
 from engine import hermes_prompt_state as prompts, session_adapter, wake
 from engine.hermes_connections import Pool
 from engine.hermes_gateway_client import GatewayTransportError
@@ -147,9 +147,11 @@ class WakePromptTests(unittest.TestCase):
         self.remote.rpc.side_effect = self.rpc
         self.pool = Pool(opener=lambda *a, **kw: self.remote,
                          revision=lambda: ('fixture', 'sha'), pinned=lambda _: False)
+        self.addCleanup(self.pool.join)
         self.addCleanup(self.pool.stop)
         self.created, self.sent, self.prompt, self.lost = [], [], 'A', False
-        patches = [patch.object(gateway, 'connection', side_effect=lambda *a, **kw:
+        patches = [patch.object(auth, 'signing_keys', return_value=(1, {1: b'isolated-prompt-key'})),
+                   patch.object(gateway, 'connection', side_effect=lambda *a, **kw:
                         (self.pool.acquire(self.home, ['fixture']), self.home, ['fixture'])),
                    patch.object(wake, 'wake_system_prompt', side_effect=lambda *a: self.prompt),
                    patch.object(wake, '_mcp_server_config', return_value={'command':'fixture','args':[],'env':{}}),
@@ -180,6 +182,26 @@ class WakePromptTests(unittest.TestCase):
         result = gateway.spawn('default','work',signal,None,'alpha',bot=self.bot,workdir='/w',model_args=[])
         for row in ledger.cleanup_pending(self.conn): ledger.finish_cleanup(self.conn, row['execution_id'])
         return result
+
+    def test_failed_handoff_keeps_next_wake_queued_without_execution(self):
+        from engine import auth
+        ring = (1, {1: b'old'})
+        with patch.object(auth, 'signing_keys', side_effect=lambda: ring):
+            self.assertTrue(self.spawn()['ok'])
+            ring = (2, {1: b'old', 2: b'new'})
+            def fail_configuration(method, **params):
+                if method == 'session.mutate' and params['operation'] == 'editor_mcp':
+                    raise GatewayTransportError('fixture handoff unavailable')
+                return self.rpc(method, **params)
+            self.remote.rpc.side_effect = fail_configuration
+            result = self.spawn()
+            self.assertTrue(result['busy'], result)
+            self.assertEqual(len(self.sent), 1)
+            self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM hermes_executions').fetchone()[0], 1)
+            self.assertEqual(self.conn.execute('SELECT pending_generation FROM hermes_session_grants').fetchone()[0], 2)
+            self.remote.rpc.side_effect = self.rpc
+            self.assertTrue(self.spawn()['ok'])
+            self.assertEqual(len(self.sent), 2)
 
     def test_new_session_and_aba_send_rules_exactly_when_needed(self):
         for index, prompt in enumerate(('A','A','B','B','A','A')):
@@ -219,19 +241,24 @@ class WakePromptTests(unittest.TestCase):
         self.assertIsNone(row['system_hash'])
         self.assertEqual(row['user_hash'], prompts.digest('A'))
 
-    def test_migrated_session_backfills_user_rules_without_claiming_system_identity(self):
-        def legacy_rpc(method, **params):
-            if method == 'session.list': return {'sessions': [{'session_id': 'old-cli'}]}
-            if method == 'session.resume' and params['session_id'] == 'old-cli':
-                return {**_snapshot(source='cli'), 'session_id': 'old-cli'}
-            return self.rpc(method, **params)
-        self.remote.rpc.side_effect = legacy_rpc
-        with patch.object(gateway.sessions, 'migrate_legacy', return_value={**_snapshot(), 'session_id':'migrated'}):
-            self.spawn(); self.spawn()
-        self.assertEqual([r['text'] for r in self.sent], ['A\n\nevent', 'event'])
-        row = self.conn.execute("SELECT * FROM hermes_prompt_state WHERE session_id='migrated'").fetchone()
-        self.assertIsNone(row['system_hash'])
-        self.assertEqual(row['user_hash'], prompts.digest('A'))
+    def test_legacy_shared_note_system_is_replaced_by_explicit_new_lifecycle(self):
+        self.prompt = 'old-project-system LEGACY-SENTINEL'
+        self.assertTrue(self.spawn()['ok'])
+        old_system = self.created[0]['client_env']['HERMES_EPHEMERAL_SYSTEM_PROMPT']
+        old_session = self.sent[-1]['session_id']
+        self.prompt = 'current-project-system-with-eight-fields'
+        self.assertTrue(self.spawn()['ok'])
+        self.assertEqual(len(self.created), 1)
+        self.assertIn('LEGACY-SENTINEL', old_system)
+        with patch.object(gateway, 'enabled', return_value=True), patch.object(wake, '_workdir_for', return_value='/w'):
+            result = session_adapter.switch_session(self.conn, 'alpha', 'default', 'work', None, 'clean-context-title',
+                                                    busy_check=lambda *args: False)
+        self.assertTrue(result['ok'], result)
+        self.assertNotEqual(result['session_id'], old_session)
+        self.assertNotIn('LEGACY-SENTINEL', self.created[-1]['client_env']['HERMES_EPHEMERAL_SYSTEM_PROMPT'])
+        self.assertTrue(self.spawn()['ok'])
+        self.assertEqual(self.sent[-1]['session_id'], result['session_id'])
+        self.assertEqual(self.sent[-1]['text'], 'event')
 
     def test_new_command_creates_fresh_system_rules(self):
         self.spawn(); self.prompt = 'B'

@@ -9,11 +9,13 @@ import uuid
 from contextlib import contextmanager
 
 from fastapi import HTTPException
-from . import db, events, project_templates, hud_inspection
+from . import db, events, project_templates, hud_inspection, hud_knowledge, hud_documents
 
 _LOCK = threading.RLock()
 DRAFT_FIELDS = {'display_name', 'description', 'root', 'template', 'directory_mode', 'worktree_root'}
+PROJECT_FIELDS = DRAFT_FIELDS - {'template'}
 STAGES = ('purpose', 'collaboration', 'roles', 'rules', 'members', 'resources', 'review', 'maintenance')
+BACKGROUND_CHECK_SECONDS = 3600
 
 
 def encode(value):
@@ -21,6 +23,9 @@ def encode(value):
 
 
 def schema(conn):
+    from .operation_transaction import Lease
+    if isinstance(conn, Lease):
+        return
     conn.executescript('''
     CREATE TABLE IF NOT EXISTS hud_sessions (
         id TEXT PRIMARY KEY, project TEXT UNIQUE, bot_id INTEGER,
@@ -48,12 +53,20 @@ def connection():
 
 
 def row(conn, sid):
-    value = conn.execute('SELECT * FROM hud_sessions WHERE id=?', (sid,)).fetchone()
-    if not value:
-        raise HTTPException(404, '维护会话不存在')
-    result = dict(value)
-    result['state'] = json.loads(result['state'])
-    return result
+    from . import hud_context
+    for _ in range(3):
+        value = conn.execute('SELECT * FROM hud_sessions WHERE id=?', (sid,)).fetchone()
+        if not value:
+            raise HTTPException(404, '维护会话不存在')
+        result = dict(value)
+        result['state'] = json.loads(result['state'])
+        if not hud_context.retire(result):
+            return result
+        changed = conn.execute('UPDATE hud_sessions SET state=?,status=? WHERE id=? AND state=? AND status=?',
+            (encode(result['state']), result['status'], sid, value['state'], value['status']))
+        if changed.rowcount:
+            return result
+    raise HTTPException(409, '助手状态已变化，请刷新后重试')
 
 
 def default_bot(conn):
@@ -64,7 +77,7 @@ def default_bot(conn):
 def valid_bot(conn, bot_id):
     if bot_id is None:
         return None
-    bot = conn.execute("SELECT * FROM bots WHERE id=? AND runtime IN ('hermes','codex')", (bot_id,)).fetchone()
+    bot = conn.execute("SELECT * FROM bots WHERE id=? AND runtime IN ('hermes','codex','dsh')", (bot_id,)).fetchone()
     if not bot:
         raise HTTPException(400, '请选择可用的 Hermes 或 Codex Bot')
     return dict(bot)
@@ -102,7 +115,7 @@ def view(sid, conn=None):
         with connection() as conn:
             return view(sid, conn)
     item = row(conn, sid)
-    bot = conn.execute("SELECT id,display_name,runtime FROM bots WHERE id=? AND runtime IN ('hermes','codex')", (item['bot_id'],)).fetchone()
+    bot = conn.execute("SELECT id,display_name,runtime FROM bots WHERE id=? AND runtime IN ('hermes','codex','dsh')", (item['bot_id'],)).fetchone()
     item['bot'] = {k: bot[k] for k in ('id', 'display_name', 'runtime')} if bot else None
     item['entries'] = [dict(r, content=json.loads(r['content'])) for r in reversed(conn.execute(
         'SELECT id,role,content,created FROM hud_entries WHERE session=? ORDER BY id DESC LIMIT 80', (sid,)).fetchall())]
@@ -119,7 +132,7 @@ def checked(conn, sid, revision):
     return item
 
 
-def store(conn, item, *, queue=False, activity=True):
+def store(conn, item, *, queue=False, activity=True, commit=True):
     now = time.time()
     if activity:
         advance_generation(item)
@@ -132,8 +145,9 @@ def store(conn, item, *, queue=False, activity=True):
                  'activity=?,updated=?,revision=revision+1,idle_seconds=? WHERE id=?',
                  (encode(item['state']), item['bot_id'], item['stage'], item['generation'], item['status'],
                   item['error'], now if activity else item['activity'], now, item['idle_seconds'], item['id']))
-    conn.commit()
-    events.bus.publish('hud.changed', {'session': item['id'], 'project': item['project']})
+    if commit:
+        conn.commit()
+        events.bus.publish('hud.changed', {'session': item['id'], 'project': item['project']})
     return view(item['id'], conn)
 
 
@@ -205,7 +219,9 @@ def answer(sid, body):
             else:
                 item['state'].pop('question')
         advance_generation(item)
+        item['state'].pop('navigation', None)
         add_entry(conn, item, 'user', {'text': text})
+        item['state']['user_request'] = text
         return store(conn, item, queue=True)
 
 
@@ -219,6 +235,8 @@ def bind(sid, request_id):
         project = json.loads(receipt[0])['project']
         if item['project'] and item['project'] != project:
             raise HTTPException(409, '维护会话已经属于另一个项目')
+        if item['project'] == project:
+            return view(sid, conn)
         other = conn.execute('SELECT id FROM hud_sessions WHERE project=? AND id<>?', (project, sid)).fetchone()
         if other:
             # An automatically opened session can be replaced only before interaction.
@@ -229,19 +247,12 @@ def bind(sid, request_id):
         item['project'], item['stage'] = project, 'maintenance'
         item['state'].pop('proposal', None)
         item['state']['cards'] = [c for c in item['state'].get('cards', []) if not c.get('proposal')]
-        share_facts(conn, item)
-        return store(conn, item, queue=item['status'] != 'paused')
-
-
-def share_facts(conn, item):
-    if item['project']:
-        conn.execute("INSERT INTO settings(key,project,value,updated_at) VALUES('maintenance_facts',?,?,?) "
-                     'ON CONFLICT(key,project) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',
-                     (item['project'], encode(item['state'].get('facts', [])), db.now_iso()))
+        return store(conn, item, queue=bool(item['bot_id']))
 
 
 def accept(sid, body):
-    with _LOCK, connection() as conn:
+    from . import project_workspaces as ws
+    with _LOCK, ws.LOCK, connection() as conn:
         item = checked(conn, sid, body['revision'])
         if item['status'] in ('queued', 'running'):
             raise HTTPException(409, '助手正在处理补充，请等待回复后确认提案')
@@ -250,31 +261,42 @@ def accept(sid, body):
         if not proposal or proposal['id'] != body['proposal_id']:
             raise HTTPException(409, '配置提案已变化')
         changes = proposal['changes']
+        actual = {}
         if item['project']:
-            if set(changes) - {'display_name', 'description'}:
+            if set(changes) - PROJECT_FIELDS:
                 raise HTTPException(400, '此变更需要在项目设置中完成')
-            actual = conn.execute('SELECT display_name,description FROM projects WHERE name=?', (item['project'],)).fetchone()
+            actual = ws.project(conn, item['project'])
             if any(actual[key] != proposal.get('base_project', {}).get(key) for key in changes):
                 raise HTTPException(409, '项目配置已被其他操作修改，请重新检查')
-            for key, value in changes.items():
-                conn.execute(f'UPDATE projects SET {key}=? WHERE name=?', (value, item['project']))
+            ws.validate_config(changes, actual)
+            if 'display_name' in changes and not changes['display_name'].strip():
+                raise HTTPException(400, '显示名不能为空')
         else:
             item['state'].setdefault('draft', {}).update(changes)
-        facts = item['state'].setdefault('facts', [])
-        for fact in proposal['facts']:
-            facts[:] = [f for f in facts if f['label'] != fact['label']]
-            facts.append({**fact, 'confirmed_at': db.now_iso()})
-        share_facts(conn, item)
         saved_text = ('已更新项目设置' if item['project'] else '已更新向导草稿') if changes else ''
-        if proposal['facts']:
-            saved_text += ('，并保存项目备注' if saved_text else '已保存项目备注')
+        if proposal.get('documents'):
+            saved_text += ('，' if saved_text else '') + '已保存项目文档'
         add_entry(conn, item, 'system', {'text': saved_text, 'proposal': proposal})
         if card:
             item['state']['cards'].remove(card)
         else:
             item['state'].pop('proposal')
         item['activity'] = time.time()
-        result = store(conn, item, queue=True)
+        with hud_documents.apply(proposal, actual):
+            if item['project'] and changes:
+                for key, value in changes.items():
+                    conn.execute(f'UPDATE projects SET {key}=? WHERE name=?', (value, item['project']))
+                ws.audit(conn, item['project'], 'project-assistant', 'project.update',
+                         {'before': actual, 'after': {**actual, **changes}})
+            result = store(conn, item, queue=True, commit=False)
+            if item['project'] and any(key in changes and changes[key] != actual[key]
+                                      for key in ('root', 'directory_mode', 'worktree_root')):
+                from .codex_project_access import commit_directory_access
+                members = [r[0] for r in conn.execute('SELECT profile FROM project_members WHERE project=?', (item['project'],))]
+                commit_directory_access(conn, item['project'], members)
+            else:
+                conn.commit()
+        events.bus.publish('hud.changed', {'session': item['id'], 'project': item['project']})
         events.bus.publish('project.updated', {'project': item['project']})
         return result
 
@@ -283,9 +305,10 @@ def project_snapshot(conn, project):
     from . import project_workspaces as ws
     config = dict(conn.execute('SELECT name,display_name,root,description,directory_mode,worktree_root,readiness_status '
                                'FROM projects WHERE name=?', (project,)).fetchone())
+    config['template'] = (project_templates.reference(project).get('template') or {}).get('id', 'blank')
     config['settings'] = [dict(r) for r in conn.execute(
         "SELECT key,value FROM settings WHERE project=? AND key='owner_profile'", (project,))]
-    config['members'] = [dict(r) for r in conn.execute('SELECT profile,role,active FROM project_members WHERE project=?', (project,))]
+    config['members'] = [dict(r) for r in conn.execute('SELECT profile,role,role_id,active FROM project_members WHERE project=?', (project,))]
     resources = {r['path']: dict(r) for r in conn.execute(
         'SELECT path,workspace_id,revision,config FROM workspace_resources WHERE project=?', (project,))}
     workspaces, errors = {}, []
@@ -311,35 +334,49 @@ def project_snapshot(conn, project):
     return config
 
 
-def document_context(root, *, include_contents=True):
+def document_context(root, *, include_contents=True, preferred=()):
     """Only bounded ordinary project documentation is offered to the model."""
-    return hud_inspection.documents(root, include_contents=include_contents)
+    return hud_inspection.documents(root, include_contents=include_contents, preferred=preferred)
 
 
 def context(conn, item):
+    from . import hud_tools, edit_policy, hud_context
     state = item['state']
     config = project_snapshot(conn, item['project']) if item['project'] else state.get('draft', {})
     selected = config.get('template', 'blank')
-    if item['project']:
-        selected = (project_templates.reference(item['project']).get('template') or {}).get('id', 'blank')
     if isinstance(selected, dict):
         selected = selected.get('id', 'blank')
     template = project_templates.load(selected) if selected != 'blank' else {'id': 'blank', 'description': '空项目：从目标、输入和产出建立约定'}
     history = [json.loads(r[0]) for r in conn.execute('SELECT content FROM hud_entries WHERE session=? '
                'AND generation=? ORDER BY id DESC LIMIT 16', (item['id'], item['generation']))][::-1]
-    materials = document_context(config.get('root'))
-    return {'stage': item['stage'], 'project_created': bool(item['project']), 'project': config, 'template': template,
-            'materials': materials, 'inspection': hud_inspection.inspect(config, materials), 'facts': state.get('facts', []),
+    history = [cleaned for entry in history if (cleaned := hud_context.project(entry))]
+    preferred = [d['path'] for d in hud_knowledge.guidance(template)['documents']]
+    preferred += ['doc/' + p[5:] for p in preferred if p.startswith('docs/')]
+    materials = document_context(config.get('root'), include_contents=False, preferred=preferred)
+    return {'stage': item['stage'], 'project_created': bool(item['project']), 'project': config,
+            'template': {key: value for key, value in template.items() if key not in ('contents', 'references')},
+            'template_root': str(project_templates.TEMPLATE_ROOT / selected),
+            'installation_root': str(project_templates.TEMPLATE_ROOT.parents[1]),
+            'config_version': hud_tools.version(hud_tools.configuration(conn, item)),
+            'user_request': state.get('user_request', ''),
+            'edit_approval_policy': edit_policy.read(conn),
+            'materials': materials, 'inspection': hud_inspection.inspect(config, materials),
+            'preparation': hud_knowledge.preparation(config, template, materials),
+            'usage_knowledge': hud_knowledge.usage(history),
             'deferred_questions': state.get('deferred_questions', [])[-12:],
-            'pending_proposal': state.get('proposal'),
-            'pending_cards': state.get('cards', []),
+            'pending_question': hud_context.project(state.get('question')),
+            'pending_proposal': hud_context.project({'proposal': state.get('proposal')}).get('proposal'),
+            'pending_cards': hud_context.project({'cards': state.get('cards', [])})['cards'],
             'decisions': state.get('decisions', [])[-60:], 'history': history,
-            'allowed_changes': sorted({'display_name', 'description'} if item['project'] else DRAFT_FIELDS)}
+            'allowed_changes': sorted(PROJECT_FIELDS if item['project'] else DRAFT_FIELDS)}
 
 
 def validate_response(value):
-    if not isinstance(value, dict) or set(value) - {'text', 'question', 'proposal', 'guide', 'notification', 'cards'}:
+    if not isinstance(value, dict) or set(value) - {'text', 'question', 'proposal', 'guide', 'notification', 'cards', 'resolved_todo_ids'}:
         raise ValueError('AI 返回格式无效，请重试')
+    resolved = value.get('resolved_todo_ids', [])
+    if not isinstance(resolved, list) or any(not isinstance(todo_id, str) or not todo_id.strip() or len(todo_id) > 128 for todo_id in resolved):
+        raise ValueError('AI 已解决待办标识无效')
     cards = value.get('cards', [])
     if not isinstance(cards, list):
         raise ValueError('AI 待办卡片格式无效')
@@ -387,22 +424,20 @@ def validate_response(value):
         question['id'] = uuid.uuid4().hex
     proposal = value.get('proposal')
     if proposal:
-        if not isinstance(proposal, dict) or set(proposal) - {'changes', 'facts', 'reason'}:
+        if not isinstance(proposal, dict) or set(proposal) - {'changes', 'facts', 'reason', 'documents'}:
             raise ValueError('AI 配置提案格式无效')
         if 'reason' in proposal and (not isinstance(proposal['reason'], str) or len(proposal['reason']) > 1200):
             raise ValueError('AI 修改说明格式无效')
         changes, facts = proposal.get('changes', {}), proposal.get('facts', [])
+        hud_documents.validate(proposal.get('documents', []))
         if not isinstance(changes, dict) or set(changes) - DRAFT_FIELDS or any(not isinstance(v, str) or len(v) > 6000 for v in changes.values()):
             raise ValueError('AI 配置字段无效')
         if 'directory_mode' in changes and changes['directory_mode'] not in ('shared', 'worktree'):
             raise ValueError('协作方式无效')
         if 'template' in changes and changes['template'] not in ('blank', 'software', 'research', 'writing', 'product-prototype', 'algorithm', 'testing'):
             raise ValueError('模板无效')
-        if not isinstance(facts, list) or len(facts) > 12:
-            raise ValueError('AI 维护资料过多')
-        for fact in facts:
-            if not isinstance(fact, dict) or set(fact) != {'label', 'value'} or any(not isinstance(v, str) or not 1 <= len(v) <= 4000 for v in fact.values()):
-                raise ValueError('AI 维护资料格式无效')
+        if not isinstance(facts, list) or facts:
+            raise ValueError('项目备注已转入历史；长期记忆请使用所选宿主的原生记忆流程')
         proposal.update(id=uuid.uuid4().hex, changes=changes, facts=facts)
         # A configuration decision occupies the current interaction; the next
         # question is generated after confirmation against the updated facts.
@@ -413,7 +448,8 @@ def validate_response(value):
 
 
 def run_one(sid):
-    from .hud_runtime import respond, progress_sink
+    from .hud_runtime import respond, progress_sink, tool_server
+    from . import hud_tools
     from .hud_gateway import owner
     with _LOCK, connection() as conn:
         item = row(conn, sid)
@@ -456,29 +492,37 @@ def run_one(sid):
             bot = valid_bot(conn, item['bot_id'])
             payload = context(conn, item)
             if item['project']:
-                snapshot = {**payload['project'], 'documents': payload['materials']['signatures'], 'inspection': payload['inspection']}
+                snapshot = {**payload['project'], 'documents': payload['materials']['signatures'],
+                            'inspection': payload['inspection'], 'preparation': payload['preparation']}
                 conn.execute('UPDATE hud_sessions SET digest=? WHERE id=? AND revision=?',
                              (hashlib.sha256(encode(snapshot).encode()).hexdigest(), sid, revision))
-        with progress_sink(progress), owner(sid):
+        with progress_sink(progress), owner(sid, item['generation']), tool_server(hud_tools.server(item)):
             response = respond(bot, payload)
         progress('stage', '正在整理检查结果')
         response = validate_response(response)
+        pending_ids = {value['id'] for container in [
+            {'question': payload['pending_question'], 'proposal': payload['pending_proposal']},
+            *payload['pending_cards']] for key in ('question', 'proposal')
+            if (value := container.get(key)) and value.get('id')}
+        if set(response.get('resolved_todo_ids', [])) - pending_ids:
+            raise ValueError('已解决待办不属于本轮待办，请重新核对')
         for result in [response, *response.get('cards', [])]:
             proposal = result.get('proposal')
             if proposal and set(proposal['changes']) - set(payload['allowed_changes']):
                 raise ValueError('此配置需要通过项目设置修改')
             if proposal:
+                if item['project']:
+                    from . import project_workspaces as ws
+                    ws.validate_config(proposal['changes'], payload['project'])
+                hud_documents.prepare(proposal, payload['project'], payload['materials'])
                 before = {key: payload['project'].get(key) or '' for key in proposal['changes']}
                 proposal['changes'] = {key: value for key, value in proposal['changes'].items() if value != before[key]}
-                previous_facts = {fact['label']: fact['value'] for fact in payload['facts']}
-                proposal['facts'] = [fact for fact in proposal['facts'] if previous_facts.get(fact['label']) != fact['value']]
                 proposal['before'] = before
-                proposal['before_facts'] = previous_facts
-                if not proposal['changes'] and not proposal['facts']:
+                if not proposal['changes'] and not proposal.get('documents'):
                     result['proposal'] = proposal = None
-                    result['text'] = '这些内容与当前配置和项目备注一致，已核对完成。'
+                    result['text'] = '这些内容与当前配置一致，已核对完成。'
             if proposal and item['project']:
-                proposal['base_project'] = {k: payload['project'][k] for k in ('display_name', 'description')}
+                proposal['base_project'] = {k: payload['project'][k] for k in PROJECT_FIELDS}
         error = ''
     except Exception as exc:
         response, error = None, str(exc)[:1500]
@@ -490,6 +534,13 @@ def run_one(sid):
         if error:
             current['status'], current['error'] = 'error', error
         else:
+            current['state'].pop('user_request', None)
+            resolved = set(response.get('resolved_todo_ids', []))
+            for key in ('question', 'proposal'):
+                if (current['state'].get(key) or {}).get('id') in resolved:
+                    current['state'].pop(key)
+            current['state']['cards'] = [card for card in current['state'].get('cards', [])
+                if not any((card.get(key) or {}).get('id') in resolved for key in ('question', 'proposal'))]
             for key in ('question', 'proposal'):
                 if response.get(key):
                     current['state'][key] = response[key]
@@ -499,7 +550,7 @@ def run_one(sid):
             cards = current['state'].setdefault('cards', [])
             def card_key(card):
                 value = card.get('question') or card.get('proposal') or {}
-                return encode({k: v for k, v in value.items() if k in ('title', 'reason', 'options', 'changes', 'facts')})
+                return encode({k: v for k, v in value.items() if k in ('title', 'reason', 'options', 'changes', 'documents')})
             existing = {card_key(card) for card in cards}
             for card in response.get('cards', []):
                 if (card.get('question') or card.get('proposal')) and card_key(card) not in existing:
@@ -521,24 +572,29 @@ def run_one(sid):
 
 def scan():
     with connection() as conn:
-        ids = [r[0] for r in conn.execute("SELECT id FROM hud_sessions WHERE project IS NOT NULL AND status='idle' ORDER BY checked")]
+        ids = [r[0] for r in conn.execute("SELECT id FROM hud_sessions WHERE project IS NOT NULL AND status IN ('idle','waiting') ORDER BY checked")]
     # Filesystem and tool probes run outside the HUD lock and database transaction.
     for sid in ids:
         with _LOCK, connection() as conn:
             item = row(conn, sid)
-            if item['status'] != 'idle':
+            if item['status'] not in ('idle', 'waiting'):
                 continue
-            if not item['bot_id'] or time.time() - item['checked'] < 60:
+            if not item['bot_id'] or time.time() - item['checked'] < BACKGROUND_CHECK_SECONDS:
                 continue
             if not conn.execute('SELECT 1 FROM projects WHERE name=? AND removed=0 AND archived=0', (item['project'],)).fetchone():
                 continue
             project = project_snapshot(conn, item['project'])
-        materials = document_context(project['root'])
-        snapshot = {**project, 'documents': materials['signatures'], 'inspection': hud_inspection.inspect(project, materials)}
+        selected = project['template']
+        template = project_templates.load(selected) if selected != 'blank' else {'id': 'blank'}
+        preferred = [d['path'] for d in hud_knowledge.guidance(template)['documents']]
+        preferred += ['doc/' + p[5:] for p in preferred if p.startswith('docs/')]
+        materials = document_context(project['root'], include_contents=False, preferred=preferred)
+        snapshot = {**project, 'documents': materials['signatures'], 'inspection': hud_inspection.inspect(project, materials),
+                    'preparation': hud_knowledge.preparation(project, template, materials)}
         digest = hashlib.sha256(encode(snapshot).encode()).hexdigest()
         with _LOCK, connection() as conn:
             current = row(conn, sid)
-            if current['revision'] != item['revision'] or current['status'] != 'idle':
+            if current['revision'] != item['revision'] or current['status'] not in ('idle', 'waiting'):
                 continue
             if project_snapshot(conn, item['project']) != project:
                 continue

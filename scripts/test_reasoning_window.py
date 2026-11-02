@@ -11,6 +11,25 @@ class MemoryDB(sqlite3.Connection):
     def close(self): pass
 
 class ReasoningWindowTests(unittest.TestCase):
+    def test_gateway_history_uses_own_connection_and_keeps_window(self):
+        import json
+        from unittest.mock import MagicMock
+        from engine import hermes_gateway
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.rpc.return_value = {'content': json.dumps({'messages': [
+            {'id': 1, 'role': 'assistant', 'reasoning': 'old', 'timestamp': 90},
+            {'id': 2, 'role': 'assistant', 'reasoning': 'current', 'timestamp': 110},
+            {'id': 3, 'role': 'assistant', 'reasoning': 'next', 'timestamp': 210}]})}
+        with patch.object(hermes_gateway, 'enabled', return_value=True), \
+             patch.object(hermes_gateway, 'connection', return_value=(client, None, [])) as connect:
+            result = reasoning.read_reasoning('bot', 'bot-work', wake_started_at=100,
+                                              wake_ended_at=200, hermes_session_id='sid')
+        connect.assert_called_once_with('bot', read_only=True, history=True)
+        self.assertEqual([entry['id'] for entry in result['entries']], [2])
+        client.rpc.assert_called_once_with('session.export', session_id='sid', format='json')
+        client.__exit__.assert_called_once()
+
     def setUp(self):
         self.c=sqlite3.connect(":memory:",factory=MemoryDB)
         self.c.row_factory=sqlite3.Row
@@ -30,7 +49,7 @@ class ReasoningWindowTests(unittest.TestCase):
     def add(self,i,ts,text,session="s"):
         self.c.execute("INSERT INTO messages VALUES(?,?,'assistant',?,NULL,NULL,NULL,?,1,NULL)",(i,session,text,ts))
     def read(self,start=100.125,end=200,after=0):
-        with patch.object(reasoning,"_profile_state_db",return_value=Path("present")),patch.object(Path,"exists",return_value=True),patch.object(reasoning.sqlite3,"connect",return_value=self.c):
+        with patch('engine.hermes_gateway.enabled', return_value=False), patch.object(reasoning,"_profile_state_db",return_value=Path("present")),patch.object(Path,"exists",return_value=True),patch.object(reasoning.sqlite3,"connect",return_value=self.c):
             return reasoning.read_reasoning("bot","bot-work",after,wake_started_at=start,wake_ended_at=end)
     def test_zero_cursor_after_refresh_stays_in_window(self):
         self.assertEqual([e['id'] for e in self.read()['entries']],[2,3,6])

@@ -13,7 +13,7 @@ FIELDS = ('model', 'provider', 'reasoning_effort')
 
 def read(conn, project, member):
     bot = bot_identity.resolve(conn, project, member)
-    if not bot or bot['runtime'] not in ('codex', 'hermes'):
+    if not bot or bot['runtime'] not in ('codex', 'hermes', 'dsh'):
         raise HTTPException(404, 'Project runtime member not found')
     key = f'member_model:{bot["id"]}'
     row = conn.execute('SELECT value FROM settings WHERE project=? AND key=?', (project, key)).fetchone()
@@ -35,6 +35,8 @@ def save(conn, project, member, values):
     efforts = ('', 'low', 'medium', 'high', 'xhigh', 'ultra')
     if current['runtime'] == 'hermes':
         efforts += ('none', 'minimal', 'max')
+    elif current['runtime'] == 'dsh':
+        efforts = ('', 'minimal', 'low', 'medium', 'high', 'max', 'ultra')
     if clean['reasoning_effort'] not in efforts:
         raise HTTPException(400, 'Unsupported reasoning effort')
     conn.execute('INSERT INTO settings(key,project,value,updated_at) VALUES(?,?,?,?) '
@@ -67,6 +69,10 @@ def arguments(conn, project, member):
         if not values['model']:
             raise ValueError('Hermes project model fallback requires a configured default model')
     args = []
+    if values['runtime'] == 'dsh':
+        # dsh 的模型/提供商/推理覆盖经 spawn overlay（--patch JSON）应用，由 task 266 实现，
+        # 不走 CLI 参数。此处仅完成项目级覆盖的读写闭环。
+        return args
     for field in FIELDS:
         value = values[field]
         if not value:

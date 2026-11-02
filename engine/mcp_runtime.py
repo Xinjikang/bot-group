@@ -22,7 +22,8 @@ def cleanup_overlay(temporary):
             logging.getLogger(__name__).exception("Cannot remove MCP runtime directory %s", temporary.name)
 
 
-def hermes_overlay(server: dict, env: dict, *, profile_home: Path | None = None) -> tempfile.TemporaryDirectory:
+def hermes_overlay(server: dict, env: dict, *, profile_home: Path | None = None,
+                   name: str = 'task_queue') -> tempfile.TemporaryDirectory:
     """Create an isolated managed overlay while preserving inherited managed settings."""
     parent = config.data_dir() / "runtime" / "mcp"
     parent.mkdir(parents=True, exist_ok=True)
@@ -35,9 +36,9 @@ def hermes_overlay(server: dict, env: dict, *, profile_home: Path | None = None)
         # while its URL key remains present; reject that conflict before launching.
         if profile_home is not None and (profile_home / "config.yaml").is_file():
             saved = yaml.safe_load((profile_home / "config.yaml").read_text(encoding="utf-8")) or {}
-            existing = (saved.get("mcp_servers") or {}).get("task_queue") if isinstance(saved, dict) else None
+            existing = (saved.get("mcp_servers") or {}).get(name) if isinstance(saved, dict) else None
             if isinstance(existing, dict) and "url" in existing:
-                raise ValueError("Remove the saved HTTP task_queue MCP entry before using the engine's stdio connection")
+                raise ValueError(f"Remove the saved HTTP {name} MCP entry before using the engine's stdio connection")
         settings = {}
         source_config = source / "config.yaml"
         if source_config.is_file():
@@ -49,7 +50,7 @@ def hermes_overlay(server: dict, env: dict, *, profile_home: Path | None = None)
         servers = settings.setdefault("mcp_servers", {})
         if not isinstance(servers, dict):
             raise ValueError("Hermes managed mcp_servers must contain a mapping")
-        servers["task_queue"] = {**server, "enabled": True, "lazy": False,
+        servers[name] = {**server, "enabled": True, "lazy": False,
                                  "cwd": str(Path(server["args"][0]).resolve().parent.parent),
                                  "connect_timeout": 60}
         # JSON is valid YAML and preserves Windows paths and multiline environment values.

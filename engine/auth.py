@@ -52,7 +52,8 @@ def verify_bot(profile: str, token: str, *, ring=None) -> bool:
     generation, keys = ring if ring is not None else signing_keys()
     return bool(profile and token) and (secrets.compare_digest(
         token.encode("utf-8"), bot_token(profile, key=keys[generation]).encode("ascii"))
-        or execution_scope(profile, token, keys) is not None)
+        or execution_scope(profile, token, keys) is not None
+        or session_scope(profile, token, keys) is not None)
 
 
 def execution_token(profile: str, context: dict, *, signing_generation=None) -> str:
@@ -72,6 +73,48 @@ def execution_token(profile: str, context: dict, *, signing_generation=None) -> 
 
 
 EXECUTION_FIELDS = ("profile", "project", "thread_id", "session", "wake_started_at")
+SESSION_FIELDS = ("profile", "project", "thread_id", "session", "session_id", "generation")
+
+
+def session_token(profile, context, *, signing_generation=None):
+    """Sign a gateway binding independently of its individual executions."""
+    generation, keys = signing_keys()
+    generation = generation if signing_generation is None else signing_generation
+    payload = base64.urlsafe_b64encode(json.dumps(
+        {key: context[key] for key in SESSION_FIELDS}, sort_keys=True,
+        separators=(',', ':')).encode()).decode('ascii')
+    signature = hmac.new(bot_token(profile, key=keys[generation]).encode('ascii'),
+                         ('session:' + payload).encode('ascii'), hashlib.sha256).hexdigest()
+    token = f'session.{payload}.{signature}'
+    if session_scope(profile, token, keys) is None:
+        raise ValueError('Invalid session context')
+    return token
+
+
+def session_scope(profile, token, keys):
+    if not token.startswith('session.') or len(token) > 8192:
+        return None
+    try:
+        _, payload, signature = token.split('.')
+        matched = next((g for g, key in keys.items() if secrets.compare_digest(
+            signature.encode(), hmac.new(bot_token(profile, key=key).encode('ascii'),
+            ('session:' + payload).encode('ascii'), hashlib.sha256).hexdigest().encode())), None)
+        if matched is None:
+            return None
+        context = json.loads(base64.urlsafe_b64decode(payload.encode('ascii')))
+        if not isinstance(context, dict) or set(context) != set(SESSION_FIELDS):
+            return None
+        if context['profile'] != profile or any(not isinstance(context[k], str) or not context[k].strip()
+                                               for k in ('profile', 'project', 'session', 'session_id')):
+            return None
+        tid, generation = context['thread_id'], context['generation']
+        if tid is not None and (type(tid) is not int or tid <= 0):
+            return None
+        if type(generation) is not int or generation < 0:
+            return None
+        return {**context, 'credential_type': 'session', 'signing_generation': matched}
+    except (ValueError, UnicodeError, TypeError):
+        return None
 
 
 def execution_scope(profile: str, token: str, keys: dict[int, bytes]) -> dict | None:

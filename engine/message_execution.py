@@ -32,10 +32,17 @@ def validate_shape(sender, body):
 
 
 def validate(conn, sender, body):
-    session, start = validate_shape(sender, body)
-    tid = body['thread_id']
     if not conn.in_transaction:
         conn.execute('BEGIN IMMEDIATE')
+    supplied = body.get('execution') or {}
+    if supplied.get('credential_type') == 'session':
+        from . import hermes_session_auth
+        resolved = hermes_session_auth.resolve(conn, supplied)
+        if supplied.get('wake_started_at', resolved['wake_started_at']) != resolved['wake_started_at']:
+            raise HTTPException(409, 'Session execution changed before write')
+        body = {**body, 'execution': resolved}
+    session, start = validate_shape(sender, body)
+    tid = body['thread_id']
     run = conn.execute('SELECT * FROM wake_runs WHERE session=? AND started_at=?', (session, start)).fetchone()
     if run is None or run['ended_at'] is not None:
         raise HTTPException(409, 'Execution is missing or has ended; use the current execution context')

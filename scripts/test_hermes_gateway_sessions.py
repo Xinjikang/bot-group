@@ -64,12 +64,11 @@ class ConfigureRefreshTests(unittest.TestCase):
         _, client = self._configure(snapshot=_snapshot(cwd='/w'), workdir='/w')
         self.assertNotIn('workspace', _mutation_ops(client))
 
-    def test_editor_mcp_refreshed_every_admission(self):
+    def test_editor_mcp_installed_without_empty_manifest(self):
         _, client = self._configure()
         mcp = [c for c in _mutations(client) if c.kwargs['operation'] == 'editor_mcp']
-        # 空 manifest 退役旧连接，再注入新 spec 重新发现工具描述。
-        self.assertEqual(mcp[0].kwargs['payload'], {'mcp_servers': []})
-        self.assertEqual(mcp[1].kwargs['payload']['mcp_servers'][0]['name'], 'task_queue')
+        self.assertEqual(len(mcp), 1)
+        self.assertEqual(mcp[0].kwargs['payload']['mcp_servers'][0]['name'], 'task_queue')
 
     def test_non_acp_session_refused(self):
         with self.assertRaises(GatewayRefusal):
@@ -107,6 +106,13 @@ class TrackedReasoningTests(unittest.TestCase):
                 workdir='/w', model_args=list(args), server=self.server)
         finally:
             conn.close()
+
+    def test_identical_turns_keep_policy_and_resume_private_transport(self):
+        self.configure(['--model', 'fixture', '--provider', 'local', '--reasoning', 'high'])
+        self.client.reset_mock()
+        self.configure(['--model', 'fixture', '--provider', 'local', '--reasoning', 'high'])
+        self.assertEqual(_mutation_ops(self.client), [])
+        self.assertIn('editor', self.client.rpc.call_args.kwargs)
 
     def test_clear_after_reopen_resets_once(self):
         self.configure(['--reasoning', 'high'])

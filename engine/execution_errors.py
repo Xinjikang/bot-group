@@ -9,10 +9,16 @@ from . import db, events, hermes_profile_names
 MESSAGES = {
     'configuration': '配置不完整或无效，请检查配置。',
     'authentication': '身份认证失败，请检查凭证。',
+    'missing_credential': '缺少模型凭据，请检查凭据配置或环境变量。',
+    'init': '初始化失败，请检查宿主配置、bundle 与版本。',
+    'refused': '模型拒绝了本次请求，请调整内容后重试。',
+    'cancelled': '本轮执行已被取消。',
+    'corrupt': '执行输出解析异常，请查看诊断日志。',
     'permission': '访问被拒绝，请检查权限。',
     'rate_limit': '请求受限，请稍后重试或检查配额。',
     'capacity': '所选模型容量已满，请稍后重试或切换模型。',
     'incomplete': '本轮执行已结束，任务尚未完成或交接，请检查任务记录。',
+    'auto_unavailable': 'DSH Auto 审批能力不可用（会话未进入 auto 预设），已阻止执行继续。',
     'timeout': '请求超时，请稍后重试或检查超时设置。',
     'network': '连接失败，请检查网络设置。',
     'upstream': '服务暂时异常，请稍后重试。',
@@ -51,11 +57,37 @@ def _failure_text(detail):
 
 
 def classify(text):
+    # req#137 task#268：Auto 审批 fail-closed 标记是引擎作者文本，须在 _failure_text
+    # 的「最后一个 JSON 错误事件优先」提取之前判定——否则被 'adapter broken' 之类
+    # 终端错误事件吞掉，落 unknown。
+    raw = str(text).lower()
+    if 'auto review capability unavailable' in raw or 'preset not confirmed' in raw:
+        return 'auto_unavailable'
     text = _failure_text(text).lower()
     if hermes_profile_names.failure_message(text) or '被 hermes 保留' in text:
         return 'configuration'
     if re.search(r'\bmodel\b[^\n.]{0,80}\bat capacity\b', text):
         return 'capacity'
+    # req#137 task#266 验收 5：结果判读六类失败细分。init 词表与
+    # dsh_auth.classify_auth_error 的 init 分支一致（initialization/load_failed/
+    # failed to parse overlay 等）；凭据缺失按 DSH MISSING_CREDENTIAL 词
+    # （'no usable credentials' 保持 configuration，不改既有语义）；损坏 JSON 由
+    # dsh reader 计数后注入 'unparseable' 诊断。init/missing_credential 先于缺 final
+    # 判读：初始化失败时归因 init（可行动因），缺 final 只是伴随症状。
+    if re.search(r'missing_credential|missing credential|no api.?key for', text):
+        return 'missing_credential'
+    if re.search(r'initialization|initialize|load_failed|failed to load|failed to initialize'
+                 r'|failed to parse (?:overlay|patch|profile|config)', text):
+        return 'init'
+    if re.search(r'\brefusal\b|\bdeclined\b|content policy|guardrail|policy violation'
+                 r'|(?:model|assistant|request)\s+refused', text):
+        return 'refused'
+    if re.search(r'\bcancell?ed\b|\baborted\b|terminated by user|用户取消|手动停止', text):
+        return 'cancelled'
+    if re.search(r'unparseable|invalid json|malformed json|json(?:decode|parse) error', text):
+        return 'corrupt'
+    if 'dsh run ended without a final event' in text:
+        return 'incomplete'
     if re.search(r'no usable credentials|missing.{0,40}(?:key|credential|config)|'
                  r'(?:key|credential).{0,40}(?:missing|not set|unset)|'
                  r'hermescompatibilityerror|configurationerror|config(?:uration)? (?:error|invalid)|'

@@ -1,14 +1,24 @@
 # 项目文档索引
 
+DSH 成员编辑的三个页签、接口字段移除及插件检测后强制 Auto 审批见 [成员设置设计](design/2026-11-02-dsh-member-settings.md)。
+
 全局 Hermes 文件编辑审批的三档选择、持久化与每轮应用规则见 [全局审批策略设计](design/2026-10-30-global-edit-policy.md)。
 
 项目维护 HUD 的独立会话、提问与创建向导联动见 [设计](design/2026-10-27-project-maintenance-hud.md) 和 [工程契约](engineering/PROJECT-HUD.md)。
 
 项目助手的实际配置检查、文档依据与修改前后确认见 [引导设计](design/2026-10-29-project-assistant-guidance.md)。
 
+项目助手的新建与详情配置、六类模板资料、原生执行/记忆、配置一致性及测试隔离的范围与验收见 [需求](requirements/2026-10-31-project-assistant.md)，方案见 [准备能力设计](design/2026-10-31-project-assistant-preparation.md) 与 [工程契约](engineering/PROJECT-HUD.md)。
+
+项目助手使用所选 Hermes/Codex 的原生文件能力、单一配置工具及一小时后台检查，执行与产物验收见 [原生工具设计](design/2026-10-31-project-assistant-native-tools.md)。
+
 Hermes 网关版的官方接口、原生审批、临时 MCP、会话迁移与执行恢复见 [Hermes 网关执行适配](engineering/HERMES-GATEWAY.md)。
 
+Hermes 停止后的空闲等待、压缩历史保护与显式清理重试见 [终态清理恢复](design/2026-10-31-terminal-cleanup-recovery.md)。
+
 Hermes WS 连接复用、业务空闲回收和顶栏全局状态见 [连接复用与状态设计](design/2026-10-30-hermes-gateway-connections.md)。
+
+Hermes 网关会话级资源复用（agent 跨轮复用、消除每轮重建）见 [会话复用设计](design/2026-10-30-hermes-gateway-session-reuse.md)。
 
 Hermes 系统层与用户层规则判重、admission 记账及旧会话补齐见 [提示词持久化判重](design/2026-10-30-hermes-prompt-dedup.md)。
 
@@ -18,11 +28,15 @@ Codex 与 Hermes 连续唤醒的规则正文、原生系统文本和工具 schem
 
 Hermes 新旧会话接口、安装定位和兼容提示见 [Hermes 兼容性](engineering/HERMES-COMPATIBILITY.md) 与 [设计依据](design/2026-10-27-hermes-compatibility.md)。
 
-当前发布说明：[v0.2.3](releases/v0.2.3.md)。历史版本：[v0.2.2](releases/v0.2.2.md)、[v0.2.1](releases/v0.2.1.md)、[v0.2.0](releases/v0.2.0.md)、[v0.1.9](releases/v0.1.9.md)、[v0.1.8](releases/v0.1.8.md)、[v0.1.7](releases/v0.1.7.md)、[v0.1.6](releases/v0.1.6.md)、[v0.1.5](releases/v0.1.5.md)、[v0.1.4](releases/v0.1.4.md)、[v0.1.3](releases/v0.1.3.md)、[v0.1.2](releases/v0.1.2.md)。
+当前发布说明：[v0.2.4](releases/v0.2.4.md)。历史版本：[v0.2.3](releases/v0.2.3.md)、[v0.2.2](releases/v0.2.2.md)、[v0.2.1](releases/v0.2.1.md)、[v0.2.0](releases/v0.2.0.md)、[v0.1.9](releases/v0.1.9.md)、[v0.1.8](releases/v0.1.8.md)、[v0.1.7](releases/v0.1.7.md)、[v0.1.6](releases/v0.1.6.md)、[v0.1.5](releases/v0.1.5.md)、[v0.1.4](releases/v0.1.4.md)、[v0.1.3](releases/v0.1.3.md)、[v0.1.2](releases/v0.1.2.md)。
 
 需求超时拆解、部分任务恢复和队列空唤醒抑制见 [需求恢复契约](engineering/REQUIREMENT-RECOVERY.md) 与 [设计依据](design/2026-10-27-requirement-recovery.md)。
 
 Profile 凭证继承与异常可见性见 [设计依据](design/2026-10-25-profile-credentials-errors.md)、[创建 profile](engineering/PROFILE-CREATE.md) 和 [执行异常反馈](engineering/EXECUTION-ERRORS.md)。
+
+DSH 的统一创建表单、独立标识、配置继承及发布回滚见 [DSH 独立 profile 创建](design/2026-11-02-dsh-profile-create.md)。
+
+Hermes/DSH 成对填写模型与供应商、来源带入和 Codex 界面规则见 [模型供应商字段组](design/2026-11-02-profile-provider-pair.md)。
 
 成员候选的配置识别、失效登记过滤与历史保留规则见 [成员候选识别](engineering/PROFILE-CREATE.md#成员候选识别)。
 
@@ -48,8 +62,11 @@ Profile 凭证继承与异常可见性见 [设计依据](design/2026-10-25-profi
 | [算法研发模板需求](requirements/2026-10-21-algorithm-template.md) | 四角色、算法方案、实验复现和报告交付 |
 | [测试项目模板需求](requirements/2026-10-21-testing-template.md) | PRD 与原型、三角色、用例脚本联动及报告交付 |
 | [MCP API 需求](requirements/2026-10-20-mcp-api-runtime.md) / [配置设计](design/2026-10-20-mcp-config-scope.md) | 运行时配置及身份隔离 |
+| [角色名称字符校验](requirements/2026-10-31-role-name-validation.md) | 不可见字符过滤、按名称筛选与派单 |
 | [协作设计依据](design/DESIGN-NOTES.md) / [配置职责](design/PROJECT-CONFIG-INVENTORY-2026-09-23.md) | 会话、持久知识和配置边界 |
 | [Codex 驱动设计](design/CODEX-DRIVER-DESIGN-2026-09-29.md) | 宿主、Bot 与项目成员分层 |
+| [DeepSeek Harness 接入需求](requirements/2026-10-31-dsh-integration.md) / [设计](design/2026-10-31-dsh-integration.md) | dsh 第三运行时、headless 接入、认证与会话契约 |
+| [DSH 刷新与会话误判修复](requirements/2026-11-01-dsh-refresh-fix.md) | 新增 DSH 成员刷新 500 及会话异种绑定误判 |
 | [进程查询兼容性](design/2026-10-25-process-query.md) | Windows 进程探测、三态保护与依赖交付 |
 | [维护代码命名空间](design/2026-10-25-maintenance-namespace.md) | Hermes 包共存、命令入口与独立安装器 |
 | [常驻执行后端方案](design/SERVE-RESIDENT-SOLUTION-2026-10-08.md) | 方案与实施前验证条件 |
@@ -58,6 +75,8 @@ Profile 凭证继承与异常可见性见 [设计依据](design/2026-10-25-profi
 | [维护经验](PITFALLS.md) | 调度、身份、前端与生命周期边界 |
 
 ## 工程与运行
+
+数据库、签名、宿主 home、连接池后台线程和受控测试入口见 [运行时测试隔离](engineering/TEST-RUNTIME-ISOLATION.md)。
 
 | 文档 | 内容 |
 | --- | --- |

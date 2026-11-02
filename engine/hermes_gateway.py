@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 from datetime import datetime
 import logging
-import os
 import sqlite3
 from pathlib import Path
 import threading
@@ -26,11 +25,16 @@ def enabled():
     return hermes_runtime.gateway_source(hermes_runtime.source_directory(_hermes_home()))
 
 
-def connection(profile, *, home=None, command=None, read_only=False, on_event=None):
+def connection(profile, *, home=None, command=None, read_only=False, on_event=None, history=False):
     from . import bot_identity
     from . import hermes_connections
     from .session_adapter import _hermes_home
     home = Path(home) if home else bot_identity.hermes_home(profile, _hermes_home())
+    if history:
+        # Transcript reads own their socket and cannot interrupt admission RPCs.
+        client = hermes_connections.open_connection(home, [], on_event, allow_start=False,
+            revision=hermes_connections.installed_revision(), max_message_bytes=64 * 1024 * 1024)
+        return client, home, []
     command = command or ([] if read_only else hermes_runtime.command())
     return hermes_connections.acquire(home, command, callback=on_event, business=not read_only), home, command
 
@@ -113,12 +117,14 @@ def _publish(row):
 
 def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args,
           bound_task=None, job_id=None, trigger_msg_id=None):
-    from . import wake, browser_resources
+    from . import wake, browser_resources, hermes_session_auth
     session = wake.session_name(profile, kind, thread_id, project)
     client = None
     row = None
     attempted = False
     conn = db.get_connection()
+    session_lock = hermes_session_auth.lock_for(session)
+    session_lock.acquire()
     try:
         if ledger.active(conn, session):
             return {'ok': False, 'busy': True, 'detail': 'gateway execution still active'}
@@ -131,6 +137,17 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
         snapshot = _binding(conn, client, bot, project, profile, kind, thread_id, session, workdir, model_args)
         if snapshot['running'] or snapshot['pending']:
             return {'ok': False, 'busy': True, 'detail': 'native session has pending execution'}
+        grant = hermes_session_auth.grant(conn, project=project, profile=profile, bot_id=bot['id'],
+            kind=kind, thread_id=thread_id, session=session, home=home, command=command,
+            workdir=workdir, model_args=model_args)
+        try:
+            snapshot = hermes_session_auth.configure(conn, grant, client, snapshot)
+        except Exception:
+            pending = conn.execute('SELECT pending_generation FROM hermes_session_grants WHERE ' +
+                                   hermes_session_auth.WHERE, hermes_session_auth.key(grant)).fetchone()
+            if pending and pending['pending_generation'] is not None:
+                return {'ok': False, 'busy': True, 'detail': 'gateway session credential handoff pending'}
+            raise
         if signal is None:
             signal = wake._finalize_injection_signal(profile, kind, thread_id, project,
                                                      trigger_msg_id, bound_task, [])
@@ -141,7 +158,6 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
         if prompt_hash is not None:
             signal = current_prompt + '\n\n' + signal
         start = time.time()
-        context = dict(profile=profile, project=project, thread_id=thread_id, session=session, wake_started_at=start)
         floor = conn.execute('SELECT COALESCE(MAX(id),0) FROM events').fetchone()[0]
         topic = conn.execute('SELECT turn_parent_id,round FROM threads WHERE id=? AND project=?',
                              (thread_id, project)).fetchone() if thread_id is not None else None
@@ -153,17 +169,10 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
             parent_id=topic['turn_parent_id'] if topic else None, round_no=topic['round'] if topic else None,
             prompt_hash=prompt_hash)
         _publish(row)
-        server = wake._mcp_server_config(profile, context=context, chat=kind == 'chat',
-                                       signing_generation=row['signing_generation'])
-        resource_env = dict(os.environ)
-        browser_resources.register(conn, resource_env, project=project, profile=profile, session=session,
-                                   started_at=start, thread_id=thread_id, task_id=bound_task)
-        server['env'].update({key: resource_env[key] for key in
-                             ('BH_RUNTIME_DIR', 'BH_RUNTIME_DIR_SHARED', 'BH_TMP_DIR', 'BH_TMP_DIR_SHARED', 'BU_NAME')})
-        server['env']['GROUP_GATEWAY_EXECUTION'] = '1'
+        browser_resources.register(conn, {}, project=project, profile=profile, session=session,
+                                   started_at=start, thread_id=thread_id, task_id=bound_task,
+                                   session_context=hermes_session_auth.context(grant))
         conn.commit()
-        sessions.configure_tracked(conn, project, client, snapshot,
-                                   workdir=workdir, model_args=model_args, server=server)
         attempted = True
         receipt = client.rpc('prompt.submit', session_id=row['session_id'], submission_id=row['submission_id'], text=signal)
         ledger.apply_receipt(conn, row['execution_id'], receipt)
@@ -182,13 +191,17 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
         conn.close()
         if client:
             client.close()
+        session_lock.release()
 
 
 def _finish(conn, row, client):
     from . import wake, browser_resources, heartbeat, events, steer_ledger
+    cleanup_detail = ''
     if client is not None:
         if row['cancel_reason'] == 'user' and row['kind'] == 'work' and row['outcome'] != 'not_submitted':
             snapshot = sessions.attach(client, row['session_id'])
+            if snapshot.get('running') or snapshot.get('pending'):
+                raise GatewayRefusal('session_busy')
             target = row['rewind_target']
             if target is None:
                 target = next((message['row_id'] for message in reversed(snapshot['messages'])
@@ -201,11 +214,18 @@ def _finish(conn, row, client):
                                  (target, row['execution_id']))
                     conn.commit()
             if target is not None:
-                sessions.mutate(client, snapshot, 'rewind', {'target_message_id': target},
-                                request_id='stop-' + row['execution_id'])
-                prompt_state.withdraw(conn, row['execution_id'], 'rewound')
-                conn.commit()
-        sessions.clear_mcp(client, row['session_id'])
+                try:
+                    sessions.mutate(client, snapshot, 'rewind', {'target_message_id': target},
+                                    request_id='stop-' + row['execution_id'])
+                except GatewayRefusal as exc:
+                    if not exc.compacted_target:
+                        raise
+                    # Compaction retained the turn in its summary. Keep both the
+                    # transcript and its accepted rule hash when rewind is refused.
+                    cleanup_detail = 'rewind_target_compacted; transcript preserved'
+                else:
+                    prompt_state.withdraw(conn, row['execution_id'], 'rewound')
+                    conn.commit()
     elif row['outcome'] != 'not_submitted':
         return False
     code = 0 if row['outcome'] == 'completed' else 1
@@ -222,7 +242,7 @@ def _finish(conn, row, client):
             error=row['detail'] or row['outcome'])
     browser_resources.finish_run(row['session'], row['started_at'])
     steer_ledger.reconcile_targets(conn)
-    ledger.finish_cleanup(conn, row['execution_id'])
+    ledger.finish_cleanup(conn, row['execution_id'], detail=cleanup_detail)
     with wake._session_lock:
         wake._running_sessions.discard(row['session'])
         wake._running_wakes.pop(row['session'], None)
@@ -247,6 +267,20 @@ def _watch(execution_id):
                 time.sleep(0.1)
                 continue
             row = ledger.read(conn, execution_id)
+            if row['state'] == 'terminal':
+                if not row['cleanup_pending'] or (row['retry_count'] or 0) >= ledger.CLEANUP_MAX_ATTEMPTS:
+                    return
+                now = time.time()
+                if row['cleanup_deadline'] and now >= row['cleanup_deadline']:
+                    ledger.mark_cleanup_failed(conn, execution_id, 'cleanup deadline exceeded')
+                    return
+                delay = (row['next_retry_at'] or 0) - now
+                if delay > 0:
+                    time.sleep(min(delay, max(0, row['cleanup_deadline'] - now))
+                               if row['cleanup_deadline'] else delay)
+                    if wake._shutting_down.is_set() or (row['cleanup_deadline']
+                            and time.time() >= row['cleanup_deadline']):
+                        continue
             try:
                 if client is None:
                     client, _, _ = connection(row['profile'], home=row['home'], command=json.loads(row['python']))
@@ -290,17 +324,22 @@ def _watch(execution_id):
                         logger.error('Hermes cleanup deadline exceeded for execution %s; '
                                      'manual retry required: %s', execution_id, detail)
                         return
+                    if detail == 'session_busy' and row['cleanup_deadline']:
+                        # Native cancellation may acknowledge the admission before
+                        # its runner becomes idle. The absolute deadline bounds polling.
+                        conn.execute('UPDATE hermes_executions SET next_retry_at=?,detail=? WHERE execution_id=?',
+                                     (min(time.time() + 3, row['cleanup_deadline']), 'waiting_for_idle', execution_id))
+                        conn.commit()
+                        continue
                     attempts = ledger.register_cleanup_retry(conn, execution_id, detail)
                     if attempts >= ledger.CLEANUP_MAX_ATTEMPTS:
                         ledger.mark_cleanup_failed(conn, execution_id, detail)
                         logger.error('Hermes cleanup failed for execution %s after %d attempts; '
                                      'manual retry required: %s', execution_id, attempts, detail)
                         return
-                    delay = (ledger.read(conn, execution_id)['next_retry_at'] or 0) - time.time()
                     if client:
                         client.close()
                         client = None
-                    time.sleep(delay if delay > 0 else 0)
                     continue
                 ledger.uncertain(conn, execution_id, detail)
                 if client:
@@ -315,15 +354,23 @@ def _watch(execution_id):
             _workers.discard(execution_id)
 
 
-def _start_worker(execution_id):
+def _start_worker(execution_id, *, retry_cleanup=False):
     with _lock:
         if execution_id in _workers:
             return
+        if retry_cleanup:
+            conn = db.get_connection()
+            try:
+                ledger.retry_cleanup(conn, execution_id)
+            finally:
+                conn.close()
         _workers.add(execution_id)
     threading.Thread(target=_watch, args=(execution_id,), daemon=True, name='hermes-reconcile').start()
 
 
 def recover():
+    from . import hermes_connections
+    hermes_connections._POOL.start()
     conn = db.get_connection()
     try:
         for row in ledger.active(conn):
@@ -373,7 +420,11 @@ def cancel(session, *, reason='user', timeout=30):
             if not pending:
                 return None
             for row in pending:
-                if (row['retry_count'] or 0) < ledger.CLEANUP_MAX_ATTEMPTS:
+                exhausted = ((row['retry_count'] or 0) >= ledger.CLEANUP_MAX_ATTEMPTS
+                             or row['cleanup_deadline'] and time.time() >= row['cleanup_deadline'])
+                if exhausted and reason == 'user':
+                    _start_worker(row['execution_id'], retry_cleanup=True)
+                elif not exhausted:
                     _start_worker(row['execution_id'])
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:

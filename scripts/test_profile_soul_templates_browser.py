@@ -1,5 +1,6 @@
 """Project SOUL drafts, plus real creation/reference API integration in Chrome."""
 import mimetypes
+import argparse
 from pathlib import Path
 import sys
 from urllib.parse import unquote, urlparse
@@ -12,6 +13,10 @@ from scripts.test_project_import_supplement import SupplementTests
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--evidence', type=Path,
+                        default=ROOT / 'reports/tests/development/profile-soul-templates')
+    args = parser.parse_args()
     writes, reads, pending, errors = [], [], [], []
     state = {'fail': False, 'delay': False, 'mismatch': False, 'real_client': None}
     soul = '# 当前项目负责人\n只协调本项目。\n<img src=x onerror="window.badSoul=true">'
@@ -32,7 +37,7 @@ def main():
                 file = ROOT / 'frontend' / (path[5:] or 'index.html')
                 req.fulfill(body=file.read_bytes(), content_type=mimetypes.guess_type(file.name)[0] or 'text/plain')
                 return
-            if req.request.method in ('POST', 'PUT', 'PATCH'):
+            if req.request.method in ('POST', 'PUT', 'PATCH') and path not in ('/hud', '/profiles/source-settings'):
                 writes.append((path, req.request.post_data_json))
             data = {}
             if path.endswith('/template-reference'):
@@ -83,7 +88,7 @@ def main():
         assert page.locator('#profile-soul-template-preview img').count() == 0
         assert page.locator('#member-create-instructions').input_value() == ''
         assert writes == []
-        out = ROOT / 'cache' / 'profile-soul-templates'
+        out = args.evidence
         out.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(out / 'desktop.png'))
         page.set_viewport_size({'width': 390, 'height': 844})

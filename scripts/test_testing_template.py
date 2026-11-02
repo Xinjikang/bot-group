@@ -53,7 +53,7 @@ class TestingTemplateTests(unittest.TestCase):
         self.assertFalse(any(p.startswith('reports/') for p in tracked))
         base = templates.TEMPLATE_ROOT / 'testing'
         self.assertEqual({p.relative_to(base).as_posix() for p in base.rglob('*') if p.is_file()},
-                         {'manifest.json', *[f['source'] for f in manifest['files']],
+                         {'manifest.json', 'assistant.json', *[f['source'] for f in manifest['files']],
                           *[r['soul_reference'] for r in manifest['roles']]})
 
     def test_report_acceptance_preserves_product_failure_and_role_permissions(self):

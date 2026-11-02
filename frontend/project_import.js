@@ -137,13 +137,35 @@
   function saveHud() {
     if(hudReady && dialog.open) return window.ProjectHUD?.saveDraft(hudSnapshot(),hudStages[step]);
   }
-  function applyHud(draft) {
+  function applyHud(draft, before) {
     if(!draft || !dialog.open) return;
+    const ordered=value=>Array.isArray(value)?value.map(ordered):value&&typeof value==='object'
+      ?Object.fromEntries(Object.keys(value).sort().map(key=>[key,ordered(value[key])])):value;
+    const same=(left,right)=>JSON.stringify(ordered(left))===JSON.stringify(ordered(right));
+    if(draft.wizard){
+      if(!before?.wizard||same(roles,before.wizard.roles||[])){
+        roles=draft.wizard.roles||roles;if(preview)renderRoles();invalidateRules();
+      }
+      if(!before?.wizard||same([...members.values()],before.wizard.members||[])){
+        members=new Map((draft.wizard.members||[...members.values()]).map(member=>[member.bot_id,member]));
+      }
+      if(preview){
+        renderMembers();
+        const currentPreview=preview;
+        if([...members.keys()].some(id=>!preview.bots.some(bot=>bot.bot_id===id))){
+          MemberPicker.load().then(candidates=>{
+            if(preview!==currentPreview||!dialog.open)return;
+            for(const candidate of candidates)if(!preview.bots.some(bot=>bot.bot_id===candidate.bot_id))preview.bots.push(candidate);
+            renderMembers();
+          }).catch(error=>status('新 profile 列表刷新失败：'+error.message,true));
+        }
+      }else hudRestored={...draft.wizard,roles,members:[...members.values()]};
+    }
     for(const [field,id] of Object.entries({display_name:'name',description:'description',root:'root',template:'template',directory_mode:'mode',worktree_root:'worktree'})) {
-      if(typeof draft[field]==='string') el(id).value=draft[field];
+      if(typeof draft[field]==='string'&&(!before||el(id).value===(before[field]??''))) el(id).value=draft[field];
     }
     nameEdited=!!el('name').value;templateExplicit=true;updateModeHelp();
-    if(preview) { preview=null;payload=null;showStep(0);status('HUD 已更新草稿，请重新检查目录和配置。'); }
+    if(preview&&Object.keys(draft).some(key=>key!=='wizard')) { preview=null;payload=null;showStep(0);status('HUD 已更新草稿，请重新检查目录和配置。'); }
   }
   dialog.addEventListener('input',e=>{
     if(e.target.closest('#project-hud'))return;

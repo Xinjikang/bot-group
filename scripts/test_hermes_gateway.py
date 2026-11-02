@@ -212,21 +212,20 @@ class GatewayTests(unittest.TestCase):
         remote = Mock()
         with patch.object(gateway.sessions, 'attach', return_value={'messages': [
                 {'role': 'user', 'row_id': 5, 'timestamp': self.start - 5}]}), \
-                patch.object(gateway.sessions, 'mutate') as mutate, \
-                patch.object(gateway.sessions, 'clear_mcp') as clear:
+                patch.object(gateway.sessions, 'mutate') as mutate:
             gateway._finish(self.conn, row, remote)
         mutate.assert_not_called()
-        clear.assert_called_once_with(remote, 'sid')
+        self.assertFalse(any(c.args and c.args[0] == 'session.mutate' for c in remote.rpc.call_args_list))
         self.assertFalse(gateway.active(self.session))
 
-    def test_pre_submit_failure_still_clears_native_mcp(self):
+    def test_pre_submit_failure_finishes_local_execution(self):
         ledger.not_submitted(self.conn, self.eid, 'configuration_failed')
         remote = Mock()
         with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
-                patch.object(gateway.sessions, 'attach'), patch.object(gateway.sessions, 'clear_mcp') as clear, \
+                patch.object(gateway.sessions, 'attach'), patch.object(gateway, '_finish', wraps=gateway._finish) as finish, \
                 patch.object(wake, '_report_execution_error'), patch.object(wake, '_handle_task_exit'):
             gateway._watch(self.eid)
-        clear.assert_called_once_with(remote, 'sid')
+        self.assertFalse(any(c.args and c.args[0] == 'session.mutate' for c in remote.rpc.call_args_list))
         self.assertFalse(gateway.active(self.session))
 
     def test_ambiguous_title_does_not_attach_create_or_bind(self):
@@ -273,12 +272,12 @@ class GatewayTests(unittest.TestCase):
         remote = Mock()
         with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
              patch.object(gateway.sessions, 'attach'), \
-             patch.object(gateway.sessions, 'clear_mcp', side_effect=ConnectionError('offline')) as clear, \
+             patch.object(gateway, '_finish', side_effect=ConnectionError('offline')) as finish, \
              patch.object(gateway.time, 'sleep') as sleep, \
              patch.object(wake, '_handle_task_exit'):
             gateway._watch(self.eid)
         row = ledger.read(self.conn, self.eid)
-        self.assertEqual(clear.call_count, 5)
+        self.assertEqual(finish.call_count, 5)
         self.assertEqual(len(sleep.call_args_list), 4)
         for expected, actual in zip((1.0, 2.0, 4.0, 8.0), [c.args[0] for c in sleep.call_args_list]):
             self.assertAlmostEqual(actual, expected, delta=0.5)
@@ -306,11 +305,11 @@ class GatewayTests(unittest.TestCase):
         remote = Mock()
         with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
              patch.object(gateway.sessions, 'attach'), \
-             patch.object(gateway.sessions, 'clear_mcp', side_effect=ConnectionError('offline')) as clear, \
+             patch.object(gateway, '_finish', side_effect=ConnectionError('offline')) as finish, \
              patch.object(gateway.time, 'sleep'), patch.object(wake, '_handle_task_exit'):
             gateway._watch(self.eid)
         row = ledger.read(self.conn, self.eid)
-        self.assertEqual(clear.call_count, 1)  # 期限已过，不再登记重试
+        self.assertEqual(finish.call_count, 0)
         self.assertEqual(row['retry_count'], 0)
         self.assertIn('cleanup deadline exceeded', row['detail'])
         self.assertEqual(row['cleanup_pending'], 1)
@@ -326,7 +325,7 @@ class GatewayTests(unittest.TestCase):
         remote = Mock()
         with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
              patch.object(gateway.sessions, 'attach'), \
-             patch.object(gateway.sessions, 'clear_mcp'), \
+             patch.object(gateway, '_finish', wraps=gateway._finish), \
              patch.object(wake, '_handle_task_exit'):
             gateway._watch(self.eid)
         a_ended = self.conn.execute('SELECT ended_at FROM wake_runs WHERE started_at=?',
@@ -338,16 +337,16 @@ class GatewayTests(unittest.TestCase):
 
     def test_recover_resumes_pending_cleanup_within_budget(self):
         self.terminal()
-        ledger.register_cleanup_retry(self.conn, self.eid, 'offline', now=self.start + 200)
-        ledger.register_cleanup_retry(self.conn, self.eid, 'offline', now=self.start + 210)
+        ledger.register_cleanup_retry(self.conn, self.eid, 'offline', now=time.time() - 10)
+        ledger.register_cleanup_retry(self.conn, self.eid, 'offline', now=time.time() - 5)
         remote = Mock()
         with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
              patch.object(gateway.sessions, 'attach'), \
-             patch.object(gateway.sessions, 'clear_mcp') as clear, \
+             patch.object(gateway, '_finish', wraps=gateway._finish) as finish, \
              patch.object(wake, '_handle_task_exit'), \
              patch.object(gateway, '_start_worker', side_effect=gateway._watch):
             gateway.recover()
-        clear.assert_called_once_with(remote, 'sid')
+        self.assertFalse(any(c.args and c.args[0] == 'session.mutate' for c in remote.rpc.call_args_list))
         self.assertEqual(ledger.read(self.conn, self.eid)['cleanup_pending'], 0)
         self.assertEqual(ledger.read(self.conn, self.eid)['retry_count'], 0)
 
@@ -363,14 +362,19 @@ class GatewayTests(unittest.TestCase):
         self.assertIn('cleanup_failed', ledger.read(self.conn, self.eid)['detail'])
 
     def test_transient_cleanup_failure_finishes_within_retry_limit(self):
+        original_finish = gateway._finish
+        def retry_finish(*args):
+            if finish.call_count == 1:
+                raise ConnectionError('offline')
+            return original_finish(*args)
         self.terminal()
         remote = Mock()
         with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
              patch.object(gateway.sessions, 'attach'), \
-             patch.object(gateway.sessions, 'clear_mcp', side_effect=[ConnectionError('offline'), None]) as clear, \
+             patch.object(gateway, '_finish', side_effect=retry_finish) as finish, \
              patch.object(gateway.time, 'sleep'), patch.object(wake, '_handle_task_exit'):
             gateway._watch(self.eid)
-        self.assertEqual(clear.call_count, 2)
+        self.assertEqual(finish.call_count, 2)
         self.assertFalse(gateway.active(self.session))
         self.assertEqual(ledger.read(self.conn, self.eid)['detail'], '')
 
@@ -402,14 +406,177 @@ class GatewayTests(unittest.TestCase):
         self.conn.commit()
         remote = Mock()
         with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
-             patch.object(gateway.sessions, 'attach'), patch.object(gateway.sessions, 'clear_mcp') as clear, \
+             patch.object(gateway.sessions, 'attach'), patch.object(gateway, '_finish', wraps=gateway._finish) as finish, \
              patch.object(gateway.sessions, 'mutate') as rewind, \
              patch.object(gateway, '_start_worker', side_effect=gateway._watch):
             self.assertTrue(gateway.cancel(self.session))
-        clear.assert_called_once_with(remote, 'sid')
+        self.assertFalse(any(c.args and c.args[0] == 'session.mutate' for c in remote.rpc.call_args_list))
         rewind.assert_not_called()
         self.assertFalse(gateway.active(self.session))
         self.assertEqual(ledger.read(self.conn, self.eid)['cancel_reason'], 'shutdown')
+
+    def test_explicit_stop_reopens_exhausted_cleanup_once(self):
+        ledger.cancel(self.conn, self.eid, 'shutdown')
+        self.terminal()
+        self.conn.execute('UPDATE hermes_executions SET retry_count=5,cleanup_deadline=? WHERE execution_id=?',
+                          (time.time() - 1, self.eid))
+        self.conn.commit()
+        remote = Mock()
+        thread = Mock()
+        thread.start.side_effect = lambda: gateway._watch(self.eid)
+        with patch.object(gateway.threading, 'Thread', return_value=thread), \
+             patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
+             patch.object(gateway.sessions, 'attach'), patch.object(wake, '_handle_task_exit'):
+            self.assertTrue(gateway.cancel(self.session))
+        row = ledger.read(self.conn, self.eid)
+        self.assertEqual(row['cleanup_pending'], 0)
+        self.assertEqual(row['cancel_reason'], 'shutdown')
+        self.assertEqual(row['admission_id'], 'a')
+        remote.rpc.assert_not_called()
+        thread.start.assert_called_once()
+
+    def test_active_cleanup_worker_keeps_existing_budget_on_stop(self):
+        self.terminal()
+        before = dict(ledger.read(self.conn, self.eid))
+        gateway._workers.add(self.eid)
+        try:
+            with patch.object(gateway.threading, 'Thread') as thread:
+                gateway._start_worker(self.eid, retry_cleanup=True)
+            thread.assert_not_called()
+            self.assertEqual(dict(ledger.read(self.conn, self.eid)), before)
+        finally:
+            gateway._workers.discard(self.eid)
+
+    def test_stop_reports_terminal_cleanup_separately_from_execution(self):
+        from engine import stop
+        self.terminal()
+        with patch.object(gateway, 'cancel', return_value=False), \
+             patch.object(stop, '_release_tasks') as release:
+            result = stop._stop_session('default', 'alpha', None)
+        self.assertFalse(result['stopped'])
+        self.assertIn('会话清理', result['detail'])
+        self.assertIn('再次停止', result['detail'])
+        release.assert_not_called()
+
+    def test_restart_obeys_persisted_retry_time(self):
+        self.terminal()
+        now = time.time()
+        self.conn.execute('UPDATE hermes_executions SET next_retry_at=? WHERE execution_id=?', (now + 2, self.eid))
+        self.conn.commit()
+        remote = Mock()
+        with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
+             patch.object(gateway.sessions, 'attach'), patch.object(gateway.time, 'time', return_value=now), \
+             patch.object(gateway.time, 'sleep') as sleep, patch.object(wake, '_handle_task_exit'):
+            gateway._watch(self.eid)
+        sleep.assert_called_once_with(2)
+        self.assertEqual(ledger.read(self.conn, self.eid)['cleanup_pending'], 0)
+
+    def test_native_busy_waits_past_error_retry_limit_then_finishes(self):
+        self.terminal()
+        remote = Mock()
+        original_finish = gateway._finish
+        count = 0
+        def finish(*args):
+            nonlocal count
+            count += 1
+            if count <= 6:
+                raise gateway.GatewayRefusal('session_busy')
+            return original_finish(*args)
+        with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
+             patch.object(gateway.sessions, 'attach'), patch.object(gateway, '_finish', side_effect=finish), \
+             patch.object(gateway.time, 'sleep') as sleep, patch.object(wake, '_handle_task_exit'):
+            gateway._watch(self.eid)
+        self.assertEqual(count, 7)
+        self.assertEqual(sleep.call_count, 6)
+        self.assertTrue(all(0 < c.args[0] <= 3 for c in sleep.call_args_list))
+        self.assertEqual(ledger.read(self.conn, self.eid)['cleanup_pending'], 0)
+
+    def test_busy_polling_stops_at_persisted_deadline(self):
+        self.terminal()
+        now = time.time()
+        self.conn.execute('UPDATE hermes_executions SET cleanup_deadline=? WHERE execution_id=?', (now + 4, self.eid))
+        self.conn.commit()
+        remote = Mock()
+        def advance(seconds):
+            nonlocal now
+            now += seconds
+        with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
+             patch.object(gateway.sessions, 'attach'), \
+             patch.object(gateway, '_finish', side_effect=gateway.GatewayRefusal('session_busy')) as finish, \
+             patch.object(gateway.time, 'time', side_effect=lambda: now), \
+             patch.object(gateway.time, 'sleep', side_effect=advance):
+            gateway._watch(self.eid)
+        row = ledger.read(self.conn, self.eid)
+        self.assertEqual(finish.call_count, 2)
+        self.assertEqual(row['retry_count'], 0)
+        self.assertEqual(row['cleanup_pending'], 1)
+        self.assertIn('cleanup deadline exceeded', row['detail'])
+
+    def test_compacted_rewind_preserves_transcript_and_accepted_rules(self):
+        from engine import hermes_prompt_state as prompts
+        ledger.cancel(self.conn, self.eid)
+        prompts.stage(self.conn, self.eid, 'home', 'sid', 'accepted-rules')
+        self.conn.commit()
+        self.terminal()
+        self.conn.execute('UPDATE hermes_executions SET rewind_target=5 WHERE execution_id=?', (self.eid,))
+        self.conn.commit()
+        snapshot = {'messages': [], 'running': False, 'pending': []}
+        with patch.object(gateway.sessions, 'attach', return_value=snapshot), \
+             patch.object(gateway.sessions, 'mutate', side_effect=gateway.GatewayRefusal(
+                 'invalid_params', compacted_target=True)) as mutate:
+            self.assertTrue(gateway._finish(self.conn, ledger.read(self.conn, self.eid), Mock()))
+        self.assertEqual(mutate.call_count, 1)
+        row = ledger.read(self.conn, self.eid)
+        self.assertEqual(row['cleanup_pending'], 0)
+        self.assertEqual(row['detail'], 'rewind_target_compacted; transcript preserved')
+        self.assertEqual(self.conn.execute('SELECT state FROM hermes_prompt_updates WHERE execution_id=?',
+                                         (self.eid,)).fetchone()[0], 'accepted')
+        self.assertEqual(self.conn.execute('SELECT user_hash FROM hermes_prompt_state').fetchone()[0], 'accepted-rules')
+
+    def test_unclassified_rewind_refusal_keeps_cleanup_blocked(self):
+        ledger.cancel(self.conn, self.eid)
+        self.terminal()
+        self.conn.execute('UPDATE hermes_executions SET rewind_target=5 WHERE execution_id=?', (self.eid,))
+        self.conn.commit()
+        for reason in ('invalid_params', 'session_busy', 'permission_denied'):
+            with self.subTest(reason=reason), \
+                 patch.object(gateway.sessions, 'attach', return_value={'messages': [], 'running': False, 'pending': []}), \
+                 patch.object(gateway.sessions, 'mutate', side_effect=gateway.GatewayRefusal(reason)), \
+                 self.assertRaises(gateway.GatewayRefusal):
+                gateway._finish(self.conn, ledger.read(self.conn, self.eid), Mock())
+        self.assertEqual(ledger.read(self.conn, self.eid)['cleanup_pending'], 1)
+
+    def test_running_native_session_is_not_rewound(self):
+        ledger.cancel(self.conn, self.eid)
+        row = self.terminal()
+        with patch.object(gateway.sessions, 'attach', return_value={'running': True, 'pending': []}), \
+             patch.object(gateway.sessions, 'mutate') as mutate, self.assertRaises(gateway.GatewayRefusal):
+            gateway._finish(self.conn, row, Mock())
+        mutate.assert_not_called()
+        self.assertEqual(ledger.read(self.conn, self.eid)['cleanup_pending'], 1)
+
+    def test_compacted_wire_marker_requires_exact_reason_field_and_prefix(self):
+        from engine.hermes_gateway_client import GatewayClient, GatewayRefusal
+        for reason, field, detail, expected in (
+            ('invalid_params', 'target_message_id', 'compacted: summary retained', True),
+            ('invalid_params', 'target_message_id', 'message missing', False),
+            ('permission_denied', 'target_message_id', 'compacted: summary retained', False),
+            ('invalid_params', 'payload', 'compacted: summary retained', False),
+        ):
+            with self.subTest(reason=reason, field=field, detail=detail):
+                client = GatewayClient.__new__(GatewayClient)
+                client._condition = threading.Condition()
+                client._pending = {}
+                client._sequence = 0
+                client._closed = False
+                client._socket = Mock()
+                def answer(_):
+                    client._pending[1] = {'error': {'data': dict(reason=reason, field=field, detail=detail)}}
+                client._socket.send.side_effect = answer
+                with self.assertRaises(GatewayRefusal) as raised:
+                    client.rpc('session.mutate')
+                self.assertEqual(raised.exception.compacted_target, expected)
+                self.assertNotIn(detail, str(raised.exception))
 
     def test_close_all_bounds_and_closes_every_viewer(self):
         from engine.hermes_gateway_client import close_all, _register, _unregister

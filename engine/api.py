@@ -255,6 +255,11 @@ def post_msg(
     if kind == "dev" and sender != "user":
         kind = "bot"
     if kind == "bot":
+        from . import task_access
+        if getattr(getattr(request, 'state', None), 'session_scope', None) is not None:
+            body = {**body, 'execution': task_access.execution_for(request, body.get('execution'))}
+        elif isinstance(body.get('execution'), dict) and body['execution'].get('credential_type') == 'session':
+            raise HTTPException(403, 'Session credential required')
         from .message_execution import validate_shape
         validate_shape(sender, body)
     raw_text = body.get("text")
@@ -750,7 +755,7 @@ def get_discovery_scan(project: str = ''):
 def post_register_bot(body: dict[str, Any], identity=Depends(_resolve_identity)):
     """Bot 注册/复用（req#87 task#150：已绑定复用，未绑定注册新 Bot）。
 
-    body：host_type（hermes/codex，必填）、profile（必填）、config_root
+    body：host_type（hermes/codex/dsh，必填）、profile（必填）、config_root
     （必填，来自 /discovery/scan 候选）、display_name（可选，仅新注册
     时落库；复用不覆盖——Bot 身份全局统一）、project（可选，带则顺带加入
     当前项目：members 花名册 upsert + project_members 兼容期口径）。
@@ -766,7 +771,8 @@ def post_register_bot(body: dict[str, Any], identity=Depends(_resolve_identity))
     conn = _conn()
     try:
         try:
-            reg = discovery.register_bot(conn, host_type, profile, config_root, display_name)
+            reg = discovery.register_bot(conn, host_type, profile, config_root, display_name,
+                                         (body.get("entry") or "").strip() or None)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         if project:
@@ -787,6 +793,21 @@ def post_register_bot(body: dict[str, Any], identity=Depends(_resolve_identity))
         conn.close()
 
 
+@router_api.post("/bots/validate-dsh")
+def post_validate_dsh(body: dict[str, Any], identity=Depends(_resolve_identity)):
+    """DSH 目录/配置复核（req#137 task#263：手动路径创建前校验）。
+
+    body：config_root（必填）、profile（必填）。逐项校验目录存在、可访问、
+    宿主配置可解析、profile 可用；错误逐项返回（保留已填路径，不自动绑定
+    到另一套账号/profile）。执行入口可用性由启动路径单独检查。
+    """
+    _admin_only(identity, '仅管理员可校验宿主目录')
+    return discovery.validate_dsh_home(
+        (body.get("config_root") or "").strip(),
+        (body.get("profile") or "").strip(),
+        (body.get("entry") or "").strip() or None)
+
+
 class ProfileSource(BaseModel):
     model_config = ConfigDict(extra='forbid')
     profile: str = Field(min_length=1, max_length=64)
@@ -796,14 +817,28 @@ class ProfileSource(BaseModel):
 class ProfileCreateBody(BaseModel):
     model_config = ConfigDict(extra='forbid')
     project: str | None = Field(default=None, max_length=200)
-    host_type: str = Field(pattern='^(codex|hermes)$')
+    host_type: str = Field(pattern='^(codex|hermes|dsh)$')
     profile: str = Field(min_length=1, max_length=64)
     display_name: str = Field(default='', max_length=100)
     model: str = Field(default='', max_length=200, pattern=r'^[^\r\n]*$')
+    provider: str | None = Field(default=None, max_length=200, pattern=r'^[^\r\n\x00]*$')
     instructions: str = Field(default='', max_length=32000)
     source: ProfileSource | None = None
     reuse_auth: bool = False
     request_id: str = Field(min_length=1, max_length=64)
+
+
+class ProfileSourceSettingsBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    host_type: str = Field(pattern='^(hermes|dsh)$')
+    source: ProfileSource | None = None
+
+
+@router_api.post('/profiles/source-settings')
+def post_profile_source_settings(body: ProfileSourceSettingsBody, identity=Depends(_resolve_identity)):
+    _admin_only(identity, '仅管理员可读取创建配置来源')
+    from . import profile_create
+    return profile_create.source_settings(body.model_dump())
 
 
 @router_api.post('/profiles/create')
@@ -1083,9 +1118,8 @@ def patch_project_role(name: str, role_id: int, body: dict[str, Any], identity=D
     改名同步更新该角色下成员的 role 文本列（保持兼容列与权威关联一致）。
     """
     _admin_only(identity, '仅管理员可管理项目角色')
-    new_name = (body.get('name') or '').strip()
-    if not new_name or len(new_name) > 100 or any(ord(c) < 32 for c in new_name):
-        raise HTTPException(400, 'name 必须是长度不超过 100 的单行文本')
+    from .project_team import validate_role_text
+    new_name = validate_role_text(body.get('name'))
     conn = _conn()
     try:
         row = conn.execute('SELECT * FROM project_roles WHERE id=? AND project=?', (role_id, name)).fetchone()
@@ -1139,11 +1173,13 @@ def delete_project_role(name: str, role_id: int, identity=Depends(_resolve_ident
 
 class ProfileConfigEdit(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    description: str = Field(max_length=100000)
-    soul: str = Field(max_length=2 * 1024 * 1024)
-    env: str = Field(max_length=2 * 1024 * 1024)
-    model: str = Field(max_length=500)
-    provider: str = Field(max_length=200)
+    description: str = Field(default='', max_length=100000)
+    # DSH 使用 persona；Hermes/Codex 使用 soul。
+    soul: Optional[str] = Field(default=None, max_length=2 * 1024 * 1024)
+    persona: Optional[str] = Field(default=None, max_length=2 * 1024 * 1024)
+    env: str = Field(default='', max_length=2 * 1024 * 1024)
+    model: str = Field(default='', max_length=500)
+    provider: str = Field(default='', max_length=200)
     reasoning_effort: Optional[str] = Field(default=None, max_length=30)
     member_profile: Optional[str] = Field(default=None, max_length=200)
     config_path: Optional[str] = Field(default=None, max_length=4096)
@@ -1205,7 +1241,10 @@ def put_member_config(profile: str, body: ProfileConfigEdit, identity=Depends(_r
     _profile_editor_access(profile, identity)
     if body.member_profile is not None and body.member_profile != profile:
         raise HTTPException(409, 'Member changed; reopen the editor')
-    return profile_config.save(profile, body.model_dump(exclude={'member_profile'}))
+    values = body.model_dump(exclude={'member_profile'})
+    if 'env' not in body.model_fields_set:
+        values.pop('env', None)
+    return profile_config.save(profile, values)
 
 
 @router_api.post("/members/{profile}/active")
@@ -1271,7 +1310,7 @@ def set_member_active(profile: str, body: dict[str, Any], identity=Depends(_reso
 
 
 @router_api.post("/heartbeat")
-def post_heartbeat(body: dict[str, Any], identity=Depends(_resolve_identity)):
+def post_heartbeat(body: dict[str, Any], request: Request = None, identity=Depends(_resolve_identity)):
     """MCP server 续租心跳：记录该 profile 的 agent 循环仍在跑（= 正在思考）。
 
     身份由成员凭据校验，心跳只更新该成员。
@@ -1282,6 +1321,15 @@ def post_heartbeat(body: dict[str, Any], identity=Depends(_resolve_identity)):
     if identity[1] != "bot":
         raise HTTPException(403, "Heartbeat requires a member credential")
     profile = identity[0]
+    session_scope = getattr(getattr(request, 'state', None), 'session_scope', None)
+    if session_scope:
+        from . import hermes_session_auth
+        conn = db.get_connection()
+        try:
+            if hermes_session_auth.execution(conn, session_scope, required=False) is None:
+                return {'ok': True, 'profile': profile, 'idle': True}
+        finally:
+            conn.close()
     if not profile:
         raise HTTPException(status_code=400, detail="profile required")
     thread_id = body.get("thread_id")
@@ -1355,6 +1403,11 @@ def get_reasoning(profile: str, session: str, wake_started_at: float, after_id: 
     if run and run['runtime'] == 'codex':
         from . import codex_reasoning
         result = codex_reasoning.read(session, wake_started_at, after_id, wake_ended_at)
+    elif run and run['runtime'] == 'dsh':
+        # DSH 宿主显式分流：按执行记录身份读 dsh_run_events（原生会话 ID 为空也照读），
+        # 不落 Hermes compression_tip（否则对 runtime!='hermes' 抛 ValueError → /reasoning 500）。
+        from . import dsh_reasoning
+        result = dsh_reasoning.read(session, wake_started_at, after_id, wake_ended_at)
     elif run and run['runtime_session_id']:
         from . import session_adapter
         options['hermes_session_id'] = session_adapter.compression_tip(profile, run['runtime_session_id'])

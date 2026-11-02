@@ -6,7 +6,7 @@
     <button class="hud-toggle" id="hud-toggle" aria-expanded="false" aria-controls="hud-panel"><span class="hud-light" aria-hidden="true"></span><span class="hud-caption"><span class="hud-name">项目助手</span><span class="hud-status"> · 准备就绪</span></span><span class="hud-chevron">展开</span></button>
     <div class="hud-panel" id="hud-panel" hidden>
       <div class="hud-context"><span id="hud-context"></span><nav aria-label="维护工具"><button class="hud-link hud-more" id="hud-more" aria-label="更多维护工具" aria-expanded="false">···</button></nav></div>
-      <nav class="hud-tools" id="hud-tools" aria-label="更多维护工具" hidden><button class="hud-link" id="hud-history-toggle">项目备注</button><button class="hud-link" id="hud-settings-toggle">设置</button></nav>
+      <nav class="hud-tools" id="hud-tools" aria-label="更多维护工具" hidden><button class="hud-link" id="hud-history-toggle" hidden>历史备注</button><button class="hud-link" id="hud-settings-toggle">设置</button></nav>
       <button class="hud-link hud-back" id="hud-back" hidden>← 返回助手</button>
       <div class="hud-tabs" id="hud-tabs" role="tablist" aria-label="助手内容">
         <button id="hud-chat-tab" role="tab" aria-controls="hud-content" aria-selected="true">对话消息</button>
@@ -35,6 +35,9 @@
   let auxiliary = '', renderedKey = '', followNext = false;
   let activeTab='chat';
   const inputs = new Map(), silenced = new Set();
+  const appliedConfigUpdates = new Map();
+  const appliedNavigation = new Set();
+  const appliedSettingsUpdates = new Map();
   const notificationKey = item => item?.state.notification?.id||item?.state.question?.id||item?.state.proposal?.id;
   function isSilenced(key) {
     if(!key)return false;
@@ -83,15 +86,64 @@
     el('send').disabled=busy||!current?.bot||current?.status==='running'||!(selected||el('input').value.trim());
     host.querySelectorAll('#hud-todos button').forEach(button=>button.disabled=busy||!current?.bot||['running','queued'].includes(current?.status));
   }
+  function applyConfigUpdates(data) {
+    const update=data.state.config_update;
+    if(!update||appliedConfigUpdates.get(data.id)===update.id)return;
+    const steps=update.steps||[update];
+    const previous=steps.findIndex(step=>step.id===appliedConfigUpdates.get(data.id));
+    for(const step of steps.slice(previous+1)){
+      if(draftMode&&step.draft)onApply?.(step.changes,step.before);
+      else if(document.querySelector('#pj-detail-form')?.dataset.origName===data.project){
+        const ids={display_name:'name',description:'desc',root:'root',directory_mode:'mode',worktree_root:'worktree'};
+        for(const [key,value] of Object.entries(step.changes)){
+          const input=document.querySelector('#pj-d-'+ids[key]);
+          if(input&&input.value===(step.before[key]??'')){
+            input.value=value;
+            if(key==='directory_mode'){
+              document.querySelectorAll('[name="project-directory-mode"]').forEach(radio=>radio.checked=radio.value===value);
+              document.querySelector('#pj-worktree-options').hidden=value!=='worktree';
+            }
+          }
+        }
+      }
+      appliedConfigUpdates.set(data.id,step.id);
+    }
+  }
   function setData(data) {
+    if (!data || typeof data !== 'object') return;
+    // 轮询响应在无卡片/无状态时可能省略 state/entries；HUD 渲染路径按空值处理，避免整页异常。
+    data = {...data, state: data.state || {}, entries: Array.isArray(data.entries) ? data.entries : []};
     const changed=current?.id!==data.id;
     if(changed) remember();
     current=data;
+    applyConfigUpdates(data);
     if(changed){
       let saved=''; try {saved=sessionStorage.getItem('hud-input:'+data.id)||'';}catch{}
       el('input').value=inputs.get(data.id)??saved;
     }
     render();
+    if(data.project&&data.state.settings_update?.id&&appliedSettingsUpdates.get(data.id)!==data.state.settings_update.id){
+      appliedSettingsUpdates.set(data.id,data.state.settings_update.id);
+      window.refreshProjectSettingsFromAssistant?.(data.project);
+    }
+    const navigation=data.state.navigation;
+    if(!draftMode&&navigation?.project===data.project&&Date.now()/1000-navigation.created<120&&['basic','agents','members','roles','permissions'].includes(navigation.page)){
+      const key='hud-navigation:'+data.id+':'+navigation.id;
+      let applied=appliedNavigation.has(key);
+      try{applied=applied||sessionStorage.getItem(key)==='1';}catch{}
+      if(!applied&&typeof window.openProjectDetail==='function'&&typeof window.selectProjectTab==='function'){
+        appliedNavigation.add(key);
+        try{
+          const dialog=document.querySelector('#dlg-project-detail');
+          if(!dialog?.open||document.querySelector('#pj-detail-form')?.dataset.origName!==data.project){
+            window.openProjectDetail(data.project,el('toggle'));
+          }
+          if(document.querySelector('#pj-tab-'+navigation.page)?.getAttribute('aria-selected')!=='true')window.selectProjectTab(navigation.page);
+          try{sessionStorage.setItem(key,'1');}catch{}
+          placeBesideDialog();
+        }catch(error){appliedNavigation.delete(key);errorText='打开项目配置失败：'+error.message;render();}
+      }
+    }
   }
   function renderProgress(){
     const active=current?.status==='running'||current?.status==='queued';
@@ -187,7 +239,7 @@
     const proposals=[...(proposal?[{proposal}]:[]),...cards.filter(card=>card.proposal&&card.proposal.id!==proposal?.id)];
     for(const card of proposals){
       const proposal=card.proposal;
-      const changes=Object.entries(proposal.changes),facts=proposal.facts;
+      const changes=Object.entries(proposal.changes),facts=proposal.facts,documents=proposal.documents||[];
       const box=node('section',null,'hud-proposal hud-todo-card');box.dataset.card=proposal.id;
       if(card.text)box.append(node('p',card.text,'hud-text'));
       box.append(node('strong','以下建议尚未保存'));
@@ -207,16 +259,39 @@
         }
       }
       if(facts.length){
-        box.append(node('p','保存位置：项目备注。本项目助手和成员 Bot 后续会参考这些约定，项目文件保持原样。','hud-muted'));
+        box.append(node('p','保存位置：项目备注。保留在本助手的旧版记录中。','hud-muted'));
         for(const fact of facts){
           const before=proposal.before_facts?.[fact.label]??item.state.facts?.find(f=>f.label===fact.label)?.value??'';
           box.append(compare(fact.label,before,fact.value,'尚未保存这条备注'));
         }
       }
-      const count=changes.length+facts.length;
-      box.append(action(changes.length&&facts.length?`确认保存以上 ${count} 项`:changes.length?(item.project?'确认修改项目设置':'确认更新向导草稿'):'确认保存项目备注',async()=>{
+      if(documents.length){
+        box.append(node('p','旧版文档建议保留以下文件记录。后续修改可直接告诉助手，完成后在对话页查看结果。','hud-muted'));
+        for(const document of documents){
+          box.append(node('p',document.path,'hud-muted'));
+        }
+      }
+      const count=changes.length+facts.length+documents.length;
+      box.append(action(documents.length?`确认保存以上 ${count} 项`:changes.length&&facts.length?`确认保存以上 ${count} 项`:changes.length?(item.project?'确认修改项目设置':'确认更新向导草稿'):'确认保存项目备注',async()=>{
         if(draftMode)await beforeConfirm?.();
         const data=await mutate('/accept',{proposal_id:proposal.id});if(data&&draftMode&&Object.keys(proposal.changes).length)onApply?.(data.state.draft);
+        if(data&&item.project){
+          const form=document.querySelector('#pj-detail-form');
+          if(form?.dataset.origName===item.project){
+            const ids={display_name:'name',description:'desc',root:'root',directory_mode:'mode',worktree_root:'worktree'};
+            for(const [key,value] of changes){
+              const input=document.querySelector('#pj-d-'+ids[key]);
+              if(input&&input.value===(proposal.before?.[key]??'')){
+                input.value=value;
+                if(key==='directory_mode'){
+                  document.querySelectorAll('[name="project-directory-mode"]').forEach(radio=>radio.checked=radio.value===value);
+                  document.querySelector('#pj-worktree-options').hidden=value!=='worktree';
+                }
+              }
+            }
+          }
+          if(changes.length)await loadProjects();
+        }
       },'hud-primary'),action('暂不处理',()=>mutate('/answer',{text:'这项建议暂不处理，请继续当前问题。',question_id:null,dismiss_proposal:proposal.id})));todos.append(box);
     }
     const reminder=actionable?notification.action:'';
@@ -233,7 +308,8 @@
     el('hint').textContent=busy?'正在发送…':state==='running'?'正在回复，输入会为你保留':'Ctrl + Enter 发送';
     el('input').disabled=!item?.bot;
     const history=el('history');history.replaceChildren();
-    history.append(node('h3','项目备注'),node('p','已保存的约定供本项目助手和成员 Bot 参考。','hud-muted'));
+    el('history-toggle').hidden=!item?.state.facts?.length;
+    history.append(node('h3','历史备注'),node('p','旧版记录仅供查看。长期记忆通过当前助手的记忆工具管理。','hud-muted'));
     for(const fact of item?.state.facts||[]){const p=node('article');p.append(node('strong',fact.label),node('p',fact.value,'hud-text'));history.append(p);}
     if(!item?.state.facts?.length)history.append(node('p','目前还没有保存项目备注。','hud-muted'));
     updateSend();
@@ -363,7 +439,7 @@
     try{
       const data=await api('/hud/'+sid);
       if(stamp!==version)return;
-      if(data.revision>=current.revision&&(data.revision!==current.revision||data.status!==current.status))setData(data);
+      if(data.revision>=current.revision&&(data.revision!==current.revision||data.status!==current.status||data.state.legacy_note_revision!==current.state.legacy_note_revision||data.state.config_update?.id!==current.state.config_update?.id||data.state.settings_update?.id!==current.state.settings_update?.id||data.state.navigation?.id!==current.state.navigation?.id))setData(data);
       else if(data.revision===current.revision){current.state.progress=data.state.progress;renderProgress();}
     }catch(e){if(stamp===version){errorText='维护连接暂时中断，输入已保留。'+e.message;render();}}
     finally{refreshing=false;}

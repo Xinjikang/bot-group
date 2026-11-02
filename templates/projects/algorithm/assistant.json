@@ -1,0 +1,8 @@
+{
+  "inputs": ["算法问题、输入输出、评价指标与验收阈值", "数据来源、使用权限、基线及计算资源"],
+  "configuration": "简介写明算法目标和成果。依据模板配置负责人、研究、工程和评审职责；核对实验环境、数据归属与复现资源，结合已有工程确定目录方式。",
+  "documents": [
+    {"path": "docs/requirements/BRIEF.md", "purpose": "算法目标、边界、数据来源及评价标准"},
+    {"path": "docs/engineering/ENGINEERING.md", "purpose": "工程、实验资源和复现约定"}
+  ]
+}

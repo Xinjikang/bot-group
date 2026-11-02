@@ -36,7 +36,7 @@ def installed_revision():
     return (str(source.resolve()), value)
 
 
-def open_connection(home, command, callback, *, allow_start, revision):
+def open_connection(home, command, callback, *, allow_start, revision, max_message_bytes=None):
     from . import hermes_gateway as gateway
     deadline = time.monotonic() + 5
     try:
@@ -63,7 +63,8 @@ def open_connection(home, command, callback, *, allow_start, revision):
         deadline = time.monotonic() + 5
     if endpoint.get('code_sha') != revision[1]:
         raise GatewayRefusal('gateway_restart_required')
-    client = gateway.GatewayClient(endpoint, on_event=callback, deadline=deadline)
+    options = {'max_message_bytes': max_message_bytes} if max_message_bytes is not None else {}
+    client = gateway.GatewayClient(endpoint, on_event=callback, deadline=deadline, **options)
     try:
         info = client.rpc('runtime.describe', timeout=remaining(deadline))
         if (info.get('profile_id') != endpoint['profile_id']
@@ -151,35 +152,23 @@ class Lease:
                             self.sessions.add(sid)
                             self.entry.subscriptions[(self.client, sid)] = result['subscription_id']
                     return result
-            return self.client.rpc(method, **params)
+            result = self.client.rpc(method, **params)
+            if method == 'session.detach':
+                with self.pool.lock:
+                    self.entry.subscriptions.pop((self.client, sid), None)
+            return result
         except GatewayTransportError:
             self.pool.failed(self.entry, self.client)
             raise
 
     def close(self):
-        with self.entry.gate:
-            with self.pool.lock:
-                if self.closed:
-                    return
-                self.closed = True
-                self.entry.leases.discard(self)
-                if self.business:
-                    self.entry.activity = self.pool.clock()
-                detach = []
-                for sid in self.sessions:
-                    if not any(other.client is self.client and sid in other.sessions for other in self.entry.leases):
-                        sub = self.entry.subscriptions.pop((self.client, sid), None)
-                        if sub:
-                            detach.append((sid, sub))
-            try:
-                deadline = time.monotonic() + 2
-                for sid, sub in detach:
-                    if not self.client.closed:
-                        self.client.rpc('session.detach', session_id=sid, subscription_id=sub,
-                                        timeout=remaining(deadline))
-            except Exception:
-                # Retire uncertain subscriptions so the next viewer gets a fresh resume.
-                self.pool.failed(self.entry, self.client)
+        with self.pool.lock:
+            if self.closed:
+                return
+            self.closed = True
+            self.entry.leases.discard(self)
+            if self.business:
+                self.entry.activity = self.pool.clock()
 
     def __enter__(self):
         return self
@@ -190,21 +179,28 @@ class Lease:
 
 class Pool:
     def __init__(self, opener=open_connection, revision=installed_revision, pinned=unresolved,
-                 clock=time.monotonic):
+                 clock=time.monotonic, maintenance=None):
         self.opener, self.revision, self.pinned, self.clock = opener, revision, pinned, clock
+        self.maintenance = maintenance
         self.lock = threading.RLock()
         self.entries = {}
         self.stopped = False
         self.stop_event = threading.Event()
         self.worker = None
+        self.threads = []
         self.events = queue.Queue(maxsize=512)
 
     def start(self):
         with self.lock:
-            if self.worker is None:
+            if not self.stopped and self.worker is None:
                 self.worker = threading.Thread(target=self._run, daemon=True, name='hermes-connections')
-                self.worker.start()
-                threading.Thread(target=self._events, daemon=True, name='hermes-connection-events').start()
+                self.threads = [self.worker, threading.Thread(
+                    target=self._events, daemon=True, name='hermes-connection-events')]
+                if self.maintenance:
+                    self.threads.append(threading.Thread(
+                        target=self._maintain, daemon=True, name='hermes-session-resources'))
+                for thread in self.threads:
+                    thread.start()
 
     def _event(self, entry, generation, frame):
         try:
@@ -247,6 +243,7 @@ class Pool:
                 if self.stopped:
                     raise GatewayTransportError('Hermes connection pool stopped')
                 entry.client, entry.revision = client, revision
+                entry.subscriptions.clear()
                 entry.state, entry.checked = 'connected', self.clock()
                 entry.retries = 0
                 entry.last_error = None
@@ -297,6 +294,7 @@ class Pool:
             if entry.client is client:
                 entry.state, entry.retry_at = 'error', self.clock()+1
                 entry.last_error = GatewayTransportError('Hermes connection interrupted; retry after reconnect')
+            entry.subscriptions = {k: v for k, v in entry.subscriptions.items() if k[0] is not client}
         client.close()
 
     def sweep(self):
@@ -311,8 +309,18 @@ class Pool:
                     idle = not entry.leases and now-entry.activity >= IDLE_SECONDS
                 if idle and not self.pinned(entry.home):
                     if entry.client:
-                        entry.client.close()
-                        entry.client = None
+                        deadline = time.monotonic() + 2
+                        try:
+                            for (owner, sid), sub in list(entry.subscriptions.items()):
+                                if owner is entry.client and not owner.closed:
+                                    owner.rpc('session.detach', session_id=sid, subscription_id=sub,
+                                              timeout=remaining(deadline))
+                        finally:
+                            entry.client.close()
+                            entry.client = None
+                            entry.subscriptions.clear()
+                            entry.state = 'waiting'
+                            entry.last_error = None
                     entry.state = 'waiting'
                     entry.last_error = None
                     continue
@@ -347,6 +355,13 @@ class Pool:
         while not self.stop_event.wait(1):
             self.sweep()
 
+    def _maintain(self):
+        while not self.stop_event.wait(3):
+            try:
+                self.maintenance()
+            except Exception:
+                _LOG.exception('Session resource maintenance failed')
+
     def status(self):
         with self.lock:
             states = []
@@ -367,8 +382,24 @@ class Pool:
             self.stopped = True
             self.stop_event.set()
 
+    def join(self, timeout=10):
+        """Wait for all pool workers before their owning runtime is released."""
+        deadline = time.monotonic() + timeout
+        with self.lock:
+            threads = list(self.threads)
+        for thread in threads:
+            if thread is not threading.current_thread():
+                thread.join(max(0, deadline - time.monotonic()))
+        if any(thread.is_alive() for thread in threads):
+            raise TimeoutError('Hermes connection pool workers are still running')
 
-_POOL = Pool()
+
+def _maintain_sessions():
+    from . import hermes_session_auth
+    hermes_session_auth.maintain()
+
+
+_POOL = Pool(maintenance=_maintain_sessions)
 
 
 def acquire(home, command, *, callback=None, business=True):
@@ -379,7 +410,7 @@ def acquire(home, command, *, callback=None, business=True):
 def resume():
     global _POOL
     if _POOL.stopped:
-        _POOL = Pool()
+        _POOL = Pool(maintenance=_maintain_sessions)
 
 
 def stop():

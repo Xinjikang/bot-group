@@ -35,7 +35,8 @@ def _source(body):
     selected = body.get('source')
     if not selected:
         return (Path(discovery._hermes_root()).resolve(), None) if body['host_type'] == 'hermes' else (None, None)
-    candidates = discovery._scan_codex() if body['host_type'] == 'codex' else discovery._scan_hermes()
+    scan = {'codex': discovery._scan_codex, 'hermes': discovery._scan_hermes, 'dsh': discovery._scan_dsh}
+    candidates = scan[body['host_type']]()
     match = next((c for c in candidates if c['profile'] == selected['profile']
                   and c['config_root'] == selected['config_root']), None)
     if not match:
@@ -44,7 +45,8 @@ def _source(body):
     if body['host_type'] == 'codex':
         home, selector = bot_identity.codex_settings(match)
         return Path(home).resolve(), selector
-    return (root if match['profile'] == 'default' else root / 'profiles' / match['profile']), None
+    return (root if body['host_type'] == 'hermes' and match['profile'] == 'default'
+            else root / 'profiles' / match['profile']), None
 
 
 def _merge(base, override):
@@ -53,6 +55,41 @@ def _merge(base, override):
             _merge(base[key], value)
         else:
             base[key] = value
+
+
+def source_settings(body):
+    """Read only the source model/provider pair without returning credentials."""
+    try:
+        home, _ = _source(body)
+        if body['host_type'] == 'dsh':
+            from . import dsh_profile_config
+            raw = _read(home, 'cordis.patch.yml') if home else None
+            _, entries = dsh_profile_config._yaml(raw)
+            config = next((entry.get('config') or {} for entry in reversed(entries)
+                           if isinstance(entry, dict) and entry.get('id') == 'agent-default-model'), {})
+            model, provider = config.get('model', ''), config.get('provider', '')
+        else:
+            _, config = files._yaml(_read(home, 'config.yaml') if home else None)
+            selected = config.get('model') or {}
+            if isinstance(selected, str):
+                model, provider = selected, ''
+            else:
+                model = selected.get('default') or selected.get('model') or selected.get('name') or ''
+                provider = selected.get('provider') or ''
+                if isinstance(model, dict):
+                    provider = provider or model.get('provider') or ''
+                    model = model.get('model') or model.get('default') or ''
+        if not isinstance(model, str) or not isinstance(provider, str):
+            raise ValueError('Model settings must be strings')
+        if any(c in value for value in (model, provider) for c in '\r\n\0'):
+            raise ValueError('Model settings must be single-line')
+        return {'model': model.strip(), 'provider': provider.strip()}
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            raise
+        raise HTTPException(400, '无法读取来源的模型与供应商，请检查配置格式或手动填写') from None
+    except Exception:
+        raise HTTPException(400, '无法读取来源的模型与供应商，请检查配置格式或手动填写') from None
 
 
 def _codex(home, selector, body):
@@ -94,6 +131,8 @@ def _codex(home, selector, body):
             config.pop('features', None)
     if body['model']:
         config['model'] = body['model']
+    if body.get('provider'):
+        config['model_provider'] = body['provider']
     result = {}
     from . import codex_auth
     raw, _ = codex_auth.read_auth(discovery._codex_root())
@@ -116,8 +155,13 @@ def _hermes(home, body, member):
     # Seed model/runtime settings only; channels and personal history belong to the source.
     config = {key: source[key] for key in ('model', 'providers', 'custom_providers', 'model_aliases',
                                          'terminal', 'compression', 'max_turns') if key in source}
-    if body['model']:
-        config.setdefault('model', {})['default'] = body['model']
+    if body['model'] or body.get('provider'):
+        if not isinstance(config.get('model'), dict):
+            config['model'] = {'default': config.get('model') or ''}
+        if body['model']:
+            config['model']['default'] = body['model']
+        if body.get('provider'):
+            config['model']['provider'] = body['provider']
     env = b''
     provisioned = False
     if home and body['reuse_auth']:
@@ -137,6 +181,16 @@ def create(conn, body):
     # Independent homes inherit provider configuration by default, including older clients.
     body = {**body, 'reuse_auth': True}
     name, host = body['profile'], body['host_type']
+    # Omitted provider keeps existing clients and recovery fingerprints compatible.
+    if body.get('provider') is None:
+        body.pop('provider', None)
+    else:
+        body['provider'] = body['provider'].strip()
+        body['model'] = body['model'].strip()
+        if any(c in value for value in (body['model'], body['provider']) for c in '\r\n\0'):
+            raise HTTPException(400, '模型和供应商必须是单行文本')
+        if host != 'codex' and (not body['model'] or not body['provider']):
+            raise HTTPException(400, '请同时填写模型和供应商')
     raw_project = body.get('project')
     project = (raw_project or '').strip()
     if raw_project and not project:
@@ -150,7 +204,8 @@ def create(conn, body):
             hermes_profile_names.validate(name)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
-    root = discovery._codex_root().resolve() if host == 'codex' else Path(discovery._hermes_root()).resolve()
+    roots = {'codex': discovery._codex_root, 'hermes': discovery._hermes_root, 'dsh': discovery._dsh_root}
+    root = Path(roots[host]()).resolve()
     container = root / 'profiles'
     target = container / name
     if container.resolve() != container or target.resolve() != target:
@@ -173,10 +228,14 @@ def create(conn, body):
             else:
                 home, selector = _source(body)
                 config_root = str(target) if host == 'codex' else str(root)
-                reg = discovery.register_bot(conn, host, name, config_root, body['display_name'])
-                member = bot_identity.enroll(conn, reg['bot_id'], project) if project else None
-                content, provisioned = (_codex(home, selector, body) if host == 'codex'
-                                        else _hermes(home, body, member))
+                if host == 'dsh':
+                    from . import dsh_profile_create
+                    content, provisioned = dsh_profile_create.content(home, body)
+                else:
+                    reg = discovery.register_bot(conn, host, name, config_root, body['display_name'])
+                    member = bot_identity.enroll(conn, reg['bot_id'], project) if project else None
+                    content, provisioned = (_codex(home, selector, body) if host == 'codex'
+                                            else _hermes(home, body, member))
                 if host == 'codex' and project:
                     from . import codex_project_access as access, project_workspaces as ws
                     config = tomlkit.parse(content['config.toml'].decode('utf-8'))
@@ -210,10 +269,12 @@ def create(conn, body):
             return {'created': True, 'bot_id': reg['bot_id'], 'member_profile': member,
                     'host_type': host, 'config_root': config_root, 'project': project or None,
                     'profile': name, 'home': str(target), 'auth_copied': provisioned,
-                    'notice': notice + ('；已复制认证配置，实际可用性以首次运行结果为准。' if provisioned
+                    'notice': notice + ('；沿用 DSH HOME 的账号认证，实际可用性以首次运行结果为准。' if host == 'dsh'
+                               else '；已复制认证配置，实际可用性以首次运行结果为准。' if provisioned
                                else '；请完成主账户登录并提供文件认证后再唤醒。' if host == 'codex'
                                else '；请完成该 profile 的登录或模型认证后再唤醒。'),
-                    'setup_command': _setup_command(host, root if host == 'codex' else target, name) if not provisioned else ''}
+                    'setup_command': _setup_command(host, root if host == 'codex' else target, name)
+                                     if not provisioned and host != 'dsh' else ''}
         except Exception as exc:
             conn.rollback()
             # Remove only files made by this request; never recursively delete a user home.

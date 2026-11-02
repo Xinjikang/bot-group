@@ -52,7 +52,7 @@ class AlgorithmTemplateTests(unittest.TestCase):
         self.assertFalse(any(p.startswith('reports/') for p in tracked))
         base = templates.TEMPLATE_ROOT / 'algorithm'
         self.assertEqual({p.relative_to(base).as_posix() for p in base.rglob('*') if p.is_file()},
-                         {'manifest.json', *[f['source'] for f in manifest['files']],
+                         {'manifest.json', 'assistant.json', *[f['source'] for f in manifest['files']],
                           *[r['soul_reference'] for r in manifest['roles']]})
 
     def test_four_role_revision_and_acceptance(self):

@@ -318,6 +318,11 @@ def existing_session_id(conn, project: str, profile: str, kind: str,
             # Codex has no Hermes legacy title/state.db fallback. Empty reset
             # tombstones and bindings from another runtime are absent sessions.
             return codex_thread_id(conn, project, profile, kind, thread_id, bot_id=bot_id)
+        if bot and bot['runtime'] == 'dsh':
+            # DSH 宿主显式分流：复用 dsh_session_id（runtime 列逐行校验，防异种 ID 撞车）。
+            # 无绑定/空绑定（/new 清空）/异种 runtime 绑定均返回 None，不落到 Hermes 的
+            # resolve_session_by_title（避免 hermes_home 对 dsh 抛 ValueError → 刷新 500）。
+            return dsh_session_id(conn, project, profile, kind, thread_id, bot_id=bot_id)
         row = conn.execute('SELECT session_id FROM session_bindings '
                            'WHERE project=? AND bot_id=? AND kind=? AND thread_id=?',
                            (project, bot_id, kind, _bind_key(kind, thread_id))).fetchone()
@@ -584,6 +589,130 @@ def codex_new(conn, project: str, profile: str, kind: str,
             conn.execute("INSERT INTO session_bindings(project,bot_id,profile,kind,thread_id,"
                          "session_id,runtime,generation,switching,title,updated_at) "
                          "VALUES(?,?,?,?,?,'','codex',0,0,?,?)",
+                         (project, bot_id, profile, kind, tid, title, db.now_iso()))
+        conn.commit()
+        return {"ok": True, "operation_id": op_id, "status": "committed",
+                "old_session_id": old_sid, "new_session_id": ""}
+
+
+# ---------- dsh 会话绑定（req#137 task#266：runtime='dsh' 存 --session-id） ----------
+# 与 codex 同一套 generation 守卫语义（/new 递增使旧运行迟到回写失效），仅 runtime 列
+# 与原生 ID 语义不同：dsh 的 session 事件在执行开头即给出真实 ID，回填发生在首行事件。
+
+def _dsh_bot_id(conn, project: str, profile: str) -> int | None:
+    """dsh Bot 的稳定身份 id（pm.bot_id → bots.runtime='dsh' 正路）。"""
+    from . import bot_identity
+    bot = bot_identity.resolve(conn, project, profile)
+    return bot['id'] if bot and bot['runtime'] == 'dsh' else None
+
+
+def dsh_session_id(conn, project: str, profile: str, kind: str,
+                    thread_id: int | None, bot_id: int | None = None) -> str | None:
+    """读 dsh 绑定行的原生 session id（runtime 列逐行校验，防异种 ID 撞车）。
+
+    返回 None 表示「无有效绑定」→ 首建（spawn 不带 --session-id）。session_id 空串
+    （/new 清空后）同样视为无绑定。
+    """
+    if bot_id is None:
+        bot_id = _dsh_bot_id(conn, project, profile)
+    if bot_id is None:
+        return None
+    row = conn.execute(
+        "SELECT session_id, runtime FROM session_bindings "
+        "WHERE project=? AND bot_id=? AND kind=? AND thread_id=?",
+        (project, bot_id, kind, _bind_key(kind, thread_id)),
+    ).fetchone()
+    if row is None or row["runtime"] != "dsh":
+        return None
+    return row["session_id"] or None
+
+
+def dsh_save_session(conn, project: str, profile: str, kind: str,
+                     thread_id: int | None, native_session_id: str,
+                     bot_id: int | None = None, spawn_gen: int | None = None) -> bool:
+    """session 事件回填：把 dsh 原生 session id 写进绑定行（runtime='dsh'）。
+
+    与 codex_save_thread 同一 generation 守卫：无行且 spawn_gen is None（首建）→
+    INSERT（generation=0）；有行且 generation == spawn_gen → 原子 UPDATE；generation
+    不匹配（/new 已弃旧会话）→ 拒绝回填（旧运行迟到回写被拒）。返回 True=已落库。
+    """
+    if bot_id is None:
+        bot_id = _dsh_bot_id(conn, project, profile)
+    if bot_id is None:
+        return False
+    tid = _bind_key(kind, thread_id)
+    with _SWITCH_LOCK:
+        row = conn.execute(
+            "SELECT generation FROM session_bindings "
+            "WHERE project=? AND bot_id=? AND kind=? AND thread_id=?",
+            (project, bot_id, kind, tid),
+        ).fetchone()
+        if row is None:
+            if spawn_gen is not None:
+                return False
+            conn.execute(
+                "INSERT INTO session_bindings "
+                "(project, bot_id, profile, kind, thread_id, session_id, runtime, "
+                " generation, switching, title, updated_at) "
+                "VALUES(?,?,?,?,?,?, 'dsh', 0, 0, '', ?)",
+                (project, bot_id, profile, kind, tid, native_session_id, db.now_iso()),
+            )
+            conn.commit()
+            return True
+        if spawn_gen is None or row["generation"] != spawn_gen:
+            return False
+        cur = conn.execute(
+            "UPDATE session_bindings SET session_id=?, runtime='dsh', switching=0, "
+            " updated_at=? "
+            "WHERE project=? AND bot_id=? AND kind=? AND thread_id=? AND generation=?",
+            (native_session_id, db.now_iso(), project, bot_id, kind, tid, spawn_gen),
+        )
+        conn.commit()
+        return cur.rowcount == 1
+
+
+def dsh_new(conn, project: str, profile: str, kind: str,
+            thread_id: int | None, title: str, bot_id: int | None = None,
+            busy_check=None, existing_only=False) -> dict:
+    """/new 清空 dsh Bot 的旧会话绑定，下一次唤醒首建新会话（语义同 codex_new）。"""
+    if bot_id is None:
+        bot_id = _dsh_bot_id(conn, project, profile)
+    if bot_id is None:
+        return {"ok": False, "detail": "目标不是 dsh Bot，无法按 dsh 会话映射重置"}
+    tid = _bind_key(kind, thread_id)
+    with _SWITCH_LOCK:
+        if busy_check and busy_check(profile, kind, thread_id, project):
+            return {'ok': False, 'detail': '目标会话正在执行，请空闲后再输入 /new'}
+        row = conn.execute(
+            "SELECT session_id, generation FROM session_bindings "
+            "WHERE project=? AND bot_id=? AND kind=? AND thread_id=?",
+            (project, bot_id, kind, tid),
+        ).fetchone()
+        if existing_only and (row is None or not row['session_id']):
+            return {'ok': False, 'detail': '当前项目尚无可重置的会话'}
+        old_sid = row["session_id"] if row is not None else ""
+        old_gen = row["generation"] if row is not None else -1
+        op_id = uuid.uuid4().hex
+        conn.execute(
+            "INSERT INTO session_switch_ops "
+            "(operation_id, project, profile, kind, thread_id, old_session_id, "
+            " old_generation, new_session_id, status, created_at, updated_at) "
+            "VALUES(?,?,?,?,?,?,?, '', 'committed', ?, ?)",
+            (op_id, project, profile, kind, tid, old_sid, old_gen, db.now_iso(), db.now_iso()),
+        )
+        if row is not None:
+            conn.execute(
+                "UPDATE session_bindings SET session_id='', runtime='dsh', generation=generation+1, "
+                " switching=0, updated_at=? "
+                "WHERE project=? AND bot_id=? AND kind=? AND thread_id=?",
+                (db.now_iso(), project, bot_id, kind, tid),
+            )
+        else:
+            # A tombstone invalidates a first spawn that has not emitted
+            # its session event yet. Its spawn_gen=None can no longer insert.
+            conn.execute("INSERT INTO session_bindings(project,bot_id,profile,kind,thread_id,"
+                         "session_id,runtime,generation,switching,title,updated_at) "
+                         "VALUES(?,?,?,?,?,'','dsh',0,0,?,?)",
                          (project, bot_id, profile, kind, tid, title, db.now_iso()))
         conn.commit()
         return {"ok": True, "operation_id": op_id, "status": "committed",

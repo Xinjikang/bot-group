@@ -1,0 +1,9 @@
+{
+  "inputs": ["产品目标、用户场景与需求来源", "已有研究、原型及品牌规范", "原型交互范围与验收方式"],
+  "configuration": "项目交付为 PRD、体验设计与可交互原型。依据当前模板指导产品经理、UX、原型工程及评审职责和权限，登记预览所需工作区资源。",
+  "documents": [
+    {"path": "outputs/PRD.md", "purpose": "产品需求与验收标准"},
+    {"path": "ui-spec/UI-SPEC.md", "purpose": "产品视觉、交互状态与响应规则"},
+    {"path": "materials/RESEARCH.md", "purpose": "已有研究与需求依据"}
+  ]
+}

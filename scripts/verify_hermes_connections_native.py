@@ -72,16 +72,17 @@ async def verify(base):
                 assert 'connection-fixture' in viewers[0].subscriptions
                 checks.append('first lease release preserves shared native subscription')
                 await asyncio.to_thread(second.close)
-                assert not viewers[0].subscriptions and not first.client.closed
-                checks.append('last lease release detaches native subscription and keeps WS')
+                assert 'connection-fixture' in viewers[0].subscriptions and not first.client.closed
+                checks.append('last lease release preserves native subscription and WS')
                 third = await asyncio.to_thread(pool.acquire, home, [])
                 await asyncio.to_thread(third.rpc, 'session.resume', session_id='connection-fixture', omit_messages=True)
                 assert third.client is first.client and 'connection-fixture' in viewers[0].subscriptions
                 await asyncio.to_thread(third.close)
-                checks.append('next lease resumes after detach on the same WS')
+                checks.append('next lease resumes retained subscription on the same WS')
                 now[0] = 600
                 await asyncio.to_thread(pool.sweep)
                 assert first.client.closed and pool.status()['state'] == 'waiting'
+                assert 'session.detach' in methods
                 checks.append('600 seconds business idle closes WS and reports waiting')
             finally:
                 pool.stop()

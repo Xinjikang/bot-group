@@ -1,7 +1,25 @@
 """Project team mutations shared by HTTP and atomic import; caller owns transaction."""
+import unicodedata
+
 from fastapi import HTTPException
 from . import db
 from . import project_workspaces as ws
+
+
+def validate_role_text(value, *, member=False):
+    """Validate original code points before trimming; preserve field length semantics."""
+    field, limit = ('role', 200) if member else ('name', 100)
+    message = f'{field} 必须是长度不超过 {limit} 的单行文本' + ('，可留空' if member else '')
+    if not isinstance(value, str):
+        raise HTTPException(400, message)
+    for index, char in enumerate(value, start=1):
+        category = unicodedata.category(char)
+        if category in {'Cc', 'Cf', 'Cs', 'Cn', 'Zl', 'Zp'}:
+            raise HTTPException(400, f'{message}；第 {index} 个字符 U+{ord(char):04X}（{category}）不可用于角色文本')
+    text = value.strip()
+    if (not member and not text) or len(value if member else text) > limit:
+        raise HTTPException(400, message)
+    return text
 
 
 def save_owner_role(conn, project, role_id):
@@ -23,9 +41,7 @@ def mark_owner_role(conn, project, roles):
 
 
 def create_role(conn, project, name, actor):
-    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 100 or any(ord(c) < 32 for c in name):
-        raise HTTPException(400, 'name 必须是长度不超过 100 的单行文本')
-    name = name.strip()
+    name = validate_role_text(name)
     if not conn.execute('SELECT 1 FROM projects WHERE name=?', (project,)).fetchone():
         raise HTTPException(404, '项目不存在')
     if conn.execute('SELECT 1 FROM project_roles WHERE project=? AND name=?', (project, name)).fetchone():
@@ -38,9 +54,7 @@ def create_role(conn, project, name, actor):
 
 
 def assign_role(conn, project, profile, role, actor):
-    if not isinstance(role, str) or len(role) > 200 or any(c in role for c in '\r\n\0'):
-        raise HTTPException(400, 'role 必须是长度不超过 200 的单行文本，可留空')
-    role = role.strip()
+    role = validate_role_text(role, member=True)
     row = conn.execute('SELECT role,role_id FROM project_members WHERE project=? AND profile=?',
                        (project, profile)).fetchone()
     if not row or db.is_builtin_user(profile):

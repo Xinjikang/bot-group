@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import unicodedata
 from urllib.parse import unquote, urlsplit
 
 EXCLUDED = {'node_modules', 'reports', 'targets', 'dist', 'build', '__pycache__', 'venv', 'vendor'}
@@ -23,15 +24,20 @@ def safe_path(base, path):
             return False
         current = path
         while current != base:
-            if current.is_symlink() or getattr(current.lstat(), 'st_file_attributes', 0) & 1024:
+            if current.is_symlink():
                 return False
+            try:
+                if getattr(current.lstat(), 'st_file_attributes', 0) & 1024:
+                    return False
+            except FileNotFoundError:
+                pass
             current = current.parent
         return True
     except OSError:
         return False
 
 
-def documents(root, *, include_contents=True):
+def documents(root, *, include_contents=True, preferred=()):
     result = {'files': [], 'documents': {}, 'signatures': {}, 'structure': [], 'structure_scope': 'limited_overview',
               'coverage': {'scan_complete': True, 'unread': [], 'limits': '160 documents; 60000 characters; 2000 paths'}}
     if not root or not Path(root).is_dir():
@@ -76,7 +82,7 @@ def documents(root, *, include_contents=True):
         if visited > 2000:
             break
     # Entry documents remain available even when a large source tree exhausts the scan.
-    for name in ENTRY_DOCS:
+    for name in (*ENTRY_DOCS, *preferred):
         path = base / name
         if safe_path(base, path) and path.is_file():
             stat = path.stat()
@@ -97,7 +103,8 @@ def documents(root, *, include_contents=True):
                     linked.append(path.as_posix())
         except (OSError, UnicodeError):
             pass
-    ordered = list(dict.fromkeys([n for n in ENTRY_DOCS if n in candidates] + linked + ordered))
+    ordered = list(dict.fromkeys([n for n in preferred if n in candidates] +
+                                [n for n in ENTRY_DOCS if n in candidates] + linked + ordered))
     result['files'] = ordered[:160]
     result['signatures'] = {n: candidates[n] for n in ordered}
     if len(ordered) > 160:
@@ -111,7 +118,8 @@ def documents(root, *, include_contents=True):
             try:
                 raw = (base / name).read_bytes()
                 full = raw.decode('utf-8-sig')
-                excerpt = full[:min(14000 if name in ENTRY_DOCS else 6000, remaining)]
+                limit = 30000 if name in preferred else 14000 if name in ENTRY_DOCS else 6000
+                excerpt = full[:min(limit, remaining)]
                 result['documents'][name] = {'text': excerpt, 'sha256': hashlib.sha256(raw).hexdigest(),
                                               'truncated': len(excerpt) < len(full), 'source': 'project_file'}
                 remaining -= len(excerpt)
@@ -238,6 +246,17 @@ def inspect(project, materials):
         add('members', 'ok' if active and all(m.get('role') for m in active) else 'missing',
             '成员已分配职责' if active and all(m.get('role') for m in active) else '项目成员或职责分配尚未齐备',
             active=len(active))
+        for member in active:
+            role = member.get('role') or ''
+            hidden = [{'position': i + 1, 'codepoint': f'U+{ord(char):04X}',
+                       'name': unicodedata.name(char, 'UNKNOWN')}
+                      for i, char in enumerate(role) if unicodedata.category(char) in ('Cf', 'Cc')]
+            if hidden:
+                visible = ''.join(f'[U+{ord(char):04X}]' if unicodedata.category(char) in ('Cf', 'Cc') else char
+                                  for char in role)
+                add('member_role_characters', 'changed', '成员角色名含不可见字符，按名称查询时需使用完整原值',
+                    profile=member['profile'], field='role', visible_value=visible, characters=hidden,
+                    role_id=member.get('role_id'), impact='name_filter_uses_exact_value; task_dispatch_impact_not_checked')
     if project.get('directory_mode') == 'worktree':
         worktree_root = project.get('worktree_root')
         add('worktree_root', 'ok' if worktree_root and Path(worktree_root).is_dir() else 'missing',

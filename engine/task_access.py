@@ -14,6 +14,13 @@ _guard = ContextVar("task_write_access", default=None)
 
 def execution_for(request, supplied):
     scope = getattr(request.state, "execution_scope", None) if request is not None else None
+    if scope is not None and scope.get('credential_type') == 'session':
+        if supplied is not None and (any(supplied.get(key) != scope[key] for key in auth.SESSION_FIELDS)
+                                     or 'wake_started_at' in supplied):
+            raise HTTPException(403, 'Context does not match the session credential')
+        return scope
+    if supplied and supplied.get('credential_type') == 'session':
+        raise HTTPException(403, 'Session credential required')
     if scope is None:
         return supplied
     if supplied is not None and any(supplied.get(key) != scope[key] for key in auth.EXECUTION_FIELDS):
@@ -35,6 +42,10 @@ def validate(conn, actor, project, operation, execution, thread_id=None):
     if execution is not None:
         if execution.get("profile") != actor or execution.get("project") != project:
             raise HTTPException(403, "Execution identity or project mismatch")
+        if execution.get('credential_type') == 'session' and operation == 'operation_receipt':
+            from . import hermes_session_auth
+            hermes_session_auth.validate(conn, execution)
+            return
         message_execution.validate(conn, actor, {
             "project": project, "thread_id": execution.get("thread_id"),
             "text": None, "need_reply": False, "execution": execution,

@@ -92,7 +92,8 @@ def _handle_new(conn: sqlite3.Connection, project: str, targets: list[str],
         return wake.session_busy(profile, k, t, prj)
 
     # req#88 task#153：/new 按目标 Bot runtime 分叉（第四节第 6 条 codex /new 必做）。
-    # codex Bot 走 codex_new（弃旧 thread、清空绑定、落审计）；hermes Bot 走 switch_session。
+    # codex Bot 走 codex_new（弃旧 thread、清空绑定、落审计）；dsh Bot 走 dsh_new
+    # （req#137 task#266，弃旧 session、generation+1）；hermes Bot 走 switch_session。
     if session_adapter._codex_bot_id(conn, project, target) is not None:
         result = session_adapter.codex_new(conn, project, target, kind, tid, title,
                                           busy_check=busy_check, existing_only=existing_only)
@@ -101,6 +102,15 @@ def _handle_new(conn: sqlite3.Connection, project: str, targets: list[str],
                     "detail": result.get("detail", "未知错误")}
         return {"handled": True, "ok": True, "command": "/new", "target": target,
                 "detail": f"@{target} 的{'当前话题' if thread_id is not None else '工作'}会话已重置。下一条发给该会话的消息将使用新的 codex 会话。",
+                "operation_id": result.get("operation_id")}
+    if session_adapter._dsh_bot_id(conn, project, target) is not None:
+        result = session_adapter.dsh_new(conn, project, target, kind, tid, title,
+                                        busy_check=busy_check, existing_only=existing_only)
+        if not result.get("ok"):
+            return {"handled": True, "ok": False, "command": "/new",
+                    "detail": result.get("detail", "未知错误")}
+        return {"handled": True, "ok": True, "command": "/new", "target": target,
+                "detail": f"@{target} 的{'当前话题' if thread_id is not None else '工作'}会话已重置。下一条发给该会话的消息将使用新的 dsh 会话。",
                 "operation_id": result.get("operation_id")}
 
     options = {"existing_only": True} if existing_only else {}
@@ -142,8 +152,10 @@ def _handle_steer(conn: sqlite3.Connection, project: str, targets: list[str],
         raise CommandError("请用 @ 指定目标 bot（如 /steer @苏瑾 请改用方案 B）")
     if not args:
         raise CommandError("/steer 需要纠偏正文（如 /steer @苏瑾 请改用方案 B）")
-    from . import steer_ledger, hermes_gateway_steer
+    from . import steer_ledger, hermes_gateway_steer, bot_identity
     kind = "chat" if thread_id is not None else "work"
+    # req#137 task#267：dsh 首期无运行中纠偏通道——按宿主能力在进入 Hermes 执行
+    # 查询/账本投递前拦截（命令留痕由 dispatch 层完成，不落 steer 账本）。
     # 每个 target 落一条 queued 账本，随即定位运行中执行并投递，回执映射回账本
     ops = []
     statuses = []
@@ -151,6 +163,11 @@ def _handle_steer(conn: sqlite3.Connection, project: str, targets: list[str],
     for t in targets:
         if db.is_builtin_user(t):
             continue  # 目标必须 bot，user 不记账本
+        bot = bot_identity.resolve(conn, project, t)
+        if bot and bot.get('runtime') == 'dsh':
+            statuses.append('unsupported')
+            details.append(f'@{t}：dsh 宿主暂不支持运行中纠偏（/steer）')
+            continue
         op = steer_ledger.new_operation(conn, project, t, kind, thread_id, args)
         ops.append(op["operation_id"])
         outcome = hermes_gateway_steer.deliver_steer(
@@ -158,6 +175,10 @@ def _handle_steer(conn: sqlite3.Connection, project: str, targets: list[str],
         statuses.append(outcome["status"])
         details.append(f"@{t}：{outcome['detail']}")
     if not ops:
+        if statuses:
+            # 全部目标为 dsh（不支持）：明确能力提示，命令已留痕
+            return {"handled": True, "ok": False, "command": "/steer", "targets": targets,
+                    "statuses": statuses, "detail": "；".join(details)}
         raise CommandError("/steer 目标必须是 bot（@ 里不含 user）")
     ok = all(s == "queued" for s in statuses)
     return {"handled": True, "ok": ok, "command": "/steer", "targets": targets,
@@ -200,9 +221,9 @@ COMMAND_REGISTRY = {
         "name": "/steer",
         "requires_target": True,
         "menu_description": "向运行中的目标 bot 注入纠偏（网关运行中执行）",
-        "help": "向运行中的目标 bot 注入纠偏；已接入网关 session.steer 运行中纠偏，子进程/Codex 后端不支持。",
+        "help": "向运行中的目标 bot 注入纠偏；已接入网关 session.steer 运行中纠偏，dsh/Codex 子进程后端不支持（dsh 首期返回能力不支持提示）。",
         "scope": "@ 目标 bot + 纠偏正文",
-        "busy_policy": "目标空闲时无法投递；仅网关（hermes）运行中执行可纠偏",
+        "busy_policy": "目标空闲时无法投递；仅网关（hermes）运行中执行可纠偏，dsh/Codex 不支持",
         "handler": _handle_steer,
     },
     "help": {

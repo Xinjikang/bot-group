@@ -755,6 +755,11 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 .member-create-fields .member-create-auth input{width:15px;height:15px;flex:0 0 15px;margin:0}
 .member-create-fields details{margin-top:12px}
 .member-create-fields summary{cursor:pointer;color:var(--fg-2);font-size:13px}
+.member-create-route{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.member-create-route.single{grid-template-columns:1fr}
+@media(max-width:520px){.member-create-route{grid-template-columns:1fr;gap:0}}
+/* Host choices wrap on narrow screens. */
+#dlg-member-add .project-mode-options label{min-width:100px}
 #dlg-member-add{max-height:calc(100dvh - 32px);overflow-y:auto}
 #dlg-member-add .dlg-btns{position:sticky;bottom:-1px;background:var(--card);padding-top:12px}
 #dlg-member-picker{width:560px;max-width:calc(100vw - 24px);box-sizing:border-box;max-height:calc(100dvh - 32px);overflow:auto}
@@ -858,7 +863,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 @media(max-width:420px){.project-member-card{padding:12px}}
 </style>
 <link rel="stylesheet" href="/app/dialogs.css?v=20261030-edit-policy">
-<link rel="stylesheet" href="/app/appearance.css?v=20261017-background-storage">
+<link rel="stylesheet" href="/app/appearance.css?v=20261031">
 </head>
 <body>
 <div id="app">
@@ -888,7 +893,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
       </div>
       </div>
       <span id="hermes-gateway-status" hidden data-state="waiting" role="status" aria-live="polite"><span class="gateway-dot"></span><span class="gateway-label"></span></span>
-      <span id="conn" data-state="connecting" role="status"><span class="dot"></span><span id="conn-text">连接中…</span></span>
+      <span id="conn" data-state="connecting" role="status"><span class="dot"></span><span id="conn-text">引擎连接中…</span></span>
     </div>
   </div>
 
@@ -987,7 +992,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 <dialog id="dlg-edit-policy" aria-labelledby="edit-policy-title" aria-describedby="edit-policy-scope">
   <form id="edit-policy-form">
     <h3 id="edit-policy-title">智能审批策略</h3>
-    <p id="edit-policy-scope" class="profile-help">全局设置 · 所有项目的 Hermes ACP Bot 共用。Codex 沿用自身审批配置。</p>
+    <p id="edit-policy-scope" class="profile-help">全局设置 · 所有项目的 Hermes ACP Bot 共用。其它宿主沿用自身审批配置。</p>
     <fieldset id="edit-policy-options">
       <legend>文件编辑授权</legend>
       <label class="edit-policy-option"><input type="radio" name="policy" value="ask" required><span><strong>逐次确认 <small>ask</small></strong><span>每次文件编辑都请求授权。</span></span></label>
@@ -1173,6 +1178,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 <dialog id="dlg-profile" aria-labelledby="profile-title">
   <form id="profile-form" autocomplete="off">
     <h3 id="profile-title">编辑成员</h3>
+    <p id="profile-plugin-status" class="profile-help" role="status" hidden></p>
     <div class="profile-tabs" id="profile-tabs" role="tablist" aria-label="Profile 配置">
       <button type="button" id="profile-tab-description" role="tab" aria-controls="profile-panel-description" aria-selected="true" data-tab="description">描述</button>
       <button type="button" id="profile-tab-soul" role="tab" aria-controls="profile-panel-soul" aria-selected="false" tabindex="-1" data-tab="soul">SOUL.md</button>
@@ -1213,7 +1219,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
           <option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option><option value="ultra">ultra</option>
         </select>
         <p class="profile-help">可用强度取决于模型和供应商；已有按模型 reasoning_overrides 配置优先。</p>
-        <label id="profile-global-label" for="profile-apply-global"><input type="checkbox" id="profile-apply-global">应用到全局</label>
+        <label id="profile-global-label" for="profile-apply-global"><input type="checkbox" id="profile-apply-global"><span id="profile-global-text">应用到全局</span></label>
         <p class="profile-help" id="profile-model-scope"></p>
       </section>
     </div>
@@ -1270,6 +1276,9 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 #dlg-profile #profile-global-label{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:20px}
 #profile-status{min-height:20px;margin-top:10px;font-size:12px;color:var(--fg-2);overflow-wrap:anywhere}
 #profile-status.is-error{color:var(--danger)}
+#profile-plugin-status{margin:0 0 10px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--fg-2);font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+#profile-plugin-status[hidden]{display:none}
+#profile-global-text{white-space:nowrap}
 .profile-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}
 .profile-footer .profile-help{margin:0}
 .profile-footer .dlg-btns{margin:0;flex-shrink:0}
@@ -1512,16 +1521,16 @@ async function connectSSE() {
   const es = new EventSource("/events");
   S.es = es;
   es.onopen = () => { setConn("connected"); loadThinking(); };
-  es.onerror = () => setConn(es.readyState === EventSource.CLOSED ? "disconnected" : "connecting", "断线重连中…");
+  es.onerror = () => setConn(es.readyState === EventSource.CLOSED ? "disconnected" : "connecting", "引擎断线重连中…");
   es.onmessage = (ev) => {
     let evt; try { evt = JSON.parse(ev.data); } catch { return; }
     handleEvent(evt);
   };
 }
-function setConn(state, connectingText = "连接中…") {
+function setConn(state, connectingText = "引擎连接中…") {
   if (S.restarting) { state = 'connecting'; connectingText = S.restartMessage || '正在重启…'; }
   $("#conn").dataset.state = state;
-  $("#conn-text").textContent = state === "connected" ? "已连接" : state === "disconnected" ? "已断开" : connectingText;
+  $("#conn-text").textContent = state === "connected" ? "引擎已连接" : state === "disconnected" ? "引擎已断开" : connectingText;
   window.HermesGatewayStatus?.engineConnection(state);
 }
 
@@ -3338,30 +3347,70 @@ function renderThreadMemberList(t, members, request) {
 }
 
 let profileEditor = null;
-const profileFields = ["description", "soul", "env", "model", "provider", "reasoning_effort"];
+const profileModelFields = ["model", "provider", "reasoning_effort"];
+function profileFieldsFor(runtime) {
+  return runtime === 'dsh'
+    ? ["description", "persona", "model", "provider", "reasoning_effort"]
+    : ["description", "soul", "env", "model", "provider", "reasoning_effort"];
+}
+function profileFieldId(field) {
+  return field === 'persona' ? 'profile-soul'
+    : 'profile-' + field;
+}
+function profileFieldLabel(runtime, field) {
+  if (runtime !== 'dsh') return field;
+  return {description: '描述', persona: '人格',
+    model: '模型', provider: '供应商', reasoning_effort: '推理强度'}[field] || field;
+}
+function profileInput(field) { return $('#' + profileFieldId(field)); }
+function updateProfileSaveAvailability() {
+  const editor = profileEditor;
+  if (!editor?.revision) return;
+  const fields = profileFieldsFor(editor.runtime);
+  $('#profile-save').disabled = editor.saving || !fields.some(field => !profileInput(field).disabled);
+}
 function configureProfileEditor(runtime, data = {}) {
   const codex = runtime === 'codex';
-  $('#profile-tab-env').hidden = codex;
-  $('#profile-tab-soul').textContent = codex ? 'AGENTS.md' : 'SOUL.md';
-  document.querySelector('label[for="profile-soul"]').textContent = codex ? 'AGENTS.md' : 'SOUL.md';
-  document.querySelector('#profile-panel-description .profile-help').textContent = codex
-    ? `用于子代理选择，保存到 agents.${data.agent_name || '<name>'}.description${data.description_path ? ` · ${data.description_path}` : ''}`
-    : '描述该成员的职责与擅长领域，保存到 profile.yaml。';
+  const dsh = runtime === 'dsh';
+  const profile = data.profile || data.member_profile || '<name>';
+  $('#profile-tab-env').hidden = codex || dsh;
+  $('#profile-tab-description').textContent = '描述';
+  $('#profile-tab-soul').textContent = dsh ? '人格' : codex ? 'AGENTS.md' : 'SOUL.md';
+  $('#profile-tab-env').textContent = '.env';
+  $('#profile-tab-model').textContent = '模型与供应商';
+  document.querySelector('label[for="profile-soul"]').textContent = dsh ? '人格 · personaPrefix' : codex ? 'AGENTS.md' : 'SOUL.md';
+  document.querySelector('#profile-panel-description .profile-help').textContent = dsh
+    ? `保存到 profiles/${profile}/.group-engine-description（DSH 无原生描述字段）。`
+    : codex
+      ? `用于子代理选择，保存到 agents.${data.agent_name || '<name>'}.description${data.description_path ? ` · ${data.description_path}` : ''}`
+      : '描述该成员的职责与擅长领域，保存到 profile.yaml。';
+  document.querySelector('#profile-panel-soul .profile-help').textContent = dsh
+    ? '保存到 cordis.patch.yml 的 system-prompt.personaPrefix，下一次启动生效。'
+    : '编辑该成员的人格与行为指引，支持 Markdown 原文。';
+  document.querySelector('#profile-panel-env .profile-help').textContent = '按 KEY=value 编辑环境变量，支持注释与多行内容。';
   const helps = document.querySelectorAll('#profile-panel-model .profile-help');
-  helps[0].textContent = codex ? `保存至 config.toml${data.config_path ? ` · ${data.config_path}` : ''}，空值沿用 Codex 默认配置。`
-    : '保存至 config.yaml，填写 Hermes 使用的模型 ID 和供应商标识。';
-  helps[1].textContent = codex ? '可用推理强度取决于所选模型与供应商。'
-    : '可用强度取决于模型和供应商；已有按模型 reasoning_overrides 配置优先。';
-  for (const [field, label] of [['model', codex ? '默认模型 · model' : '默认模型 · model.default'],
-    ['provider', codex ? '供应商 · model_provider' : '供应商 · model.provider'],
-    ['reasoning_effort', codex ? '推理强度 · model_reasoning_effort' : '推理强度 · agent.reasoning_effort']])
+  helps[0].textContent = dsh
+    ? `保存至 cordis.patch.yml 的 agent-default-model${data.config_path ? ` · ${data.config_path}` : ''}，空值沿用 DSH 默认配置。`
+    : codex ? `保存至 config.toml${data.config_path ? ` · ${data.config_path}` : ''}，空值沿用 Codex 默认配置。`
+      : '保存至 config.yaml，填写 Hermes 使用的模型 ID 和供应商标识。';
+  helps[1].textContent = dsh
+    ? '可用强度取决于 DSH 模型与供应商；保存后下一次启动生效。'
+    : codex ? '可用推理强度取决于所选模型与供应商。'
+      : '可用强度取决于模型和供应商；已有按模型 reasoning_overrides 配置优先。';
+  for (const [field, label] of [['model', dsh ? '默认模型 · model' : codex ? '默认模型 · model' : '默认模型 · model.default'],
+    ['provider', dsh ? '供应商 · provider' : codex ? '供应商 · model_provider' : '供应商 · model.provider'],
+    ['reasoning_effort', dsh ? '推理强度 · reasoningEffort' : codex ? '推理强度 · model_reasoning_effort' : '推理强度 · agent.reasoning_effort']])
     document.querySelector(`label[for="profile-${field}"]`).textContent = label;
-  const efforts = codex ? ['', 'low', 'medium', 'high', 'xhigh', 'ultra']
-    : ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+  const efforts = dsh ? ['', 'minimal', 'low', 'medium', 'high', 'max', 'ultra']
+    : codex ? ['', 'low', 'medium', 'high', 'xhigh', 'ultra']
+      : ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
   const effortSelect = $('#profile-reasoning_effort');
   effortSelect.replaceChildren(...efforts.map(effort => new Option(
-    effort === '' ? (codex ? 'Codex 默认' : 'Hermes 默认') : effort === 'none' ? '关闭' : effort, effort)));
+    effort === '' ? (dsh ? 'DSH 默认' : codex ? 'Codex 默认' : 'Hermes 默认') : effort === 'none' ? '关闭' : effort, effort)));
   effortSelect.setCustomValidity('');
+  $('#profile-global-text').textContent = dsh ? '模型与推理应用到全局' : '应用到全局';
+  $('#profile-soul-templates').hidden = dsh;
+  if (dsh) $('#profile-soul-templates').replaceChildren();
 }
 $('#profile-reasoning_effort').addEventListener('change', e => e.target.setCustomValidity(''));
 $('#profile-reasoning_effort').addEventListener('invalid', () => selectProfileTab('model'));
@@ -3396,15 +3445,63 @@ function profileStatus(message, error = false) {
 function updateProfileModelScope() {
   const editor = profileEditor;
   const global = $('#profile-apply-global').checked;
+  const dsh = editor?.runtime === 'dsh';
   $('#profile-model-scope').textContent = global
-    ? (editor?.project ? '保存到该成员的全局配置；当前项目沿用新值，其他项目的独立覆盖保留。'
-      : '保存到该成员的全局配置，各项目的独立覆盖保留。')
-    : '仅用于当前项目。留空沿用成员全局配置。';
+    ? (editor?.project
+      ? (dsh ? '保存到该成员的全局 cordis.patch.yml；当前项目沿用新值，其他项目的独立覆盖保留。'
+        : '保存到该成员的全局配置；当前项目沿用新值，其他项目的独立覆盖保留。')
+      : (dsh ? '保存到该成员的全局 cordis.patch.yml，各项目的独立覆盖保留。'
+        : '保存到该成员的全局配置，各项目的独立覆盖保留。'))
+    : (dsh ? '仅模型、供应商和推理强度保存到当前项目；人格与描述保存到该成员的 profile。'
+      : '仅用于当前项目。留空沿用成员全局配置。');
   const help = $('#profile-panel-model .profile-help');
   if (editor?.globalModelHelp) help.textContent = global ? editor.globalModelHelp
-    : '模型、供应商和推理强度保存到当前项目，下一次唤醒生效。';
+    : (dsh ? '模型、供应商和推理强度保存到当前项目，下一次启动生效。'
+      : '模型、供应商和推理强度保存到当前项目，下一次唤醒生效。');
 }
 $('#profile-apply-global').addEventListener('change', updateProfileModelScope);
+function pluginUnavailable(state) {
+  if (!state || typeof state !== 'object') return false;
+  if (state.available === false || state.ok === false) return true;
+  return ['missing', 'disabled', 'load_failed', 'error', 'unavailable']
+    .includes(String(state.state || '').toLowerCase());
+}
+function renderProfilePlugins(editor, data) {
+  const box = $('#profile-plugin-status');
+  box.textContent = '';
+  box.hidden = true;
+  const lines = [];
+  const disabled = new Set();
+  const plugins = data.plugins || data.capabilities;
+  if (plugins && typeof plugins === 'object') {
+    for (const field of profileFieldsFor(editor.runtime)) {
+      const state = plugins[field];
+      if (!pluginUnavailable(state)) continue;
+      disabled.add(field);
+      const label = profileFieldLabel(editor.runtime, field);
+      const reason = state.reason || state.message || '插件不可用';
+      const plugin = state.plugin && !String(reason).includes(state.plugin) ? `插件 ${state.plugin}：` : '';
+      const path = state.path ? `（${state.path}）` : '';
+      lines.push(`${label}：${plugin}${reason}${path}`);
+    }
+  }
+  editor.pluginDisabled = disabled;
+  for (const field of profileFieldsFor(editor.runtime)) {
+    const input = profileInput(field);
+    if (!input) continue;
+    if (disabled.has(field)) {
+      input.disabled = true;
+      input.setAttribute('aria-describedby', 'profile-plugin-status');
+    } else {
+      input.removeAttribute('aria-describedby');
+    }
+  }
+  if (lines.length) {
+    box.textContent = '以下字段因插件不可用已禁用保存：' + lines.join('；');
+    box.hidden = false;
+  }
+  updateProfileSaveAvailability();
+}
 async function openProfileEditor(member, project = null) {
   const editor = { profile: member.profile, project, templateProject: project || '', revision: null, saving: false };
   profileEditor = editor;
@@ -3413,8 +3510,8 @@ async function openProfileEditor(member, project = null) {
   $("#profile-form").reset();
   $('#profile-apply-global').checked = !project;
   $('#profile-apply-global').disabled = true;
-  configureProfileEditor(member.runtime || 'hermes');
-  for (const field of profileFields) $("#profile-" + field).disabled = true;
+  configureProfileEditor(member.runtime || 'hermes', {profile: member.profile});
+  for (const field of profileFieldsFor(member.runtime || 'hermes')) $("#" + profileFieldId(field)).disabled = true;
   $("#profile-save").disabled = true;
   $("#profile-cancel").disabled = false;
   selectProfileTab("description");
@@ -3442,25 +3539,30 @@ async function openProfileEditor(member, project = null) {
       for (const field of ['model', 'provider', 'reasoning_effort']) data[field] = model[field] || data[field] || '';
     }
     editor.displayed = {...data};
-    for (const field of profileFields) {
-      $("#profile-" + field).value = data[field] ?? '';
-      $("#profile-" + field).disabled = false;
+    const fields = profileFieldsFor(editor.runtime);
+    for (const field of fields) {
+      const input = profileInput(field);
+      input.value = data[field] ?? '';
+      input.disabled = false;
     }
     editor.revision = data.revision;
-    mountProjectSoulTemplates($('#profile-soul-templates'), {
-      project: editor.templateProject, maxLength: $('#profile-soul').maxLength,
-      isActive: () => profileEditor === editor && !editor.saving && !!editor.revision
-        && (editor.project || '') === editor.templateProject,
-      getValue: () => $('#profile-soul').value,
-      setValue: value => { $('#profile-soul').value = value; },
-    });
+    renderProfilePlugins(editor, data);
+    if (editor.runtime !== 'dsh') {
+      mountProjectSoulTemplates($('#profile-soul-templates'), {
+        project: editor.templateProject, maxLength: $('#profile-soul').maxLength,
+        isActive: () => profileEditor === editor && !editor.saving && !!editor.revision
+          && (editor.project || '') === editor.templateProject,
+        getValue: () => $('#profile-soul').value,
+        setValue: value => { $('#profile-soul').value = value; },
+      });
+    }
     $('#profile-apply-global').disabled = !project;
     updateProfileModelScope();
-    $("#profile-save").disabled = false;
+    updateProfileSaveAvailability();
     profileStatus(data.instructions_overridden ? 'AGENTS.override.md 当前优先于 AGENTS.md；修改指令前请处理覆盖文件。' : '');
     const effortSelect = $('#profile-reasoning_effort');
     if (data.reasoning_effort && ![...effortSelect.options].some(option => option.value === data.reasoning_effort)) {
-      const message = `原配置档位 ${data.reasoning_effort} 超出当前可选范围，请选择一个档位或 Codex 默认。`;
+      const message = `原配置档位 ${data.reasoning_effort} 超出当前可选范围，请选择一个档位或 ${editor.runtime === 'dsh' ? 'DSH' : 'Codex'} 默认。`;
       effortSelect.setCustomValidity(message);
       profileStatus(message, true);
     }
@@ -3489,46 +3591,74 @@ $("#profile-form").addEventListener("submit", async e => {
   e.preventDefault();
   const editor = profileEditor;
   if (!editor?.revision || editor.saving) return;
+  const fields = profileFieldsFor(editor.runtime);
   const body = { revision: editor.revision, member_profile: editor.profile };
   if (editor.runtime === 'codex' && editor.configPath)
     body.config_path = editor.configPath;
-  for (const field of profileFields) body[field] = $("#profile-" + field).value;
-  const modelFields = ['model', 'provider', 'reasoning_effort'];
+  for (const field of fields) {
+    const input = profileInput(field);
+    body[field] = input.disabled
+      ? (editor.original[field] || '')
+      : input.value;
+  }
+  const modelFields = profileModelFields;
   const applyGlobal = $('#profile-apply-global').checked;
   const modelBody = editor.projectModel ? {revision: editor.projectModel.revision} : null;
+  const projectModelChanged = [];
   if (modelBody) {
     for (const field of modelFields) {
-      modelBody[field] = applyGlobal ? '' : body[field] === editor.displayed[field]
+      const next = applyGlobal ? '' : body[field] === editor.displayed[field]
         ? editor.projectModel[field] || '' : body[field];
+      modelBody[field] = next;
+      if (next !== (editor.projectModel[field] || '')) projectModelChanged.push(field);
       if (!applyGlobal) body[field] = editor.original[field] || '';
     }
   }
+  const globalChanged = fields.filter(field => body[field] !== (editor.original[field] || ''));
   editor.saving = true;
+  editor.globalSaved = false;
+  editor.globalSavedFields = [];
   $("#profile-save").disabled = true;
   $("#profile-cancel").disabled = true;
   $('#profile-apply-global').disabled = true;
-  for (const field of profileFields) $("#profile-" + field).disabled = true;
+  for (const field of fields) profileInput(field).disabled = true;
   profileStatus("正在保存…");
   try {
-    if (!editor.project || profileFields.some(field => body[field] !== (editor.original[field] || ''))) {
+    if (!editor.project || globalChanged.length) {
       const result = await api(`/members/${encodeURIComponent(editor.profile)}/config`, { method: "PUT", body: JSON.stringify(body) });
       editor.revision = result.revision || editor.revision;
       editor.original = {...editor.original, ...body, revision: editor.revision};
       editor.globalSaved = true;
+      editor.globalSavedFields = globalChanged;
     }
-    if (modelBody && modelFields.some(field => modelBody[field] !== (editor.projectModel[field] || ''))) {
+    if (modelBody && projectModelChanged.length) {
       editor.projectModel = await api(editor.modelUrl, {method: 'PUT', body: JSON.stringify(modelBody)});
     }
     $("#dlg-profile").close();
   } catch (err) {
-    profileStatus((editor.globalSaved ? '成员全局配置已保存；项目模型保存失败：' : '保存失败：') + err.message, true);
+    const saved = (editor.globalSavedFields || []).map(field => profileFieldLabel(editor.runtime, field));
+    if (editor.globalSaved) {
+      // 全局写入已生效；重新读取 revision，允许在不重开窗口时继续保存项目模型。
+      try {
+        const refreshed = await api(`/members/${encodeURIComponent(editor.profile)}/config`, {cache: 'no-store'});
+        if (profileEditor === editor) editor.revision = refreshed.revision || editor.revision;
+      } catch {}
+      profileStatus(`已保存全局字段：${saved.join('、') || '无'}；项目模型保存失败：${err.message}`, true);
+    } else if (editor.project && projectModelChanged.length && !globalChanged.length) {
+      profileStatus(`项目模型保存失败：${err.message}`, true);
+    } else {
+      profileStatus(`保存失败（未保存任何字段）：${err.message}`, true);
+    }
   } finally {
     editor.saving = false;
     if (profileEditor === editor) {
-      $("#profile-save").disabled = false;
       $("#profile-cancel").disabled = false;
       $('#profile-apply-global').disabled = !editor.project;
-      for (const field of profileFields) $("#profile-" + field).disabled = false;
+      for (const field of fields) {
+        const input = profileInput(field);
+        input.disabled = editor.pluginDisabled?.has(field) || false;
+      }
+      updateProfileSaveAvailability();
     }
   }
 });
@@ -4819,18 +4949,18 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/background_settings.js?v=20261023-settings-anchor"></script>
 <script src="/app/directory_picker.js?v=20261011"></script>
 <script src="/app/workspace_resources.js?v=20261026-resource-spacing"></script>
-<script src="/app/project_import.js?v=20261026-role-permission-notices"></script>
+<script src="/app/project_import.js?v=20261031-assistant-config"></script>
 <script src="/app/member_picker.js?v=20261023-unjoined"></script>
 <script src="/app/project_removal.js?v=20261014-hidden-removed"></script>
 <script src="/app/project_template_references.js?v=20261016-latest-soul"></script>
 <script src="/app/profile_soul_templates.js?v=20261029-project-context"></script>
-<script src="/app/project_settings.js?v=20261026-role-permission-notices"></script>
-<link rel="stylesheet" href="/app/project_hud.css?v=20261029-progress">
-<script src="/app/project_hud.js?v=20261029-progress"></script>
+<script src="/app/project_settings.js?v=20261031-dsh-home"></script>
+<link rel="stylesheet" href="/app/project_hud.css?v=20261031-native-agent">
+<script src="/app/project_hud.js?v=20261031-hud-state-fallback"></script>
 <script src="/app/requirement_details.js?v=20261012-controls"></script>
 <link rel="stylesheet" href="/app/hermes_approvals.css?v=20261029">
 <link rel="stylesheet" href="/app/hermes_gateway_status.css?v=20261030">
 <script src="/app/hermes_approvals.js?v=20261029"></script>
-<script src="/app/hermes_gateway_status.js?v=20261030"></script>
+<script src="/app/hermes_gateway_status.js?v=20261031"></script>
 </body>
 </html>

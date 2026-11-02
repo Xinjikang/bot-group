@@ -19,12 +19,13 @@ def fixture_response(bot, context):
                 {'title':'选择维护 AI','body':'从已有 Bot 中选择一个，可以与项目负责人相同。'},
                 {'title':'保存并开始维护','body':'确认选择后点击“保存并开始维护”，由新的助手继续维护当前项目。'}]}}
     decisions = context.get('decisions', [])
-    if decisions and not context.get('facts'):
-        return {'text': '建议记住你刚说明的资料位置，方便项目成员后续查找。', 'proposal': {
-            'reason': '记录本次确定的需求和原型位置。',
-            'changes': {}, 'facts': [{'label': '需求资料来源', 'value': decisions[-1]['answer']}]}}
-    if context.get('facts'):
-        return {'text': '资料约定已经保存。接下来想完善哪一部分？'}
+    if decisions:
+        description = '需求资料来源：' + decisions[-1]['answer']
+        if context.get('project', {}).get('description') not in (description, '用于测试的简介'):
+            return {'text': '建议在项目简介中登记本次资料说明，确认后保存。', 'proposal': {
+                'reason': '更新本次确认的项目资料说明。',
+                'changes': {'description': description}}}
+        return {'text': '资料说明已经保存。接下来想完善哪一部分？'}
     return {'text': '我们先把需求资料准备好，再确定下一步。',
         'notification': {'kind':'user_action','action':'请提供本次项目的需求资料来源，便于确定项目输入。'}, 'question': {
         'title': '这次项目的需求资料准备到哪一步了？',
@@ -66,6 +67,7 @@ def main():
                 conn.execute('DELETE FROM hud_entries WHERE session=?',(sid,))
             conn.execute("DELETE FROM hud_sessions WHERE project IS NULL")
             conn.execute("UPDATE hud_sessions SET state='{}',status='queued',revision=revision+1 WHERE project='hud-preview'")
+            conn.execute("UPDATE projects SET description='本地验证数据；此预览使用固定响应，不连接模型服务。' WHERE name='hud-preview'")
         return {'fixture':True}
     import uvicorn
     uvicorn.run(app,host='127.0.0.1',port=args.port,log_level='warning')

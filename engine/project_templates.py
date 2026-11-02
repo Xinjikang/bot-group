@@ -167,7 +167,7 @@ def validate_bots(conn, team):
         bot = conn.execute('SELECT id,profile,runtime,config_root,display_name FROM bots WHERE id=?', (member['bot_id'],)).fetchone()
         if bot is None or db.is_builtin_user(bot['profile']):
             invalid('所选 Bot 已失效，请返回重新选择')
-        if bot['runtime'] not in ('hermes', 'codex') or not bot['config_root'] or not Path(bot['config_root']).is_dir():
+        if bot['runtime'] not in ('hermes', 'codex', 'dsh') or not bot['config_root'] or not Path(bot['config_root']).is_dir():
             invalid('所选 Bot 宿主目录不可用，请重新选择')
         identity = {k: bot[k] for k in ('id', 'profile', 'runtime', 'config_root', 'display_name')}
         if member.get('identity') and member['identity'] != identity:

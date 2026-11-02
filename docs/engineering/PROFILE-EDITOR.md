@@ -1,6 +1,6 @@
 # 成员 Profile 编辑
 
-当前入口：项目详情 → 成员与目录 → 成员卡片“编辑”。支持 Hermes/Codex，描述、SOUL/AGENTS、环境配置与模型字段按宿主能力展示。
+当前入口：项目详情 → 成员与目录 → 成员卡片“编辑”。支持 Hermes/Codex/DSH，描述、人格、环境配置与模型字段按宿主能力展示。
 保存成功关闭编辑窗口并返回成员列表；取消丢弃草稿，失败保留输入。
 
 ## 配置作用域
@@ -8,6 +8,10 @@
 模型、供应商与推理强度默认保存本项目覆盖；勾选“应用到全局”时更新全局并清空当前项目这三个字段的覆盖。描述、SOUL/AGENTS 和环境配置走全局成员配置。两个作用域使用各自 revision，部分成功时保留草稿并提示具体阶段。详见 [统一模型编辑](UNIFIED-MODEL-EDITOR.md)、[项目模型](PROJECT-MEMBER-MODELS-2026-10-11.md)。
 
 Codex 配置由 `engine/codex_profile_config.py` 读取所选 home/命名配置及 AGENTS，保存保留其他用户配置；home 与命名配置规则见 [Codex 配置目录](../guides/CODEX-PROFILE-HOMES.md)。以下文件与备份细节描述 Hermes 分支。
+
+## DSH 文件与自动审批
+
+DSH 提供描述、人格、模型与供应商三个页签。描述保存到 profile 的 `.group-engine-description`，人格保存到 `cordis.patch.yml` 的 `system-prompt.config.personaPrefix`。模型组遵循同一项目/全局规则。DSH 成员接口移除 `instructions`、`env`、`auto_review` 字段；原生 HOME 文件继续由宿主管理。Auto 在每轮启动前检测插件并强制启用，设置界面无开关，详情见 [DSH 成员设置](../design/2026-11-02-dsh-member-settings.md)。
 
 ## Hermes 文件与生效方式
 

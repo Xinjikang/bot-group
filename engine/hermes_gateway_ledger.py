@@ -190,10 +190,20 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
         raise
 
 
-def finish_cleanup(conn, execution_id):
+def retry_cleanup(conn, execution_id, *, now=None):
+    """Explicit operator retry renews only an exhausted terminal cleanup budget."""
+    now = time.time() if now is None else now
+    conn.execute("UPDATE hermes_executions SET retry_count=0,next_retry_at=NULL,cleanup_deadline=?,detail='' "
+                 "WHERE execution_id=? AND state='terminal' AND cleanup_pending=1 "
+                 "AND (retry_count>=? OR cleanup_deadline<=?)",
+                 (now + CLEANUP_BUDGET_SECONDS, execution_id, CLEANUP_MAX_ATTEMPTS, now))
+    conn.commit()
+
+
+def finish_cleanup(conn, execution_id, *, detail=''):
     conn.execute("UPDATE hermes_executions SET cleanup_pending=0,retry_count=0,"
-                 "next_retry_at=NULL,cleanup_deadline=NULL,detail='' "
-                 "WHERE execution_id=? AND state='terminal'", (execution_id,))
+                 "next_retry_at=NULL,cleanup_deadline=NULL,detail=? "
+                 "WHERE execution_id=? AND state='terminal'", (detail, execution_id))
     conn.commit()
 
 

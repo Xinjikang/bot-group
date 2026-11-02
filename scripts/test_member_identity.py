@@ -63,7 +63,7 @@ class MemberIdentityTests(unittest.TestCase):
                 self.assertEqual(next(m for m in self.roster() if m['profile'] == member)['role'], 'developer')
                 self.assertEqual(self.conn.execute('SELECT display_name FROM members WHERE profile=?', (member,)).fetchone()[0], 'New name')
                 candidates = [{'host_type': host, 'profile': 'default', 'config_root': str(self.root / host)}]
-                with patch.object(discovery, '_scan_hermes', return_value=[]), patch.object(discovery, '_scan_codex', return_value=candidates):
+                with patch.object(discovery, '_scan_hermes', return_value=[]), patch.object(discovery, '_scan_codex', return_value=candidates), patch.object(discovery, '_scan_dsh', return_value=[]):
                     self.assertEqual(discovery.scan_candidates(self.conn)[0]['display_name'], 'New name')
 
     def test_invalid_unauthorized_and_missing_rename_preserve_name(self):
@@ -94,7 +94,7 @@ class MemberIdentityTests(unittest.TestCase):
         candidates.append({'host_type': 'codex', 'profile': 'new', 'config_root': str(self.root / 'new')})
         self.conn.execute('UPDATE project_members SET active=0 WHERE project=? AND profile=?', ('p', member))
         self.conn.commit()
-        with patch.object(discovery, '_scan_hermes', return_value=[]), patch.object(discovery, '_scan_codex', return_value=candidates):
+        with patch.object(discovery, '_scan_hermes', return_value=[]), patch.object(discovery, '_scan_codex', return_value=candidates), patch.object(discovery, '_scan_dsh', return_value=[]):
             rows = self.client.get('/discovery/scan?project=p').json()['candidates']
             self.assertEqual([r['already_project_member'] for r in rows], [True, False, False])
             self.assertEqual([r['already_member'] for r in rows], [True, True, False])

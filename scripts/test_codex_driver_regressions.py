@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from engine import api, bot_identity, codex_reasoning, commands, db, discovery, session_adapter, stop, wake
+from scripts.runtime_test_support import isolated_runtime
 
 
 class CodexDriverRegressions(unittest.TestCase):
@@ -20,11 +21,9 @@ class CodexDriverRegressions(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.home = self.root / 'codex'
         self.home.mkdir()
-        env = patch.dict(os.environ, {'GROUP_DB': str(self.root / 'group.db'),
-                                     'HERMES_HOME': str(self.root / 'hermes'),
-                                     'CODEX_HOME': str(self.home)})
-        env.start()
-        self.addCleanup(env.stop)
+        runtime = isolated_runtime(self.root)
+        runtime.__enter__()
+        self.addCleanup(runtime.__exit__, None, None, None)
         adapter = patch.object(session_adapter, 'available', return_value=False)
         adapter.start()
         self.addCleanup(adapter.stop)
@@ -376,6 +375,84 @@ class CodexDriverRegressions(unittest.TestCase):
             result = self.client.get('/reasoning', params={'profile': member, 'session': session, 'wake_started_at': 100.5})
         self.assertEqual(result.status_code, 200, result.text)
         self.assertEqual(result.json()['entries'][0]['reasoning'], 'checking')
+
+    def test_reasoning_dsh_routing_skips_hermes_compression(self):
+        # req#140 task#274：GET /reasoning 对 DSH 走 dsh_reasoning.read，不落 Hermes compression_tip。
+        from engine import dsh_reasoning, reasoning
+        cur = self.conn.execute(
+            "INSERT INTO bots(host_type,profile,config_root,runtime,runtime_entry,display_name,role) "
+            "VALUES('dsh','dsh-bot','C:/dsh-home','dsh','C:/dsh/dsh.cmd','dsh-bot','')")
+        bot_id = cur.lastrowid
+        self.conn.execute("INSERT INTO members(profile,display_name,role,bot_id) VALUES('dsh-bot','dsh-bot','',?)", (bot_id,))
+        self.conn.execute("INSERT INTO project_members(project,profile,bot_id,active) VALUES('p','dsh-bot',?,1)", (bot_id,))
+        session = wake.session_name('dsh-bot', 'work', None, 'p')
+        self.conn.execute(
+            "INSERT INTO wake_runs(session,profile,thread_id,runtime_session_id,bot_id,runtime,started_at,ended_at,exit_code,pid,project) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (session, 'dsh-bot', 0, 'native-sid', bot_id, 'dsh', 100.5, 100.9, 0, 54321, 'p'))
+        self.conn.commit()
+        dsh_reasoning.record(session, 100.5, {'type': 'thinking', 'text': '先想一下'})
+        dsh_reasoning.record(session, 100.5, {'type': 'final', 'text': 'DSH_OK'})
+        with patch.object(session_adapter, 'compression_tip', side_effect=AssertionError('Hermes compression called')), \
+             patch.object(reasoning, 'read_reasoning', side_effect=AssertionError('Hermes reasoning read called')):
+            result = self.client.get('/reasoning', params={'profile': 'dsh-bot', 'session': session, 'wake_started_at': 100.5})
+        self.assertEqual(result.status_code, 200, result.text)
+        body = result.json()
+        self.assertIn('先想一下', [e['reasoning'] for e in body['entries']])
+        self.assertTrue(body['entries'][-1]['finished'])
+        self.assertEqual(body['process_ended_at'], 100.9)
+        self.assertEqual(body['exit_code'], 0)
+
+    def test_reasoning_dsh_failure_no_final_reports_exit_code(self):
+        # req#140 task#274 验收③：失败/无 final 已结束返回真实非零 exit_code + 结束时间，不假报成功、不 500。
+        from engine import dsh_reasoning, reasoning
+        cur = self.conn.execute(
+            "INSERT INTO bots(host_type,profile,config_root,runtime,runtime_entry,display_name,role) "
+            "VALUES('dsh','dsh-bot3','C:/dsh-home','dsh','C:/dsh/dsh.cmd','dsh-bot3','')")
+        bot_id = cur.lastrowid
+        self.conn.execute("INSERT INTO members(profile,display_name,role,bot_id) VALUES('dsh-bot3','dsh-bot3','',?)", (bot_id,))
+        self.conn.execute("INSERT INTO project_members(project,profile,bot_id,active) VALUES('p','dsh-bot3',?,1)", (bot_id,))
+        session = wake.session_name('dsh-bot3', 'work', None, 'p')
+        self.conn.execute(
+            "INSERT INTO wake_runs(session,profile,thread_id,runtime_session_id,bot_id,runtime,started_at,ended_at,exit_code,pid,project) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (session, 'dsh-bot3', 0, 'native-sid', bot_id, 'dsh', 100.5, 100.9, 1, 54321, 'p'))
+        self.conn.commit()
+        # 认证失败：仅 thinking 无 final，但已结束 exit_code=1。
+        dsh_reasoning.record(session, 100.5, {'type': 'thinking', 'text': '尝试连接'})
+        with patch.object(session_adapter, 'compression_tip', side_effect=AssertionError('Hermes compression called')), \
+             patch.object(reasoning, 'read_reasoning', side_effect=AssertionError('Hermes reasoning read called')):
+            result = self.client.get('/reasoning', params={'profile': 'dsh-bot3', 'session': session, 'wake_started_at': 100.5})
+        self.assertEqual(result.status_code, 200, result.text)
+        body = result.json()
+        self.assertIn('尝试连接', [e['reasoning'] for e in body['entries']])
+        self.assertFalse(any(e.get('finished') for e in body['entries']))  # 无 final → 不假报完成
+        self.assertEqual(body['process_ended_at'], 100.9)  # 已结束 → 真实结束时间
+        self.assertEqual(body['exit_code'], 1)  # 非零 exit_code 不假报成功
+
+    def test_reasoning_dsh_no_native_session_id_still_reads_events(self):
+        # 原生会话 ID 为空也按执行记录身份读 dsh_run_events；运行中不假报完成。
+        from engine import dsh_reasoning, reasoning
+        cur = self.conn.execute(
+            "INSERT INTO bots(host_type,profile,config_root,runtime,runtime_entry,display_name,role) "
+            "VALUES('dsh','dsh-bot2','C:/dsh-home','dsh','C:/dsh/dsh.cmd','dsh-bot2','')")
+        bot_id = cur.lastrowid
+        self.conn.execute("INSERT INTO members(profile,display_name,role,bot_id) VALUES('dsh-bot2','dsh-bot2','',?)", (bot_id,))
+        self.conn.execute("INSERT INTO project_members(project,profile,bot_id,active) VALUES('p','dsh-bot2',?,1)", (bot_id,))
+        session = wake.session_name('dsh-bot2', 'work', None, 'p')
+        self.conn.execute(
+            "INSERT INTO wake_runs(session,profile,thread_id,runtime_session_id,bot_id,runtime,started_at,pid,project) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (session, 'dsh-bot2', 0, '', bot_id, 'dsh', 100.5, 54321, 'p'))
+        self.conn.commit()
+        dsh_reasoning.record(session, 100.5, {'type': 'thinking', 'text': '空会话也读'})
+        with patch.object(session_adapter, 'compression_tip', side_effect=AssertionError('Hermes compression called')), \
+             patch.object(reasoning, 'read_reasoning', side_effect=AssertionError('Hermes reasoning read called')):
+            result = self.client.get('/reasoning', params={'profile': 'dsh-bot2', 'session': session, 'wake_started_at': 100.5})
+        self.assertEqual(result.status_code, 200, result.text)
+        body = result.json()
+        self.assertIn('空会话也读', [e['reasoning'] for e in body['entries']])
+        self.assertIsNone(body['process_ended_at'])  # 运行中（ended_at 空），禁止假报完成
 
 
 if __name__ == '__main__':

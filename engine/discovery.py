@@ -16,7 +16,9 @@ from __future__ import annotations
 import os
 import json
 import re
+import shutil
 import sqlite3
+import sys
 import tomllib
 from pathlib import Path
 
@@ -97,6 +99,9 @@ def candidate_available(bot) -> bool:
             if selector:
                 return selector in _codex_names(Path(home))
             return _codex_home(Path(home))
+        if bot['host_type'] == 'dsh':
+            home = root / 'profiles' / profile
+            return home.is_dir() and _dsh_patch(home / 'cordis.patch.yml')
     except (OSError, ValueError):
         return False
     return False
@@ -157,6 +162,184 @@ def _scan_codex() -> list[dict]:
     return out
 
 
+def _windows_user_env(name: str) -> str:
+    """读 Windows 当前运行账户的用户级环境变量（HKCU\\Environment）；非 Windows/失败返回空。"""
+    if sys.platform != "win32":
+        return ""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, _ = winreg.QueryValueEx(key, name)
+            return str(value).strip() if value else ""
+    except (OSError, ImportError):
+        return ""
+
+
+def _dsh_root() -> Path:
+    """DSH 配置根目录（进程 DSH_HOME 优先，Windows 用户级 HKCU\\Environment 次之，默认 ~/.dsh）。"""
+    configured = (os.environ.get("DSH_HOME") or "").strip()
+    if configured:
+        return Path(configured).resolve()
+    user_home = _windows_user_env("DSH_HOME")
+    if user_home:
+        return Path(user_home).resolve()
+    return Path.home() / ".dsh"
+
+
+def _dsh_patch(path: Path) -> bool:
+    """DSH profile 有效 patch：cordis.patch.yml 存在且可解析为 YAML。"""
+    try:
+        import yaml
+        yaml.safe_load(path.read_text(encoding='utf-8-sig'))
+        return True
+    except Exception:  # noqa: BLE001 - 只读可解析性检查，读取/解析失败均视为无效 patch
+        return False
+
+
+def _dsh_bundled_entry() -> str:
+    """定位桌面安装的 bundled dsh.cmd（不依赖 DSH_BIN/PATH，req#138 F8）。
+
+    优先读 Windows 卸载注册表的 DeepSeek/Harness 条目安装位置；回退常见安装目录
+    （LOCALAPPDATA/ProgramFiles）。相对路径固定为 ``resources/runtime/cli/bin/dsh.cmd``
+    （桌面安装布局，0.2.1-rc.5 实测）。非 Windows 返回空。
+    """
+    if sys.platform != "win32":
+        return ""
+    candidates: list[Path] = []
+    import winreg
+    roots = (
+        (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+    )
+    for hkey, sub in roots:
+        try:
+            key = winreg.OpenKey(hkey, sub)
+        except OSError:
+            continue
+        try:
+            for i in range(winreg.QueryInfoKey(key)[0]):
+                name = winreg.EnumKey(key, i)
+                try:
+                    subkey = winreg.OpenKey(key, name)
+                except OSError:
+                    continue
+                display = location = ""
+                for vname in ("DisplayName", "InstallLocation", "DisplayIcon", "UninstallString"):
+                    try:
+                        val, _ = winreg.QueryValueEx(subkey, vname)
+                    except OSError:
+                        continue
+                    val = str(val).strip()
+                    if vname == "DisplayName":
+                        display = val
+                    elif vname == "InstallLocation" and val:
+                        location = val
+                    elif vname == "DisplayIcon" and not location and val:
+                        # "<root>\DeepSeek Harness.exe,0" → 取 exe 父目录
+                        location = str(Path(val.split(",")[0]).parent)
+                    elif vname == "UninstallString" and not location and val:
+                        # "\"<root>\Uninstall ....exe\" /currentuser" → 取首个 token 父目录
+                        token = val.strip().strip('"').split(" ")[0]
+                        location = str(Path(token).parent)
+                if location and any(t in (display + " " + location).lower()
+                                   for t in ("deepseek", "harness", "dsh")):
+                    candidates.append(Path(location))
+        except OSError:
+            continue
+    # 常见安装目录回退。
+    for env_name in ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"):
+        base = (os.environ.get(env_name) or "").strip()
+        if not base:
+            continue
+        try:
+            for child in Path(base).iterdir():
+                if "deepseek" in child.name.lower() or "harness" in child.name.lower():
+                    candidates.append(child)
+        except OSError:
+            continue
+    for root in candidates:
+        entry = Path(root) / "resources" / "runtime" / "cli" / "bin" / "dsh.cmd"
+        if _has_file(entry):
+            return str(entry)
+    return ""
+
+
+def _dsh_entry() -> str:
+    """DSH 执行入口：DSH_BIN 优先，PATH 的 dsh/dsh.cmd 次之，桌面 bundled 兜底（req#138 F8）。"""
+    configured = (os.environ.get("DSH_BIN") or "").strip()
+    if configured:
+        return configured
+    for name in ("dsh", "dsh.cmd", "dsh.exe"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return _dsh_bundled_entry()
+
+
+def _dsh_entry_available(entry: str) -> bool:
+    """DSH 入口可用：非空且文件存在（可执行性由 spawn 启动路径核验）。"""
+    return bool(entry) and _has_file(Path(entry))
+
+
+def _scan_dsh() -> list[dict]:
+    """Discover DSH named profiles under DSH_HOME/profiles/<name>/."""
+    root = _dsh_root()
+    if not root.is_dir():
+        return []
+    profiles_dir = root / "profiles"
+    if not profiles_dir.is_dir():
+        return []
+    out: list[dict] = []
+    for entry in _entries(profiles_dir):
+        if not entry.is_dir() or not _PROFILE_RE.match(entry.name):
+            continue
+        if _dsh_patch(entry / "cordis.patch.yml"):
+            out.append({"host_type": "dsh", "profile": entry.name, "config_root": str(root)})
+    return out
+
+
+def validate_dsh_home(config_root: str, profile: str = "", entry: str | None = None) -> dict:
+    """DSH 目录/配置复核（手动路径创建前校验，req#137 task#263）。
+
+    逐项校验并保留失败项（不自动绑定到另一套账号/profile）：
+    - config_root 必填、目录存在、可访问；
+    - profile 名称合法、目录存在、patch 可解析；
+    - 执行入口可用（缺失/不可访问明确拒绝；entry=None 时自动发现 DSH_BIN/PATH）。
+    返回 {ok, errors, config_root, profile, entry}。spawn 显式传 DSH_HOME 由 266 验收。
+    """
+    errors: list[str] = []
+    root_raw = (config_root or "").strip()
+    profile = (profile or "").strip()
+    resolved_entry = (entry or "").strip() if entry is not None else _dsh_entry()
+    if not profile:
+        errors.append("profile 必填")
+    elif not _PROFILE_RE.match(profile) or db.is_builtin_user(profile):
+        errors.append("profile 名称非法")
+    if not root_raw:
+        # 原始空白串须在 Path 构造前判空：Path('')=Path('.')，否则会误取当前目录
+        # 甚至隐式绑定到 cwd 下恰好存在的有效 profile。
+        errors.append("config_root 必填")
+    else:
+        root = Path(root_raw)
+        if not root.is_dir():
+            errors.append("目录不存在")
+        elif not os.access(root, os.R_OK):
+            errors.append("目录不可访问")
+        elif profile and _PROFILE_RE.match(profile) and not db.is_builtin_user(profile):
+            home = root / "profiles" / profile
+            if not home.is_dir():
+                errors.append("profile 目录不存在")
+            elif not _dsh_patch(home / "cordis.patch.yml"):
+                errors.append("profile patch 不可解析（cordis.patch.yml）")
+    if not resolved_entry:
+        errors.append("执行入口未发现（设置 DSH_BIN 或加入 PATH）")
+    elif not _dsh_entry_available(resolved_entry):
+        errors.append("执行入口不可用")
+    return {"ok": not errors, "errors": errors, "config_root": root_raw, "profile": profile,
+            "entry": resolved_entry}
+
+
 def scan_candidates(conn: sqlite3.Connection, project: str = '') -> list[dict]:
     """产出可发现 profile 候选（只读，不写库）。
 
@@ -174,7 +357,7 @@ def scan_candidates(conn: sqlite3.Connection, project: str = '') -> list[dict]:
     project_bots = {r['bot_id'] for r in conn.execute(
         'SELECT bot_id FROM project_members WHERE project=?', (project,))} if project else set()
     out: list[dict] = []
-    for cand in _scan_hermes() + _scan_codex():
+    for cand in _scan_hermes() + _scan_codex() + _scan_dsh():
         if db.is_builtin_user(cand["profile"]):
             continue  # 内置 user 身份不是扫描资源（8.1）
         bot = bots.get((cand["host_type"], cand["config_root"], cand["profile"]))
@@ -194,37 +377,56 @@ def scan_candidates(conn: sqlite3.Connection, project: str = '') -> list[dict]:
 
 
 def register_bot(conn: sqlite3.Connection, host_type: str, profile: str,
-                 config_root: str, display_name: str = "") -> dict:
+                 config_root: str, display_name: str = "", entry: str | None = None) -> dict:
     """Bot 注册/复用（req#87 task#150：已绑定复用，未绑定注册新 Bot）。
 
     返回 {bot_id, created}。created=False 表示复用既有 Bot，保留统一显示名。
     项目角色与权限由项目成员配置单独管理。
+    dsh 分支在写入/复用前执行权威目录/profile/patch/入口复核（防 TOCTOU），
+    失败抛 ValueError 且不新增 Bot；复用成功时更新入口绑定。
     🔴 兼容异构 bots 表（真库带 created_at NOT NULL）：按列集分叉写入。
     """
     host_type = (host_type or "").strip()
     profile = (profile or "").strip()
     config_root = (config_root or "").strip()
-    if host_type not in ("hermes", "codex"):
-        raise ValueError("host_type must be 'hermes' or 'codex'")
+    if host_type not in ("hermes", "codex", "dsh"):
+        raise ValueError("host_type must be 'hermes', 'codex' or 'dsh'")
     if not profile or not _PROFILE_RE.match(profile) or db.is_builtin_user(profile):
         raise ValueError(f"invalid profile: {profile!r}")
     if host_type == 'hermes':
         hermes_profile_names.validate(profile)
     if not config_root:
         raise ValueError("config_root is required")
+    entry = (entry or "").strip() if entry is not None else ""
+    if host_type == 'dsh':
+        # 权威复核：写入/复用前复核目录/profile/patch/入口，失败不新增 Bot/成员/项目绑定
+        resolved_entry = entry or _dsh_entry()
+        check = validate_dsh_home(config_root, profile, resolved_entry)
+        if not check["ok"]:
+            raise ValueError("；".join(check["errors"]))
+        entry = check["entry"]
     row = conn.execute(
         "SELECT id FROM bots WHERE host_type=? AND config_root=? AND profile=?",
         (host_type, config_root, profile),
     ).fetchone()
     if row is not None:
+        # 复用：更新入口绑定（列存在时），保留统一显示名
+        if entry:
+            bot_cols = {r["name"] for r in conn.execute("PRAGMA table_info(bots)")}
+            if "runtime_entry" in bot_cols:
+                conn.execute("UPDATE bots SET runtime_entry=? WHERE id=?", (entry, row["id"]))
         return {"bot_id": row["id"], "created": False}
     bot_cols = {r["name"] for r in conn.execute("PRAGMA table_info(bots)")}
-    created = ", created_at" if "created_at" in bot_cols else ""
+    cols = ["host_type", "profile", "config_root", "runtime", "display_name"]
+    vals: list = [host_type, profile, config_root, host_type, display_name]
+    if "runtime_entry" in bot_cols:
+        cols.append("runtime_entry")
+        vals.append(entry)
+    if "created_at" in bot_cols:
+        cols.append("created_at")
+        vals.append(db.now_iso())
     cur = conn.execute(
-        "INSERT INTO bots (host_type, profile, config_root, runtime, display_name"
-        f"{created}) VALUES (?, ?, ?, ?, ?{', ?' if created else ''})",
-        (host_type, profile, config_root, host_type, display_name,
-          db.now_iso()) if created
-        else (host_type, profile, config_root, host_type, display_name),
+        f"INSERT INTO bots ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+        vals,
     )
     return {"bot_id": cur.lastrowid, "created": True}
