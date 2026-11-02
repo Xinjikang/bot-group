@@ -152,8 +152,8 @@ def _native_session_state(conn, profile, session):
     无绑定行，返回 False 沿用既有进程查询。
 
     只读观察租约在 finally 释放（Pool.sweep 依赖 entry.leases 空集做空闲回收），
-    共享物理连接保持池契约；观察走底层客户端 RPC（Lease.rpc 不带超时参数），
-    超时/断连只暂缓本会话。
+    共享物理连接保持池契约；观察走 Lease.rpc（保留 gate 序列化、订阅登记与传输
+    失败处理，timeout 为传输层显式参数而非 wire 参数），超时/断连只暂缓本会话。
     """
     binding = _binding_for_engine_session(conn, profile, session)
     if binding is None:
@@ -168,8 +168,8 @@ def _native_session_state(conn, profile, session):
     lease = None
     try:
         lease, _, _ = connection(profile, read_only=True)
-        snapshot = lease.client.rpc('session.resume', session_id=binding['session_id'],
-                                    timeout=_NATIVE_QUERY_TIMEOUT)
+        snapshot = lease.rpc('session.resume', session_id=binding['session_id'],
+                             timeout=_NATIVE_QUERY_TIMEOUT)
         running = snapshot.get('running')
         pending = snapshot.get('pending')
         if running is None and pending is None:

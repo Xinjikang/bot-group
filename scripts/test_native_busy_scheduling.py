@@ -22,7 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from engine import db, queue, wake  # noqa: E402
 from engine import hermes_gateway  # noqa: E402
-from engine.hermes_gateway_client import GatewayTransportError  # noqa: E402
+from engine import hermes_connections as connections  # noqa: E402
+from engine.hermes_gateway_client import GatewayRefusal, GatewayTransportError  # noqa: E402
 from engine import process_query  # noqa: E402
 
 PROJECT = 'p'
@@ -79,8 +80,10 @@ class FakeOwnedProc:
         return None
 
 
-class NativeBusySchedulingTests(unittest.TestCase):
-    def setUp(self):
+class NativeBusyFixtures:
+    """共享夹具（DB/队列/进程确定性），供假网关用例与真实 Pool/Lease 契约用例复用。"""
+
+    def _setup_db(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         patcher = patch.object(db, 'db_path', return_value=os.path.join(self.tmp.name, 'group.db'))
@@ -103,21 +106,8 @@ class NativeBusySchedulingTests(unittest.TestCase):
                 "VALUES(?,?,?,?,?,'','')", (f'probe-{i}', f'/probe/{i}', profile, profile, runtime)).lastrowid
             self.conn.execute('UPDATE members SET bot_id=? WHERE profile=?', (bot_id, profile))
         self.conn.commit()
-        # 状态夹具
-        self.native_states = {}
-        self.gateway_calls = []
-        self.lease_closes = []
-        self.clock = None
-        self.delivered = []
 
-        def fake_connection(profile, *, home=None, command=None, read_only=False,
-                            on_event=None, history=False):
-            return FakeHermesClient(self.native_states, self.gateway_calls,
-                                    self.lease_closes, clock=self.clock), home, command or []
-
-        patcher = patch.object(hermes_gateway, 'connection', side_effect=fake_connection)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+    def _setup_queue_and_process_fixtures(self):
         # 物理进程扫描确定性：默认无匹配进程（空闲）；按用例单独覆盖
         patcher = patch.object(process_query, 'list_processes', return_value=[])
         patcher.start()
@@ -135,8 +125,6 @@ class NativeBusySchedulingTests(unittest.TestCase):
     def _fake_deliver(self, profile, kind, **kwargs):
         self.delivered.append((profile, kind, kwargs.get('thread_id')))
         return {'ok': True, 'detail': 'probe'}
-
-    # ---- 夹具 ----
 
     def _bind(self, profile, kind='work', thread_id=0, session_id=None, generation=0, switching=0):
         """注册 Hermes 托管绑定行（project 固定为 p）。"""
@@ -156,6 +144,28 @@ class NativeBusySchedulingTests(unittest.TestCase):
 
     def _clear_native_cache(self):
         hermes_gateway._native_cache.clear()
+
+
+class NativeBusySchedulingTests(NativeBusyFixtures, unittest.TestCase):
+    def setUp(self):
+        self._setup_db()
+        # 状态夹具
+        self.native_states = {}
+        self.gateway_calls = []
+        self.lease_closes = []
+        self.clock = None
+        self.delivered = []
+
+        def fake_connection(profile, *, home=None, command=None, read_only=False,
+                            on_event=None, history=False):
+            return FakeHermesClient(self.native_states, self.gateway_calls,
+                                    self.lease_closes, clock=self.clock), home, command or []
+
+        patcher = patch.object(hermes_gateway, 'connection', side_effect=fake_connection)
+        patcher.start()
+        self.connection_patcher = patcher
+        self.addCleanup(patcher.stop)
+        self._setup_queue_and_process_fixtures()
 
     # ---- 验收 1：原生 busy 无引擎记录 → 后方空闲会话投递，A 保留原 ID 恢复 ----
 
@@ -410,6 +420,106 @@ class NativeBusySchedulingTests(unittest.TestCase):
             ('codex-c', 'work', None),
             ('dsh-d', 'work', None),
         ])
+
+
+class _ObserverRemote:
+    """真实传输契约夹具：timeout 是传输层显式参数（不进入 wire 载荷），params 才是 wire。"""
+
+    def __init__(self, calls, fail):
+        self.calls = calls
+        self.fail = fail
+        self.closed = False
+
+    def rpc(self, method, *, timeout=30, **params):
+        if self.closed:
+            raise GatewayTransportError('fixture transport closed')
+        self.calls.append({'method': method, 'params': params, 'timeout': timeout})
+        if self.fail[0] is not None:
+            raise self.fail[0]
+        if method == 'session.resume':
+            return {'session_id': params.get('session_id'), 'subscription_id': str(len(self.calls)),
+                    'running': False, 'pending': False}
+        return {'pong': True}
+
+    def close(self):
+        self.closed = True
+
+
+class NativeObserverPoolContractTests(NativeBusyFixtures, unittest.TestCase):
+    """观察者经真实 Pool/Lease 的集成契约（node1705）。
+
+    不使用 FakeHermesClient（其 client 即自身，掩盖 Lease.rpc 的 gate 序列化、订阅登记
+    与传输失败语义），改用真实 connections.Pool/Lease + 传输夹具
+    （与 scripts/test_hermes_connections.py 的 PoolTests 同一模式）。
+    """
+
+    def setUp(self):
+        self._setup_db()
+        self.delivered = []
+        self._setup_queue_and_process_fixtures()
+        self.observer_calls = []
+        self.observer_fail = [None]
+        self.observer_opens = []
+        self.observer_clock = [0.0]
+        self.observer_home = Path(self.tmp.name) / 'observer-home'
+        self.observer_pool = connections.Pool(
+            lambda home, command, callback, **kw: self._open(home, command, callback),
+            lambda: ('fixture', 'sha'), lambda home: False, lambda: self.observer_clock[0])
+        patcher = patch.object(hermes_gateway, 'connection', side_effect=self._acquire)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.observer_pool.stop)
+        self.addCleanup(self.observer_pool.join)
+
+    def _open(self, home, command, callback):
+        remote = _ObserverRemote(self.observer_calls, self.observer_fail)
+        self.observer_opens.append(remote)
+        self.observer_remote = remote
+        return remote
+
+    def _acquire(self, profile, **kwargs):
+        lease = self.observer_pool.acquire(self.observer_home, [], business=False)
+        return lease, self.observer_home, []
+
+    def _observe(self):
+        session = wake.session_name('hermes-a', 'work', None, PROJECT)
+        self._bind('hermes-a', session_id='native-observer')
+        return hermes_gateway._native_session_state(self.conn, 'hermes-a', session)
+
+    def _entry(self):
+        return self.observer_pool.entries[os.path.normcase(str(self.observer_home.resolve()))]
+
+    def test_observer_lease_rpc_registers_subscription_passes_timeout_and_releases(self):
+        self.assertIs(self._observe(), False)
+        entry = self._entry()
+        self.assertEqual(len(entry.leases), 0)  # finally 释放，Pool.sweep 可做空闲回收
+        self.assertFalse(self.observer_remote.closed)  # 共享物理连接保持池契约
+        call = self.observer_calls[-1]
+        self.assertEqual(call['method'], 'session.resume')
+        self.assertEqual(call['timeout'], hermes_gateway._NATIVE_QUERY_TIMEOUT)  # 传输层显式超时
+        self.assertNotIn('timeout', call['params'])  # timeout 不进 wire 载荷
+        self.assertTrue(any(sid == 'native-observer' for _, sid in entry.subscriptions))  # 订阅登记
+
+    def test_observer_transport_failure_releases_and_marks_pool(self):
+        self.observer_fail[0] = GatewayTransportError('injected transport failure')
+        self.assertIsNone(self._observe())  # 超时/断连只暂缓本会话
+        entry = self._entry()
+        self.assertEqual(len(entry.leases), 0)  # 异常路径同样 finally 释放
+        self.assertEqual(entry.state, 'error')  # Lease.rpc 经 pool.failed 标记死传输
+        self.assertTrue(self.observer_remote.closed)
+        self.observer_clock[0] = 2.0  # 越过 retry_at 后重连
+        lease = self.observer_pool.acquire(self.observer_home, [], business=False)
+        lease.close()
+        self.assertEqual(len(self.observer_opens), 2)  # 池重建连接
+        self.assertEqual(entry.state, 'connected')
+
+    def test_observer_refusal_keeps_shared_connection_and_pool_connected(self):
+        self.observer_fail[0] = GatewayRefusal('session_not_found')
+        self.assertIsNone(self._observe())  # 会话级拒答只暂缓本会话
+        entry = self._entry()
+        self.assertEqual(len(entry.leases), 0)  # finally 释放
+        self.assertFalse(self.observer_remote.closed)  # 拒答不毁共享连接
+        self.assertEqual(entry.state, 'connected')  # 池仍连接
 
 
 if __name__ == '__main__':
