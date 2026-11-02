@@ -1,7 +1,7 @@
 """req#137 task#264：dsh 成员配置读写与 persona 挂载测试。
 
 覆盖（对应验收标准）：
-- 7 字段回读一致（描述/人格/指令/.env/模型/提供商/推理强度）
+- 成员字段回读一致（描述/人格/模型/供应商/推理强度）
 - 仅写变更字段 + 未知条目/字段保留
 - revision 冲突检测、备份、清空字段继承原生 profile
 - 动态表达式（!!js）只读容忍、保存拒绝
@@ -85,8 +85,8 @@ class DshProfileConfigTests(unittest.TestCase):
     def _save(self, overrides):
         current = self._read()
         values = {k: current[k] for k in ("revision", "description", "persona",
-                                          "instructions", "model", "provider",
-                                          "reasoning_effort", "env")}
+                                          "model", "provider",
+                                          "reasoning_effort")}
         values.update(overrides)
         return dsh_profile_config.save(self.bot, values)
 
@@ -96,8 +96,6 @@ class DshProfileConfigTests(unittest.TestCase):
         self.assertEqual(view["model"], "deepseek-flash")
         self.assertEqual(view["provider"], "deepseek-account")
         self.assertEqual(view["reasoning_effort"], "max")
-        self.assertIn("先思考再回答", view["instructions"])
-        self.assertIn("DEEPSEEK_API_KEY=sk-test123456", view["env"])
         self.assertEqual(view["description"], "")
         self.assertEqual(view["runtime"], "dsh")
 
@@ -107,11 +105,8 @@ class DshProfileConfigTests(unittest.TestCase):
         self.assertEqual(plugins["persona"]["state"], "ok")
         self.assertEqual(plugins["persona"]["plugin"], "system-prompt")
         self.assertEqual(plugins["model"]["state"], "ok")
-        self.assertEqual(plugins["instructions"]["state"], "ok")  # 继承 bundle 默认，不再误判 missing
-        self.assertEqual(plugins["instructions"]["plugin"], "dsh-agent-instructions")
         self.assertEqual(plugins["description"]["state"], "ok")
         self.assertIsNone(plugins["description"]["plugin"])
-        self.assertEqual(plugins["env"]["state"], "ok")
 
     def test_plugins_status_disabled(self):
         self.patch.write_text(
@@ -162,14 +157,14 @@ class DshProfileConfigTests(unittest.TestCase):
         self.assertEqual(view["persona"], "新人格")
         self.assertEqual(view["provider"], "deepseek-account")
 
-    def test_save_instructions_and_description_to_files(self):
-        self._save({"instructions": "新指令", "description": "成员描述"})
+    def test_save_description_preserves_host_files(self):
+        before = {p: p.read_bytes() for p in (self.envfile, self.droot / "AGENTS.md")}
+        self._save({"description": "成员描述"})
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
         # 指令写 AGENTS.md、描述写侧边文件，均不入 cordis.patch.yml
-        self.assertIn("新指令", self.agentsfile.read_text(encoding="utf-8"))
         self.assertIn("成员描述", self.descfile.read_text(encoding="utf-8"))
         self.assertNotIn("成员描述", self.patch.read_text(encoding="utf-8"))
         view = self._read()
-        self.assertIn("新指令", view["instructions"])
         self.assertEqual(view["description"], "成员描述")
 
     def test_revision_conflict(self):
@@ -178,8 +173,8 @@ class DshProfileConfigTests(unittest.TestCase):
         self.patch.write_text(self.patch.read_text(encoding="utf-8") + "- id: added\n",
                               encoding="utf-8")
         values = {k: current[k] for k in ("revision", "description", "persona",
-                                          "instructions", "model", "provider",
-                                          "reasoning_effort", "env")}
+                                          "model", "provider",
+                                          "reasoning_effort")}
         values["model"] = "changed"
         with self.assertRaises(HTTPException) as cm:
             dsh_profile_config.save(self.bot, values)
@@ -233,8 +228,8 @@ class DshProfileConfigTests(unittest.TestCase):
         self.assertEqual(view["runtime"], "dsh")
         self.assertEqual(view["model"], "deepseek-flash")
         values = {k: view[k] for k in ("revision", "description", "persona",
-                                       "instructions", "model", "provider",
-                                       "reasoning_effort", "env")}
+                                       "model", "provider",
+                                       "reasoning_effort")}
         values["persona"] = "分派人格"
         result = profile_config.save("bot-1", values)
         self.assertTrue(result["saved"])

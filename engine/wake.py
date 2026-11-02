@@ -1089,7 +1089,11 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         # req#137 task#268：Auto 审批启用时生成受控适配插件（session/created 切 auto，
         # stderr 出证据行），随 overlay insert 一起注入。
         from . import dsh_auto
-        dsh_auto_enabled = dsh_auto.read_enabled(bot)
+        try:
+            dsh_auto_enabled = dsh_auto.plugin_available(bot)
+        except (OSError, ValueError, TypeError):
+            _shutil_rmtree(dsh_tmp)
+            return {'ok': False, 'detail': 'DSH Auto 插件检测失败，请检查绑定的运行时安装'}
         dsh_auto_overlay = None
         if dsh_auto_enabled:
             dsh_adapter_path = Path(dsh_tmp) / dsh_auto.ADAPTER_FILE

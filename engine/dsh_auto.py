@@ -11,7 +11,7 @@
   已启用 Auto 的执行若拿不到「preset=auto」运行时证据，判定能力失效并阻止继续。
 
 本模块职责：受控适配插件（session/created 切 auto + stderr 证据行）、overlay insert、
-启用状态读写（引擎侧边文件，不写 cordis.patch.yml）、插件状态判定（保存校验用）、
+运行前检测插件包并强制启用（执行 overlay，不写 cordis.patch.yml）、
 每轮审计落库（审查尝试 vs 工具主体执行独立计数）。
 """
 from __future__ import annotations
@@ -21,8 +21,6 @@ from pathlib import Path
 
 AUTO_PLUGIN_ID = 'auto-review'
 AUTO_PLUGIN_PACKAGE = '@deepseek-ai/dsh-experimental-auto-review'
-# 引擎侧边文件（与 description 同约定：不改 cordis.patch.yml，避免 round-trip 风险）。
-SIDE_FILE = '.group-engine-auto-review'
 ADAPTER_ID = 'auto-enable-adapter'
 ADAPTER_FILE = 'auto-enable-adapter.mjs'
 # 适配插件 stderr 证据行（引擎审计 + fail-closed 判读的唯一事实源）。
@@ -113,29 +111,44 @@ export function apply(ctx) {
 """
 
 
-def side_path(bot) -> Path:
-    """引擎侧启用标记文件：<DSH_HOME>/profiles/<profile>/.group-engine-auto-review。"""
-    return Path(bot['config_root']).resolve() / 'profiles' / bot['profile'] / SIDE_FILE
+def plugin_available(bot) -> bool:
+    """Detect the native Auto package in the bound runtime or DSH home.
 
-
-def read_enabled(bot) -> bool:
-    """Auto 是否启用（'on'；文件缺失/其他内容一律视为 off，fail-closed）。"""
-    try:
-        return side_path(bot).read_text(encoding='utf-8-sig').strip().lower() == 'on'
-    except OSError:
+    Existing profile flags and disabled overrides do not control engine approval.
+    Package presence enables the runtime preset check, which fails closed on load errors.
+    """
+    package = Path(*AUTO_PLUGIN_PACKAGE.split('/'))
+    home = Path(bot['config_root']).resolve()
+    entry_text = str(bot.get('runtime_entry') or '').strip()
+    bases = [home / 'profiles' / bot['profile'], home]
+    if entry_text:
+        entry = Path(entry_text).resolve()
+        bases.extend(list(entry.parents)[:4])
+    if any((base / 'node_modules' / package / 'package.json').is_file() for base in bases):
+        return True
+    if not entry_text:
         return False
-
-
-def write_enabled(bot, enabled: bool) -> None:
-    path = side_path(bot)
-    if enabled:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text('on', encoding='utf-8')
-    else:
-        try:
-            path.unlink()
-        except OSError:
-            pass
+    # Desktop installs bundle DSH modules inside resources/app.asar.
+    archive = entry.parent.parent.parent.parent / 'app.asar'
+    if not archive.is_file():
+        return False
+    import json
+    import struct
+    with archive.open('rb') as stream:
+        head = stream.read(16)
+        if len(head) != 16:
+            raise ValueError('DSH app.asar header is incomplete')
+        size = struct.unpack('<I', head[12:16])[0]
+        if not 0 < size <= 32 * 1024 * 1024:
+            raise ValueError('DSH app.asar header size is invalid')
+        node = json.loads(stream.read(size))
+    for part in ('dsh', 'node_modules', *AUTO_PLUGIN_PACKAGE.split('/'), 'package.json'):
+        if not isinstance(node, dict) or not isinstance(node.get('files', {}), dict):
+            raise ValueError('DSH app.asar module index is invalid')
+        node = node.get('files', {}).get(part)
+        if node is None:
+            return False
+    return True
 
 
 def adapter_source() -> str:
@@ -151,37 +164,6 @@ def overlay_inserts(adapter_path: str) -> list:
             {'id': ADAPTER_ID, 'name': str(adapter_path)},
         ],
     }]
-
-
-def plugin_state(bot, patch_entries: list) -> dict:
-    """auto-review 插件状态（保存校验 + 视图展示）。
-
-    沿用 dsh_profile_config 的继承语义：用户 patch 无该条目 → 继承 bundle 默认
-    （bundle 内含该插件，desktop 实测）→ ok；显式 disabled → disabled；显式指定
-    非 bundle 包名且未安装 → load_failed。真实加载失败由启动证据补足（wake fail-closed）。
-    """
-    home = Path(bot['config_root']).resolve()
-    profile = bot['profile']
-    entry = next((e for e in patch_entries if isinstance(e, dict)
-                  and str(e.get('id') or '') == AUTO_PLUGIN_ID), None)
-    if entry is None:
-        return {'plugin': AUTO_PLUGIN_ID, 'state': 'ok', 'reason': ''}
-    if entry.get('disabled'):
-        return {'plugin': AUTO_PLUGIN_ID, 'state': 'disabled',
-                'reason': f'{AUTO_PLUGIN_ID} 插件已禁用'}
-    name = entry.get('name')
-    if name and name != AUTO_PLUGIN_PACKAGE and not _pkg_installed(home, profile, name):
-        return {'plugin': AUTO_PLUGIN_ID, 'state': 'load_failed',
-                'reason': f'{name} 未安装或加载失败'}
-    return {'plugin': AUTO_PLUGIN_ID, 'state': 'ok', 'reason': ''}
-
-
-def _pkg_installed(home: Path, profile: str, pkg_name: str) -> bool:
-    parts = pkg_name.split('/')
-    for base in (home / 'profiles' / profile / 'node_modules', home / 'node_modules'):
-        if base.joinpath(*parts).is_dir():
-            return True
-    return False
 
 
 def preset_evidence(stderr_lines) -> dict:

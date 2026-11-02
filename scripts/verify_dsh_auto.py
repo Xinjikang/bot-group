@@ -88,8 +88,6 @@ class EngineFixture:
         if profile_src.is_dir():
             shutil.copytree(profile_src, self.bot_home / "profiles" / "desktop",
                             dirs_exist_ok=True)
-        (self.bot_home / "profiles" / "desktop" / dsh_auto.SIDE_FILE).write_text(
-            "on", encoding="utf-8")
         # 适配插件替换（fail 段）：模拟插件失效（set 抛异常 → preset 永不 auto）。
         self._orig_adapter = dsh_auto.adapter_source
         if broken_adapter:

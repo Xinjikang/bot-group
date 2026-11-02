@@ -65,12 +65,12 @@ def main():
                         req.fulfill(status=409, json={'detail': '配置已被其他操作修改'})
                         return
                     assert body['revision'] == config['revision']
-                    for key in ('description', 'persona', 'instructions', 'env', 'model',
-                                'provider', 'reasoning_effort', 'auto_review'):
+                    for key in ('description', 'persona', 'model',
+                                'provider', 'reasoning_effort'):
                         assert key in body, key
                     config.update({key: body[key] for key in
-                                   ('description', 'persona', 'instructions', 'env', 'model',
-                                    'provider', 'reasoning_effort', 'auto_review')})
+                                   ('description', 'persona', 'model',
+                                    'provider', 'reasoning_effort')})
                     config['revision'] = 'c' * 64
                     req.fulfill(json={'saved': True, 'backup': ['backup']})
                 else:
@@ -120,41 +120,26 @@ def main():
 
         # DSH fields, tabs and fixed effort levels.
         open_editor()
-        assert page.locator('#profile-tabs [role=tab]:visible').count() == 6
+        assert page.locator('#profile-tabs [role=tab]:visible').count() == 3
         assert page.locator('#profile-tab-soul').inner_text() == '人格'
-        assert page.locator('#profile-tab-instructions').is_visible()
-        assert page.locator('#profile-tab-env').is_visible()
-        assert page.locator('#profile-tab-model').inner_text() == '模型'
-        assert page.locator('#profile-tab-auto').inner_text() == 'Auto'
+        assert page.locator('#profile-tab-env').is_hidden()
+        assert page.locator('#profile-tab-instructions, #profile-tab-auto, #profile-instructions, #profile-auto-review, #btn-dsh-auto').count() == 0
+        assert page.locator('#profile-tab-model').inner_text() == '模型与供应商'
         assert '.group-engine-description' in page.locator('#profile-panel-description .profile-help').inner_text()
         assert 'personaPrefix' in page.locator('#profile-panel-soul .profile-help').inner_text()
-        assert 'AGENTS.md' in page.locator('#profile-panel-instructions .profile-help').inner_text()
         assert 'agent-default-model' in page.locator('#profile-panel-model .profile-help').first.inner_text()
-        assert '.group-engine-auto-review' in page.locator('#profile-auto-help').inner_text()
         assert page.locator('#profile-soul').input_value() == config['persona']
-        assert page.locator('#profile-instructions').input_value() == config['instructions']
-        assert page.locator('#profile-env').input_value() == config['env']
-        assert not page.locator('#profile-auto-review').is_checked()
-        assert page.locator('#profile-auto-text').inner_text() == '已关闭'
         choices = page.locator('#profile-reasoning_effort option').evaluate_all(
             '(options) => options.map(o => o.value)')
         assert choices == ['', 'minimal', 'low', 'medium', 'high', 'max', 'ultra'], choices
 
-        # All seven fields save through the dsh field names (persona/instructions, no soul).
+        # All member fields save through the dsh field names (persona, no soul).
         page.locator('#profile-description').fill('新的 DSH 描述')
         page.locator('#profile-tab-soul').click()
         page.locator('#profile-soul').fill('新的 DSH 人格')
-        page.locator('#profile-tab-instructions').click()
-        page.locator('#profile-instructions').fill('新的指令')
-        page.locator('#profile-tab-env').click()
-        page.locator('#profile-env').fill('DEEPSEEK_API_KEY=new\n')
         page.locator('#profile-tab-model').click()
         page.locator('#profile-model').fill('deepseek-reasoner')
         page.locator('#profile-reasoning_effort').select_option('high')
-        page.locator('#profile-tab-auto').click()
-        page.locator('.profile-switch-track').click()
-        assert page.locator('#profile-auto-review').is_checked()
-        assert page.locator('#profile-auto-text').inner_text() == '已开启'
         page.locator('#profile-save').click()
         page.wait_for_function('!document.querySelector("#dlg-profile").open')
         path, body = writes[-1]
@@ -162,36 +147,20 @@ def main():
         assert body['member_profile'] == 'bot-dsh'
         assert body['description'] == '新的 DSH 描述'
         assert body['persona'] == '新的 DSH 人格'
-        assert body['instructions'] == '新的指令'
-        assert body['env'].replace('\r\n', '\n') == 'DEEPSEEK_API_KEY=new\n'
         assert body['model'] == 'deepseek-reasoner'
         assert body['provider'] == 'deepseek-account'
         assert body['reasoning_effort'] == 'high'
-        assert body['auto_review'] == 'on'
-        assert 'soul' not in body
+        assert not {'env', 'instructions', 'auto_review', 'soul'} & body.keys()
         assert 'config_path' not in body
         page.wait_for_function('profileEditor === null')
 
-        # Auto readback: on is checked after reload; turning it off writes off.
-        open_editor()
-        page.locator('#profile-tab-auto').click()
-        assert page.locator('#profile-auto-review').is_checked()
-        assert page.locator('#profile-auto-text').inner_text() == '已开启'
-        page.locator('.profile-switch-track').click()
-        assert not page.locator('#profile-auto-review').is_checked()
-        page.locator('#profile-save').click()
-        page.wait_for_function('!document.querySelector("#dlg-profile").open')
-        off_body = writes[-1][1]
-        assert off_body['auto_review'] == 'off'
-        page.wait_for_function('profileEditor === null')
-
-        # Project scope: model fields go to the project; persona/instructions stay global.
+        # Project scope: model fields go to the project; persona stay global.
         state['model_conflict'] = True
         open_editor('p')
         assert '模型与推理应用到全局' in page.locator('#profile-global-text').inner_text()
         page.locator('#profile-description').fill('全局描述已保存')
         page.locator('#profile-tab-model').click()
-        assert '人格、指令、描述、.env 和 Auto 始终写入全局 profile' in page.locator('#profile-model-scope').inner_text()
+        assert '人格与描述保存到该成员的 profile' in page.locator('#profile-model-scope').inner_text()
         page.locator('#profile-model').fill('project-model')
         page.locator('#profile-save').click()
         page.wait_for_function('document.querySelector("#profile-status").textContent.includes("已保存全局字段")')
@@ -249,21 +218,9 @@ def main():
         assert page.locator('#profile-provider').is_disabled()
         assert page.locator('#profile-reasoning_effort').is_disabled()
         assert page.locator('#profile-description').is_enabled()
-        assert page.locator('#profile-env').is_enabled()
         assert page.locator('#profile-save').is_enabled()
-        if real_plugins:
-            # 未覆盖的 instructions 继承 bundle 默认插件，状态为 ok，保持可编辑。
-            assert '指令' not in text
-            assert page.locator('#profile-instructions').is_enabled()
-            assert 'Auto' not in text
-            assert page.locator('#profile-auto-review').is_enabled()
-        else:
-            assert '指令' in text and '未安装' in text and 'dsh-agent-instructions' in text
-            assert page.locator('#profile-instructions').is_disabled()
-            assert 'Auto 审批' in text and 'auto-review' in text
-            assert page.locator('#profile-auto-review').is_disabled()
+        assert '指令' not in text and 'Auto' not in text
         page.locator('#profile-description').fill('插件缺失下仍可保存描述')
-        page.locator('#profile-tab-auto').click()
         page.screenshot(path=str(evidence / 'dsh-config-plugins-1280-dark.png'))
         page.evaluate("applyTheme('light')")
         page.screenshot(path=str(evidence / 'dsh-config-plugins-1280-light.png'))
@@ -272,10 +229,8 @@ def main():
         page.wait_for_function('!document.querySelector("#dlg-profile").open')
         plugin_write = writes[-1]
         assert plugin_write[1]['persona'] == config['persona']
-        assert plugin_write[1]['instructions'] == config['instructions']
         assert plugin_write[1]['provider'] == config['provider']
         assert plugin_write[1]['reasoning_effort'] == config['reasoning_effort']
-        assert plugin_write[1]['auto_review'] == config['auto_review']
         assert plugin_write[1]['description'] == '插件缺失下仍可保存描述'
         page.wait_for_function('profileEditor === null')
         state['plugins'] = {}
@@ -285,16 +240,13 @@ def main():
         open_editor()
         box = page.locator('#dlg-profile').bounding_box()
         assert box['x'] >= 0 and box['x'] + box['width'] <= 390
-        assert page.locator('#profile-tabs [role=tab]:visible').count() == 6
+        assert page.locator('#profile-tabs [role=tab]:visible').count() == 3
         overflow = page.locator('#profile-tabs').evaluate('(el) => el.scrollWidth - el.clientWidth')
         assert overflow <= 0, overflow
-        page.locator('#profile-tab-auto').click()
-        assert page.locator('.profile-switch-track').is_visible()
-        assert page.locator('#profile-auto-text').inner_text() in ('已关闭', '已开启')
         for theme in ('dark', 'light'):
             page.evaluate('(theme) => applyTheme(theme)', theme)
             page.screenshot(path=str(evidence / f'dsh-config-390-{theme}.png'))
-            page.screenshot(path=str(evidence / f'dsh-config-auto-390-{theme}.png'))
+
         page.evaluate("applyTheme('dark')")
         page.set_viewport_size({'width': 1280, 'height': 900})
         page.screenshot(path=str(evidence / 'dsh-config-1280-dark.png'))
@@ -302,7 +254,7 @@ def main():
 
         assert not errors, errors
         browser.close()
-    print('PASS: DSH member config fields, persona/instructions mapping, Auto on/off and plugin gate, '
+    print('PASS: DSH member config fields, persona mapping, '
           'project scope, partial failure, revision conflict, plugin status and 390px themes')
 
 

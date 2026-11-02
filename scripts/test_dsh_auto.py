@@ -1,7 +1,7 @@
 """req#137 task#268：DSH Auto 审批接入单元测试（mock 隔离库，不起真实 DSH）。
 
 覆盖：overlay insert 结构、适配插件源码与证据解析（session preset / pre-execute 计数）、
-启用状态读写（side file fail-closed）、保存校验（插件禁用/未安装拒绝启用）、
+插件包检测与强制启用由 test_dsh_member_settings 覆盖、
 审计落库（审查尝试 vs 工具主体执行独立计数）、失败分类 auto_unavailable、
 wake fail-closed 判读（证据缺失阻止执行）。
 """
@@ -146,64 +146,6 @@ class PresetEvidenceTests(unittest.TestCase):
         ev = dsh_auto.preset_evidence(lines[-2:])
         self.assertEqual(ev["blocked_count"], 1)
         self.assertFalse(ev["confirmed"])
-
-
-class EnabledStateTests(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
-        (self.root / "profiles" / "desktop").mkdir(parents=True)
-        self.bot = {"config_root": str(self.root), "profile": "desktop"}
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def test_missing_file_is_off(self):
-        self.assertFalse(dsh_auto.read_enabled(self.bot))
-
-    def test_on_roundtrip(self):
-        dsh_auto.write_enabled(self.bot, True)
-        self.assertTrue(dsh_auto.read_enabled(self.bot))
-        self.assertEqual(dsh_auto.side_path(self.bot).read_text().strip(), "on")
-
-    def test_off_removes(self):
-        dsh_auto.write_enabled(self.bot, True)
-        dsh_auto.write_enabled(self.bot, False)
-        self.assertFalse(dsh_auto.read_enabled(self.bot))
-        self.assertFalse(dsh_auto.side_path(self.bot).exists())
-
-    def test_garbage_content_is_off(self):
-        dsh_auto.side_path(self.bot).write_text("something-else")
-        self.assertFalse(dsh_auto.read_enabled(self.bot))
-
-
-class PluginStateTests(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
-        self.bot = {"config_root": str(self.root), "profile": "desktop"}
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def test_inherit_bundle_ok(self):
-        self.assertEqual(dsh_auto.plugin_state(self.bot, [])["state"], "ok")
-
-    def test_disabled(self):
-        state = dsh_auto.plugin_state(self.bot, [{"id": "auto-review", "disabled": True}])
-        self.assertEqual(state["state"], "disabled")
-
-    def test_custom_name_not_installed(self):
-        state = dsh_auto.plugin_state(
-            self.bot, [{"id": "auto-review", "name": "@scope/not-installed"}])
-        self.assertEqual(state["state"], "load_failed")
-
-    def test_custom_name_installed(self):
-        pkg = self.root / "profiles" / "desktop" / "node_modules" / "@scope" / "installed"
-        pkg.mkdir(parents=True)
-        state = dsh_auto.plugin_state(
-            self.bot, [{"id": "auto-review", "name": "@scope/installed"}])
-        self.assertEqual(state["state"], "ok")
 
 
 class AuditTests(unittest.TestCase):
@@ -450,87 +392,6 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(execution_errors.classify(text), "auto_unavailable")
 
 
-class ProfileConfigAutoTests(unittest.TestCase):
-    """dsh_profile_config 的 auto_review 字段读写与保存校验。"""
-
-    def setUp(self):
-        from engine import dsh_profile_config
-        self.dsh_profile_config = dsh_profile_config
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
-        (self.root / "profiles" / "desktop").mkdir(parents=True)
-        self.patch = self.root / "profiles" / "desktop" / "cordis.patch.yml"
-        self.patch.write_text(
-            "- id: agent-default-model\n"
-            "  config:\n    provider: deepseek-account\n    model: deepseek-flash\n",
-            encoding="utf-8")
-        (self.root / ".env").write_text("DEEPSEEK_API_KEY=x\n", encoding="utf-8")
-        (self.root / "AGENTS.md").write_text("# rules\n", encoding="utf-8")
-        os.environ["GROUP_DB"] = str(self.root / "group.db")
-        self.bot = {"id": 1, "runtime": "dsh",
-                    "config_root": str(self.root), "profile": "desktop"}
-
-    def tearDown(self):
-        os.environ.pop("GROUP_DB", None)
-        self.tmp.cleanup()
-
-    def _read(self):
-        return self.dsh_profile_config.read(self.bot)
-
-    def _save(self, overrides):
-        current = self._read()
-        values = {k: current[k] for k in ("revision", "description", "persona",
-                                          "instructions", "model", "provider",
-                                          "reasoning_effort", "env", "auto_review")}
-        values.update(overrides)
-        return self.dsh_profile_config.save(self.bot, values)
-
-    def test_default_off(self):
-        self.assertEqual(self._read()["auto_review"], "off")
-        self.assertEqual(self._read()["plugins"]["auto_review"]["plugin"], "auto-review")
-
-    def test_enable_roundtrip(self):
-        self._save({"auto_review": "on"})
-        self.assertEqual(self._read()["auto_review"], "on")
-        self.assertTrue(dsh_auto.read_enabled(self.bot))
-
-    def test_disable_roundtrip(self):
-        self._save({"auto_review": "on"})
-        self._save({"auto_review": "off"})
-        self.assertEqual(self._read()["auto_review"], "off")
-        self.assertFalse(dsh_auto.read_enabled(self.bot))
-
-    def test_enable_rejected_when_plugin_disabled(self):
-        self.patch.write_text(
-            "- id: auto-review\n  disabled: true\n"
-            "- id: agent-default-model\n"
-            "  config:\n    provider: deepseek-account\n    model: deepseek-flash\n",
-            encoding="utf-8")
-        with self.assertRaises(Exception) as ctx:
-            self._save({"auto_review": "on"})
-        self.assertIn("无法启用 Auto 审批", str(ctx.exception))
-        self.assertEqual(self._read()["auto_review"], "off")
-
-    def test_enable_rejected_when_custom_plugin_missing(self):
-        self.patch.write_text(
-            "- id: auto-review\n  name: '@deepseek-ai/custom-missing'\n"
-            "- id: agent-default-model\n"
-            "  config:\n    provider: deepseek-account\n    model: deepseek-flash\n",
-            encoding="utf-8")
-        with self.assertRaises(Exception) as ctx:
-            self._save({"auto_review": "on"})
-        self.assertIn("无法启用 Auto 审批", str(ctx.exception))
-
-    def test_invalid_value_rejected(self):
-        with self.assertRaises(Exception) as ctx:
-            self._save({"auto_review": "maybe"})
-        self.assertIn("只接受 on/off", str(ctx.exception))
-
-    def test_other_fields_save_alongside_auto(self):
-        self._save({"auto_review": "on", "model": "deepseek-reasoner"})
-        view = self._read()
-        self.assertEqual(view["auto_review"], "on")
-        self.assertEqual(view["model"], "deepseek-reasoner")
 
 
 if __name__ == "__main__":

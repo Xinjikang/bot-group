@@ -54,7 +54,7 @@ def main():
         }, ensure_ascii=False, indent=2), encoding='utf-8')
         states = {field: state['state'] for field, state in view['plugins'].items()}
         assert states['persona'] == 'disabled', states
-        assert states['instructions'] == 'ok', states  # 未覆盖 → 继承 bundle 默认
+        assert 'instructions' not in states and 'auto_review' not in states, states
         assert states['model'] == states['provider'] == states['reasoning_effort'] == 'load_failed', states
         assert states['description'] == states['env'] == 'ok', states
         print(f'PASS: dsh plugin status {states}; evidence={evidence.resolve()}')

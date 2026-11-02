@@ -1,5 +1,7 @@
 # DeepSeek Harness 接入设计
 
+成员编辑与 Auto 启用规则的现行契约见 [成员设置设计](2026-11-02-dsh-member-settings.md)。下文保留原接入方案与验收历史。
+
 日期：2026-10-31。项目：bot-group。范围：新增 DeepSeek Harness（dsh）作为第三个 bot 运行时。
 
 ## 目标与范围

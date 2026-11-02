@@ -10,13 +10,8 @@
     model            -> agent-default-model.config.model
     provider         -> agent-default-model.config.provider
     reasoning_effort -> agent-default-model.config.reasoningEffort
-    instructions     -> DSH_HOME/AGENTS.md（dsh-agent-instructions 加载用户全局指令链
-                       ``$DSH_HOME/AGENTS.md``；其 config 仅 maxBytes 等预算字段，无指令正文）
     description      -> profiles/<name>/.group-engine-description（DSH 无原生描述字段，
                        存引擎侧边文件，不写入 cordis.patch.yml）
-    env              -> DSH_HOME/.env（``DEEPSEEK_API_KEY=...``）
-    auto_review      -> profiles/<name>/.group-engine-auto-review（'on'/'off' 引擎侧边文件，
-                       Auto 审批启用开关；插件条目由 spawn overlay insert，不写入 patch）
 
 含动态表达式（``!!js``）的 patch 无法安全 round-trip，保存前拒绝为只读。锚点/别名由
 ruamel 原生 round-trip 保留，不再拒绝（避免误拒 ``A&B`` / ``*重点*`` 等合法字符串内容）。
@@ -62,16 +57,13 @@ _REASONING_LEVELS = ('', 'minimal', 'low', 'medium', 'high', 'max', 'ultra')
 _AMBIGUOUS = re.compile(r'!!js\b')
 # 凭据脱敏：sk-* 密钥、bearer token、api_key=... 等。
 _CREDENTIAL = re.compile(r'(?i)(sk-[A-Za-z0-9_-]{6,}|bearer\s+\S+|api[_-]?key\s*[:=]\s*\S+)')
-# 字段 -> (依赖插件 id, 包名)；description/env 无插件依赖（引擎侧边文件 / DSH 原生 .env）。
+# 字段 -> (依赖插件 id, 包名)；description 使用引擎侧边文件。
 _PLUGIN_BACKING = {
     'persona': ('system-prompt', '@deepseek-ai/dsh-system-prompt'),
     'model': ('agent-default-model', '@deepseek-ai/dsh-agent-default-model'),
     'provider': ('agent-default-model', '@deepseek-ai/dsh-agent-default-model'),
     'reasoning_effort': ('agent-default-model', '@deepseek-ai/dsh-agent-default-model'),
-    'instructions': ('dsh-agent-instructions', '@deepseek-ai/dsh-agent-instructions'),
     'description': (None, None),
-    'env': (None, None),
-    'auto_review': ('auto-review', '@deepseek-ai/dsh-experimental-auto-review'),
 }
 
 
@@ -129,16 +121,11 @@ def resolve(member: str):
         conn.close()
 
 
-def _layout(bot) -> tuple[Path, Path, Path, Path, Path, Path]:
-    """返回 (home, patch, env, agents_md, description_file, auto_review_file)。"""
+def _layout(bot) -> tuple[Path, Path, Path]:
+    """Return the home, profile patch and description paths."""
     home = Path(bot['config_root']).resolve()
-    profile = bot['profile']
-    patch = home / 'profiles' / profile / 'cordis.patch.yml'
-    env = home / '.env'
-    agents = home / 'AGENTS.md'
-    desc = home / 'profiles' / profile / '.group-engine-description'
-    auto = home / 'profiles' / profile / '.group-engine-auto-review'
-    return home, patch, env, agents, desc, auto
+    folder = home / 'profiles' / bot['profile']
+    return home, folder / 'cordis.patch.yml', folder / '.group-engine-description'
 
 
 def _snapshot(paths) -> dict[str, bytes | None]:
@@ -184,8 +171,6 @@ def _view(home: Path, profile: str, patch: Path, file_paths: dict[str, Path],
         view[field] = str(config[key] or '') if isinstance(config, dict) and key in config else ''
     for field, path in file_paths.items():
         view[field] = files._text(snapshot.get(str(path)))
-    # auto_review 侧边文件归一化为 'on'/'off'（缺失/其他内容一律 off，fail-closed）。
-    view['auto_review'] = 'on' if (view.get('auto_review') or '').strip() == 'on' else 'off'
     view['plugins'] = _plugin_status(home, profile, seq, patch)
     return view
 
@@ -193,12 +178,11 @@ def _view(home: Path, profile: str, patch: Path, file_paths: dict[str, Path],
 def read(bot) -> dict:
     try:
         with files._LOCK:
-            home, patch, env, agents, desc, auto = _layout(bot)
+            home, patch, desc = _layout(bot)
             if not patch.is_file():
                 raise HTTPException(404, 'DSH profile cordis.patch.yml does not exist')
-            paths = [patch, env, agents, desc, auto]
-            file_paths = {'env': env, 'instructions': agents, 'description': desc,
-                          'auto_review': auto}
+            paths = [patch, desc]
+            file_paths = {'description': desc}
             return _view(home, bot['profile'], patch, file_paths, _snapshot(paths))
     except YAMLError as exc:
         raise HTTPException(400, _sanitize(f'cordis.patch.yml 解析失败：{exc}')) from None
@@ -254,32 +238,24 @@ def _commit(before: dict, after: dict) -> list[str]:
 
 
 def save(bot, values: dict) -> dict:
+    if any(field in values for field in ('env', 'instructions', 'auto_review')):
+        raise HTTPException(400, 'DSH 成员编辑仅支持描述、人格、模型与供应商')
     try:
         with files._LOCK:
-            home, patch, env, agents, desc, auto = _layout(bot)
+            home, patch, desc = _layout(bot)
             if not patch.is_file():
                 raise HTTPException(404, 'DSH profile cordis.patch.yml does not exist')
-            paths = [patch, env, agents, desc, auto]
-            file_paths = {'env': env, 'instructions': agents, 'description': desc}
+            paths = [patch, desc]
+            file_paths = {'description': desc}
             before = _snapshot(paths)
             current = _view(home, bot['profile'], patch,
-                            dict(file_paths, auto_review=auto), before)
+                            file_paths, before)
             if values['revision'] != current['revision']:
                 raise HTTPException(409, 'Configuration changed; reopen the editor')
             raw = files._text(before[str(patch)])
             if _AMBIGUOUS.search(raw):
                 raise HTTPException(400, 'cordis.patch.yml 含动态表达式，为避免覆盖损坏请先在 DSH 宿主中解析')
             parser, seq = _yaml(before[str(patch)])
-            # req#137 task#268：Auto 审批开关。启用前校验插件状态（可选能力规则）：
-            # 插件禁用/未安装时拒绝保存，避免「已启用审批」在运行时静默失效。
-            auto_value = str(values.get('auto_review') or '').strip()
-            if auto_value not in ('', 'on', 'off'):
-                raise HTTPException(400, 'auto_review 只接受 on/off')
-            if auto_value == 'on' and current['auto_review'] != 'on':
-                from . import dsh_auto
-                state = dsh_auto.plugin_state(bot, _parse(raw))
-                if state['state'] != 'ok':
-                    raise HTTPException(400, f'无法启用 Auto 审批：{state["reason"]}')
             for field, (entry_id, key) in _PATCH_FIELDS.items():
                 value = values.get(field)
                 if value is None or value == current[field]:
@@ -306,16 +282,15 @@ def save(bot, values: dict) -> dict:
                     config.pop(key, None)
             after = dict(before)
             after[str(patch)] = files._dump(parser, seq, before[str(patch)])
-            # 独立文件字段（env/instructions/description）：仅写变更，保留原 EOL 风格。
+            # 描述文件仅写变更，保留原 EOL 风格。
             for field, path in file_paths.items():
+                if values.get(field) is None:
+                    continue
                 value = (values.get(field) or '').replace('\r\n', '\n')
                 if value != current[field].replace('\r\n', '\n'):
                     if before[str(path)] and b'\r\n' in before[str(path)]:
                         value = value.replace('\n', '\r\n')
                     after[str(path)] = value.encode('utf-8')
-            # Auto 审批开关（'on'/'off'，缺失视为不变更）；仅写变更。
-            if auto_value in ('on', 'off') and auto_value != current['auto_review']:
-                after[str(auto)] = auto_value.encode('utf-8')
             if any(raw is not None and len(raw) > files._MAX_BYTES for raw in after.values()):
                 raise HTTPException(400, 'Configuration file exceeds 2 MB')
             return {'saved': True, 'backup': _commit(before, after)}

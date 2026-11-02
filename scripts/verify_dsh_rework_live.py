@@ -1,7 +1,7 @@
 """req#138 task#269 返修：真实 DSH overlay.yml 加载 + 真实 PUT 保存回读证据。
 
 两段（各自独立，可独立复跑）：
-  --segment put      真实 HTTP PUT（TestClient）保存 persona/instructions（无 soul）回读一致
+  --segment put      真实 HTTP PUT（TestClient）保存 persona（无 soul）回读一致
   --segment overlay  真实 DSH --patch overlay.yml 加载：!!js 求值 + 本地 insert 插件 + persona
 运行：python -X utf8 -B scripts/verify_dsh_rework_live.py --entry <dsh.cmd绝对路径> \\
   --source-home <源DSH_HOME> --test-directory <分配隔离目录> --evidence <绝对证据路径> \\
@@ -33,7 +33,7 @@ def _sanitize(text):
 
 
 def _segment_put(test_dir: Path) -> dict:
-    """真实 PUT 保存 persona/instructions（无 soul）+ 回读一致。"""
+    """真实 PUT 保存 persona（无 soul）+ 回读一致。"""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from engine import api, auth, db
@@ -72,12 +72,9 @@ def _segment_put(test_dir: Path) -> dict:
     body = {
         "description": "一个 DSH 助手",
         "persona": "我是「PUT_PERSONA」人格",
-        "instructions": "先思考再回答",
-        "env": "",
         "model": "deepseek-flash",
         "provider": "deepseek-account",
         "reasoning_effort": "medium",
-        "auto_review": "off",
         "revision": None,
     }
     # 先读 revision
@@ -91,11 +88,9 @@ def _segment_put(test_dir: Path) -> dict:
     result["put_status"] = put.status_code
     read1 = client.get("/members/dsh-bot/config", headers=headers).json()
     result["persona_readback"] = read1.get("persona")
-    result["instructions_readback"] = read1.get("instructions")
     result["persona_consistent"] = read1.get("persona") == "我是「PUT_PERSONA」人格"
-    result["instructions_consistent"] = read1.get("instructions") == "先思考再回答"
     result["passed"] = (put.status_code == 200 and result["persona_consistent"]
-                        and result["instructions_consistent"])
+                        and "instructions" not in read1 and "env" not in read1 and "auto_review" not in read1)
     client.close()
     shutil.rmtree(root, ignore_errors=True)
     return result

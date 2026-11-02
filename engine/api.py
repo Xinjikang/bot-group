@@ -1174,16 +1174,13 @@ def delete_project_role(name: str, role_id: int, identity=Depends(_resolve_ident
 class ProfileConfigEdit(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     description: str = Field(default='', max_length=100000)
-    # req#138 F1：DSH 成员用 persona 替代 soul；soul 对 DSH 不必填，persona/instructions
-    # 由 DSH 编辑器提交。Hermes/Codex 仍提交 soul。
+    # DSH 使用 persona；Hermes/Codex 使用 soul。
     soul: Optional[str] = Field(default=None, max_length=2 * 1024 * 1024)
     persona: Optional[str] = Field(default=None, max_length=2 * 1024 * 1024)
-    instructions: Optional[str] = Field(default=None, max_length=2 * 1024 * 1024)
     env: str = Field(default='', max_length=2 * 1024 * 1024)
     model: str = Field(default='', max_length=500)
     provider: str = Field(default='', max_length=200)
     reasoning_effort: Optional[str] = Field(default=None, max_length=30)
-    auto_review: Optional[str] = Field(default=None, max_length=10)
     member_profile: Optional[str] = Field(default=None, max_length=200)
     config_path: Optional[str] = Field(default=None, max_length=4096)
     revision: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -1244,7 +1241,10 @@ def put_member_config(profile: str, body: ProfileConfigEdit, identity=Depends(_r
     _profile_editor_access(profile, identity)
     if body.member_profile is not None and body.member_profile != profile:
         raise HTTPException(409, 'Member changed; reopen the editor')
-    return profile_config.save(profile, body.model_dump(exclude={'member_profile'}))
+    values = body.model_dump(exclude={'member_profile'})
+    if 'env' not in body.model_fields_set:
+        values.pop('env', None)
+    return profile_config.save(profile, values)
 
 
 @router_api.post("/members/{profile}/active")

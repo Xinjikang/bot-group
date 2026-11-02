@@ -1,7 +1,7 @@
 """req#138 task#269：dsh 后端返修（F1/F3/F4/F5/F8/F10）单元回归。
 
 覆盖：
-- F1：ProfileConfigEdit 接受 persona/instructions（无 soul），DSH 保存回读一致。
+- F1：ProfileConfigEdit 接受 persona（无 soul），DSH 保存回读一致。
 - F3：项目覆盖 provider 后认证路由与运行 provider 一致（deepseek-account 正确 disabled）。
 - F4：dsh_overlay 保留 insert 无 id 插件与 !!js 动态表达式，persona 不丢失。
 - F5：项目覆盖 reasoning_effort 映射为原生 reasoningEffort。
@@ -23,23 +23,19 @@ from engine import api, db, discovery, dsh_auth, native_runtime, wake  # noqa: E
 
 
 class F1ProfileConfigEditTests(unittest.TestCase):
-    """DSH 成员编辑请求体（persona/instructions，无 soul）不得 422。"""
+    """DSH 成员编辑请求体（persona，无 soul）不得 422。"""
 
-    def test_dsh_body_without_soul_accepts_persona_instructions(self):
+    def test_dsh_body_without_soul_accepts_persona(self):
         body = {
             "description": "一个 DSH 助手",
             "persona": "你是测试人格",
-            "instructions": "先思考再回答",
-            "env": "DEEPSEEK_API_KEY=sk-test",
             "model": "deepseek-flash",
             "provider": "deepseek-account",
             "reasoning_effort": "medium",
-            "auto_review": "off",
             "revision": "a" * 64,
         }
         model = api.ProfileConfigEdit.model_validate(body)
         self.assertEqual(model.persona, "你是测试人格")
-        self.assertEqual(model.instructions, "先思考再回答")
         self.assertIsNone(model.soul)  # soul 不必填
 
     def test_hermes_body_still_accepts_soul(self):
