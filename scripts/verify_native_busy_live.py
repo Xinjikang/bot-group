@@ -330,6 +330,13 @@ def verify(args):
             time.sleep(1)
         assert row_a['status'] == 'done', row_a
         result['checks']['a_recovered_same_id'] = True
+        # 恢复投递的引擎记录终态对账滞后于 job 完成：等第二条记录收敛到 completed
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            rows_now = engine_rows()
+            if len(rows_now) == 2 and all(r['outcome'] == 'completed' for r in rows_now):
+                break
+            time.sleep(1)
         result['jobs'].append({'window': 'after-release', 'a': dict(conn.execute(
             'SELECT * FROM wake_jobs WHERE id=?', (job_a['id'],)).fetchone())})
         result['engine_rows'] = engine_rows()
