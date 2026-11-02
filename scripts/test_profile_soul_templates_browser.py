@@ -81,6 +81,10 @@ def main():
         page.locator('[name=member-add-host][value=codex]').check()
         page.wait_for_function("!memberAdd.scanning")
         page.locator('#member-create-profile').fill('new-person')
+        assert page.locator('#member-create-soul-templates button').is_hidden()
+        page.locator('.member-create-fields summary').click()
+        assert page.locator('#member-create-soul-templates').evaluate("e => !!e.closest('details')")
+        assert page.locator('label[for=member-create-instructions]').inner_text() == '个人指令 · AGENTS.md'
         page.locator('#member-create-soul-templates button').click()
         page.locator('#profile-soul-template-apply').wait_for(state='visible')
         page.wait_for_function("!document.querySelector('#profile-soul-template-apply').disabled")
@@ -189,6 +193,7 @@ def main():
             page.locator('#member-picker-list .member-picker-create').click()
             page.locator('[name=member-add-host][value=codex]').check()
             page.wait_for_function('!memberAdd.scanning')
+            page.locator('.member-create-fields summary').click()
             page.locator('#member-create-soul-templates button').click()
             page.wait_for_function("!document.querySelector('#profile-soul-template-retry').disabled")
             assert page.locator('#profile-soul-template-role option').all_text_contents() == [r['name'] for r in expected]

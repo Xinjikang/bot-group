@@ -86,7 +86,7 @@ HUD 实时进度：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test
 
 HUD 设置分区：检查两个卡片分别包含 AI 选择及复选框、空闲时间及说明；取消和保存位于卡片外。浏览器核对卡片边界及控件可见，取消返回对话；保持只读验证，不提交配置。
 
-SOUL 模板入口范围：仅项目创建向导传入模板、项目详情传入项目时显示。HUD 新建 profile、全局 profile 编辑隐藏整个模板工具栏；全局编辑即使已选中项目也不继承模板上下文。浏览器检查入口可见性，不创建或保存 profile；无上下文回归断言见 test_profile_soul_templates_browser.py。
+SOUL 模板入口范围：仅项目创建向导传入模板、项目详情传入项目时显示。创建页入口归入“更多设置 → 个人指令”，与正文同组折叠，引用填入同一编辑框，标签标明宿主对应内容。HUD 新建 profile、全局 profile 编辑隐藏整个模板工具栏；全局编辑即使已选中项目也不继承模板上下文。浏览器检查入口可见性、折叠及引用；无上下文回归断言见 test_profile_soul_templates_browser.py，390px 创建页标签可读性见 test_profile_create_browser.py。
 
 HUD 设置与标题：在隔离预览打开设置，检查字段组间距、选择器下的“新建 profile”和“刷新可选 Bot”、与弹窗一致的 15px 主题色复选框；修改空闲时间后取消，再次打开应恢复已保存值。取消与保存并排，设置页隐藏顶部返回入口。验证新建入口可打开及取消、刷新后设置仍可操作，默认“项目助手”名称与状态分别采用 13px/600、12px/400 及次级文字色。正式页面使用独立标签页只读核对，不保存配置或启动模型。
 
@@ -209,7 +209,7 @@ Hermes 兼容性配套回归：设置 `HERMES_TEST_SOURCE` 为本机 Hermes 源�
 
 DSH profile 创建：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_dsh_profile_create scripts.test_profile_create -q`，隔离 HOME/SQLite 验证独立目录、模型和账号路由继承、个人指令、同名拒绝、幂等重试、默认设置、源文件保持、失败回滚、运行入口检查、HUD 说明核验和延迟入组。`python -X utf8 -B scripts/test_dsh_host_browser.py --evidence <主目录报告路径>` 使用真实 Chrome + 合成 HTTP，覆盖标识逐字输入、初始为空、来源/宿主切换保留、统一表单、失败修改重试、扫描为空/异常、创建载荷、既有成员绑定失效提示和桌面/390px 深浅主题。共用表单继续运行 `test_profile_create_browser.py`。Python 需安装项目依赖与 Playwright，使用已安装 Chrome。
 
-创建模型与供应商：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_profile_provider_pair scripts.test_profile_create scripts.test_dsh_profile_create scripts.test_hud_native_tools -q`，隔离验证来源预览权限、扫描边界与错误脱敏、Hermes 标量来源、显式成对填写、空字段拒绝、实际落盘、DSH 重复条目取末项及运行 overlay 的供应商。浏览器复用 `test_dsh_host_browser.py` 与 `test_profile_create_browser.py`，覆盖来源自动带入、空 headless 手动补齐、供应商必填、Codex 隐藏、手动整组保护、跨宿主草稿、过期响应隔离、Hermes 真实接口落盘，以及桌面/390px 深浅主题。
+创建模型与供应商：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_profile_provider_pair scripts.test_profile_create scripts.test_dsh_profile_create scripts.test_hud_native_tools -q`，隔离验证来源预览权限、扫描边界与错误脱敏、Hermes 标量来源、可选字段、两项留空与单项覆盖、默认主 profile 继承、实际落盘、DSH 重复条目取末项及运行 overlay 的供应商。浏览器复用 `test_dsh_host_browser.py` 与 `test_profile_create_browser.py`，覆盖来源自动带入、空 headless 留空提交、更多设置默认收起、Codex 隐藏、手动整组保护、跨宿主草稿、过期响应隔离、Hermes 真实接口落盘，以及桌面/390px 深浅主题。
 
 DSH 原生新 profile 配置验证：`python -X utf8 -B scripts/verify_dsh_profile_create_native.py --entry <已安装dsh入口绝对路径> --evidence <主目录报告路径>`。使用临时 HOME/SQLite 和合成来源，经真实创建 API 后调用原生 `--profile <新标识> --dump-config`，检查 headless、模型与供应商覆盖和人格正文；零模型调用，退出清理临时资源，原生组合配置留在报告目录。需 Python 3.11+、项目依赖和可执行 DSH 入口。
 

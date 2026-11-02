@@ -29,19 +29,44 @@ class HermesProviderPairTests(unittest.TestCase):
         self.assertEqual(config['model']['provider'], 'openrouter')
         self.assertEqual(source.read_bytes(), before)
 
-    def test_scalar_source_and_blank_pair_validation(self):
+    def test_scalar_source_and_explicit_override(self):
         root, body = self.fixture('hermes')
         (root / 'config.yaml').write_text('model: scalar-model\n', encoding='utf-8')
         preview = self.client.post('/profiles/source-settings', json={'host_type': 'hermes'})
         self.assertEqual(preview.json(), {'model': 'scalar-model', 'provider': ''})
-        for model, provider in [('only-model', ''), ('', 'openai'), (' ', 'openai')]:
-            response = self.client.post('/profiles/create', json={**body, 'model': model, 'provider': provider})
-            self.assertEqual(response.status_code, 400, response.text)
-            self.assertFalse((root / 'profiles' / body['profile']).exists())
         response = self.client.post('/profiles/create', json={**body, 'model': 'new-model', 'provider': 'openai'})
         self.assertEqual(response.status_code, 200, response.text)
         config = yaml.safe_load((Path(response.json()['home']) / 'config.yaml').read_text(encoding='utf-8'))
         self.assertEqual(config['model']['provider'], 'openai')
+
+    def test_optional_fields_inherit_selected_or_default_source(self):
+        root, body = self.fixture('hermes')
+        source = root / 'config.yaml'
+        source.write_text('model:\n  default: source-model\n  provider: openai\n', encoding='utf-8')
+        for index, (selected, model, provider) in enumerate([
+            (body['source'], '', ''), (None, '', ''),
+            (body['source'], 'new-model', ''), (None, 'new-model', ''),
+            (body['source'], '', 'openrouter'), (None, '', 'openrouter'),
+        ]):
+            with self.subTest(source=selected, model=model, provider=provider):
+                response = self.client.post('/profiles/create', json={**body,
+                    'profile': f'optional-{index}', 'request_id': f'optional-{index}',
+                    'source': selected, 'model': model, 'provider': provider})
+                self.assertEqual(response.status_code, 200, response.text)
+                config = yaml.safe_load((Path(response.json()['home']) / 'config.yaml').read_text(encoding='utf-8'))
+                self.assertEqual(config['model']['default'], model or 'source-model')
+                self.assertEqual(config['model']['provider'], provider or 'openai')
+
+    def test_blank_default_without_model_config_and_single_line_validation(self):
+        root, body = self.fixture('hermes')
+        (root / 'config.yaml').write_text('{}\n', encoding='utf-8')
+        response = self.client.post('/profiles/create', json={**body, 'source': None, 'model': ' ', 'provider': ' '})
+        self.assertEqual(response.status_code, 200, response.text)
+        config = yaml.safe_load((Path(response.json()['home']) / 'config.yaml').read_text(encoding='utf-8'))
+        self.assertFalse(config)
+        response = self.client.post('/profiles/create', json={**body,
+            'profile': 'invalid-model', 'model': 'bad\nmodel', 'provider': ''})
+        self.assertIn(response.status_code, (400, 422))
 
     def test_preview_auth_source_boundary_and_parser_redaction(self):
         root, body = self.fixture('hermes')
@@ -71,7 +96,6 @@ class DshProviderPairTests(unittest.TestCase):
         (source / 'cordis.patch.yml').write_text('[]\n', encoding='utf-8')
         self.assertEqual(self.client.post('/profiles/source-settings', json=request).json(),
                          {'model': '', 'provider': ''})
-        self.assertEqual(self.client.post('/profiles/create', json={**body, 'provider': ''}).status_code, 400)
         response = self.client.post('/profiles/create', json={**body, 'provider': 'deepseek-official'})
         self.assertEqual(response.status_code, 200, response.text)
         bot = {'config_root': str(root), 'profile': body['profile']}
@@ -80,6 +104,38 @@ class DshProviderPairTests(unittest.TestCase):
         self.assertEqual(entries['agent-default-model']['config'],
                          {'model': body['model'], 'provider': 'deepseek-official'})
         self.assertTrue(entries['deepseek-account']['disabled'])
+
+    def test_optional_fields_and_default_desktop_inheritance(self):
+        root, source, body = self.fixture()
+        desktop = root / 'profiles/desktop'
+        desktop.mkdir()
+        desktop_text = (source / 'cordis.patch.yml').read_text(encoding='utf-8').replace('source-model', 'primary-model')
+        (desktop / 'cordis.patch.yml').write_text(desktop_text, encoding='utf-8')
+        preview = self.client.post('/profiles/source-settings', json={'host_type': 'dsh', 'source': None})
+        self.assertEqual(preview.json(), {'model': 'primary-model', 'provider': 'deepseek-account'})
+        for index, (selected, model, provider) in enumerate([
+            (body['source'], '', ''), (None, '', ''),
+            (body['source'], 'new-model', ''), (None, 'new-model', ''),
+            (body['source'], '', 'deepseek-official'), (None, '', 'deepseek-official'),
+        ]):
+            with self.subTest(source=selected, model=model, provider=provider):
+                response = self.client.post('/profiles/create', json={**body,
+                    'profile': f'optional-{index}', 'request_id': f'optional-{index}',
+                    'source': selected, 'model': model, 'provider': provider})
+                self.assertEqual(response.status_code, 200, response.text)
+                entries = yaml.safe_load((Path(response.json()['home']) / 'cordis.patch.yml').read_text(encoding='utf-8'))
+                config = next(e['config'] for e in entries if e.get('id') == 'agent-default-model')
+                self.assertEqual(config['model'], model or ('source-model' if selected else 'primary-model'))
+                self.assertEqual(config['provider'], provider or 'deepseek-account')
+                self.assertEqual(config['reasoningEffort'], 'high')
+        self.assertEqual((desktop / 'cordis.patch.yml').read_text(encoding='utf-8'), desktop_text)
+
+    def test_blank_default_without_desktop_uses_native_defaults(self):
+        root, source, body = self.fixture()
+        response = self.client.post('/profiles/create', json={**body, 'source': None, 'model': '', 'provider': ''})
+        self.assertEqual(response.status_code, 200, response.text)
+        entries = yaml.safe_load((Path(response.json()['home']) / 'cordis.patch.yml').read_text(encoding='utf-8'))
+        self.assertFalse(any(e.get('id') == 'agent-default-model' for e in entries))
 
     def test_last_model_entry_is_previewed_and_overridden(self):
         root, source, body = self.fixture()

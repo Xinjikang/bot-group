@@ -131,6 +131,7 @@ def main():
             for theme in ('light', 'dark'):
                 page.evaluate('applyTheme', theme); page.set_viewport_size({'width': 390, 'height': 844})
                 assert page.locator('#dlg-member-add').evaluate('e => e.scrollWidth <= e.clientWidth + 1')
+                assert page.locator('label[for=member-create-instructions]').bounding_box()['height'] < 35
                 page.locator('#dlg-member-add').screenshot(path=str(output / f'profile-create-390-{theme}.png'))
             page.set_viewport_size({'width': 1280, 'height': 900})
             page.locator('#member-add-join').click()
@@ -196,10 +197,12 @@ def main():
             assert page.locator('#member-create-model').input_value() == 'base-model'
             assert page.locator('#member-create-provider').input_value() == 'openai'
             page.locator('#member-create-profile').fill('wizard-hermes')
+            assert page.locator('#member-create-model').is_hidden()
+            assert page.locator('#member-create-provider').is_hidden()
+            page.locator('.member-create-fields summary').click()
             page.locator('#member-create-model').fill('wizard-model')
             page.locator('#member-create-provider').fill('')
-            assert page.locator('#member-add-join').is_disabled()
-            page.locator('#member-create-provider').fill('openai')
+            assert page.locator('#member-add-join').is_enabled()
             page.locator('#dlg-member-add').screenshot(path=str(output / 'hermes-model-provider.png'))
             page.locator('.profile-soul-template-open').last.click()
             page.locator('#profile-soul-template-apply').wait_for(state='visible')
@@ -217,7 +220,7 @@ def main():
             config = yaml.safe_load((host / 'profiles/wizard-hermes/config.yaml').read_text(encoding='utf-8'))
             assert config['model']['default'] == 'wizard-model'
             assert config['model']['provider'] == 'openai'
-            assert creates[-1]['provider'] == 'openai'
+            assert creates[-1]['provider'] == ''
             wizard.locator('input[data-profile="wizard-hermes"]').check()
             page.locator('#import-next').click()
             page.locator('#import-resource-step').wait_for(state='visible')

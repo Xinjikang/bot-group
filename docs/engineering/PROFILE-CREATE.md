@@ -12,8 +12,8 @@ Hermes profile 创建、宿主 profile 注册及按已有 Bot ID 入组会校验
 
 兼容规则集中在 `engine/hermes_profile_names.py`，与 Hermes `hermes_cli/profiles.py` 的 `_RESERVED_NAMES` 及 `default` 例外保持一致。校验使用本地规则，避免在创建与候选扫描时加载宿主运行时模块；升级适配时核对上游列表与验证函数。
 
-- 填写显示名称和 profile 标识；标识使用 1–64 位小写字母、数字、短横线、下划线。默认选择该宿主的 default 作为配置来源，否则选择第一个可用来源；也可选择“使用默认设置”。已加入当前项目的 profile 也可作为来源。
-- Hermes/DSH 的模型与供应商位于来源下方，同组必填；来源读取自动带入，手动编辑后保留整组，切换宿主分别恢复草稿。Codex 显示可选模型，空模型沿用来源或宿主默认设置。“更多设置”填写个人指令，留空生成基础工作约定。
+- 填写显示名称和 profile 标识；标识使用 1–64 位小写字母、数字、短横线、下划线。默认选择该宿主的 default（DSH 为 desktop）作为配置来源，否则选择第一个可用来源；也可选择“使用默认设置”。已加入当前项目的 profile 也可作为来源。
+- Hermes/DSH 的模型与供应商位于默认收起的“更多设置”中，同组展示且均可选；留空继承来源，单项填写只覆盖对应项；来源读取自动带入，手动编辑后保留整组，切换宿主分别恢复草稿。Codex 显示可选模型，空模型沿用来源或宿主默认设置。“更多设置”填写个人指令，留空生成基础工作约定。
 - Codex 自动复制引擎主账户目录（`CODEX_HOME`，默认 `~/.codex`）的 `auth.json`。配置来源用于继承模型与运行设置，创建界面省去认证选择。使用默认设置或选择其他 profile 作为配置来源时，文件认证仍来自主账户。
 - 新建 Codex Bot 统一使用智能审批（“帮我审批”）及工作区写入沙箱，加入项目时获得项目工作目录授权；创建规则独立于配置来源。创建表单显示该规则。
 - Hermes 自动继承来源的模型配置与凭证。“使用默认设置”读取主 profile 的 `config.yaml` 和 `.env`；指定来源读取该 profile 自身文件。界面说明默认继承行为，OAuth 登录需在新 home 中完成。
@@ -22,7 +22,7 @@ Hermes profile 创建、宿主 profile 注册及按已有 Bot ID 入组会校验
 
 ## DSH 独立创建
 
-DSH 与 Hermes/Codex 共用创建表单和 `POST /profiles/create`。Profile 标识初始为空，由用户填写；配置来源优先 desktop，扫描和切换来源保留标识。供应商与模型从来源带入，空来源需手动填写两项。成功扫描省去数量及目录提示。已有 DSH profile 在成员候选列表选择。
+DSH 与 Hermes/Codex 共用创建表单和 `POST /profiles/create`。Profile 标识初始为空，由用户填写；配置来源优先 desktop，扫描和切换来源保留标识。供应商与模型从来源带入，两项留空继承来源；“使用默认设置”继承同一 HOME 的 desktop 主 profile，缺失时沿用原生默认配置。成功扫描省去数量及目录提示。已有 DSH profile 在成员候选列表选择。
 
 新目录为 `DSH_HOME/profiles/<新标识>/`，包含原生 base/headless bundle 声明、空 cordis.yml 和独立 cordis.patch.yml。来源按白名单继承模型、供应商及认证路由；模型覆盖写入 agent-default-model，个人指令写入该 profile 的 system-prompt.config.personaPrefix，可在成员“人格”页继续编辑。共享 HOME 的认证、AGENTS.md 和源 profile 保持原值。创建时检查运行入口；发布后校验目录并注册，支持同请求重试、冲突拒绝和失败回滚，入组沿用调用方确认。设计见 [DSH 独立创建](../design/2026-11-02-dsh-profile-create.md)。
 
@@ -36,12 +36,14 @@ DSH 与 Hermes/Codex 共用创建表单和 `POST /profiles/create`。Profile 标
 
 “创建 profile”和“编辑成员 → SOUL.md / AGENTS.md”均提供“查看 / 引用 SOUL 模板”。
 
+创建页的模板入口位于“更多设置 → 个人指令”标题旁，与正文编辑框同组折叠。个人指令标签随宿主显示 SOUL.md、AGENTS.md 或人格；引用模板填入同一个编辑框。
+
 成员编辑页的模板按钮位于 SOUL.md / AGENTS.md 标题说明区右侧，提示文字排列在按钮下方，窄屏沿用左右布局并自动换行。
 
 - 已登记项目使用 `/projects/{project}/template-reference`，按项目模板类型读取最新角色参考。创建项目向导使用当前选定的 `/projects/templates/{id}`，核对版本与向导快照一致。空白项目或未关联模板显示空态；读取失败可重试，项目或版本不匹配的响应会被拒绝。
 - 创建入口使用当前项目详情的项目 ID；成员编辑入口使用打开该编辑窗口时的项目上下文。全局花名册有当前选中项目时使用该项目，未选中项目时禁用模板入口。
 - 查看保持正文原样；“引用模板”填入个人指令或 SOUL 编辑框，展开创建表单的更多设置，允许继续修改。替换已有正文前确认，取消确认保留原文。
-- 引用仅更改草稿，实际文件写入通过“创建 profile”或“保存”。Hermes 对应 SOUL.md，Codex 对应 AGENTS.md；既有 profile 的保存范围保持原有全局配置语义。
+- 引用仅更改草稿，实际文件写入通过“创建 profile”或“保存”。Hermes 对应 SOUL.md，Codex 对应 AGENTS.md，DSH 创建时对应 profile 的 system-prompt.config.personaPrefix；既有 profile 的保存范围保持原有全局配置语义。
 - 选择窗跟随所属编辑窗口，处理关闭、重新打开和跨项目响应竞态；预览以纯文本呈现。已有向导的复制、下载、预览功能保持现状。
 
 项目详情的“模板参考”同样展示该类型的最新参考。读取过程保持项目角色、授权、创建记录和已保存的 profile 正文原样；用户引用并保存后才更新 profile。此接口修复需要手动重启引擎并刷新页面。

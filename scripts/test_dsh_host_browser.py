@@ -122,12 +122,16 @@ def run(evidence):
         assert page.locator('#member-create-source').input_value() == '0'
         assert page.locator('#member-create-model').input_value() == 'deepseek-flash'
         assert page.locator('#member-create-provider').input_value() == 'deepseek-account'
+        assert page.locator('#member-create-model').is_hidden()
+        assert page.locator('#member-create-provider').is_hidden()
+        assert page.locator('#member-create-model').get_attribute('required') is None
+        assert page.locator('#member-create-provider').get_attribute('required') is None
         profile.press_sequentially('new-headless')
         page.locator('#member-create-source').select_option('1')
         page.wait_for_function('!memberAdd.sourceLoading')
         assert page.locator('#member-create-model').input_value() == ''
         assert page.locator('#member-create-provider').input_value() == ''
-        assert page.locator('#member-add-join').is_disabled()
+        assert page.locator('#member-add-join').is_enabled()
         page.locator('#member-create-source').select_option('0')
         page.wait_for_function('!memberAdd.sourceLoading')
         assert profile.input_value() == 'new-headless'
@@ -141,7 +145,7 @@ def run(evidence):
         page.locator('#member-add-steps details summary').click()
         page.locator('#member-create-model').fill('chosen-model')
         page.locator('#member-create-provider').fill('')
-        assert page.locator('#member-add-join').is_disabled()
+        assert page.locator('#member-add-join').is_enabled()
         page.locator('#member-create-provider').fill('deepseek-official')
         page.locator('#member-create-source').select_option('1')
         assert page.locator('#member-create-model').input_value() == 'chosen-model'
@@ -182,12 +186,11 @@ def run(evidence):
             if scan == 'error':
                 assert '模拟扫描失败' in status(page)
             profile.fill('default-agent')
-            assert page.locator('#member-add-join').is_disabled()
-            page.locator('#member-create-model').fill('manual-model')
-            page.locator('#member-create-provider').fill('deepseek-account')
+            assert page.locator('#member-add-join').is_enabled()
             page.locator('#member-add-join').click()
             page.wait_for_function('window.__created !== null')
             assert creates[-1]['source'] is None
+            assert creates[-1]['model'] == '' and creates[-1]['provider'] == ''
         page.set_viewport_size({'width': 1280, 'height': 900})
 
         # Late source responses cannot overwrite the latest source or a manually edited pair.
@@ -210,6 +213,7 @@ def run(evidence):
         assert page.locator('#member-create-provider').input_value() == 'latest-provider'
         page.locator('#member-create-source').select_option('1')
         profile.fill('race-agent')
+        page.locator('#member-add-steps details summary').click()
         page.locator('#member-create-model').fill('manual-model')
         page.locator('#member-create-provider').fill('manual-provider')
         page.evaluate('window.__pendingSources[2]({model:"late-model", provider:"late-provider"})')

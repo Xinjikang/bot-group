@@ -34,7 +34,12 @@ def _read(home, name):
 def _source(body):
     selected = body.get('source')
     if not selected:
-        return (Path(discovery._hermes_root()).resolve(), None) if body['host_type'] == 'hermes' else (None, None)
+        if body['host_type'] == 'hermes':
+            return Path(discovery._hermes_root()).resolve(), None
+        if body['host_type'] == 'dsh':
+            primary = Path(discovery._dsh_root()).resolve() / 'profiles' / 'desktop'
+            return (primary, None) if (primary / 'cordis.patch.yml').is_file() else (None, None)
+        return None, None
     scan = {'codex': discovery._scan_codex, 'hermes': discovery._scan_hermes, 'dsh': discovery._scan_dsh}
     candidates = scan[body['host_type']]()
     match = next((c for c in candidates if c['profile'] == selected['profile']
@@ -189,8 +194,6 @@ def create(conn, body):
         body['model'] = body['model'].strip()
         if any(c in value for value in (body['model'], body['provider']) for c in '\r\n\0'):
             raise HTTPException(400, '模型和供应商必须是单行文本')
-        if host != 'codex' and (not body['model'] or not body['provider']):
-            raise HTTPException(400, '请同时填写模型和供应商')
     raw_project = body.get('project')
     project = (raw_project or '').strip()
     if raw_project and not project:

@@ -143,8 +143,7 @@ function memberProfileError(value) {
   return '';
 }
 function memberCreateValid() {
-  return !memberAdd.sourceLoading && !memberProfileError(memberAdd.draft.profile)
-    && (memberAdd.host === 'codex' || !!(memberAdd.draft.model.trim() && memberAdd.draft.provider.trim()));
+  return !memberAdd.sourceLoading && !memberProfileError(memberAdd.draft.profile);
 }
 function renderMemberCreate(steps) {
   const dsh = memberAdd.host === 'dsh';
@@ -158,16 +157,19 @@ function renderMemberCreate(steps) {
       <label for="member-create-source">配置来源</label><select id="member-create-source"><option value="">使用默认设置</option></select>
     </div>
     <p class="profile-help" id="member-create-auth-help"></p>
-    <div class="member-create-route${memberAdd.host === 'codex' ? ' single' : ''}">
-      <div><label for="member-create-model">模型${memberAdd.host === 'codex' ? '' : ' <span class="profile-help">必填</span>'}</label>
-        <input id="member-create-model" maxlength="200" placeholder="${memberAdd.host === 'codex' ? '留空沿用来源或运行时默认模型' : '填写模型标识'}"></div>
-      <div id="member-create-provider-block"><label for="member-create-provider">供应商 <span class="profile-help">必填</span></label>
-        <input id="member-create-provider" maxlength="200" placeholder="填写对应供应商标识"></div>
-    </div>
-    <p class="profile-help" id="member-create-route-help">模型和供应商从配置来源带入；手动修改后保留整组输入。</p>
-    <div id="member-create-soul-templates"></div>
     <details><summary>更多设置</summary>
-      <label for="member-create-instructions">个人指令</label><textarea id="member-create-instructions" rows="4" maxlength="32000" placeholder="填写性格、专长或工作偏好；项目职责在加入后设置。"></textarea>
+    <div class="member-create-route${memberAdd.host === 'codex' ? ' single' : ''}">
+      <div><label for="member-create-model">模型</label>
+        <input id="member-create-model" maxlength="200" placeholder="留空沿用来源或运行时默认模型"></div>
+      <div id="member-create-provider-block"><label for="member-create-provider">供应商</label>
+        <input id="member-create-provider" maxlength="200" placeholder="留空沿用来源或运行时默认供应商"></div>
+    </div>
+    <p class="profile-help" id="member-create-route-help">模型和供应商均可选；留空沿用配置来源或宿主默认值，填写后覆盖对应项。</p>
+      <div class="profile-soul-heading">
+        <label for="member-create-instructions">个人指令 · ${dsh ? '人格' : memberAdd.host === 'codex' ? 'AGENTS.md' : 'SOUL.md'}</label>
+        <div id="member-create-soul-templates"></div>
+      </div>
+      <textarea id="member-create-instructions" rows="4" maxlength="32000" placeholder="填写性格、专长或工作偏好；项目职责在加入后设置。"></textarea>
     </details>`;
   const draft = memberAdd.draft;
   form.querySelector('#member-create-profile-help').textContent = dsh
@@ -178,11 +180,6 @@ function renderMemberCreate(steps) {
   const paired = memberAdd.host !== 'codex';
   form.querySelector('#member-create-provider-block').hidden = !paired;
   form.querySelector('#member-create-route-help').hidden = !paired;
-  for (const field of ['model', 'provider']) {
-    const input = form.querySelector('#member-create-' + field);
-    input.required = paired;
-    input.dialogValidation = value => paired && !value.trim() ? '请同时填写模型和供应商。' : '';
-  }
   const details = form.querySelector('details');
   details.open = !!draft.expanded;
   details.addEventListener('toggle', () => { draft.expanded = details.open; });
@@ -202,7 +199,7 @@ function renderMemberCreate(steps) {
   source.value = draft.source;
   const updateAuth = () => {
     if (memberAdd.host === 'dsh') {
-      form.querySelector('#member-create-auth-help').textContent = '新 profile 使用填写的模型与供应商，凭据沿用同一 DSH HOME 的共享配置。个人指令保存到该 profile 的人格配置。';
+      form.querySelector('#member-create-auth-help').textContent = '新 profile 继承配置来源；“使用默认设置”继承 desktop 主 profile。凭据沿用同一 DSH HOME 的共享配置，个人指令保存到该 profile 的人格配置。';
       return;
     }
     if (memberAdd.host === 'codex') {
@@ -332,7 +329,7 @@ async function loadMemberSourceSettings() {
     }
   } catch (err) {
     if (memberAdd !== current || current.sourceVersion !== version) return;
-    current.error = `来源读取失败：${err.message}。请填写模型与供应商。`;
+    current.error = `来源预览读取失败：${err.message}。可重试读取，或留空沿用来源配置。`;
   } finally {
     if (memberAdd === current && current.sourceVersion === version) {
       current.sourceLoading = false;
