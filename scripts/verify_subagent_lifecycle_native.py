@@ -57,6 +57,8 @@ class Model(BaseHTTPRequestHandler):
             if not self.server.release_parent.wait(240):
                 raise TimeoutError('Parent model barrier expired')
             msg['content'] = 'PARENT_FINISHED'
+            if getattr(self.server, 'callback_response', None):
+                msg, finish = self.server.callback_response(body)
         elif not delegated and any('PARENT_SCENARIO_' in u for u in users):
             names = {t.get('function', {}).get('name') for t in body.get('tools', [])}
             if 'delegate_task' in names:

@@ -1,6 +1,12 @@
 # 测试脚本索引
 
+Hermes 子代理等待与原生续接：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_hermes_delegations scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_session_reuse scripts.test_native_busy_scheduling scripts.test_topic_restart_recovery scripts.test_thinking_run_identity`。覆盖等待空闲显示、任务保持、回调投递空档、独立单元/嵌套委派、断线恢复、授权撤销、停止、点对点输入幂等及结束竞态、扫描队列转交定向消息，以及不同话题/不同 Bot 工作会话的并行投递。模拟原生账本只放在夹具 home，HTTP 状态读验证零网关调用。
+
+真实子代理等待链路：`.venv\Scripts\python.exe -X utf8 -B scripts/verify_delegation_wait_native.py --hermes-python <Hermes 解释器绝对路径> --hermes-source <匹配源码绝对目录> --run-dir <新建隔离运行绝对目录> --evidence <主目录 reports/tests 下的新绝对目录>`。Windows 运行目录宜用短名。脚本创建独立 home、工作目录、SQLite、回环模型/API，使用实际 Pool/Lease、网关、父子代理、原生自动回调及 stdio MCP 写消息/task node；受控模型支持原生 tool_search/tool_call 桥接，核对一条逻辑执行接续两个原生 admission、任务交接和零失败事件。模型仅产生合成工具调用；不评估模型指令遵循能力。成功/失败均停止自身网关并核对端口和 PID 文件释放，原始模型请求、数据库备份及结果存入 evidence。引擎重建、多个独立单元和并行队列由上述隔离回归覆盖；网关重启的原生生命周期使用 `verify_subagent_lifecycle_native.py --restart`。
+
 Hermes 旧成员宿主定位：使用 `scripts.run_isolated_tests` 运行 `scripts.test_member_identity`、`scripts.test_project_roles`。临时根目录注册 default 与命名 profile，注入个人 profile 作为 fallback，验证成员身份解析及网关连接使用登记根目录，未登记成员保持 fallback。
+
+子代理原生验收的诊断选项：`verify_delegation_wait_native.py --mcp-path client` 在原生回调屏障内使用独立真实 stdio MCP 客户端写入，分离权限验证与原生工具发现；默认 `native` 由父 agent 原生调用工具。`--trace-tools` 仅在新建 run-dir 的 `sitecustomize.py` 中记录工具选择及作用域，`--scope-cache-fix` 在同一隔离模块中实验性补入会话作用域缓存键，实际安装源码保持原样。结果标记 mcp_path/trace_tools/scope_cache_fix，含候选修正的成功须与原安装失败分别记录。正常验收使用默认参数。
 
 Hermes 重启遗留执行停止恢复：通过下列取消回归命令运行 `scripts.test_hermes_gateway_ledger` 与 `scripts.test_hermes_gateway.GatewayTests.test_manual_retry_resolves_unknown_and_releases_execution`。合成 `unknown` 回执覆盖用户停止后按原 admission/代次调用 `prompt.resolve_unknown`、权威终态收尾、自动超时保留占用及响应丢失保留身份；沿用隔离数据库与模拟 RPC。
 

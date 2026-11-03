@@ -77,7 +77,11 @@ def process_one(conn) -> bool:
                 if candidate["trigger"] != expected:
                     _discard_queued(conn, candidate["id"], "superseded topic recovery")
                     continue
-        if wake.session_busy(candidate["profile"], candidate["kind"], candidate["thread_id"], candidate["project"]):
+        from . import hermes_delegations
+        direct_wait = (candidate['kind'] == 'work'
+                       and hermes_delegations.direct_wait(conn, candidate['profile'], candidate['project'],
+                                                         candidate['trigger_msg_id']))
+        if not direct_wait and wake.session_busy(candidate["profile"], candidate["kind"], candidate["thread_id"], candidate["project"]):
             continue
         if candidate['kind'] == 'chat' and wake.topic_busy(conn, candidate['thread_id'], candidate['project']):
             continue
@@ -124,9 +128,9 @@ def process_one(conn) -> bool:
         # 注入正文里的触发消息标注；回复要求由注入正文逐条按 effective_need_reply 承载。
         _trigger_msg_id = job["trigger_msg_id"]
         from . import task_retry
-        task_id = int(job['trigger'].split(':')[-1]) if job['trigger'].startswith('retry:task:') else None
-        bound_task = task_retry.select_task(conn, job['profile'], _proj, task_id) if job['kind'] == 'work' else None
-        if job['kind'] == 'work' and (job['trigger'] == 'scan:task' or job['trigger'].startswith('retry:task:')) and bound_task is None:
+        task_id = int(job['trigger'].split(':')[-1]) if not direct_wait and job['trigger'].startswith('retry:task:') else None
+        bound_task = task_retry.select_task(conn, job['profile'], _proj, task_id) if job['kind'] == 'work' and not direct_wait else None
+        if not direct_wait and job['kind'] == 'work' and (job['trigger'] == 'scan:task' or job['trigger'].startswith('retry:task:')) and bound_task is None:
             _mark(conn, job['id'], 'cancelled', 'No published complete task remains eligible')
             return True
         if job['kind'] == 'work' and job['trigger'] == 'scan:req' and bound_task is None:

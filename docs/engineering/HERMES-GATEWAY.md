@@ -1,8 +1,16 @@
 # Hermes 网关执行适配
 
+## 子代理等待
+
+结构化 `delegate_task` 后台派发回执把逻辑执行置为 `waiting_delegation`。原生父轮次终态保持当前任务及话题发言位，清除该轮思考显示；原生回调 admission 自动归入同一个 `execution_id`。全部委派回调处理完毕后进行逻辑执行收尾，回调工具写入继续校验当前任务/话题归属。相关表为 `hermes_delegation_cycles`、`hermes_delegations`、`hermes_native_turns` 和 `hermes_delegation_inputs`。
+
+恢复线程通过原执行 home 下的只读 `state.db/session_admissions` 查找已知委派的原生回调身份，再用 `prompt.receipt(include_result=True)` 对账。原生账本查询限时并与 HTTP 状态读路径分离；字段不兼容或读取失败保留未知执行并使用既有恢复期限。该本地适配契约已核对 Hermes `0431192d69d4afd2443a7da15bb9e129a424414c`，升级时运行原生验证脚本。
+
+等待中的工作会话可以接收实际定向未读消息，持久保存输入 ID 并幂等提交；入箱事务重新检查状态及归属。成员授权撤销、任务移交或话题发言位变化终止旧写入资格，后台协调停止旧委派及原生执行。其他会话沿用 #276 的跳过忙会话调度。设计与边界见 [子代理等待](../design/2026-11-03-delegation-wait.md)。
+
 ## 接口与版本
 
-`engine/hermes_gateway*.py` 使用公开 CLI `hermes gateway ensure --json`、本地 control 协议的 `session-ticket` 和 `/api/ws` 的 `hermes-gateway-v1`。适配器仅调用线协议，Hermes 源码保持独立。运行时核验 profile、协议、安装提交身份，以及 `durable-admission-v1`、`acp-session-mcp-v1` 能力。v0.22.5 验证基线为 `bf0203a794a07aac3ff764972ab9087baa4e4f4e`。
+`engine/hermes_gateway*.py` 使用公开 CLI `hermes gateway ensure --json`、本地 control 协议的 `session-ticket` 和 `/api/ws` 的 `hermes-gateway-v1`。执行与控制使用线协议，委派恢复另使用上节的只读账本发现；Hermes 源码保持独立。运行时核验 profile、协议、安装提交身份，以及 `durable-admission-v1`、`acp-session-mcp-v1` 能力。v0.22.5 验证基线为 `bf0203a794a07aac3ff764972ab9087baa4e4f4e`。
 
 网关版采用独立执行路径；旧版 Hermes 和 Codex 保留现有运行时。安装来源由 `HERMES_BIN`、`HERMES_HOME` 和已有安装定位规则确定。
 

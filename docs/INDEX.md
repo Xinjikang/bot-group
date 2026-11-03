@@ -1,5 +1,7 @@
 # 项目文档索引
 
+Hermes 子代理等待、原生回调续接、任务归属与点对点调度见 [子代理等待设计](design/2026-11-03-delegation-wait.md)。
+
 DSH 成员编辑的三个页签、接口字段移除及插件检测后强制 Auto 审批见 [成员设置设计](design/2026-11-02-dsh-member-settings.md)。
 
 全局 Hermes 文件编辑审批的三档选择、持久化与每轮应用规则见 [全局审批策略设计](design/2026-10-30-global-edit-policy.md)。

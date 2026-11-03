@@ -173,7 +173,7 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(row['state'], 'terminal')
         for key in ('admission_id', 'submission_id', 'reconcile_deadline', 'execution_deadline'):
             self.assertEqual(row[key], before[key])
-        remote.rpc.assert_called_once_with('prompt.receipt', session_id='sid', admission_id='a', timeout=30.0)
+        remote.rpc.assert_called_once_with('prompt.receipt', session_id='sid', admission_id='a', timeout=30.0, include_result=True)
 
     def test_unreachable_execution_still_has_original_execution_budget(self):
         self.accept()

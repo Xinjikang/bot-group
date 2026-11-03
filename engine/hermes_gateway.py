@@ -222,6 +222,9 @@ def _publish(row):
                channel='hermes-gateway', state=row['state'], cancel_reason=row['cancel_reason'])
     with wake._session_lock:
         wake._running_sessions.add(row['session'])
+        if row['state'] == 'waiting_delegation':
+            wake._running_wakes.pop(row['session'], None)
+            return
         wake._running_wakes[row['session']] = run
         if row['cancel_reason'] == 'user':
             wake._intentional_stops.add(row['session'])
@@ -237,6 +240,24 @@ def _sync_run_state(row):
             run.update(state=row['state'], cancel_reason=row['cancel_reason'])
 
 
+def _sync_delegation_state(conn, row):
+    from . import hermes_delegations, wake, heartbeat
+    if hermes_delegations.waiting(conn, row):
+        with wake._session_lock:
+            was_running = wake._running_wakes.pop(row['session'], None)
+            wake._running_sessions.add(row['session'])
+        if was_running:
+            beat = conn.execute('SELECT pid FROM wake_runs WHERE session=? AND started_at=?',
+                                (row['session'], row['started_at'])).fetchone()
+            heartbeat.on_exit(row['profile'], pid=(beat['pid'] or 0) if beat else 0,
+                              thread_id=row['thread_id'], advance=False)
+    elif row['state'] not in ('terminal', 'manual'):
+        with wake._session_lock:
+            published = row['session'] in wake._running_wakes
+        if not published:
+            _publish(row)
+
+
 def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args,
           bound_task=None, job_id=None, trigger_msg_id=None):
     from . import wake, browser_resources, hermes_session_auth
@@ -249,6 +270,16 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
     session_lock.acquire()
     try:
         if ledger.active(conn, session):
+            from . import hermes_delegations
+            direct = hermes_delegations.direct_wait(conn, profile, project, trigger_msg_id) if kind == 'work' else None
+            if direct:
+                prior, message_id = direct
+                text = wake._finalize_injection_signal(profile, kind, thread_id, project,
+                                                       message_id, prior['task_id'], [])
+                if not hermes_delegations.enqueue_direct(conn, prior, message_id, text):
+                    return {'ok': False, 'busy': True, 'detail': 'delegation wait changed during delivery'}
+                _start_worker(prior['execution_id'])
+                return {'ok': True, 'channel': 'hermes-gateway', 'detail': 'direct message queued for delegation wait'}
             return {'ok': False, 'busy': True, 'detail': 'gateway execution still active'}
         if ledger.cleanup_pending(conn, session):
             return {'ok': False, 'busy': True, 'detail': 'gateway cleanup pending'}
@@ -319,7 +350,7 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
 
 
 def _finish(conn, row, client):
-    from . import wake, browser_resources, heartbeat, events, steer_ledger
+    from . import wake, browser_resources, heartbeat, events, steer_ledger, hermes_delegations
     cleanup_detail = ''
     if client is not None:
         if row['cancel_reason'] == 'user' and row['kind'] == 'work' and row['outcome'] != 'not_submitted':
@@ -356,7 +387,7 @@ def _finish(conn, row, client):
     conn.execute('UPDATE wake_runs SET ended_at=?,exit_code=? WHERE session=? AND started_at=?',
                  (row['ended_at'], code, row['session'], row['started_at']))
     conn.commit()
-    if row['cancel_reason'] not in ('user', 'shutdown'):
+    if row['cancel_reason'] not in ('user', 'shutdown', 'superseded'):
         if code:
             wake._report_execution_error(row['profile'], row['project'], row['thread_id'], row['session'],
                 row['execution_id'], 'Hermes gateway execution failed: ' + (row['detail'] or row['outcome']),
@@ -374,7 +405,8 @@ def _finish(conn, row, client):
     events.bus.publish('wake.finished', {'session': row['session'], 'wake_started_at': row['started_at'], 'ended_at': row['ended_at']})
     run = conn.execute('SELECT pid FROM wake_runs WHERE session=? AND started_at=?',
                        (row['session'], row['started_at'])).fetchone()
-    heartbeat.on_exit(row['profile'], pid=(run['pid'] or 0) if run else 0, thread_id=row['thread_id'])
+    heartbeat.on_exit(row['profile'], pid=(run['pid'] or 0) if run else 0, thread_id=row['thread_id'],
+                      advance=row['cancel_reason'] != 'superseded' and hermes_delegations.owned(conn, row))
     return True
 
 
@@ -425,10 +457,21 @@ def _watch(execution_id, *, retry_manual=False):
                         return
                     time.sleep(1)
                     continue
+                from . import hermes_delegations
+                if (hermes_delegations.waiting(conn, row) or
+                        (hermes_delegations.cycle(conn, row) and
+                         (row['cancel_reason'] or not hermes_delegations.owned(conn, row)))):
+                    changed = hermes_delegations.poll(conn, row, client)
+                    row = ledger.read(conn, execution_id)
+                    _sync_delegation_state(conn, row)
+                    if not changed:
+                        time.sleep(1)
+                    continue
                 if row['execution_deadline'] and time.time() >= row['execution_deadline'] and not row['cancel_reason']:
                     ledger.cancel(conn, execution_id, 'timeout')
                 row = ledger.reconcile(client, conn, execution_id, retry_manual=manual_attempt)
                 _sync_run_state(row)
+                _sync_delegation_state(conn, row)
                 if row['state'] == 'manual':
                     logger.error('Hermes execution %s entered manual; automatic reconciliation stopped', execution_id)
                     return
@@ -504,12 +547,15 @@ def _start_worker(execution_id, *, retry_cleanup=False, retry_manual=False):
 
 
 def recover():
-    from . import hermes_connections
+    from . import hermes_connections, hermes_delegations
     hermes_connections._POOL.start()
     conn = db.get_connection()
     try:
         for row in ledger.active(conn):
-            _publish(row)
+            if hermes_delegations.waiting(conn, row):
+                _sync_delegation_state(conn, row)
+            else:
+                _publish(row)
             _start_worker(row['execution_id'])
         # terminal 后未清理的行重启清理 worker（不 _publish：已终态不再发 spawned）。
         # 已耗尽（cleanup_failed）的行不自动重试，只续剩余额度（设计 6.3 / D2）。

@@ -56,9 +56,10 @@ CREATE TABLE IF NOT EXISTS hermes_session_migrations (
 
 
 def initialize(conn):
-    from . import hermes_prompt_state
+    from . import hermes_prompt_state, hermes_delegations
     conn.executescript(SCHEMA)
     conn.executescript(hermes_prompt_state.SCHEMA)
+    conn.executescript(hermes_delegations.SCHEMA)
 
 
 def prepare(conn, *, session, project, profile, kind, thread_id, task_id, job_id,
@@ -160,10 +161,17 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
         if status == 'terminal':
             if not isinstance(receipt.get('outcome'), str) or not receipt['outcome']:
                 raise ValueError('Terminal receipt has no outcome')
-            conn.execute("UPDATE hermes_executions SET admission_id=?,generation=?,authority_epoch=?,"
-                         "state='terminal',outcome=?,ended_at=?,cleanup_pending=1,cleanup_deadline=?,detail='' "
-                         "WHERE execution_id=?",
-                         (aid, gen, epoch, receipt['outcome'], now, now + CLEANUP_BUDGET_SECONDS, execution_id))
+            from . import hermes_delegations
+            if hermes_delegations.capture(conn, row, receipt):
+                conn.execute("UPDATE hermes_executions SET admission_id=?,generation=?,authority_epoch=?,"
+                             "state='waiting_delegation',outcome=NULL,ended_at=NULL,cleanup_pending=0,"
+                             "execution_deadline=?,detail='' WHERE execution_id=?",
+                             (aid, gen, epoch, now + 3600, execution_id))
+            else:
+                conn.execute("UPDATE hermes_executions SET admission_id=?,generation=?,authority_epoch=?,"
+                             "state='terminal',outcome=?,ended_at=?,cleanup_pending=1,cleanup_deadline=?,detail='' "
+                             "WHERE execution_id=?",
+                             (aid, gen, epoch, receipt['outcome'], now, now + CLEANUP_BUDGET_SECONDS, execution_id))
         else:
             state = 'running' if status == 'started' else 'submitting' if status == 'queued' else 'unknown'
             deadline = (row['reconcile_deadline'] if row['cancel_reason'] or row['admission_id'] is None
@@ -181,7 +189,7 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
             else:
                 hermes_prompt_state.accepted(conn, execution_id)
         conn.commit()
-        if status == 'terminal':
+        if read(conn, execution_id)['state'] == 'terminal':
             from . import signing_keys
             signing_keys.retire(conn)
         return read(conn, execution_id)
@@ -271,7 +279,7 @@ def reconcile(client, conn, execution_id, *, now=None, retry_manual=False):
     else:
         rpc_timeout = 30.0
     receipt = client.rpc('prompt.receipt', session_id=row['session_id'], admission_id=row['admission_id'],
-                         timeout=rpc_timeout)
+                         timeout=rpc_timeout, include_result=True)
     row = apply_receipt(conn, execution_id, receipt, now=now)
     if row['state'] == 'terminal' or not row['cancel_reason']:
         return row
