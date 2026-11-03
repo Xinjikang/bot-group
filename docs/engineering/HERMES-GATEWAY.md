@@ -104,6 +104,10 @@ AGENTS.md、SOUL 和记忆通过用户主动 `/new` 刷新。v0.22.5 在同 sid 
 
 `verify_gateway_refresh_live.py` 在隔离 home 中通过公开协议执行配置刷新和模型调用。配置字段以只读的已提交 policy 回执核验；规则与工具描述以模型最终回答及实际 tool_search 结果核验。policy 回执证明派生值变化，max_turns 耗尽和 checkpoint 文件生成属于独立运行行为验证。
 
+## 根目录解析
+
+宿主发现、旧成员登记和配置编辑共用 `hermes_runtime.config_root()` 解析环境中的 Hermes 根目录。`HERMES_HOME` 指向 `根目录/profiles/<名称>` 时还原为根目录，扫描结果包含 default 和其他有效的同级 profile；显式根目录继续生效，未配置时使用平台默认根目录。此解析保持环境变量高于 `.env` 的加载顺序，已登记成员的连接继续使用其保存的宿主目录。
+
 ## 停止后的清理恢复
 
 成员的 Hermes home 使用成员绑定 Bot 的 `config_root` 与宿主 profile 组合，覆盖旧 profile 名称句柄及 `bot-*` 句柄。调用进程继承个人 profile 的 `HERMES_HOME` 时，已登记成员仍定位到登记的宿主根目录；未登记成员沿用显式 fallback。

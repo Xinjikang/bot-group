@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 import re
-import sys
 import tempfile
 import threading
 import uuid
@@ -26,19 +25,8 @@ _MAX_BYTES = 2 * 1024 * 1024
 
 
 def _root() -> Path:
-    # Match hermes_constants.get_default_hermes_root (including named-profile homes).
-    if sys.platform == "win32":
-        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-        native = base / "hermes"
-    else:
-        native = Path.home() / ".hermes"
-    configured = os.environ.get("HERMES_HOME", "").strip()
-    if not configured:
-        return native.resolve()
-    home = Path(configured).resolve()
-    if home.is_relative_to(native.resolve()):
-        return native.resolve()
-    return home.parent.parent if home.parent.name == "profiles" else home
+    from .hermes_runtime import config_root
+    return config_root()
 
 
 def _directory(profile: str) -> Path:

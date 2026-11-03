@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import sqlite3
-import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -687,24 +686,9 @@ def _migrate_pm_bot_id(conn: sqlite3.Connection) -> None:
 
 
 def _hermes_root() -> str:
-    """Hermes 根目录（req#87 task#150 起与 profile_config._root 同口径：HERMES_HOME 优先）。
-
-    存量反推时 bots.config_root 统一记 Hermes 根目录——存量库的 Bot 全部是
-    hermes 宿主，按「反推优先」口径归属，不做目录探测。
-
-    🔴 口径修正（task#150 实测暴露）：#147 版只认 LOCALAPPDATA/hermes，但生产
-    引擎由 start.sh export HERMES_HOME=<根>（E:/home/admin/hermes），两边根不
-    一致 → 宿主发现/注册/复用按 config_root 精确匹配全 miss。统一为
-    HERMES_HOME 优先、缺省回退 native。既有 LOCALAPPDATA 基线的 bots 行由
-    _migrate_bot_config_roots 归一到当前根（保 id，pm/sb 引用不动）。
-    """
-    if sys.platform == "win32":
-        native = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "hermes"
-    else:
-        native = Path.home() / ".hermes"
-    configured = (os.environ.get("HERMES_HOME") or "").strip()
-    root = Path(configured).resolve() if configured else native.resolve()
-    return str(root)
+    """Use the shared host root for discovery and legacy Bot registration."""
+    from .hermes_runtime import config_root
+    return str(config_root())
 
 
 def _migrate_bot_config_roots(conn: sqlite3.Connection) -> None:
