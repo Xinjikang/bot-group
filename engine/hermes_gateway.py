@@ -219,13 +219,22 @@ def _publish(row):
     from . import wake, events
     run = {key: row[key] for key in ('session', 'project', 'profile', 'kind', 'thread_id', 'parent_id', 'round')}
     run.update(wake_started_at=row['started_at'], spawned_at=datetime.fromtimestamp(row['started_at']).isoformat(),
-               channel='hermes-gateway', state=row['state'])
+               channel='hermes-gateway', state=row['state'], cancel_reason=row['cancel_reason'])
     with wake._session_lock:
         wake._running_sessions.add(row['session'])
         wake._running_wakes[row['session']] = run
         if row['cancel_reason'] == 'user':
             wake._intentional_stops.add(row['session'])
     events.bus.publish('wake.spawned', run)
+
+
+def _sync_run_state(row):
+    """Publish durable status only to the matching execution snapshot."""
+    from . import wake
+    with wake._session_lock:
+        run = wake._running_wakes.get(row['session'])
+        if run and run['wake_started_at'] == row['started_at']:
+            run.update(state=row['state'], cancel_reason=row['cancel_reason'])
 
 
 def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args,
@@ -369,7 +378,7 @@ def _finish(conn, row, client):
     return True
 
 
-def _watch(execution_id):
+def _watch(execution_id, *, retry_manual=False):
     from . import wake
     client = None
     conn = db.get_connection()
@@ -382,6 +391,15 @@ def _watch(execution_id):
                 time.sleep(0.1)
                 continue
             row = ledger.read(conn, execution_id)
+            if (row['state'] != 'terminal' and row['cancel_reason']
+                    and time.time() >= row['reconcile_deadline']):
+                ledger.uncertain(conn, execution_id, row['detail'] or 'Cancellation confirmation deadline exceeded')
+                row = ledger.read(conn, execution_id)
+            _sync_run_state(row)
+            if row['state'] == 'manual' and not retry_manual:
+                return
+            manual_attempt = retry_manual and row['state'] == 'manual'
+            retry_manual = False
             if row['state'] == 'terminal':
                 if not row['cleanup_pending'] or (row['retry_count'] or 0) >= ledger.CLEANUP_MAX_ATTEMPTS:
                     return
@@ -409,20 +427,17 @@ def _watch(execution_id):
                     continue
                 if row['execution_deadline'] and time.time() >= row['execution_deadline'] and not row['cancel_reason']:
                     ledger.cancel(conn, execution_id, 'timeout')
-                row = ledger.reconcile(client, conn, execution_id)
+                row = ledger.reconcile(client, conn, execution_id, retry_manual=manual_attempt)
+                _sync_run_state(row)
+                if row['state'] == 'manual':
+                    logger.error('Hermes execution %s entered manual; automatic reconciliation stopped', execution_id)
+                    return
                 from . import hermes_approvals
                 hermes_approvals.sync(conn, row, client)
                 from . import hermes_gateway_steer
                 hermes_gateway_steer.observe_session(conn, client, row['session_id'], row['started_at'])
-                from . import wake
-                with wake._session_lock:
-                    if row['session'] in wake._running_wakes:
-                        wake._running_wakes[row['session']]['state'] = row['state']
                 if row['state'] == 'terminal':
                     continue
-                if row['state'] == 'manual':
-                    logger.error('Hermes execution %s entered manual; automatic reconciliation stopped', execution_id)
-                    return
             except Exception as exc:
                 from . import wake
                 if wake._shutting_down.is_set():
@@ -457,6 +472,10 @@ def _watch(execution_id):
                         client = None
                     continue
                 ledger.uncertain(conn, execution_id, detail)
+                row = ledger.read(conn, execution_id)
+                _sync_run_state(row)
+                if row['state'] == 'manual':
+                    return
                 if client:
                     client.close()
                     client = None
@@ -469,7 +488,7 @@ def _watch(execution_id):
             _workers.discard(execution_id)
 
 
-def _start_worker(execution_id, *, retry_cleanup=False):
+def _start_worker(execution_id, *, retry_cleanup=False, retry_manual=False):
     with _lock:
         if execution_id in _workers:
             return
@@ -480,7 +499,8 @@ def _start_worker(execution_id, *, retry_cleanup=False):
             finally:
                 conn.close()
         _workers.add(execution_id)
-    threading.Thread(target=_watch, args=(execution_id,), daemon=True, name='hermes-reconcile').start()
+    threading.Thread(target=_watch, args=(execution_id,), kwargs={'retry_manual': retry_manual},
+                     daemon=True, name='hermes-reconcile').start()
 
 
 def recover():
@@ -548,8 +568,9 @@ def cancel(session, *, reason='user', timeout=30):
                 time.sleep(0.1)
             return False
         for row in rows:
-            ledger.cancel(conn, row['execution_id'], reason)
-            _start_worker(row['execution_id'])
+            row = ledger.cancel(conn, row['execution_id'], reason)
+            _sync_run_state(row)
+            _start_worker(row['execution_id'], retry_manual=reason == 'user' and row['state'] == 'manual')
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if not ledger.active(conn, session):

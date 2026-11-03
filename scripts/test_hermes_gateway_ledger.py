@@ -95,7 +95,7 @@ class LedgerTests(unittest.TestCase):
         ledger.cancel(self.conn, self.eid, now=115)
         client = Mock()
         client.rpc.side_effect = [self.receipt(), {'execution_state': 'idle'}]
-        row = ledger.reconcile(client, self.conn, self.eid)
+        row = ledger.reconcile(client, self.conn, self.eid, now=120)
         self.assertEqual(row['state'], 'cancelling')
         self.assertIsNone(row['ended_at'])
         self.assertEqual(client.rpc.call_args.args, ('session.interrupt',))
@@ -106,7 +106,7 @@ class LedgerTests(unittest.TestCase):
         ledger.cancel(self.conn, self.eid, now=115)
         client = Mock()
         client.rpc.side_effect = [self.receipt('queued'), self.receipt('started')]
-        row = ledger.reconcile(client, self.conn, self.eid)
+        row = ledger.reconcile(client, self.conn, self.eid, now=120)
         self.assertEqual(row['state'], 'cancelling')
         self.assertIsNone(row['ended_at'])
 
@@ -218,13 +218,21 @@ class LedgerTests(unittest.TestCase):
         ledger.reconcile(client, self.conn, self.eid, now=180)  # remaining=85 → cap 30
         self.assertEqual(client.rpc.call_args_list[0].kwargs['timeout'], 30.0)
 
-    def test_reconcile_rpc_timeout_zero_when_budget_exhausted(self):
+    def test_reconcile_skips_rpc_when_budget_exhausted(self):
         self.accept()
         ledger.cancel(self.conn, self.eid, now=115)
         client = Mock()
         client.rpc.side_effect = [self.receipt(), {'execution_state': 'idle'}]
-        ledger.reconcile(client, self.conn, self.eid, now=270)  # remaining=0
-        self.assertEqual(client.rpc.call_args_list[0].kwargs['timeout'], 0.0)
+        row = ledger.reconcile(client, self.conn, self.eid, now=270)
+        self.assertEqual(row['state'], 'manual')
+        client.rpc.assert_not_called()
+
+    def test_started_receipt_after_cancel_deadline_becomes_manual(self):
+        self.accept()
+        ledger.cancel(self.conn, self.eid, now=115)
+        row = ledger.apply_receipt(self.conn, self.eid, self.receipt(), now=266)
+        self.assertEqual(row['state'], 'manual')
+        self.assertIsNone(row['ended_at'])
 
     def test_reconcile_rpc_timeout_keeps_thirty_when_not_cancelled(self):
         # 非取消 running 执行运行超 reconcile_deadline（started_at+150）时，

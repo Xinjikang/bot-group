@@ -84,6 +84,8 @@ AGENTS.md、SOUL 和记忆通过用户主动 `/new` 刷新。v0.22.5 在同 sid 
 
 ## 停止后的清理恢复
 
+取消意图、回执及传输异常更新后的执行状态同步到 `/thinking` 使用的内存快照，按 session 和 started_at 匹配当前执行。取消确认期限到达后，worker 在建立连接前退出；连接或查询异常跨过期限时，同步 `manual` 后退出。页面沿用「停止请求已发送，结束状态确认超时」提示。服务重启保留 `manual`，停止自动查询。用户再次点击停止可对原 admission 发起一次显式核对（每个 RPC 最长 30 秒），原取消期限与执行身份保持；取得终态后进入正常清理，其余结果保持占用并结束本次核对。
+
 终态 admission 的 runner 仍忙时，清理每三秒等待一次，受原有五分钟绝对期限约束；普通错误保留五次重试上限。期限、下次重试时间和错误次数跨重启保留。管理员再次执行停止可为耗尽的终态清理开启新预算；已有 worker 继续使用原预算，服务重启保持自动重试上限。
 
 原生明确以 `invalid_params`、`target_message_id` 和 `compacted:` 标记停止位置已压缩时，清理保留当前历史与已受理的规则哈希，记录 `rewind_target_compacted; transcript preserved` 并释放清理待办。其他拒绝继续保留清理门禁。实现与边界见[终态清理恢复](../design/2026-10-31-terminal-cleanup-recovery.md)。

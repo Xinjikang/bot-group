@@ -130,6 +130,95 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(ledger.read(self.conn, self.eid)['state'], 'manual')
         remote.rpc.assert_not_called()
 
+    def test_cancel_timeout_during_connection_failure_updates_thinking_and_exits(self):
+        clock = [time.time()]
+        ledger.cancel(self.conn, self.eid, now=clock[0])
+        def fail_connection(*args, **kwargs):
+            clock[0] += 151
+            raise gateway.GatewayTransportError('offline')
+        with patch.object(wake, '_running_wakes', {}), patch.object(wake, '_running_sessions', set()), \
+             patch.object(wake, '_intentional_stops', set()), \
+             patch.object(gateway, 'connection', side_effect=fail_connection) as connect, \
+             patch.object(gateway.time, 'time', side_effect=lambda: clock[0]), \
+             patch.object(gateway.time, 'sleep') as sleep:
+            gateway._publish(ledger.read(self.conn, self.eid))
+            gateway._watch(self.eid)
+            run = next(r for r in api.get_thinking()['runs'] if r['session'] == self.session)
+            self.assertEqual(run['state'], 'manual')
+            self.assertEqual(run['cancel_reason'], 'user')
+        connect.assert_called_once()
+        sleep.assert_not_called()
+        self.assertTrue(gateway.active(self.session))
+        self.assertIsNone(ledger.read(self.conn, self.eid)['ended_at'])
+
+    def test_expired_cancel_and_recovered_manual_never_open_connection(self):
+        ledger.cancel(self.conn, self.eid, now=time.time() - 151)
+        with patch.object(gateway, 'connection') as connect, patch.object(gateway.time, 'sleep') as sleep:
+            gateway._watch(self.eid)
+            gateway._watch(self.eid)
+        connect.assert_not_called()
+        sleep.assert_not_called()
+        self.assertEqual(ledger.read(self.conn, self.eid)['state'], 'manual')
+
+    def test_manual_retry_queries_original_receipt_once_and_keeps_deadlines(self):
+        receipt = dict(admission_id='a', ref={'session_id': 'sid', 'profile_id': 'home'},
+                       authority_epoch=1, execution_generation=1, status='started')
+        ledger.apply_receipt(self.conn, self.eid, receipt)
+        before = ledger.cancel(self.conn, self.eid, now=time.time() - 151)
+        ledger.uncertain(self.conn, self.eid, 'offline')
+        remote = Mock()
+        remote.rpc.side_effect = [receipt, {'execution_state': 'idle'}]
+        with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
+             patch.object(gateway.sessions, 'attach'), patch.object(gateway.time, 'sleep') as sleep:
+            gateway._watch(self.eid, retry_manual=True)
+        self.assertEqual([c.args[0] for c in remote.rpc.call_args_list], ['prompt.receipt', 'session.interrupt'])
+        self.assertEqual(remote.rpc.call_args_list[0].kwargs['timeout'], 30)
+        sleep.assert_not_called()
+        after = ledger.read(self.conn, self.eid)
+        self.assertEqual(after['state'], 'manual')
+        for key in ('cancel_deadline', 'reconcile_deadline', 'admission_id', 'submission_id'):
+            self.assertEqual(after[key], before[key])
+
+    def _assert_cancel_terminal(self, expired):
+        receipt = dict(admission_id='a', ref={'session_id': 'sid', 'profile_id': 'home'},
+                       authority_epoch=1, execution_generation=1, status='started')
+        ledger.apply_receipt(self.conn, self.eid, receipt)
+        ledger.cancel(self.conn, self.eid, now=time.time() - (151 if expired else 0))
+        if expired:
+            ledger.uncertain(self.conn, self.eid, 'offline')
+        remote = Mock()
+        remote.rpc.return_value = dict(receipt, status='terminal', outcome='cancelled')
+        with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
+             patch.object(gateway.sessions, 'attach', return_value={'messages': []}):
+            gateway._watch(self.eid, retry_manual=expired)
+        self.assertFalse(gateway.active(self.session))
+        self.assertEqual(ledger.cleanup_pending(self.conn, self.session), [])
+        self.assertIsNotNone(self.conn.execute('SELECT ended_at FROM wake_runs WHERE session=?', (self.session,)).fetchone()[0])
+
+    def test_cancel_success_releases_execution(self):
+        self._assert_cancel_terminal(False)
+
+    def test_manual_retry_terminal_releases_execution(self):
+        self._assert_cancel_terminal(True)
+
+    def test_cancel_publishes_intent_and_manual_retry_is_explicit(self):
+        with patch.object(wake, '_running_wakes', {}), patch.object(wake, '_running_sessions', set()), \
+             patch.object(wake, '_intentional_stops', set()), patch.object(gateway, '_start_worker') as worker:
+            gateway._publish(self.row)
+            gateway.cancel(self.session, timeout=0)
+            run = wake.active_runs()[0]
+            self.assertEqual((run['state'], run['cancel_reason']), ('cancelling', 'user'))
+            worker.assert_called_once_with(self.eid, retry_manual=False)
+            ledger.uncertain(self.conn, self.eid, 'offline', now=time.time() + 151)
+            gateway.cancel(self.session, timeout=0)
+            self.assertEqual(worker.call_args, call(self.eid, retry_manual=True))
+
+    def test_late_status_update_preserves_successor_snapshot(self):
+        successor = {'wake_started_at': self.start + 1, 'state': 'running'}
+        with patch.object(wake, '_running_wakes', {self.session: successor.copy()}):
+            gateway._sync_run_state(ledger.cancel(self.conn, self.eid))
+            self.assertEqual(wake._running_wakes[self.session], successor)
+
     def test_shutdown_skips_gateway_execution_and_releases_locally(self):
         from engine import browser_resources, process_tree
         from engine.lifecycle import Shutdown

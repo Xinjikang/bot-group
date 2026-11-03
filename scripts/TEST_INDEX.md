@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+Hermes 取消超时与状态同步：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录 reports/tests 下的新绝对目录> scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_stop_scope`，另运行 `node scripts/test_wake_liveness.cjs`。隔离 SQLite 与模拟网关覆盖连接失败跨越取消期限、超时退出及重启保持、页面查询状态同步、原执行手动核对、正常终态收尾、迟到状态保护后继执行；模拟 RPC 使用合成回执，无生产网关或模型调用。
+
 子代理生命周期技术验证：`.venv\Scripts\python.exe -X utf8 -B scripts/verify_subagent_lifecycle_native.py --hermes-python <已安装 Hermes 依赖解释器> --hermes-source <对应源码绝对目录> --run-dir <新的隔离短目录> --evidence <项目主目录 reports/research 下的新目录>`；加 `--restart` 验证子代理运行期间独立网关重启。使用真实原生网关、ACP 会话、delegate_task 与自动续跑，本地随机端口模型夹具控制子代理和父会话边界；不使用生产模型凭证或引擎数据库。设置 HERMES_DISABLE_LAZY_INSTALLS，解释器须已有依赖。记录父轮终态下子代理列表、连接重建、结果投递空档、委派事件与回执、事件重放代次、重启 unknown 恢复及端口/PID 文件清理。隔离 state.db 只读查询用于交叉验证，脚本未实现业务调度。鉴权边界复用 `scripts.test_hermes_session_reuse`，通过 run_isolated_tests 运行并保存隔离审计。Windows 测试目录应使用短路径；源码和解释器通过参数传入。
 
 DSH 停止验证器补偿回收：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_dsh_stop_tree_kill -q`。实际调用 `_run_segment`、私有数据库恢复、归属匹配和进程回收函数；底层数据库连接、进程查询及终止操作使用内存夹具。覆盖引擎先退出、首次查询失败后恢复、外部进程保留、私有数据库或进程扫描失败、本次执行命令行未知。恢复结果写入 `recovery_report`；失败使总结果为 false 并保留本次目录供诊断。无归属的系统进程查询失败单列诊断，本次运行 PID 或已登记 PID 的未知状态进入失败判定。

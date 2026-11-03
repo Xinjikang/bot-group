@@ -168,7 +168,7 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
             state = 'running' if status == 'started' else 'submitting' if status == 'queued' else 'unknown'
             deadline = (row['reconcile_deadline'] if row['cancel_reason'] or row['admission_id'] is None
                         else row['execution_deadline'])
-            if row['state'] == 'manual' or status == 'unknown' and deadline and now >= deadline:
+            if row['state'] == 'manual' or (status == 'unknown' or row['cancel_reason']) and deadline and now >= deadline:
                 state = 'manual'
             elif row['cancel_reason']:
                 state = 'cancelling'
@@ -244,20 +244,28 @@ def not_submitted(conn, execution_id, detail):
     signing_keys.retire(conn)
 
 
-def reconcile(client, conn, execution_id, *, now=None):
+def reconcile(client, conn, execution_id, *, now=None, retry_manual=False):
     """Query before cancelling; transport loss never triggers prompt resubmission.
 
     Cancellation RPCs use the smaller of 30 seconds and the remaining cancellation
     budget. Normal receipt polling uses 30 seconds within the execution lifecycle.
+    An explicit manual retry permits one pass with a 30-second timeout per RPC,
+    preserving the persisted deadlines and manual hold until a terminal receipt.
     """
     now = time.time() if now is None else now
     row = read(conn, execution_id)
     if row['state'] == 'terminal':
         return row
+    if not retry_manual and (row['state'] == 'manual' or
+            row['cancel_reason'] and now >= row['reconcile_deadline']):
+        uncertain(conn, execution_id, row['detail'] or 'Cancellation confirmation deadline exceeded', now=now)
+        return read(conn, execution_id)
     if not row['admission_id']:
         uncertain(conn, execution_id, 'Submission receipt unavailable; manual reconciliation required', now=now)
         return read(conn, execution_id)
-    if row['cancel_reason']:
+    if retry_manual:
+        rpc_timeout = 30.0
+    elif row['cancel_reason']:
         remaining = max(0.0, (row['reconcile_deadline'] or 0) - now)
         rpc_timeout = min(30.0, remaining) if remaining > 0 else 0.0
     else:
