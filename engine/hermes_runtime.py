@@ -13,6 +13,22 @@ import sys
 import threading
 
 
+def config_root() -> Path:
+    """Resolve the Hermes host root, including inherited named-profile homes."""
+    if sys.platform == 'win32':
+        base = Path(os.environ.get('LOCALAPPDATA') or Path.home() / 'AppData' / 'Local')
+        native = base / 'hermes'
+    else:
+        native = Path.home() / '.hermes'
+    configured = os.environ.get('HERMES_HOME', '').strip()
+    if not configured:
+        return native.resolve()
+    home = Path(configured).resolve()
+    if home.is_relative_to(native.resolve()):
+        return native.resolve()
+    return home.parent.parent if home.parent.name == 'profiles' else home
+
+
 class HermesCompatibilityError(RuntimeError):
     """Installed Hermes cannot provide the required session operations."""
 

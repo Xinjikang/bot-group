@@ -32,6 +32,12 @@
 
 管理员接口 `GET /system/hermes-gateway` 被动读取全局模式和池状态，返回 `mode`、`state`、`updated_at`，设置 `Cache-Control: no-store`。浏览器每 3 秒读取，单次请求上限 4 秒，结果超过 15 秒或引擎失联显示状态未知。子进程模式隐藏顶栏状态；空闲释放显示待连接。设计与验证范围见 [连接复用与状态设计](../design/2026-10-30-hermes-gateway-connections.md) 和测试索引。
 
+## 换证等待与诊断
+
+签名换证失败且 `pending_generation` 存在时，保留原授权与待交接状态，将该绑定写入短期忙碌缓存，再把原 job 退回 queued。原生会话即使空闲，缓存有效期内也会跳过该候选，让其他独立会话获得投递机会；期满后重新核实，换证成功后沿用原会话和 job 继续派发。换证成功取决于网关及配置恢复，永久性错误需要诊断和管理员处置。普通 busy 重试保持原 ID、原顺序及既有失败计数语义。
+
+换证派发与后台维护警告记录操作阶段、profile、project、引擎会话、原生 session ID、home、签名代、异常类型、HTTP 状态及脱敏原因。后台维护分别标记 connect、resume、configure 或 detach，以区分连接故障、远端恢复失败和本地授权校验。维护诊断只记录运行身份及经过脱敏的错误信息。
+
 ## 会话、MCP 和原生审批
 
 新会话使用 `source=acp`，首次通过 `session.mutate editor_mcp` 注入会话级 task_queue。配置指纹按 profile/session/project 持久化；后续相同配置通过 `session.resume(editor=...)` 恢复私有传输参数，保留原生 agent 与 MCP 连接。model/provider/reasoning 仅在引擎指定值变化时更新；workspace/edit_policy 按会话快照比较。实际工具发现和调用由 Hermes 原生机制完成。
@@ -97,6 +103,10 @@ AGENTS.md、SOUL 和记忆通过用户主动 `/new` 刷新。v0.22.5 在同 sid 
 固定配置的连续唤醒验证使用 `scripts/verify_wake_prefix.py`，保存模型实际请求中的 system/developer 文本、工具 schema 和 SHA-256。Hermes 延迟加载工具时额外记录完整 MCP manifest；配置与凭据的传输对象不作为 schema 哈希输入。共享 `_MCP_TOOLS` 包含只读对账工具 `operation_get`，Codex `enabled_tools` 和 Hermes 子进程 `tools.include` 同步使用该列表。验证边界见[前缀验证设计](../design/2026-10-30-wake-prefix-verification.md)。
 
 `verify_gateway_refresh_live.py` 在隔离 home 中通过公开协议执行配置刷新和模型调用。配置字段以只读的已提交 policy 回执核验；规则与工具描述以模型最终回答及实际 tool_search 结果核验。policy 回执证明派生值变化，max_turns 耗尽和 checkpoint 文件生成属于独立运行行为验证。
+
+## 根目录解析
+
+宿主发现、旧成员登记和配置编辑共用 `hermes_runtime.config_root()` 解析环境中的 Hermes 根目录。`HERMES_HOME` 指向 `根目录/profiles/<名称>` 时还原为根目录，扫描结果包含 default 和其他有效的同级 profile；显式根目录继续生效，未配置时使用平台默认根目录。此解析保持环境变量高于 `.env` 的加载顺序，已登记成员的连接继续使用其保存的宿主目录。
 
 ## 停止后的清理恢复
 

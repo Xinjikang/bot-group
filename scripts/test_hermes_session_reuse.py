@@ -231,6 +231,25 @@ class SessionReuseTests(unittest.TestCase):
             with self.assertRaises(HTTPException):
                 grants.validate(self.conn, auth.session_scope('default', old_token, ring[1]))
 
+    def test_maintenance_diagnostics_identify_stage_and_redact_credentials(self):
+        for phase in ('connect', 'resume', 'configure'):
+            with self.subTest(phase=phase):
+                failure = HTTPException(401, 'credential=fixture-secret\nsynthetic rejection')
+                self.remote.rpc.side_effect = failure if phase == 'resume' else None
+                with patch.object(auth, 'signing_keys', return_value=(2, {1: b'old', 2: b'new'})), \
+                     patch.object(gateway, 'connection', return_value=(self.remote, self.grant['home'], []),
+                                  side_effect=failure if phase == 'connect' else None), \
+                     patch.object(grants, 'configure', side_effect=failure), \
+                     self.assertLogs(grants.LOG, level='WARNING') as logs:
+                    grants.maintain()
+                message = logs.output[0]
+                for expected in (f'phase={phase}', "profile='default'", "project='alpha'",
+                                 "session_id='sid'", 'home=', 'signing_generation=1',
+                                 'error=HTTPException', 'status=401', 'synthetic rejection', '[REDACTED]'):
+                    self.assertIn(expected, message)
+                self.assertNotIn('fixture-secret', message)
+                self.assertNotIn('\n', message)
+
 
 if __name__ == '__main__':
     unittest.main()

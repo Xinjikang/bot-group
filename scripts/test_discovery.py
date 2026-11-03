@@ -87,6 +87,29 @@ class DiscoveryTests(unittest.TestCase):
         # 内置 user 不参与发现
         self.assertFalse(any(c["profile"] == "user" for c in cands))
 
+    def test_scan_from_named_profile_keeps_sibling_candidates(self):
+        from engine import profile_config
+        with patch.dict(os.environ, {"HERMES_HOME": str(self.hroot / "profiles" / "alice")}):
+            conn = db.get_connection()
+            try:
+                candidates = discovery.scan_candidates(conn)
+            finally:
+                conn.close()
+            hermes = [c for c in candidates if c['host_type'] == 'hermes']
+            self.assertEqual({c['profile'] for c in hermes}, {'default', 'alice', 'bob'})
+            self.assertEqual({c['config_root'] for c in hermes}, {str(self.hroot.resolve())})
+            self.assertEqual(Path(db._hermes_root()), profile_config._root())
+
+    def test_native_root_resolution_matches_profile_configuration(self):
+        from engine import profile_config
+        base = Path(self.tmp.name)
+        native = base / ('hermes' if sys.platform == 'win32' else '.hermes')
+        with patch.dict(os.environ, {'LOCALAPPDATA': str(base)}), patch.object(Path, 'home', return_value=base):
+            for configured in ('', str(native), str(native / 'profiles' / 'alice')):
+                with self.subTest(configured=configured), patch.dict(os.environ, {'HERMES_HOME': configured}):
+                    self.assertEqual(Path(db._hermes_root()), native.resolve())
+                    self.assertEqual(profile_config._root(), native.resolve())
+
     def test_nested_codex_home_discovery_and_launch(self):
         from engine.bot_identity import codex_settings
         home = self.croot / 'profiles' / 'dev-01'

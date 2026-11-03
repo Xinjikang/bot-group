@@ -1,5 +1,9 @@
 # 测试脚本索引
 
+Hermes 根目录解析：使用 `scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_discovery scripts.test_profile_config scripts.test_member_identity scripts.test_project_roles`。临时目录与隔离数据库覆盖显式根目录、继承命名 profile、平台默认路径，以及扫描同级助手、配置读取和已登记成员的连接定位；无需生产目录或真实网关。
+
+Hermes 换证调度与诊断：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_hermes_handoff_scheduling scripts.test_native_busy_scheduling scripts.test_hermes_session_reuse scripts.test_signing_keys`。隔离 SQLite、合成 RPC 和受控时钟执行实际 queue/spawn/grant/configure 路径；验证原生空闲但换证失败时后方会话可调度，原 job ID/顺序/旧代引用保留，异常解除后原会话只提交一次。维护日志覆盖 connect/resume/configure 阶段、HTTP 状态和凭据脱敏，无生产数据或模型调用。
+
 话题输入框自动填充：`python -X utf8 -B scripts/test_thread_creation_browser.py --screenshots <主目录报告下的绝对目录>`。需要 Python 3.11+、项目依赖、Playwright 与 Chrome；隔离 API 覆盖深浅主题、1280/390px、普通/自动填充及聚焦状态共 16 组合，继续回归图片开场白、重复提交和响应丢失重试。截图参数可省略。
 
 项目助手选择：`python -X utf8 -B scripts/test_hud_draft_selection_browser.py --evidence <主目录报告下的绝对目录>`。同上浏览器依赖；真实页面与隔离 HUD API 验证从已配置及未配置的项目打开新建向导均要求单独选择并保存助手、设置中移除全局预选，检查桌面与 390px。后端使用 `scripts.run_isolated_tests` 运行 `scripts.test_project_hud` 与 `scripts.test_hud_preparation`，覆盖旧预选值忽略、新草稿空选择、已有草稿恢复、项目配置独立及创建绑定。
