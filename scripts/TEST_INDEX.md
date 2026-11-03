@@ -375,6 +375,8 @@ MCP API 与运行时配置：`test_task_api.py` 验证成员/项目/执行校验
 
 ## 浏览器回归
 
+引擎日志：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录 reports/tests 下的绝对目录> scripts.test_engine_logs scripts.test_app_updates`，验证日志缺失/空内容、中文、末尾字节和行数限制、轮转、无缓存、管理员/成员/匿名权限和读取错误。`python -X utf8 -B scripts/test_app_settings_browser.py --evidence <报告绝对目录>` 使用 Playwright 与 Chrome，所有接口由合成路由隔离，覆盖日志自动刷新/暂停/手动重试、滚动位置、纯文本、空内容、关闭与退出停止刷新、桌面和 390px 深浅主题，并回归原有设置功能。
+
 使用 `python -X utf8 -B scripts/<文件名>`。脚本通过合成 HTTP 或隔离服务验证真实 DOM、交互和刷新，先确认解释器的 Playwright/浏览器依赖。
 
 | 范围 | 用例 |

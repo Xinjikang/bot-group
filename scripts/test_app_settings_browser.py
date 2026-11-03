@@ -9,7 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(evidence):
-    state = {'checks': 0, 'failure': False, 'hold': False, 'held': [], 'version': 'v1.0.0'}
+    state = {'checks': 0, 'failure': False, 'hold': False, 'held': [], 'version': 'v1.0.0',
+             'log_checks': 0, 'log_failure': False, 'log_text': '\n'.join(f'{i} 中文 <img src=x onerror=alert(1)>' for i in range(150))}
     errors, writes = [], []
     update = {'status': 'ok', 'current_version': 'v1.0.0', 'latest_version': 'v1.1.0', 'update_available': True}
     def route(req):
@@ -29,6 +30,13 @@ def run(evidence):
                 state['held'].append(req)
                 return
             data = {'status': 'unavailable', 'update_available': False} if state['failure'] else update
+        elif path == '/system/logs':
+            state['log_checks'] += 1
+            if state['log_failure']:
+                req.fulfill(status=503, json={'detail': '日志读取失败'})
+                return
+            data = {'text': state['log_text'], 'lines': len(state['log_text'].splitlines()),
+                    'truncated': True, 'available': True}
         elif path == '/system/version':
             data = {'current_version': state['version'], 'version_label': state.get('label') or state['version'] or '源码副本 · 缺少版本信息'}
         elif path == '/user/display-name':
@@ -84,6 +92,52 @@ def run(evidence):
         page.locator('#btn-settings').click()
         page.locator('.logo').click()
         assert page.locator('#app-settings-menu').is_hidden()
+
+        page.locator('#btn-settings').click()
+        page.locator('#btn-engine-logs').click()
+        log = page.locator('#engine-logs-content')
+        page.wait_for_function('document.querySelector("#engine-logs-content").textContent.includes("149 中文")')
+        assert page.locator('#app-settings-menu').is_hidden()
+        assert log.locator('img').count() == 0
+        assert log.evaluate('e => e.scrollTop > 0')
+        page.screenshot(path=str(evidence / 'logs-desktop.png'))
+        log.evaluate('e => e.scrollTop = 0')
+        page.clock.fast_forward(2100)
+        page.wait_for_timeout(100)
+        assert state['log_checks'] == 2
+        assert log.evaluate('e => e.scrollTop === 0')
+        page.locator('#engine-logs-auto').uncheck()
+        checks = state['log_checks']
+        page.clock.fast_forward(5000)
+        assert state['log_checks'] == checks
+        state['log_failure'] = True
+        page.locator('#engine-logs-refresh').click()
+        page.wait_for_function('document.querySelector("#engine-logs-status").dataset.error === "true"')
+        assert '149 中文' in log.inner_text()
+        state['log_failure'] = False
+        state['log_text'] = ''
+        page.locator('#engine-logs-refresh').click()
+        page.wait_for_function('document.querySelector("#engine-logs-content").textContent === "暂无引擎日志。"')
+        assert page.locator('#engine-logs-status').get_attribute('data-error') == 'false'
+        state['log_text'] = '日志轮转后\n' + '长路径/' * 300
+        page.locator('#engine-logs-refresh').click()
+        page.wait_for_function('document.querySelector("#engine-logs-content").textContent.includes("日志轮转后")')
+        for theme in ('light', 'dark'):
+            page.evaluate('applyTheme', theme)
+            page.set_viewport_size({'width': 390, 'height': 844})
+            for selector in ('#engine-logs', '#engine-logs-close', '#engine-logs-refresh'):
+                rect = page.locator(selector).bounding_box()
+                assert rect['x'] >= 0 and rect['x'] + rect['width'] <= 391, (selector, rect)
+                assert rect['y'] >= 0 and rect['y'] + rect['height'] <= 845, (selector, rect)
+            page.screenshot(path=str(evidence / f'logs-390-{theme}.png'))
+        page.keyboard.press('Escape')
+        assert page.locator('#engine-logs').is_hidden()
+        assert page.locator('#btn-settings').evaluate('e => document.activeElement === e')
+        checks = state['log_checks']
+        page.clock.fast_forward(5000)
+        assert state['log_checks'] == checks
+        page.set_viewport_size({'width': 1280, 'height': 900})
+        page.evaluate('applyTheme', 'light')
 
         page.clock.fast_forward(12 * 60 * 60 * 1000 + 60000)
         page.wait_for_function('!document.querySelector("#app-update-notice").hidden')
@@ -145,14 +199,21 @@ def run(evidence):
         page.wait_for_function('document.querySelector("#app-about-version").textContent.includes("源码副本 · 缺少版本信息")')
         assert '暂时无法比较' in page.locator('#app-about-detail').inner_text()
         page.locator('#app-about-close').click()
+        page.locator('#btn-settings').click()
+        page.locator('#btn-engine-logs').click()
+        page.wait_for_function('document.querySelector("#engine-logs-content").textContent.includes("日志轮转后")')
         page.evaluate('logout()')
+        assert page.locator('#engine-logs').is_hidden()
+        assert log.inner_text() == ''
+        log_checks = state['log_checks']
         checks = state['checks']
         page.clock.fast_forward(13 * 60 * 60 * 1000)
         assert state['checks'] == checks
+        assert state['log_checks'] == log_checks
         assert not errors, errors
-        assert all(path == '/auth/events' for path in writes), writes
+        assert all(path in ('/auth/events', '/hud') for path in writes), writes
         browser.close()
-    print('PASS: initial/reload check, 12-hour timer, overdue resume, in-flight deduplication, quiet retry, unknown version, auth boundary, settings/background/theme, keyboard/outside close, 390px themes')
+    print('PASS: initial/reload check, 12-hour timer, overdue resume, in-flight deduplication, quiet retry, unknown version, auth boundary, settings/background/theme, keyboard/outside close, engine log polling/pause/retry/scroll/empty/rotation/plain text/logout, 390px themes')
 
 
 if __name__ == '__main__':
