@@ -6,7 +6,7 @@ Hermes 子代理等待与原生续接：`.venv\Scripts\python.exe -X utf8 -B -m 
 
 Hermes 旧成员宿主定位：使用 `scripts.run_isolated_tests` 运行 `scripts.test_member_identity`、`scripts.test_project_roles`。临时根目录注册 default 与命名 profile，注入个人 profile 作为 fallback，验证成员身份解析及网关连接使用登记根目录，未登记成员保持 fallback。
 
-子代理原版运行时验证：`verify_delegation_wait_native.py --scenario direct --mcp-path client` 覆盖等待会话排在队首、另一 Bot 的工作会话实际完成、同一等待会话连续处理两条点对点输入（第一条仍未读），以及原生回调后的任务交接。`--scenario topic --mcp-path client` 覆盖等待话题保留发言位、超时检查、同一 Bot 的另一个话题实际执行，以及原生回调后的话题消息写入。均需提供上述四个显式路径参数，每次使用新的 run-dir/evidence。client 路径使用独立真实 stdio MCP 客户端核验 bot-group 权限；默认 native 路径由父 agent 原生调用工具。原生源码提交、工作区状态及 model_tools.py 摘要在启动/结束时比对，保持运行时代码原样。此前带原生代码注入的实验入口已从验收脚本移除。
+子代理原版运行时验证：`verify_delegation_wait_native.py --scenario direct --mcp-path native` 覆盖等待会话排在队首、另一 Bot 的工作会话实际完成、同一等待会话连续处理两条点对点输入（第一条仍未读），以及原生回调后的任务交接。`--scenario topic --mcp-path native` 覆盖等待话题保留发言位、超时检查、同一 Bot 的另一个话题实际执行，以及原生回调后的话题消息写入。均需提供上述四个显式路径参数，每次使用新的 run-dir/evidence。默认采用 Hermes ACP 工具集，由父 agent 通过原生工具搜索及调用完成写入；`--toolsets delegation` 可复现仅委派工具集的兼容性对照，`--toolsets hermes-cli` 使用完整 CLI 工具集对照。可选 client 路径使用独立真实 stdio MCP 客户端核验 bot-group 权限。原生源码提交、工作区状态及 model_tools.py 摘要在启动/结束时比对，保持运行时代码原样。
 
 委派点对点补充回归：使用 `scripts.run_isolated_tests` 运行 `scripts.test_hermes_delegations scripts.test_native_busy_scheduling scripts.test_thinking_run_identity`。覆盖旧输入仍未读时继续选择新消息、入箱前撤回复核、任务归属及话题保留、#276 并行调度和 /thinking 零网关调用。
 

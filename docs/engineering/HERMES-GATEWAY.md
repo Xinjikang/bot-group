@@ -30,6 +30,8 @@
 
 新会话使用 `source=acp`，首次通过 `session.mutate editor_mcp` 注入会话级 task_queue。配置指纹按 profile/session/project 持久化；后续相同配置通过 `session.resume(editor=...)` 恢复私有传输参数，保留原生 agent 与 MCP 连接。model/provider/reasoning 仅在引擎指定值变化时更新；workspace/edit_policy 按会话快照比较。实际工具发现和调用由 Hermes 原生机制完成。
 
+默认 ACP 工具集可通过 `tool_search` / `tool_call` 延迟发现并调用 task_queue 工具。判断工具可用性需核对实际搜索、调用及服务端写入结果。原生委派验收默认保留 ACP 工具集，裁剪为仅 `delegation` 的配置用于兼容性对照，具体边界见委派等待设计。
+
 `hermes_session_grants` 保存会话授权、当前签名代、待交接代和撤权释放状态。`session_token` 签名绑定 profile/project/thread_id/session/session_id/generation，类型参与签名；MCP 上下文跨轮固定。消息和任务在服务端定位唯一非终态执行，取消中、人工核对态及空闲会话拒绝写入；消息和任务事务再次校验授权与执行身份。会话回执按稳定身份查询，消息来源仍按每轮 started_at 记账。浏览器资源目录使用会话身份生成，每轮资源记录关联当前执行。
 
 关闭话题、移除或停用成员、撤销项目权限、归档或移除项目、切换会话绑定时撤销对应授权。绑定、成员及话题变更通过数据库触发器持久化撤权，权限变更与授权更新处于同一事务。后台每 3 秒重试待释放订阅；撤权即时生效，网关暂时不可用时保留释放待办。重新授权使用递增绑定 generation，旧凭据持续失效。设计见[会话资源复用](../design/2026-10-30-hermes-gateway-session-reuse.md)。

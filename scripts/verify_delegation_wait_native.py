@@ -50,6 +50,8 @@ def main():
     parser.add_argument('--mcp-path', choices=('native', 'client'), default='native',
                         help='native model tools, or separate real MCP client while the native callback is held')
     parser.add_argument('--scenario', choices=('work', 'direct', 'topic'), default='work')
+    parser.add_argument('--toolsets', nargs='+',
+                        help='Override isolated ACP toolsets; omitted uses Hermes ACP defaults')
     args = parser.parse_args()
     run, evidence, source, python = [absolute_path(getattr(args, n.replace('-', '_')), '--' + n)
         for n in ('run-dir', 'evidence', 'hermes-source', 'hermes-python')]
@@ -66,7 +68,7 @@ def main():
     origin = f'http://127.0.0.1:{model.server_port}'
     config = {'model': {'default': 'gpt-4.1-mini', 'provider': 'custom', 'base_url': origin + '/v1',
                        'api_key': 'loopback-fixture'}, 'mcp_servers': {},
-              'platform_toolsets': {'acp': ['delegation']}, 'agent': {'max_turns': 16},
+              'platform_toolsets': {'acp': args.toolsets} if args.toolsets else {}, 'agent': {'max_turns': 16},
               'terminal': {'cwd': str(work)}, 'approvals': {'mode': 'smart'},
               'checkpoints': {'enabled': False}, 'updates': {'check': False},
               'models_dev': {'url': origin + '/models'},
@@ -91,6 +93,7 @@ def main():
               'boundary': 'real native gateway, reconciler, MCP and HTTP writes; deterministic loopback model',
               'mcp_path': args.mcp_path,
               'scenario': args.scenario,
+              'toolsets': args.toolsets,
               'source_before': source_identity(),
               'home': str(home), 'source': str(source), 'snapshots': []}
     endpoint = None
