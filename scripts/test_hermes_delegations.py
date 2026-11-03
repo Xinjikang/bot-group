@@ -230,6 +230,24 @@ class DelegationTests(unittest.TestCase):
         self.assertEqual(deliver.call_args.args[:2], ('architect', 'work'))
         self.assertEqual(self.conn.execute("SELECT status FROM wake_jobs WHERE profile='default'").fetchone()[0], 'queued')
 
+    def test_new_direct_message_is_deliverable_while_prior_input_remains_unread(self):
+        self.wait()
+        first = self.message()
+        delegations.enqueue_direct(self.conn, self.current(), first, 'first input')
+        second = self.message()
+        selected = delegations.direct_wait(self.conn, 'default', 'alpha')
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected[1], second)
+
+    def test_retracted_direct_message_is_rechecked_before_enqueue(self):
+        self.wait()
+        mid = self.message()
+        row, _ = delegations.direct_wait(self.conn, 'default', 'alpha')
+        self.conn.execute('UPDATE messages SET retract_at=? WHERE id=?', (db.now_iso(), mid))
+        self.conn.commit()
+        self.assertFalse(delegations.enqueue_direct(self.conn, row, mid, 'stale input'))
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM hermes_delegation_inputs').fetchone()[0], 0)
+
     def test_queued_task_scan_can_deliver_actual_direct_message_during_wait(self):
         self.wait()
         mid = self.message()

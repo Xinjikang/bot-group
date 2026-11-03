@@ -241,11 +241,12 @@ def poll(conn, row, client):
     return False
 
 
-def direct_message(conn, profile, project, message_id=None):
+def direct_message(conn, profile, project, message_id=None, *, execution_id=None):
     from .delivery import effective_need_reply
     rows = conn.execute("SELECT m.* FROM inbox i JOIN messages m ON m.id=i.message_id WHERE i.profile=? "
-        "AND i.status='pending' AND m.project=? AND m.thread_id IS NULL AND m.retract_at IS NULL ORDER BY m.id",
-        (profile, project)).fetchall()
+        "AND i.status='pending' AND m.project=? AND m.thread_id IS NULL AND m.retract_at IS NULL "
+        "AND NOT EXISTS (SELECT 1 FROM hermes_delegation_inputs d WHERE d.execution_id=? AND d.message_id=m.id) ORDER BY m.id",
+        (profile, project, execution_id)).fetchall()
     return next((r['id'] for r in rows if (message_id is None or r['id'] == message_id)
                  and effective_need_reply(r, profile) is not None), None)
 
@@ -255,9 +256,8 @@ def direct_wait(conn, profile, project, message_id=None):
     row = conn.execute("SELECT * FROM hermes_executions WHERE session=? AND state='waiting_delegation' "
                        'AND cancel_reason IS NULL', (wake.session_name(profile, 'work', None, project),)).fetchone()
     if row and owned(conn, row):
-        mid = direct_message(conn, profile, project, message_id)
-        if mid is not None and not conn.execute('SELECT 1 FROM hermes_delegation_inputs WHERE execution_id=? AND message_id=?',
-                                                (row['execution_id'], mid)).fetchone():
+        mid = direct_message(conn, profile, project, message_id, execution_id=row['execution_id'])
+        if mid is not None:
             return row, mid
     return None
 
@@ -268,6 +268,9 @@ def enqueue_direct(conn, row, message_id, text):
     try:
         current = ledger.read(conn, row['execution_id'])
         if current['state'] != 'waiting_delegation' or current['cancel_reason'] or not owned(conn, current):
+            conn.rollback()
+            return False
+        if direct_message(conn, current['profile'], current['project'], message_id) is None:
             conn.rollback()
             return False
         conn.execute('INSERT OR IGNORE INTO hermes_delegation_inputs VALUES(?,?,?,?)',

@@ -52,6 +52,8 @@ class Model(BaseHTTPRequestHandler):
             if not self.server.release_child.wait(240):
                 raise TimeoutError('Child model barrier expired')
             msg['content'] = 'CHILD_FINISHED'
+        elif 'DIRECT_SCENARIO_' in last_user and getattr(self.server, 'direct_response', None):
+            msg, finish = self.server.direct_response(body)
         elif delegated and 'PARENT_SCENARIO_' not in last_user:
             self.server.parent_entered.set()
             if not self.server.release_parent.wait(240):
