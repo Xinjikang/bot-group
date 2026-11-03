@@ -1,4 +1,4 @@
-"""req#142 成果 1 task#276 验收 7 真机层 + 成果 2 task#277 /thinking 真机证据。
+"""Hermes 原生忙闲预检查与恢复投递的隔离真机验证。
 
 场景（全部隔离：随机回环端口 + 隔离数据目录 + 隔离 Hermes home，复用 gw_probe 安装与模型配置）：
 1. 隔离引擎 + 真实网关启动；A（default，hermes bot）经引擎真实 spawn 一次（work 会话）
@@ -7,15 +7,12 @@
    续跑第一动作调用 busy_wait 阻塞（受控窗口，证明原生 running 无引擎记录）
 4. 窗口内：A 的 work job + B 的 work job 入队，由引擎真实队列 worker 轮转——
    预检查命中原生忙 → B 投递（记录层）、A 保留原 ID 排队
-5. /thinking 证据（#277）：窗口内观察条目显示 A 自发执行（observed/state=native_running/
-   归属 default-alpha-work），释放后续跑结束 → 条目撤下 + /reasoning 返回 process_ended_at
-6. 释放 busy_wait → 续跑结束 → 原生空闲 → 引擎队列恢复投递 A（原 ID，真实二次 spawn）
-7. 证据：原生 admission/会话状态、引擎执行记录、wake_jobs 时间线、/thinking 观察、
+5. 释放 busy_wait → 续跑结束 → 原生空闲 → 引擎队列恢复投递 A（原 ID，真实二次 spawn）
+6. 证据：原生 admission/会话状态、引擎执行记录、wake_jobs 时间线、
    清理三方核验
 
 分层说明（验收 7 要求模拟层与真实运行层分别记录）：
-- 真实层：异步委托与续跑、原生 running/pending、引擎队列 worker 的跳过/投递决策、A 恢复投递、
-  /thinking 观察条目显示与撤下（真实引擎 /thinking + 真实网关原生状态）
+- 真实层：异步委托与续跑、原生 running/pending、引擎队列 worker 的跳过/投递决策、A 恢复投递。
 - 记录层：B 的 deliver 由 serve 内记录器承接（真实 spawn 链路由既有网关真机探针覆盖），
   避免为 B 再拉起一个真实模型回合
 
@@ -333,26 +330,6 @@ def verify(args):
         result['checks']['b_delivered_a_retained_original_id'] = True
         result['jobs'].append({'window': 'native-busy', 'a': dict(job_a), 'b': dict(job_b),
                                'b_deliveries': deliveries})
-        # req#142 成果 2（#277）/thinking 证据：续跑窗口内观察条目显示自发执行
-        # （引擎无活动派发记录、原生 running → observed 条目，归属 default/alpha/work）
-        deadline = time.monotonic() + 30
-        observation = None
-        while time.monotonic() < deadline:
-            snapshot = client.get('/thinking').json()
-            for entry in snapshot.get('runs') or []:
-                if (entry.get('observed') is True and entry.get('profile') == 'default'
-                        and entry.get('session') == 'default-alpha-work'):
-                    observation = entry
-                    break
-            if observation:
-                break
-            time.sleep(1)
-        assert observation, 'thinking observation missing during native continuation'
-        assert observation.get('state') == 'native_running', observation
-        assert observation.get('thread_id') is None, observation
-        assert observation.get('project') == 'alpha', observation
-        result['checks']['thinking_observation_during_continuation'] = True
-        result['thinking_observation'] = observation
         # 释放 busy_wait → 续跑结束 → 原生空闲 → A 恢复投递（原 ID）
         (workspace / 'continue').touch()
         deadline = time.monotonic() + 180
@@ -377,23 +354,6 @@ def verify(args):
         completed = [r for r in result['engine_rows'] if r['outcome'] == 'completed']
         assert len(result['engine_rows']) == 2 and len(completed) == 2, result['engine_rows']
         result['checks']['continuation_left_no_engine_row'] = True
-        # /thinking 结束清除：续跑结束后观察条目撤下，/reasoning 按批次返回 process_ended_at
-        deadline = time.monotonic() + 60
-        cleared = False
-        while time.monotonic() < deadline:
-            snapshot = client.get('/thinking').json()
-            if not any(e.get('observed') is True and e.get('session') == 'default-alpha-work'
-                       for e in snapshot.get('runs') or []):
-                cleared = True
-                break
-            time.sleep(1)
-        assert cleared, 'thinking observation not cleared after continuation ended'
-        reasoning = client.get('/reasoning', params={
-            'profile': 'default', 'session': 'default-alpha-work',
-            'wake_started_at': observation['wake_started_at'], 'after_id': 0}).json()
-        assert reasoning.get('process_ended_at'), reasoning
-        result['checks']['thinking_observation_cleared_after'] = True
-        result['thinking_reasoning_process_ended_at'] = reasoning.get('process_ended_at')
     finally:
         try:
             from engine.maintenance.stop_engine import stop
@@ -424,8 +384,7 @@ def verify(args):
     required = ['a_first_admission_spawned', 'continuation_running_without_engine_row',
                 'spawn_row_recorded', 'native_running_while_engine_idle',
                 'b_delivered_a_retained_original_id', 'a_recovered_same_id',
-                'continuation_left_no_engine_row',
-                'thinking_observation_during_continuation', 'thinking_observation_cleared_after']
+                'continuation_left_no_engine_row']
     missing = [name for name in required if result['checks'].get(name) is not True]
     assert not missing, f'required checks not all true: {missing}'
     assert result['gateway_home_clean'], 'isolated home still holds gateway processes'

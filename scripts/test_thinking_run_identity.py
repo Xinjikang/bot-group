@@ -1,7 +1,9 @@
 """Thinking heartbeats identify a recorded execution, never the latest profile wake."""
+import json
+import time
 import unittest
-from unittest.mock import patch
-from engine import api, db, heartbeat, wake
+from unittest.mock import Mock, patch
+from engine import api, db, events, heartbeat, hermes_gateway, wake
 from scripts import test_abnormal_exit as fixtures
 
 
@@ -62,6 +64,44 @@ class ThinkingRunIdentityTests(unittest.TestCase):
         self.conn.commit()
         rows = self.thinking([{'profile': 'dev-1', 'thread_id': None, 'pid': 10}])
         self.assertEqual(rows[0]['project'], 'bot-group')
+
+    def test_http_snapshot_with_200_bindings_keeps_gateway_out_of_request(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        self.conn.executemany(
+            "INSERT INTO session_bindings(project,bot_id,profile,kind,thread_id,session_id,"
+            "runtime,generation,title,updated_at) VALUES('p',0,'dev-2','chat',?,?,'hermes',0,'',?)",
+            [(index, f'native-{index}', db.now_iso()) for index in range(1, 201)])
+        self.conn.commit()
+        run = dict(profile='dev-1', session='dev-1-p-work', project='p',
+                   thread_id=None, wake_started_at=100, spawned_at='2026-09-22T10:00:00')
+        app = FastAPI()
+        app.include_router(api.router_api)
+        app.dependency_overrides[api.authorize] = lambda: None
+        latencies = []
+        with patch.object(heartbeat, 'active_entries', return_value=[]), \
+                patch.object(wake, '_running_wakes', {run['session']: run}), \
+                patch.object(events.bus, 'publish') as publish, TestClient(app) as client:
+            for snapshot in ({'running': True, 'pending': []},
+                             {'running': False, 'pending': [{'status': 'queued'}]}):
+                with self.subTest(snapshot=snapshot):
+                    lease = Mock()
+                    lease.rpc.return_value = snapshot
+                    with patch.object(hermes_gateway, '_native_cache', {}), \
+                            patch.object(hermes_gateway, 'connection',
+                                         return_value=(lease, None, [])) as connection:
+                        for _ in range(10):
+                            started = time.perf_counter()
+                            response = client.get('/thinking')
+                            latencies.append((time.perf_counter() - started) * 1000)
+                            self.assertEqual(response.status_code, 200)
+                            self.assertEqual(response.json(), {'thinking': [], 'runs': [run]})
+                        connection.assert_not_called()
+            publish.assert_not_called()
+        print(json.dumps({'thinking_snapshot': {'bindings': 200, 'requests': len(latencies),
+            'gateway_calls': 0, 'p95_ms': round(sorted(latencies)[18], 3),
+            'max_ms': round(max(latencies), 3)}}), flush=True)
 
 
 if __name__ == '__main__':

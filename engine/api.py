@@ -1371,11 +1371,6 @@ def get_thinking():
         for entry in entries:
             if 'session' in entry:
                 runs.setdefault((entry['session'], entry['wake_started_at']), entry)
-        # req#142 成果 2：原生执行观察（自发续跑无引擎记录）——观察条目与派发记录区分
-        # （observed=true），仅引擎无活动派发记录的绑定且原生忙时出现，空闲即撤。
-        from . import native_observation
-        for entry in native_observation.refresh(conn):
-            runs.setdefault((entry['session'], entry['wake_started_at']), entry)
         return {"thinking": entries, "runs": list(runs.values())}
     finally:
         conn.close()
@@ -1402,11 +1397,6 @@ def get_reasoning(profile: str, session: str, wake_started_at: float, after_id: 
     finally:
         conn.close()
     ended_at = run["ended_at"] if run else None
-    if run is None:
-        # 原生执行观察（req#142 成果 2）：自发续跑无 wake_runs 行，观察批次结束时刻
-        # 供前端按 process_ended_at 折叠气泡，执行结束及时撤下活动状态。
-        from . import native_observation
-        ended_at = native_observation.ended_for(session, wake_started_at)
     if ended_at is not None:
         wake_ended_at = min(wake_ended_at, ended_at) if wake_ended_at is not None else ended_at
     options = {}
