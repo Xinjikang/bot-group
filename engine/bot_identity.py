@@ -1,6 +1,5 @@
 """Resolve engine member handles to stable Bots and physical host profiles."""
 from pathlib import Path
-import re
 
 
 def resolve(conn, project, member, *, active_only=False):
@@ -37,8 +36,7 @@ def member_views(conn):
 
 
 def hermes_home(member, fallback):
-    if not re.fullmatch(r'bot-\d+(?:-bot)*', member):
-        return fallback if member == 'default' else fallback / 'profiles' / member
+    """Resolve registered members against their host root, including legacy handles."""
     from . import db
     conn = db.get_connection()
     try:

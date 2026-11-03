@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+Hermes 旧成员宿主定位：使用 `scripts.run_isolated_tests` 运行 `scripts.test_member_identity`、`scripts.test_project_roles`。临时根目录注册 default 与命名 profile，注入个人 profile 作为 fallback，验证成员身份解析及网关连接使用登记根目录，未登记成员保持 fallback。
+
 Hermes 重启遗留执行停止恢复：通过下列取消回归命令运行 `scripts.test_hermes_gateway_ledger` 与 `scripts.test_hermes_gateway.GatewayTests.test_manual_retry_resolves_unknown_and_releases_execution`。合成 `unknown` 回执覆盖用户停止后按原 admission/代次调用 `prompt.resolve_unknown`、权威终态收尾、自动超时保留占用及响应丢失保留身份；沿用隔离数据库与模拟 RPC。
 
 Hermes 取消超时与状态同步：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录 reports/tests 下的新绝对目录> scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_stop_scope`，另运行 `node scripts/test_wake_liveness.cjs`。隔离 SQLite 与模拟网关覆盖连接失败跨越取消期限、超时退出及重启保持、页面查询状态同步、原执行手动核对、正常终态收尾、迟到状态保护后继执行；模拟 RPC 使用合成回执，无生产网关或模型调用。
