@@ -179,7 +179,7 @@ class GatewayTests(unittest.TestCase):
         for key in ('cancel_deadline', 'reconcile_deadline', 'admission_id', 'submission_id'):
             self.assertEqual(after[key], before[key])
 
-    def _assert_cancel_terminal(self, expired):
+    def _assert_cancel_terminal(self, expired, lost=False):
         receipt = dict(admission_id='a', ref={'session_id': 'sid', 'profile_id': 'home'},
                        authority_epoch=1, execution_generation=1, status='started')
         ledger.apply_receipt(self.conn, self.eid, receipt)
@@ -188,18 +188,25 @@ class GatewayTests(unittest.TestCase):
             ledger.uncertain(self.conn, self.eid, 'offline')
         remote = Mock()
         remote.rpc.return_value = dict(receipt, status='terminal', outcome='cancelled')
+        if lost:
+            remote.rpc.side_effect = [dict(receipt, status='unknown'), remote.rpc.return_value]
         with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
              patch.object(gateway.sessions, 'attach', return_value={'messages': []}):
             gateway._watch(self.eid, retry_manual=expired)
         self.assertFalse(gateway.active(self.session))
         self.assertEqual(ledger.cleanup_pending(self.conn, self.session), [])
         self.assertIsNotNone(self.conn.execute('SELECT ended_at FROM wake_runs WHERE session=?', (self.session,)).fetchone()[0])
+        if lost:
+            self.assertEqual([c.args[0] for c in remote.rpc.call_args_list], ['prompt.receipt', 'prompt.resolve_unknown'])
 
     def test_cancel_success_releases_execution(self):
         self._assert_cancel_terminal(False)
 
     def test_manual_retry_terminal_releases_execution(self):
         self._assert_cancel_terminal(True)
+
+    def test_manual_retry_resolves_unknown_and_releases_execution(self):
+        self._assert_cancel_terminal(True, lost=True)
 
     def test_cancel_publishes_intent_and_manual_retry_is_explicit(self):
         with patch.object(wake, '_running_wakes', {}), patch.object(wake, '_running_sessions', set()), \

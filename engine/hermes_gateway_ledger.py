@@ -282,5 +282,12 @@ def reconcile(client, conn, execution_id, *, now=None, retry_manual=False):
     elif receipt['status'] == 'started' and row['generation'] is not None:
         client.rpc('session.interrupt', session_id=row['session_id'],
                    execution_generation=row['generation'], timeout=rpc_timeout)
+    elif receipt['status'] == 'unknown' and row['cancel_reason'] == 'user' and row['generation'] is not None:
+        # The gateway fences the lost generation and returns its authoritative
+        # terminal receipt, preserving any result already captured by the owner.
+        reply = client.rpc('prompt.resolve_unknown', session_id=row['session_id'],
+                           admission_id=row['admission_id'], execution_generation=row['generation'],
+                           timeout=rpc_timeout)
+        row = apply_receipt(conn, execution_id, reply, now=now)
     # An interrupt acknowledgement is a session handle, not an admission receipt.
     return row

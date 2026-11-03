@@ -124,6 +124,42 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(self.accept()['state'], 'manual')
         self.assertEqual(self.accept('terminal')['state'], 'terminal')
 
+    def test_user_cancel_resolves_lost_generation_with_authoritative_terminal(self):
+        self.accept()
+        ledger.cancel(self.conn, self.eid, now=115)
+        client = Mock()
+        client.rpc.side_effect = [self.receipt('unknown'), self.receipt('terminal', outcome='interrupted')]
+        row = ledger.reconcile(client, self.conn, self.eid, now=120)
+        self.assertEqual(row['state'], 'terminal')
+        self.assertEqual(row['outcome'], 'interrupted')
+        self.assertEqual(row['cleanup_pending'], 1)
+        client.rpc.assert_called_with('prompt.resolve_unknown', session_id='sid', admission_id='a',
+                                      execution_generation=7, timeout=30.0)
+
+    def test_automatic_timeout_keeps_unknown_execution_occupied(self):
+        self.accept()
+        ledger.cancel(self.conn, self.eid, reason='timeout', now=115)
+        client = Mock()
+        client.rpc.return_value = self.receipt('unknown')
+        row = ledger.reconcile(client, self.conn, self.eid, now=120)
+        self.assertIsNone(row['ended_at'])
+        self.assertEqual(len(ledger.active(self.conn)), 1)
+        self.assertEqual(client.rpc.call_count, 1)
+
+    def test_unknown_resolution_failure_preserves_identity_and_hold(self):
+        self.accept()
+        before = ledger.cancel(self.conn, self.eid, now=115)
+        ledger.uncertain(self.conn, self.eid, 'offline', now=266)
+        client = Mock()
+        client.rpc.side_effect = [self.receipt('unknown'), ConnectionError('response lost')]
+        with self.assertRaises(ConnectionError):
+            ledger.reconcile(client, self.conn, self.eid, now=270, retry_manual=True)
+        row = ledger.read(self.conn, self.eid)
+        self.assertEqual(row['state'], 'manual')
+        self.assertIsNone(row['ended_at'])
+        for key in ('admission_id', 'generation', 'reconcile_deadline', 'submission_id'):
+            self.assertEqual(row[key], before[key])
+
     def test_long_execution_disconnect_recovers_original_admission(self):
         self.accept()
         before = dict(ledger.read(self.conn, self.eid))
