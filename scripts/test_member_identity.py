@@ -17,6 +17,22 @@ class MemberIdentityTests(unittest.TestCase):
     roster = test_project_roles.ProjectRoleTests.roster
     set_role = test_project_roles.ProjectRoleTests.set_role
 
+    def test_registered_hermes_handles_ignore_profile_scoped_fallback(self):
+        from engine import bot_identity, hermes_gateway, hermes_connections, session_adapter
+        fallback = self.root / 'hermes' / 'profiles' / 'caller'
+        for profile in ('default', 'reviewer'):
+            member = self.join(profile=profile, host='hermes')
+            self.assertEqual(member, profile)
+            expected = self.root / 'hermes'
+            if profile != 'default':
+                expected = expected / 'profiles' / profile
+            self.assertEqual(bot_identity.hermes_home(member, fallback), expected)
+            with patch.object(session_adapter, '_hermes_home', return_value=fallback), \
+                 patch.object(hermes_connections, 'acquire') as acquire:
+                hermes_gateway.connection(member, read_only=True)
+            self.assertEqual(acquire.call_args.args[0], expected)
+        self.assertEqual(bot_identity.hermes_home('unregistered', fallback), fallback / 'profiles' / 'unregistered')
+
     def test_enrolled_roster_keeps_disabled_and_excludes_other_projects(self):
         local = self.join('p')
         foreign = self.join('q', profile='other')

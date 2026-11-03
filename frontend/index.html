@@ -866,7 +866,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 #dlg-workspace .workspace-danger{color:var(--danger);border-color:var(--danger);background:transparent}
 @media(max-width:420px){.project-member-card{padding:12px}}
 </style>
-<link rel="stylesheet" href="/app/dialogs.css?v=20261030-edit-policy">
+<link rel="stylesheet" href="/app/dialogs.css?v=20261103-thread-autofill">
 <link rel="stylesheet" href="/app/appearance.css?v=20261031">
 </head>
 <body>
@@ -893,6 +893,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
       <button id="btn-theme-top" type="button" title="切换深色 / 浅色"><svg class="settings-icon theme-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg><svg class="settings-icon theme-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/></svg><span class="settings-label">切换浅色</span></button>
       <button id="btn-edit-policy" type="button" aria-haspopup="dialog" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6z"/><path d="m8 12 3 3 5-6"/></svg><span>智能审批策略</span></button>
       <button id="btn-restart" type="button" title="重启服务" aria-label="重启服务" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2.3 5.7"/></svg><span class="settings-label">重启服务</span></button>
+      <button id="btn-engine-logs" type="button" aria-haspopup="dialog" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 12h8M8 17h5"/></svg><span>查看日志</span></button>
       <button id="btn-about" type="button" aria-haspopup="dialog" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></svg><span>关于</span></button>
       </div>
       </div>
@@ -4949,6 +4950,7 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/message_navigation.js?v=20261016-read-persistence"></script>
 <script src="/app/service_restart.js?v=20261026-settings-icons"></script>
 <script src="/app/app_settings.js?v=20261026-auto-refresh"></script>
+<script src="/app/engine_logs.js?v=20261103"></script>
 <script src="/app/edit_policy_settings.js?v=20261030"></script>
 <script src="/app/background_settings.js?v=20261023-settings-anchor"></script>
 <script src="/app/directory_picker.js?v=20261011"></script>
@@ -4960,7 +4962,7 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/profile_soul_templates.js?v=20261029-project-context"></script>
 <script src="/app/project_settings.js?v=20261102-profile-empty-overrides"></script>
 <link rel="stylesheet" href="/app/project_hud.css?v=20261031-native-agent">
-<script src="/app/project_hud.js?v=20261031-hud-state-fallback"></script>
+<script src="/app/project_hud.js?v=20261103-independent-assistant"></script>
 <script src="/app/requirement_details.js?v=20261012-controls"></script>
 <link rel="stylesheet" href="/app/hermes_approvals.css?v=20261029">
 <link rel="stylesheet" href="/app/hermes_gateway_status.css?v=20261030">

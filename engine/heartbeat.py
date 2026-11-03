@@ -31,7 +31,7 @@ _lock = threading.Lock()
 _beats: dict[str, dict[int, dict]] = {}   # profile -> {pid: {"ts": float, "thread_id": int|None}}
 
 
-def on_exit(profile: str, pid: int | None = None, thread_id: int | None = None) -> None:
+def on_exit(profile: str, pid: int | None = None, thread_id: int | None = None, *, advance=True) -> None:
     """子进程退出事件（wake._spawn 的 reaper 线程调）：只清该 pid/该话题的心跳。
 
     req#51 task#93 会话语义：thread_id 非 None 时只清「该话题」的心跳槽
@@ -59,7 +59,7 @@ def on_exit(profile: str, pid: int | None = None, thread_id: int | None = None) 
     events.bus.publish("thinking.changed", {"profile": profile})
     # Only a topic execution's exit can advance that topic's turn.
     from . import wake
-    if not wake._shutting_down.is_set():
+    if advance and not wake._shutting_down.is_set():
         _advance_turn_on_exit(profile, thread_id)
 
 

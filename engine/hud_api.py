@@ -10,7 +10,6 @@ class Revision(BaseModel):
 
 class Update(Revision):
     bot_id: int | None = Field(default=None, ge=1)
-    make_default: bool = False
     idle_seconds: int | None = Field(default=None, ge=300, le=86400)
     draft: dict | None = None
     stage: str | None = None
@@ -85,7 +84,7 @@ def router(identity, admin):
                 session['notification'] = state.get('notification')
                 session['cards'] = state.get('cards', [])
                 session['title'] = state.get('draft', {}).get('display_name', '创建项目草稿')
-            return {'sessions': sessions, 'default_bot_id': hud.default_bot(conn)}
+            return {'sessions': sessions}
 
     @protected.post('')
     def create(body: Create):

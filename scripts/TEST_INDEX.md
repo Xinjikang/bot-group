@@ -1,5 +1,27 @@
 # 测试脚本索引
 
+话题输入框自动填充：`python -X utf8 -B scripts/test_thread_creation_browser.py --screenshots <主目录报告下的绝对目录>`。需要 Python 3.11+、项目依赖、Playwright 与 Chrome；隔离 API 覆盖深浅主题、1280/390px、普通/自动填充及聚焦状态共 16 组合，继续回归图片开场白、重复提交和响应丢失重试。截图参数可省略。
+
+项目助手选择：`python -X utf8 -B scripts/test_hud_draft_selection_browser.py --evidence <主目录报告下的绝对目录>`。同上浏览器依赖；真实页面与隔离 HUD API 验证从已配置及未配置的项目打开新建向导均要求单独选择并保存助手、设置中移除全局预选，检查桌面与 390px。后端使用 `scripts.run_isolated_tests` 运行 `scripts.test_project_hud` 与 `scripts.test_hud_preparation`，覆盖旧预选值忽略、新草稿空选择、已有草稿恢复、项目配置独立及创建绑定。
+
+Hermes 子代理等待与原生续接：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_hermes_delegations scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_session_reuse scripts.test_native_busy_scheduling scripts.test_topic_restart_recovery scripts.test_thinking_run_identity`。覆盖等待空闲显示、任务保持、回调投递空档、独立单元/嵌套委派、断线恢复、授权撤销、停止、点对点输入幂等及结束竞态、扫描队列转交定向消息，以及不同话题/不同 Bot 工作会话的并行投递。模拟原生账本只放在夹具 home，HTTP 状态读验证零网关调用。
+
+真实子代理等待链路：`.venv\Scripts\python.exe -X utf8 -B scripts/verify_delegation_wait_native.py --hermes-python <Hermes 解释器绝对路径> --hermes-source <匹配源码绝对目录> --run-dir <新建隔离运行绝对目录> --evidence <主目录 reports/tests 下的新绝对目录>`。Windows 运行目录宜用短名。脚本创建独立 home、工作目录、SQLite、回环模型/API，使用实际 Pool/Lease、网关、父子代理、原生自动回调及 stdio MCP 写消息/task node；受控模型支持原生 tool_search/tool_call 桥接，核对一条逻辑执行接续两个原生 admission、任务交接和零失败事件。模型仅产生合成工具调用；不评估模型指令遵循能力。成功/失败均停止自身网关并核对端口和 PID 文件释放，原始模型请求、数据库备份及结果存入 evidence。引擎重建、多个独立单元和并行队列由上述隔离回归覆盖；网关重启的原生生命周期使用 `verify_subagent_lifecycle_native.py --restart`。
+
+Hermes 旧成员宿主定位：使用 `scripts.run_isolated_tests` 运行 `scripts.test_member_identity`、`scripts.test_project_roles`。临时根目录注册 default 与命名 profile，注入个人 profile 作为 fallback，验证成员身份解析及网关连接使用登记根目录，未登记成员保持 fallback。
+
+子代理原版运行时验证：`verify_delegation_wait_native.py --scenario direct --mcp-path native` 覆盖等待会话排在队首、另一 Bot 的工作会话实际完成、同一等待会话连续处理两条点对点输入（第一条仍未读），以及原生回调后的任务交接。`--scenario topic --mcp-path native` 覆盖等待话题保留发言位、超时检查、同一 Bot 的另一个话题实际执行，以及原生回调后的话题消息写入。均需提供上述四个显式路径参数，每次使用新的 run-dir/evidence。默认采用 Hermes ACP 工具集，由父 agent 通过原生工具搜索及调用完成写入；`--toolsets delegation` 可复现仅委派工具集的兼容性对照，`--toolsets hermes-cli` 使用完整 CLI 工具集对照。可选 client 路径使用独立真实 stdio MCP 客户端核验 bot-group 权限。原生源码提交、工作区状态及 model_tools.py 摘要在启动/结束时比对，保持运行时代码原样。
+
+委派点对点补充回归：使用 `scripts.run_isolated_tests` 运行 `scripts.test_hermes_delegations scripts.test_native_busy_scheduling scripts.test_thinking_run_identity`。覆盖旧输入仍未读时继续选择新消息、入箱前撤回复核、任务归属及话题保留、#276 并行调度和 /thinking 零网关调用。
+
+Hermes 重启遗留执行停止恢复：通过下列取消回归命令运行 `scripts.test_hermes_gateway_ledger` 与 `scripts.test_hermes_gateway.GatewayTests.test_manual_retry_resolves_unknown_and_releases_execution`。合成 `unknown` 回执覆盖用户停止后按原 admission/代次调用 `prompt.resolve_unknown`、权威终态收尾、自动超时保留占用及响应丢失保留身份；沿用隔离数据库与模拟 RPC。
+
+委派停止与大历史预检查：使用 `scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_hermes_delegations scripts.test_native_busy_scheduling`。隔离账本与模拟 RPC 覆盖父回调 unknown 的用户停止、150 秒后手动重试、解析响应丢失后收尾、其他 admission 与缺少代次的保护；实际 worker 验证占用与清理结束。临时回环 WebSocket 以 9 MiB 合成历史验证预检查省略消息，并通过真实 Pool/Lease 检查同一物理连接上另一会话的控制调用持续可用。端口由操作系统分配，退出回收连接池与服务器线程；无需生产网关或模型。
+
+Hermes 取消超时与状态同步：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录 reports/tests 下的新绝对目录> scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_stop_scope`，另运行 `node scripts/test_wake_liveness.cjs`。隔离 SQLite 与模拟网关覆盖连接失败跨越取消期限、超时退出及重启保持、页面查询状态同步、原执行手动核对、正常终态收尾、迟到状态保护后继执行；模拟 RPC 使用合成回执，无生产网关或模型调用。
+
+子代理生命周期技术验证：`.venv\Scripts\python.exe -X utf8 -B scripts/verify_subagent_lifecycle_native.py --hermes-python <已安装 Hermes 依赖解释器> --hermes-source <对应源码绝对目录> --run-dir <新的隔离短目录> --evidence <项目主目录 reports/research 下的新目录>`；加 `--restart` 验证子代理运行期间独立网关重启。使用真实原生网关、ACP 会话、delegate_task 与自动续跑，本地随机端口模型夹具控制子代理和父会话边界；不使用生产模型凭证或引擎数据库。设置 HERMES_DISABLE_LAZY_INSTALLS，解释器须已有依赖。记录父轮终态下子代理列表、连接重建、结果投递空档、委派事件与回执、事件重放代次、重启 unknown 恢复及端口/PID 文件清理。隔离 state.db 只读查询用于交叉验证，脚本未实现业务调度。鉴权边界复用 `scripts.test_hermes_session_reuse`，通过 run_isolated_tests 运行并保存隔离审计。Windows 测试目录应使用短路径；源码和解释器通过参数传入。
+
 DSH 停止验证器补偿回收：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_dsh_stop_tree_kill -q`。实际调用 `_run_segment`、私有数据库恢复、归属匹配和进程回收函数；底层数据库连接、进程查询及终止操作使用内存夹具。覆盖引擎先退出、首次查询失败后恢复、外部进程保留、私有数据库或进程扫描失败、本次执行命令行未知。恢复结果写入 `recovery_report`；失败使总结果为 false 并保留本次目录供诊断。无归属的系统进程查询失败单列诊断，本次运行 PID 或已登记 PID 的未知状态进入失败判定。
 
 重启签名与长历史断线回归：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录 reports/tests 下的新绝对目录> scripts.test_signing_keys scripts.test_hermes_session_reuse scripts.test_hermes_connections scripts.test_reasoning_window scripts.test_runtime_isolation scripts.test_hermes_gateway scripts.test_hermes_gateway_sessions scripts.test_hermes_gateway_ledger`。临时数据库与密钥复现读取代次后轮换、退役、再登记的交错；验证写事务阻止并发轮换、后续重启继续换代且保留有效引用、失败交接保留两代、终态撤权。随机回环 WebSocket 返回 9 MiB 合成历史，验证独立历史连接成功读取、超限断线后控制连接仍可查回执；分别覆盖网关和旧 CLI 的思考时间窗口。无需外部模型或业务数据，运行器检查资源隔离与线程清理。
@@ -177,6 +199,8 @@ Hermes 会话绑定与清理重试：`.venv\Scripts\python.exe -X utf8 -B -m uni
 
 任务链与三层结构提示：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_prompt_entry_points scripts.test_project_templates scripts.test_template_role_rename scripts.test_product_prototype_template scripts.test_algorithm_template scripts.test_testing_template scripts.test_flow -q`，随后运行 `.venv\Scripts\python.exe -X utf8 -B scripts/test_mcp_handshake.py`。覆盖 work/chat 公共定义、六类模板预览与落盘中的完整任务链及返修路径、角色替换、同一任务的实际节点流转，以及两种模式真实 MCP 暴露的第一个接手人说明。使用隔离 SQLite、项目和宿主配置；这些检查验证提示与工具契约，真实模型的自主拆解行为需在隔离场景另行验收。
 
+模板管理支持（req#141 task#275）：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_template_management_support scripts.test_prompt_entry_points scripts.test_project_templates scripts.test_template_role_rename scripts.test_product_prototype_template scripts.test_algorithm_template scripts.test_testing_template -q`。验证六模板 manifest roles[].responsibilities 仅追加管理支持职责（13 角色原职责与 permissions 保留）、六模板 AGENTS.md.tmpl「管理支持行为」四段逐字一致且位于指定流程章节之前、第 3 条引用原审查段不重复列四要素、审查段覆盖「问题位置、依据、预期与实际、影响」（只补缺项）、wake.py WORK 第 5 条与 CHAT 第 6 条 L2 括号替换为重复返修话题触发提示词，以及 software 渲染落盘含新职责与行为段。使用隔离 SQLite、项目与宿主配置；管理行为被模型实际遵循的程度另行隔离行为验收。
+
 Hermes 兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_hermes_compatibility scripts.test_execution_errors scripts.test_install scripts.test_hermes_transport scripts.test_runtime_fork -q`。覆盖新旧 ID、入口与源码身份、静态能力、导入错误、配置提示、多行传输及 Codex 隔离。对 v0.21.1 `cdf4c765` 和 v0.21.3 `afc3b7c6f3` 的真实源码分别执行 `.venv\Scripts\python.exe -X utf8 -B scripts/verify_hermes_compatibility.py --source <源码目录>`；脚本在临时 home/SQLite 与独立子进程中检查创建、恢复、标题迁移、历史保留、`/new`、generation、压缩续接、失效绑定及重启恢复。源码只读，使用本地已取得的对应提交，报告保存到项目主目录。契约见 [Hermes 兼容性](../docs/engineering/HERMES-COMPATIBILITY.md)。
 
 网关停止语义（#251）：`python -B scripts/gw_stop_probe.py --scenarios s1,s2,s3,s4,s5,s6`（真实网关；隔离 home + 随机回环端口）。场景：S1 queued→`prompt.cancel`、S2 started→`session.interrupt`（先证 `prompt.cancel` 抛 `stale_generation`）、S3 提交后立即 cancel 的 queued→started 竞态、S4 取消与自然完成竞态、S5 两会话隔离（A 中断不影响 B `completed`）、S6 不取消的自然完成对照。`prompt.cancel` 必须同时传 `session_id`（只传 `admission_id` 报 invalid_params）。`--preflight-only` 只跑隔离校验、不启动网关。归属判定与清理单测：`python -B -m unittest scripts.test_gw_probe_gates`（109 项，含 600s 慢启动上界 `+600 owned` / `+601 unknown` 临界用例，以及 `force=True` 下 foreign/unknown 仍 refused、`--yes` 仅在归属通过后追加 3 项）。证据落主目录 `reports/research/hermes-gateway/evidence-2026-10-28-task251/`。
@@ -194,6 +218,10 @@ Hermes 兼容性配套回归：设置 `HERMES_TEST_SOURCE` 为本机 Hermes 源�
 当前发布验收说明：[v0.1.6](../docs/releases/v0.1.6.md)。本版组合执行需求恢复、正式 Release 验收，以及设置菜单和服务重启浏览器回归；报告保存到主目录 `reports/tests/v0.1.6/2026-10-27-release/`。
 
 需求恢复与空唤醒：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_requirement_recovery scripts.test_scan_requirements scripts.test_decompose_state_machine scripts.test_decompose_finalize scripts.test_requirement_lifecycle scripts.test_requirement_gate scripts.test_requirement_gate_reason scripts.test_message_injection scripts.test_task_retry scripts.test_queue_claim_race -q`。使用独立 SQLite 和模型投递记录器，覆盖 blocked 子任务连续扫描及显式恢复、部分拆解续作上下文、有效租约与拆解完成、来源撤回、授权/成员/项目门禁、负责人配置协调、存量队列取消、消息/任务合并保留及领取期间状态变化。生产数据及真实模型调用保持隔离；报告记录被测提交与实际命令。契约见 [需求恢复](../docs/engineering/REQUIREMENT-RECOVERY.md)。
+
+Hermes 原生忙闲预检查（req#142 成果 1 task#276）：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_native_busy_scheduling scripts.test_queue_claim_race scripts.test_stop_scope scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway_sessions scripts.test_session_binding scripts.test_session_switch scripts.test_member_session_reset scripts.test_topic_restart_recovery scripts.test_recipient_need_reply scripts.test_topic_skip -q`。隔离 SQLite + 确定性网关/进程夹具（不触达真实网关与进程），覆盖：原生 busy 且引擎表缺记录时后方空闲会话获得投递、A 保留原 ID 等待解除 busy 后恢复、terminal 引擎记录下新原生执行仍判 busy、同 Bot 独立 work/chat 与不同 Bot 继续推进（FIFO 跳过 busy）、投递 attach 才发现 busy 回写观察缓存（生产更新路径，不手工清缓存）后同一 TTL 窗口零重投、观察租约 finally 释放（成功/失败/未知分支）、真实 Pool/Lease 集成契约（Lease.rpc 登记订阅、timeout 为传输层显式参数不进 wire、GatewayTransportError 经 pool.failed 关闭死传输并越 retry_at 重连、GatewayRefusal 保留共享连接）、查询失败只暂缓对应会话且退避从失败完成时起算（5s 超时晚于 3s 首档退避）、绑定代次切换使空闲缓存失效、Hermes 原生忙时 Codex/DSH 就绪任务获得投递及 codex/dsh 忙时跳过与空闲恢复。真机层（验收 7）：`GW_PROBE_DATA=<当前工作区 test-data> GW_PROBE_ROOT=<仓库>/.probe-worktrees PYTHONPATH= .venv\Scripts\python.exe -X utf8 -B scripts/verify_native_busy_live.py --backend http://127.0.0.1:<引擎分配回环端口> --evidence <主目录报告目录下的新绝对路径> --hermes-python <带 delegate_task 的 Hermes 安装 python> --hermes-source <该 Hermes 源码目录> --hermes-bin <该 Hermes bin\hermes.exe>`。真实异步子任务完成回调驱动 Hermes 自发续跑（真实网关+模型+隔离引擎）：受控 busy_wait 窗口内核对原生 running 无引擎记录、B 投递 A 保留原 ID、释放后 A 恢复投递原 ID，终局引擎 2 条 completed（spawn+恢复，续跑零记录），结束三方核验资源清理；busy_wait 经 scripts/native_busy_mcp_wrapper.py 并入 task_queue 服务器（不增改编辑器 MCP 列表）；B 投递为记录层。要点：run 目录短名（Windows 260 路径限制）、acp 工具集含 delegation、恢复投递注入 HERMES_BIN、恢复记录终态对账滞后需等待。
+
+/thinking 本地执行快照：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录 reports/tests 下的新绝对目录> scripts.test_thinking_run_identity scripts.test_reasoning_window scripts.test_native_busy_scheduling`。隔离数据库覆盖 200 个 Hermes 历史绑定下的真实 HTTP 路由：网关连接调用为零、状态查询不发布 thinking.changed、保留引擎活动执行；模拟原生运行与排队两种载荷均保持本地快照。既有用例核验 PID、项目、话题、执行代次和推理结束窗口，调度预检查另行回归。前端继续运行 `node scripts/test_thinking_lifecycle.cjs` 与 `node scripts/test_thinking_cache.cjs`。原生观察专用测试及载荷脚本已随功能撤回，真机探针 verify_native_busy_live.py 保留调度验证的 7 项门禁。
 
 页面复用：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_service scripts.test_ui_presence scripts.test_service_restart scripts.test_desktop scripts.test_app_upgrade -q`。覆盖管理员权限、同源登记门禁、回环地址归并、远端隔离、连接关闭、占位释放/过期、浏览器失败重试及维护启动。运行 `python -X utf8 -B scripts/test_ui_presence_browser.py` 验证真实 Chrome、`tools/service.py start` 与临时桌面快捷方式的首次打开、快速重复、登录页、后台页、刷新、多页面和全部关闭后重新打开；隔离服务端口与数据目录，浏览器打开请求使用记录器，实际焦点切换受浏览器策略限制。
 
@@ -306,7 +334,7 @@ python -X utf8 -B scripts/test_project_templates_browser.py
 
 唤醒提示词与项目规则：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_project_rules scripts.test_prompt_entry_points scripts.test_workspace_resources scripts.test_codex_project_access -q`。验证共享目录和 worktree 的规则加载、主目录与当前目录及资源注入、项目隔离、静态规则组合，以及独立工作区的共享报告目录授权；目录分类和报告位置由项目规则维护。
 
-提示词与角色参考文案：复用 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_prompt_entry_points scripts.test_flow scripts.test_project_templates scripts.test_template_role_rename scripts.test_product_prototype_template scripts.test_algorithm_template scripts.test_testing_template -q`，验证提示词组合、任务流转及六类模板生成；运行 `.venv\Scripts\python.exe -X utf8 -B scripts/test_mcp_handshake.py` 核验实际注册的工具说明与参数。人工检查直接提示、角色参考和启动阅读指令中的冗余规则来源声明，核对具体职责与参数要求；Bot 唤醒后的实际阅读行为单独验收。
+提示词与角色参考文案：复用 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_prompt_entry_points scripts.test_flow scripts.test_project_templates scripts.test_template_role_rename scripts.test_product_prototype_template scripts.test_algorithm_template scripts.test_testing_template scripts.test_template_management_support -q`，验证提示词组合、任务流转及六类模板生成；运行 `.venv\Scripts\python.exe -X utf8 -B scripts/test_mcp_handshake.py` 核验实际注册的工具说明与参数。人工检查直接提示、角色参考和启动阅读指令中的冗余规则来源声明，核对具体职责与参数要求；Bot 唤醒后的实际阅读行为单独验收。
 
 真实规则加载：`.venv\Scripts\python.exe -X utf8 -B scripts/verify_prompt_rules_live.py --live --hermes-home <已授权的Hermes主目录> --evidence <主目录报告目录>/prompt-live.json`。复用明确选定的 Ollama Cloud 凭证与模型，使用临时数据库、项目、宿主 home 和随机 API 端口；保留文件读取工具，在同一话题连续唤醒三次，每次最长 240 秒。证据记录原始调用、规则令牌、角色与业务结果、已读状态及原配置指纹。输出路径须为新的绝对路径；模型或工具执行失败保留诊断，已有生产会话保持原状。
 
@@ -360,6 +388,8 @@ MCP API 与运行时配置：`test_task_api.py` 验证成员/项目/执行校验
 | 思考与命令 | `test_direct_thinking_order.cjs`、`test_thinking_lifecycle.cjs`、`test_thinking_cache.cjs`、`test_wake_liveness.cjs`、`test_command_controls.cjs`、`test_command_feedback.cjs` |
 
 ## 浏览器回归
+
+引擎日志：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录 reports/tests 下的绝对目录> scripts.test_engine_logs scripts.test_app_updates`，验证日志缺失/空内容、中文、末尾字节和行数限制、轮转、无缓存、管理员/成员/匿名权限和读取错误。`python -X utf8 -B scripts/test_app_settings_browser.py --evidence <报告绝对目录>` 使用 Playwright 与 Chrome，所有接口由合成路由隔离，覆盖日志自动刷新/暂停/手动重试、滚动位置、纯文本、空内容、关闭与退出停止刷新、桌面和 390px 深浅主题，并回归原有设置功能。
 
 使用 `python -X utf8 -B scripts/<文件名>`。脚本通过合成 HTTP 或隔离服务验证真实 DOM、交互和刷新，先确认解释器的 Playwright/浏览器依赖。
 

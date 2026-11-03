@@ -69,11 +69,6 @@ def row(conn, sid):
     raise HTTPException(409, '助手状态已变化，请刷新后重试')
 
 
-def default_bot(conn):
-    value = conn.execute("SELECT value FROM settings WHERE project='' AND key='hud_bot' ").fetchone()
-    return int(value[0]) if value and value[0] else None
-
-
 def valid_bot(conn, bot_id):
     if bot_id is None:
         return None
@@ -106,7 +101,7 @@ def create(project=None):
                 return view(old[0], conn)
         sid, now = uuid.uuid4().hex, time.time()
         conn.execute("INSERT INTO hud_sessions(id,project,bot_id,stage,activity,updated,status) VALUES(?,?,?,?,?,?,'paused')",
-                     (sid, project, default_bot(conn), 'maintenance' if project else 'purpose', now, now))
+                     (sid, project, None, 'maintenance' if project else 'purpose', now, now))
         return view(sid, conn)
 
 
@@ -161,10 +156,6 @@ def update(sid, body):
             if body['bot_id'] != item['bot_id']:
                 item['generation'] += 1
             item['bot_id'] = body['bot_id']
-            if body.get('make_default'):
-                conn.execute("INSERT INTO settings(key,project,value,updated_at) VALUES('hud_bot','',?,?) "
-                             'ON CONFLICT(key,project) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',
-                             (str(body['bot_id'] or ''), db.now_iso()))
         if 'idle_seconds' in body:
             if type(body['idle_seconds']) is not int or not 300 <= body['idle_seconds'] <= 86400:
                 raise HTTPException(400, '空闲重置时间须为 5 分钟至 24 小时')

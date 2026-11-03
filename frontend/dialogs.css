@@ -1,3 +1,12 @@
+#engine-logs{width:960px;max-width:calc(100vw - 24px);height:min(720px,calc(100dvh - 32px));max-height:calc(100dvh - 32px);box-sizing:border-box}
+#engine-logs[open]{display:flex;flex-direction:column;gap:12px}
+#engine-logs h3,#engine-logs .dlg-btns{margin:0;flex-shrink:0}
+.engine-logs-tools{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.engine-logs-tools label{display:flex;align-items:center;gap:8px;margin:0;font-size:13px}
+#engine-logs-auto{width:15px;height:15px;margin:0;accent-color:var(--accent)}
+#engine-logs-status{font-size:12px;color:var(--fg-2);margin:0;overflow-wrap:anywhere}
+#engine-logs-content{flex:1;min-height:0;margin:0;padding:12px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 Consolas,monospace;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:10px}
+@media(max-width:520px){#engine-logs{padding:16px}}
 #app-about{width:480px;max-width:calc(100vw - 32px);max-height:calc(100dvh - 32px);overflow:auto;box-sizing:border-box}
 #app-about p{white-space:pre-line;overflow-wrap:anywhere;line-height:1.6}
 #app-about .dlg-btns{flex-wrap:wrap;position:sticky;bottom:-26px;background:var(--card);padding:12px 0 0}
@@ -109,6 +118,12 @@ dialog [data-error="true"] { color: var(--danger) !important; }
 #dlg-project-import .import-permissions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
 #dlg-project-import .import-permissions label{margin:0;padding:8px;font-size:12px}
 #dlg-project-import input[type=checkbox]{width:14px;height:14px}
+#dlg-thread{color-scheme:dark}
+:root[data-theme=light] #dlg-thread{color-scheme:light}
+#dlg-thread input:autofill{
+  box-shadow:0 0 0 1000px var(--bg) inset;
+  -webkit-text-fill-color:var(--fg);caret-color:var(--fg);
+}
 #dlg-project-import{color-scheme:dark}
 :root[data-theme=light] #dlg-project-import{color-scheme:light}
 #dlg-project-import input:autofill{

@@ -54,7 +54,6 @@ def main():
         db.init_schema(conn)
         conn.execute("INSERT OR IGNORE INTO projects(name,root,display_name,description,directory_mode,created_at) VALUES('hud-preview',?,'HUD 交互预览','本地验证数据；此预览使用固定响应，不连接模型服务。','shared',?)", (str(data/'project'),db.now_iso()))
         conn.execute("INSERT OR IGNORE INTO bots(id,host_type,profile,config_root,runtime,display_name) VALUES(900001,'hermes','hud-fixture',?,'hermes','维护助手 · 本地验证')", (str(data/'hermes'),))
-        conn.execute("INSERT INTO settings(key,project,value,updated_at) VALUES('hud_bot','','900001',?) ON CONFLICT(key,project) DO UPDATE SET value='900001'", (db.now_iso(),))
     session=project_hud.create('hud-preview')
     if session['status']=='paused':
         project_hud.update(session['id'],{'revision':session['revision'],'bot_id':900001})

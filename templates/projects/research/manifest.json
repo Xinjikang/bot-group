@@ -9,7 +9,7 @@
     {
       "id": "lead",
       "name": "调研负责人",
-      "responsibilities": "明确调研问题和时间范围、建需求拆任务、协调成员、接收阻塞通知、验收报告并关闭任务和需求",
+      "responsibilities": "明确调研问题和时间范围、建需求拆任务、协调成员、接收阻塞通知、验收报告并关闭任务和需求、统筹整体效率、实质支持、跟踪解除结果",
       "permissions": [
         "req.create",
         "req.update",
@@ -44,7 +44,7 @@
     {
       "id": "verifier",
       "name": "复核员",
-      "responsibilities": "独立核验来源、时间范围、覆盖和推断边界",
+      "responsibilities": "独立核验来源、时间范围、覆盖和推断边界、补证与修订指导",
       "permissions": [],
       "required": true,
       "soul_reference": "references/souls/verifier.md"

@@ -1,5 +1,7 @@
 # 项目文档索引
 
+Hermes 子代理等待、原生回调续接、任务归属与点对点调度见 [子代理等待设计](design/2026-11-03-delegation-wait.md)。
+
 DSH 成员编辑的三个页签、接口字段移除及插件检测后强制 Auto 审批见 [成员设置设计](design/2026-11-02-dsh-member-settings.md)。
 
 全局 Hermes 文件编辑审批的三档选择、持久化与每轮应用规则见 [全局审批策略设计](design/2026-10-30-global-edit-policy.md)。
@@ -28,7 +30,7 @@ Codex 与 Hermes 连续唤醒的规则正文、原生系统文本和工具 schem
 
 Hermes 新旧会话接口、安装定位和兼容提示见 [Hermes 兼容性](engineering/HERMES-COMPATIBILITY.md) 与 [设计依据](design/2026-10-27-hermes-compatibility.md)。
 
-当前发布说明：[v0.2.4](releases/v0.2.4.md)。历史版本：[v0.2.3](releases/v0.2.3.md)、[v0.2.2](releases/v0.2.2.md)、[v0.2.1](releases/v0.2.1.md)、[v0.2.0](releases/v0.2.0.md)、[v0.1.9](releases/v0.1.9.md)、[v0.1.8](releases/v0.1.8.md)、[v0.1.7](releases/v0.1.7.md)、[v0.1.6](releases/v0.1.6.md)、[v0.1.5](releases/v0.1.5.md)、[v0.1.4](releases/v0.1.4.md)、[v0.1.3](releases/v0.1.3.md)、[v0.1.2](releases/v0.1.2.md)。
+当前发布说明：[v0.2.5](releases/v0.2.5.md)。历史版本：[v0.2.4](releases/v0.2.4.md)、[v0.2.3](releases/v0.2.3.md)、[v0.2.2](releases/v0.2.2.md)、[v0.2.1](releases/v0.2.1.md)、[v0.2.0](releases/v0.2.0.md)、[v0.1.9](releases/v0.1.9.md)、[v0.1.8](releases/v0.1.8.md)、[v0.1.7](releases/v0.1.7.md)、[v0.1.6](releases/v0.1.6.md)、[v0.1.5](releases/v0.1.5.md)、[v0.1.4](releases/v0.1.4.md)、[v0.1.3](releases/v0.1.3.md)、[v0.1.2](releases/v0.1.2.md)。
 
 需求超时拆解、部分任务恢复和队列空唤醒抑制见 [需求恢复契约](engineering/REQUIREMENT-RECOVERY.md) 与 [设计依据](design/2026-10-27-requirement-recovery.md)。
 
@@ -67,11 +69,13 @@ Hermes/DSH 成对填写模型与供应商、来源带入和 Codex 界面规则�
 | [Codex 驱动设计](design/CODEX-DRIVER-DESIGN-2026-09-29.md) | 宿主、Bot 与项目成员分层 |
 | [DeepSeek Harness 接入需求](requirements/2026-10-31-dsh-integration.md) / [设计](design/2026-10-31-dsh-integration.md) | dsh 第三运行时、headless 接入、认证与会话契约 |
 | [DSH 刷新与会话误判修复](requirements/2026-11-01-dsh-refresh-fix.md) | 新增 DSH 成员刷新 500 及会话异种绑定误判 |
+| [队列饥饿与自发执行状态修复](requirements/2026-11-02-wake-busy-observation.md) / [设计](design/2026-11-02-wake-busy-observation.md) | 网关原生忙闲预检查、按会话保序调度与 /thinking 自发执行展示 |
 | [进程查询兼容性](design/2026-10-25-process-query.md) | Windows 进程探测、三态保护与依赖交付 |
 | [维护代码命名空间](design/2026-10-25-maintenance-namespace.md) | Hermes 包共存、命令入口与独立安装器 |
 | [常驻执行后端方案](design/SERVE-RESIDENT-SOLUTION-2026-10-08.md) | 方案与实施前验证条件 |
 | [网关取消与清理方案](design/2026-10-28-hermes-gateway-cancel-cleanup.md) | 执行终态与清理分离、取消有界、清理可恢复 |
 | [规则维护边界](design/bot-group-copy-edit-checklist.md) | 提示词、AGENTS、角色参考及成员查询职责 |
+| [模板管理支持职责与重复返修触发](design/2026-11-02-template-management-support.md) | 六模板角色职责增量、管理行为正文、审查要求去重及 L2 话题触发提示词 |
 | [维护经验](PITFALLS.md) | 调度、身份、前端与生命周期边界 |
 
 ## 工程与运行

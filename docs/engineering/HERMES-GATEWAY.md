@@ -1,8 +1,22 @@
 # Hermes 网关执行适配
 
+## 子代理等待
+
+结构化 `delegate_task` 后台派发回执把逻辑执行置为 `waiting_delegation`。原生父轮次终态保持当前任务及话题发言位，清除该轮思考显示；原生回调 admission 自动归入同一个 `execution_id`。全部委派回调处理完毕后进行逻辑执行收尾，回调工具写入继续校验当前任务/话题归属。相关表为 `hermes_delegation_cycles`、`hermes_delegations`、`hermes_native_turns` 和 `hermes_delegation_inputs`。
+
+正常等待跨过普通 `execution_deadline` 后继续保留归属，异常恢复依据明确的失效事实或用户停止。前端沿用父轮 final 的内容采集终态，同标识原生回调的实时思考刷新存在已接受的展示限制。维护与验收分别遵循设计中的[正常委派等待与超时](../design/2026-11-03-delegation-wait.md#正常委派等待与超时)和[思考展示边界](../design/2026-11-03-delegation-wait.md#思考展示边界)。
+
+恢复线程通过原执行 home 下的只读 `state.db/session_admissions` 查找已知委派的原生回调身份，再用 `prompt.receipt(include_result=True)` 对账。原生账本查询限时并与 HTTP 状态读路径分离；字段不兼容或读取失败保留未知执行并使用既有恢复期限。该本地适配契约已核对 Hermes `0431192d69d4afd2443a7da15bb9e129a424414c`，升级时运行原生验证脚本。
+
+等待中的工作会话可以接收实际定向未读消息，持久保存输入 ID 并幂等提交；候选选择跳过当前执行已入箱的消息，入箱事务重新检查执行归属、消息未读状态及撤回状态。成员授权撤销、任务移交或话题发言位变化终止旧写入资格，后台协调停止旧委派及原生执行。其他会话沿用 #276 的跳过忙会话调度。设计与边界见 [子代理等待](../design/2026-11-03-delegation-wait.md)。
+
+用户停止时，委派取消分支对当前父回调 admission 的 `unknown` 状态调用 `prompt.resolve_unknown`，携带快照中的 admission ID 和执行代次。随后重新确认会话空闲，并读取原 admission 的权威回执完成收尾。150 秒取消确认期限后的显式手动重试使用同一路径，保持原身份和截止时间；响应丢失后继续查询原回执。其他 admission、缺少执行代次及非用户停止保持占用待核实。子委派结果的 `unknown` 仍交给原生回调处理。
+
+调度忙闲预检查使用 `session.resume(omit_messages=True)`，只获取控制状态，避免完整历史超过共享控制连接的 8 MiB 接收上限。查询继续经过 Pool/Lease，保留共享连接、订阅和失败退避契约。
+
 ## 接口与版本
 
-`engine/hermes_gateway*.py` 使用公开 CLI `hermes gateway ensure --json`、本地 control 协议的 `session-ticket` 和 `/api/ws` 的 `hermes-gateway-v1`。适配器仅调用线协议，Hermes 源码保持独立。运行时核验 profile、协议、安装提交身份，以及 `durable-admission-v1`、`acp-session-mcp-v1` 能力。v0.22.5 验证基线为 `bf0203a794a07aac3ff764972ab9087baa4e4f4e`。
+`engine/hermes_gateway*.py` 使用公开 CLI `hermes gateway ensure --json`、本地 control 协议的 `session-ticket` 和 `/api/ws` 的 `hermes-gateway-v1`。执行与控制使用线协议，委派恢复另使用上节的只读账本发现；Hermes 源码保持独立。运行时核验 profile、协议、安装提交身份，以及 `durable-admission-v1`、`acp-session-mcp-v1` 能力。v0.22.5 验证基线为 `bf0203a794a07aac3ff764972ab9087baa4e4f4e`。
 
 网关版采用独立执行路径；旧版 Hermes 和 Codex 保留现有运行时。安装来源由 `HERMES_BIN`、`HERMES_HOME` 和已有安装定位规则确定。
 
@@ -21,6 +35,8 @@
 ## 会话、MCP 和原生审批
 
 新会话使用 `source=acp`，首次通过 `session.mutate editor_mcp` 注入会话级 task_queue。配置指纹按 profile/session/project 持久化；后续相同配置通过 `session.resume(editor=...)` 恢复私有传输参数，保留原生 agent 与 MCP 连接。model/provider/reasoning 仅在引擎指定值变化时更新；workspace/edit_policy 按会话快照比较。实际工具发现和调用由 Hermes 原生机制完成。
+
+默认 ACP 工具集可通过 `tool_search` / `tool_call` 延迟发现并调用 task_queue 工具。判断工具可用性需核对实际搜索、调用及服务端写入结果。原生委派验收默认保留 ACP 工具集，裁剪为仅 `delegation` 的配置用于兼容性对照，具体边界见委派等待设计。
 
 `hermes_session_grants` 保存会话授权、当前签名代、待交接代和撤权释放状态。`session_token` 签名绑定 profile/project/thread_id/session/session_id/generation，类型参与签名；MCP 上下文跨轮固定。消息和任务在服务端定位唯一非终态执行，取消中、人工核对态及空闲会话拒绝写入；消息和任务事务再次校验授权与执行身份。会话回执按稳定身份查询，消息来源仍按每轮 started_at 记账。浏览器资源目录使用会话身份生成，每轮资源记录关联当前执行。
 
@@ -83,6 +99,12 @@ AGENTS.md、SOUL 和记忆通过用户主动 `/new` 刷新。v0.22.5 在同 sid 
 `verify_gateway_refresh_live.py` 在隔离 home 中通过公开协议执行配置刷新和模型调用。配置字段以只读的已提交 policy 回执核验；规则与工具描述以模型最终回答及实际 tool_search 结果核验。policy 回执证明派生值变化，max_turns 耗尽和 checkpoint 文件生成属于独立运行行为验证。
 
 ## 停止后的清理恢复
+
+成员的 Hermes home 使用成员绑定 Bot 的 `config_root` 与宿主 profile 组合，覆盖旧 profile 名称句柄及 `bot-*` 句柄。调用进程继承个人 profile 的 `HERMES_HOME` 时，已登记成员仍定位到登记的宿主根目录；未登记成员沿用显式 fallback。
+
+用户已明确停止且网关回执为 `unknown` 时，使用 `prompt.resolve_unknown` 按原 admission 和 execution_generation 确认遗留执行。网关校验代次并返回终态，已有捕获结果由网关保留；引擎校验终态回执后再释放占用并清理。自动超时、普通断线及缺少代次的未知执行继续保留占用。接口拒绝或响应丢失按原有有界确认流程处理，后续重试先查询原回执。
+
+取消意图、回执及传输异常更新后的执行状态同步到 `/thinking` 使用的内存快照，按 session 和 started_at 匹配当前执行。取消确认期限到达后，worker 在建立连接前退出；连接或查询异常跨过期限时，同步 `manual` 后退出。页面沿用「停止请求已发送，结束状态确认超时」提示。服务重启保留 `manual`，停止自动查询。用户再次点击停止可对原 admission 发起一次显式核对（每个 RPC 最长 30 秒），原取消期限与执行身份保持；取得终态后进入正常清理，其余结果保持占用并结束本次核对。
 
 终态 admission 的 runner 仍忙时，清理每三秒等待一次，受原有五分钟绝对期限约束；普通错误保留五次重试上限。期限、下次重试时间和错误次数跨重启保留。管理员再次执行停止可为耗尽的终态清理开启新预算；已有 worker 继续使用原预算，服务重启保持自动重试上限。
 

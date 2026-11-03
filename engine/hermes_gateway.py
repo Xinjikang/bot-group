@@ -82,18 +82,33 @@ def active(session):
         conn.close()
 
 
-def process_state(session):
-    """Gateway ownership has no per-execution OS process to terminate."""
+def process_state(session, profile=None):
+    """Gateway ownership has no per-execution OS process to terminate.
+
+    profile 传入时（调度路径），引擎记录判空闲的两条路径（无记录继续进程查询 /
+    terminal 清空判空闲）均先核对 Hermes 原生 running/pending——异步子任务回调驱动的
+    自发续跑没有 hermes_executions 记录，仅按引擎记录会漏判 busy，投递 attach 才发现
+    原生占用导致任务反复退回、后方会话饥饿（req#142）。
+    """
     conn = db.get_connection()
     try:
         row = conn.execute('SELECT state,cleanup_pending,started_at FROM hermes_executions '
                            'WHERE session=? ORDER BY started_at DESC LIMIT 1', (session,)).fetchone()
         if row is None:
-            return False
-        latest = conn.execute('SELECT MAX(started_at) FROM wake_runs WHERE session=?', (session,)).fetchone()[0]
-        if latest is not None and latest > row['started_at']:
-            return False
-        return [] if row['state'] == 'terminal' and not row['cleanup_pending'] else None
+            idle = False
+        else:
+            latest = conn.execute('SELECT MAX(started_at) FROM wake_runs WHERE session=?', (session,)).fetchone()[0]
+            if latest is not None and latest > row['started_at']:
+                idle = False
+            elif row['state'] == 'terminal' and not row['cleanup_pending']:
+                idle = []
+            else:
+                return None
+        if profile is not None:
+            native = _native_session_state(conn, profile, session)
+            if native is not False:
+                return native
+        return idle
     except sqlite3.OperationalError as exc:
         if 'no such table' in str(exc):
             return False
@@ -102,17 +117,145 @@ def process_state(session):
         conn.close()
 
 
+# 原生状态预检查的查询超时与缓存边界（req#142）：短 TTL 按原生会话 + 绑定代次隔离，
+# /new 换 session_id、绑定切换升 generation 均自然失效；空闲缓存期间的竞态由
+# spawn 阶段 attach 复核兜底。查询失败按指数退避缓存「暂缓」，避免网关不可用时
+# 每次队列 tick 都吃满查询超时拖垮其他 runtime 的调度。
+_NATIVE_QUERY_TIMEOUT = 5.0        # 秒：单次原生状态查询超时（超时/断连只暂缓目标会话）
+_NATIVE_CACHE_TTL = 3.0            # 秒：idle/busy 结果缓存有效期
+_NATIVE_FAIL_BACKOFF_BASE = 3.0    # 秒：查询失败退避基数（3,6,12,24…）
+_NATIVE_FAIL_BACKOFF_CAP = 30.0    # 秒：查询失败退避上限（网关恢复后至多延迟 30s 恢复调度）
+_native_cache = {}                 # {(session_id, generation): (state, expires_at, fails)}
+_native_cache_lock = threading.Lock()
+
+
+def _binding_for_engine_session(conn, profile, session):
+    """按引擎会话名反查 Hermes 绑定行（profile 过滤，行数有限）。
+
+    引擎会话名由 (profile, kind, thread_id, project) 派生，绑定行携带同一组字段，
+    重建会话名逐一比对即可，无需解析字符串。
+    """
+    from . import wake
+    rows = conn.execute("SELECT * FROM session_bindings WHERE profile=? AND runtime='hermes'",
+                        (profile,)).fetchall()
+    for row in rows:
+        if wake.session_name(row['profile'], row['kind'], row['thread_id'] or None, row['project']) == session:
+            return row
+    return None
+
+
+def _native_session_state(conn, profile, session):
+    """Hermes 原生 running/pending 预检查（req#142）。
+
+    返回 False=原生空闲（沿用既有判空闲路径）；None=原生忙或查询失败/未知（只暂缓
+    本会话，调用方按 busy 跳过本次调度；其他会话不受影响）。非 Hermes 托管会话
+    无绑定行，返回 False 沿用既有进程查询。
+
+    只读观察租约在 finally 释放（Pool.sweep 依赖 entry.leases 空集做空闲回收），
+    共享物理连接保持池契约；观察走 Lease.rpc（保留 gate 序列化、订阅登记与传输
+    失败处理，timeout 为传输层显式参数而非 wire 参数），超时/断连只暂缓本会话。
+    """
+    binding = _binding_for_engine_session(conn, profile, session)
+    if binding is None:
+        return False
+    if binding['switching']:
+        return None  # /new 切换进行中：暂缓投递
+    key = (binding['session_id'], binding['generation'])
+    with _native_cache_lock:
+        hit = _native_cache.get(key)
+    if hit is not None and hit[1] > time.monotonic():
+        return False if hit[0] == 'idle' else None
+    lease = None
+    try:
+        lease, _, _ = connection(profile, read_only=True)
+        snapshot = lease.rpc('session.resume', session_id=binding['session_id'],
+                             omit_messages=True, timeout=_NATIVE_QUERY_TIMEOUT)
+        running = snapshot.get('running')
+        pending = snapshot.get('pending')
+        if running is None and pending is None:
+            return _native_cache_failure(key, 'native session state unknown')
+        state = 'busy' if (running or pending) else 'idle'
+    except (GatewayTransportError, GatewayRefusal) as exc:
+        # 超时/断连/会话不存在：只暂缓本会话，不按空闲放行
+        return _native_cache_failure(key, str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception('native session state query failed for %s', session)
+        return _native_cache_failure(key, str(exc))
+    finally:
+        if lease is not None:
+            lease.close()
+    with _native_cache_lock:
+        _native_cache[key] = (state, time.monotonic() + _NATIVE_CACHE_TTL, 0)
+    return False if state == 'idle' else None
+
+
+def _native_cache_failure(key, detail):
+    """查询失败：退避从失败完成时起算（查询超时可能长于首档退避），成功即清零。"""
+    now = time.monotonic()
+    with _native_cache_lock:
+        fails = (_native_cache[key][2] if key in _native_cache else 0) + 1
+        ttl = min(_NATIVE_FAIL_BACKOFF_BASE * (2 ** (fails - 1)), _NATIVE_FAIL_BACKOFF_CAP)
+        _native_cache[key] = ('busy', now + ttl, fails)
+    return None
+
+
+def _native_busy_feedback(conn, session_id):
+    """attach 复核发现原生 running/pending：回写观察缓存，下一轮预检查直接判忙。
+
+    预检查缓存仍持空闲时 spawn attach 才会发现原生忙（空闲窗口内新执行启动的竞态）；
+    回写使退回后同一 TTL 窗口内的调度立即跳过本会话，不再反复占队首（req#142）。
+    """
+    rows = conn.execute('SELECT session_id,generation FROM session_bindings WHERE session_id=?',
+                        (session_id,)).fetchall()
+    if not rows:
+        return
+    now = time.monotonic()
+    with _native_cache_lock:
+        for row in rows:
+            _native_cache[(row['session_id'], row['generation'])] = ('busy', now + _NATIVE_CACHE_TTL, 0)
+
+
 def _publish(row):
     from . import wake, events
     run = {key: row[key] for key in ('session', 'project', 'profile', 'kind', 'thread_id', 'parent_id', 'round')}
     run.update(wake_started_at=row['started_at'], spawned_at=datetime.fromtimestamp(row['started_at']).isoformat(),
-               channel='hermes-gateway', state=row['state'])
+               channel='hermes-gateway', state=row['state'], cancel_reason=row['cancel_reason'])
     with wake._session_lock:
         wake._running_sessions.add(row['session'])
+        if row['state'] == 'waiting_delegation':
+            wake._running_wakes.pop(row['session'], None)
+            return
         wake._running_wakes[row['session']] = run
         if row['cancel_reason'] == 'user':
             wake._intentional_stops.add(row['session'])
     events.bus.publish('wake.spawned', run)
+
+
+def _sync_run_state(row):
+    """Publish durable status only to the matching execution snapshot."""
+    from . import wake
+    with wake._session_lock:
+        run = wake._running_wakes.get(row['session'])
+        if run and run['wake_started_at'] == row['started_at']:
+            run.update(state=row['state'], cancel_reason=row['cancel_reason'])
+
+
+def _sync_delegation_state(conn, row):
+    from . import hermes_delegations, wake, heartbeat
+    if hermes_delegations.waiting(conn, row):
+        with wake._session_lock:
+            was_running = wake._running_wakes.pop(row['session'], None)
+            wake._running_sessions.add(row['session'])
+        if was_running:
+            beat = conn.execute('SELECT pid FROM wake_runs WHERE session=? AND started_at=?',
+                                (row['session'], row['started_at'])).fetchone()
+            heartbeat.on_exit(row['profile'], pid=(beat['pid'] or 0) if beat else 0,
+                              thread_id=row['thread_id'], advance=False)
+    elif row['state'] not in ('terminal', 'manual'):
+        with wake._session_lock:
+            published = row['session'] in wake._running_wakes
+        if not published:
+            _publish(row)
 
 
 def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args,
@@ -127,6 +270,16 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
     session_lock.acquire()
     try:
         if ledger.active(conn, session):
+            from . import hermes_delegations
+            direct = hermes_delegations.direct_wait(conn, profile, project, trigger_msg_id) if kind == 'work' else None
+            if direct:
+                prior, message_id = direct
+                text = wake._finalize_injection_signal(profile, kind, thread_id, project,
+                                                       message_id, prior['task_id'], [])
+                if not hermes_delegations.enqueue_direct(conn, prior, message_id, text):
+                    return {'ok': False, 'busy': True, 'detail': 'delegation wait changed during delivery'}
+                _start_worker(prior['execution_id'])
+                return {'ok': True, 'channel': 'hermes-gateway', 'detail': 'direct message queued for delegation wait'}
             return {'ok': False, 'busy': True, 'detail': 'gateway execution still active'}
         if ledger.cleanup_pending(conn, session):
             return {'ok': False, 'busy': True, 'detail': 'gateway cleanup pending'}
@@ -136,6 +289,8 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
             raise GatewayRefusal('gateway_capabilities_unavailable')
         snapshot = _binding(conn, client, bot, project, profile, kind, thread_id, session, workdir, model_args)
         if snapshot['running'] or snapshot['pending']:
+            # attach 复核发现原生忙：回写观察缓存，退回后同一 TTL 窗口内不再反复占队首
+            _native_busy_feedback(conn, snapshot['session_id'])
             return {'ok': False, 'busy': True, 'detail': 'native session has pending execution'}
         grant = hermes_session_auth.grant(conn, project=project, profile=profile, bot_id=bot['id'],
             kind=kind, thread_id=thread_id, session=session, home=home, command=command,
@@ -195,7 +350,7 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
 
 
 def _finish(conn, row, client):
-    from . import wake, browser_resources, heartbeat, events, steer_ledger
+    from . import wake, browser_resources, heartbeat, events, steer_ledger, hermes_delegations
     cleanup_detail = ''
     if client is not None:
         if row['cancel_reason'] == 'user' and row['kind'] == 'work' and row['outcome'] != 'not_submitted':
@@ -232,7 +387,7 @@ def _finish(conn, row, client):
     conn.execute('UPDATE wake_runs SET ended_at=?,exit_code=? WHERE session=? AND started_at=?',
                  (row['ended_at'], code, row['session'], row['started_at']))
     conn.commit()
-    if row['cancel_reason'] not in ('user', 'shutdown'):
+    if row['cancel_reason'] not in ('user', 'shutdown', 'superseded'):
         if code:
             wake._report_execution_error(row['profile'], row['project'], row['thread_id'], row['session'],
                 row['execution_id'], 'Hermes gateway execution failed: ' + (row['detail'] or row['outcome']),
@@ -250,11 +405,12 @@ def _finish(conn, row, client):
     events.bus.publish('wake.finished', {'session': row['session'], 'wake_started_at': row['started_at'], 'ended_at': row['ended_at']})
     run = conn.execute('SELECT pid FROM wake_runs WHERE session=? AND started_at=?',
                        (row['session'], row['started_at'])).fetchone()
-    heartbeat.on_exit(row['profile'], pid=(run['pid'] or 0) if run else 0, thread_id=row['thread_id'])
+    heartbeat.on_exit(row['profile'], pid=(run['pid'] or 0) if run else 0, thread_id=row['thread_id'],
+                      advance=row['cancel_reason'] != 'superseded' and hermes_delegations.owned(conn, row))
     return True
 
 
-def _watch(execution_id):
+def _watch(execution_id, *, retry_manual=False):
     from . import wake
     client = None
     conn = db.get_connection()
@@ -267,6 +423,15 @@ def _watch(execution_id):
                 time.sleep(0.1)
                 continue
             row = ledger.read(conn, execution_id)
+            if (row['state'] != 'terminal' and row['cancel_reason']
+                    and time.time() >= row['reconcile_deadline']):
+                ledger.uncertain(conn, execution_id, row['detail'] or 'Cancellation confirmation deadline exceeded')
+                row = ledger.read(conn, execution_id)
+            _sync_run_state(row)
+            if row['state'] == 'manual' and not retry_manual:
+                return
+            manual_attempt = retry_manual and row['state'] == 'manual'
+            retry_manual = False
             if row['state'] == 'terminal':
                 if not row['cleanup_pending'] or (row['retry_count'] or 0) >= ledger.CLEANUP_MAX_ATTEMPTS:
                     return
@@ -292,22 +457,30 @@ def _watch(execution_id):
                         return
                     time.sleep(1)
                     continue
+                from . import hermes_delegations
+                if (hermes_delegations.waiting(conn, row) or
+                        (hermes_delegations.cycle(conn, row) and
+                         (row['cancel_reason'] or not hermes_delegations.owned(conn, row)))):
+                    changed = hermes_delegations.poll(conn, row, client)
+                    row = ledger.read(conn, execution_id)
+                    _sync_delegation_state(conn, row)
+                    if not changed:
+                        time.sleep(1)
+                    continue
                 if row['execution_deadline'] and time.time() >= row['execution_deadline'] and not row['cancel_reason']:
                     ledger.cancel(conn, execution_id, 'timeout')
-                row = ledger.reconcile(client, conn, execution_id)
+                row = ledger.reconcile(client, conn, execution_id, retry_manual=manual_attempt)
+                _sync_run_state(row)
+                _sync_delegation_state(conn, row)
+                if row['state'] == 'manual':
+                    logger.error('Hermes execution %s entered manual; automatic reconciliation stopped', execution_id)
+                    return
                 from . import hermes_approvals
                 hermes_approvals.sync(conn, row, client)
                 from . import hermes_gateway_steer
                 hermes_gateway_steer.observe_session(conn, client, row['session_id'], row['started_at'])
-                from . import wake
-                with wake._session_lock:
-                    if row['session'] in wake._running_wakes:
-                        wake._running_wakes[row['session']]['state'] = row['state']
                 if row['state'] == 'terminal':
                     continue
-                if row['state'] == 'manual':
-                    logger.error('Hermes execution %s entered manual; automatic reconciliation stopped', execution_id)
-                    return
             except Exception as exc:
                 from . import wake
                 if wake._shutting_down.is_set():
@@ -342,6 +515,10 @@ def _watch(execution_id):
                         client = None
                     continue
                 ledger.uncertain(conn, execution_id, detail)
+                row = ledger.read(conn, execution_id)
+                _sync_run_state(row)
+                if row['state'] == 'manual':
+                    return
                 if client:
                     client.close()
                     client = None
@@ -354,7 +531,7 @@ def _watch(execution_id):
             _workers.discard(execution_id)
 
 
-def _start_worker(execution_id, *, retry_cleanup=False):
+def _start_worker(execution_id, *, retry_cleanup=False, retry_manual=False):
     with _lock:
         if execution_id in _workers:
             return
@@ -365,16 +542,20 @@ def _start_worker(execution_id, *, retry_cleanup=False):
             finally:
                 conn.close()
         _workers.add(execution_id)
-    threading.Thread(target=_watch, args=(execution_id,), daemon=True, name='hermes-reconcile').start()
+    threading.Thread(target=_watch, args=(execution_id,), kwargs={'retry_manual': retry_manual},
+                     daemon=True, name='hermes-reconcile').start()
 
 
 def recover():
-    from . import hermes_connections
+    from . import hermes_connections, hermes_delegations
     hermes_connections._POOL.start()
     conn = db.get_connection()
     try:
         for row in ledger.active(conn):
-            _publish(row)
+            if hermes_delegations.waiting(conn, row):
+                _sync_delegation_state(conn, row)
+            else:
+                _publish(row)
             _start_worker(row['execution_id'])
         # terminal 后未清理的行重启清理 worker（不 _publish：已终态不再发 spawned）。
         # 已耗尽（cleanup_failed）的行不自动重试，只续剩余额度（设计 6.3 / D2）。
@@ -433,8 +614,9 @@ def cancel(session, *, reason='user', timeout=30):
                 time.sleep(0.1)
             return False
         for row in rows:
-            ledger.cancel(conn, row['execution_id'], reason)
-            _start_worker(row['execution_id'])
+            row = ledger.cancel(conn, row['execution_id'], reason)
+            _sync_run_state(row)
+            _start_worker(row['execution_id'], retry_manual=reason == 'user' and row['state'] == 'manual')
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if not ledger.active(conn, session):

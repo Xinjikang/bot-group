@@ -56,9 +56,10 @@ CREATE TABLE IF NOT EXISTS hermes_session_migrations (
 
 
 def initialize(conn):
-    from . import hermes_prompt_state
+    from . import hermes_prompt_state, hermes_delegations
     conn.executescript(SCHEMA)
     conn.executescript(hermes_prompt_state.SCHEMA)
+    conn.executescript(hermes_delegations.SCHEMA)
 
 
 def prepare(conn, *, session, project, profile, kind, thread_id, task_id, job_id,
@@ -160,15 +161,22 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
         if status == 'terminal':
             if not isinstance(receipt.get('outcome'), str) or not receipt['outcome']:
                 raise ValueError('Terminal receipt has no outcome')
-            conn.execute("UPDATE hermes_executions SET admission_id=?,generation=?,authority_epoch=?,"
-                         "state='terminal',outcome=?,ended_at=?,cleanup_pending=1,cleanup_deadline=?,detail='' "
-                         "WHERE execution_id=?",
-                         (aid, gen, epoch, receipt['outcome'], now, now + CLEANUP_BUDGET_SECONDS, execution_id))
+            from . import hermes_delegations
+            if hermes_delegations.capture(conn, row, receipt):
+                conn.execute("UPDATE hermes_executions SET admission_id=?,generation=?,authority_epoch=?,"
+                             "state='waiting_delegation',outcome=NULL,ended_at=NULL,cleanup_pending=0,"
+                             "execution_deadline=?,detail='' WHERE execution_id=?",
+                             (aid, gen, epoch, now + 3600, execution_id))
+            else:
+                conn.execute("UPDATE hermes_executions SET admission_id=?,generation=?,authority_epoch=?,"
+                             "state='terminal',outcome=?,ended_at=?,cleanup_pending=1,cleanup_deadline=?,detail='' "
+                             "WHERE execution_id=?",
+                             (aid, gen, epoch, receipt['outcome'], now, now + CLEANUP_BUDGET_SECONDS, execution_id))
         else:
             state = 'running' if status == 'started' else 'submitting' if status == 'queued' else 'unknown'
             deadline = (row['reconcile_deadline'] if row['cancel_reason'] or row['admission_id'] is None
                         else row['execution_deadline'])
-            if row['state'] == 'manual' or status == 'unknown' and deadline and now >= deadline:
+            if row['state'] == 'manual' or (status == 'unknown' or row['cancel_reason']) and deadline and now >= deadline:
                 state = 'manual'
             elif row['cancel_reason']:
                 state = 'cancelling'
@@ -181,7 +189,7 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
             else:
                 hermes_prompt_state.accepted(conn, execution_id)
         conn.commit()
-        if status == 'terminal':
+        if read(conn, execution_id)['state'] == 'terminal':
             from . import signing_keys
             signing_keys.retire(conn)
         return read(conn, execution_id)
@@ -244,26 +252,34 @@ def not_submitted(conn, execution_id, detail):
     signing_keys.retire(conn)
 
 
-def reconcile(client, conn, execution_id, *, now=None):
+def reconcile(client, conn, execution_id, *, now=None, retry_manual=False):
     """Query before cancelling; transport loss never triggers prompt resubmission.
 
     Cancellation RPCs use the smaller of 30 seconds and the remaining cancellation
     budget. Normal receipt polling uses 30 seconds within the execution lifecycle.
+    An explicit manual retry permits one pass with a 30-second timeout per RPC,
+    preserving the persisted deadlines and manual hold until a terminal receipt.
     """
     now = time.time() if now is None else now
     row = read(conn, execution_id)
     if row['state'] == 'terminal':
         return row
+    if not retry_manual and (row['state'] == 'manual' or
+            row['cancel_reason'] and now >= row['reconcile_deadline']):
+        uncertain(conn, execution_id, row['detail'] or 'Cancellation confirmation deadline exceeded', now=now)
+        return read(conn, execution_id)
     if not row['admission_id']:
         uncertain(conn, execution_id, 'Submission receipt unavailable; manual reconciliation required', now=now)
         return read(conn, execution_id)
-    if row['cancel_reason']:
+    if retry_manual:
+        rpc_timeout = 30.0
+    elif row['cancel_reason']:
         remaining = max(0.0, (row['reconcile_deadline'] or 0) - now)
         rpc_timeout = min(30.0, remaining) if remaining > 0 else 0.0
     else:
         rpc_timeout = 30.0
     receipt = client.rpc('prompt.receipt', session_id=row['session_id'], admission_id=row['admission_id'],
-                         timeout=rpc_timeout)
+                         timeout=rpc_timeout, include_result=True)
     row = apply_receipt(conn, execution_id, receipt, now=now)
     if row['state'] == 'terminal' or not row['cancel_reason']:
         return row
@@ -274,5 +290,12 @@ def reconcile(client, conn, execution_id, *, now=None):
     elif receipt['status'] == 'started' and row['generation'] is not None:
         client.rpc('session.interrupt', session_id=row['session_id'],
                    execution_generation=row['generation'], timeout=rpc_timeout)
+    elif receipt['status'] == 'unknown' and row['cancel_reason'] == 'user' and row['generation'] is not None:
+        # The gateway fences the lost generation and returns its authoritative
+        # terminal receipt, preserving any result already captured by the owner.
+        reply = client.rpc('prompt.resolve_unknown', session_id=row['session_id'],
+                           admission_id=row['admission_id'], execution_generation=row['generation'],
+                           timeout=rpc_timeout)
+        row = apply_receipt(conn, execution_id, reply, now=now)
     # An interrupt acknowledgement is a session handle, not an admission receipt.
     return row

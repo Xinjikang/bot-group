@@ -95,7 +95,7 @@ class LedgerTests(unittest.TestCase):
         ledger.cancel(self.conn, self.eid, now=115)
         client = Mock()
         client.rpc.side_effect = [self.receipt(), {'execution_state': 'idle'}]
-        row = ledger.reconcile(client, self.conn, self.eid)
+        row = ledger.reconcile(client, self.conn, self.eid, now=120)
         self.assertEqual(row['state'], 'cancelling')
         self.assertIsNone(row['ended_at'])
         self.assertEqual(client.rpc.call_args.args, ('session.interrupt',))
@@ -106,7 +106,7 @@ class LedgerTests(unittest.TestCase):
         ledger.cancel(self.conn, self.eid, now=115)
         client = Mock()
         client.rpc.side_effect = [self.receipt('queued'), self.receipt('started')]
-        row = ledger.reconcile(client, self.conn, self.eid)
+        row = ledger.reconcile(client, self.conn, self.eid, now=120)
         self.assertEqual(row['state'], 'cancelling')
         self.assertIsNone(row['ended_at'])
 
@@ -124,6 +124,42 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(self.accept()['state'], 'manual')
         self.assertEqual(self.accept('terminal')['state'], 'terminal')
 
+    def test_user_cancel_resolves_lost_generation_with_authoritative_terminal(self):
+        self.accept()
+        ledger.cancel(self.conn, self.eid, now=115)
+        client = Mock()
+        client.rpc.side_effect = [self.receipt('unknown'), self.receipt('terminal', outcome='interrupted')]
+        row = ledger.reconcile(client, self.conn, self.eid, now=120)
+        self.assertEqual(row['state'], 'terminal')
+        self.assertEqual(row['outcome'], 'interrupted')
+        self.assertEqual(row['cleanup_pending'], 1)
+        client.rpc.assert_called_with('prompt.resolve_unknown', session_id='sid', admission_id='a',
+                                      execution_generation=7, timeout=30.0)
+
+    def test_automatic_timeout_keeps_unknown_execution_occupied(self):
+        self.accept()
+        ledger.cancel(self.conn, self.eid, reason='timeout', now=115)
+        client = Mock()
+        client.rpc.return_value = self.receipt('unknown')
+        row = ledger.reconcile(client, self.conn, self.eid, now=120)
+        self.assertIsNone(row['ended_at'])
+        self.assertEqual(len(ledger.active(self.conn)), 1)
+        self.assertEqual(client.rpc.call_count, 1)
+
+    def test_unknown_resolution_failure_preserves_identity_and_hold(self):
+        self.accept()
+        before = ledger.cancel(self.conn, self.eid, now=115)
+        ledger.uncertain(self.conn, self.eid, 'offline', now=266)
+        client = Mock()
+        client.rpc.side_effect = [self.receipt('unknown'), ConnectionError('response lost')]
+        with self.assertRaises(ConnectionError):
+            ledger.reconcile(client, self.conn, self.eid, now=270, retry_manual=True)
+        row = ledger.read(self.conn, self.eid)
+        self.assertEqual(row['state'], 'manual')
+        self.assertIsNone(row['ended_at'])
+        for key in ('admission_id', 'generation', 'reconcile_deadline', 'submission_id'):
+            self.assertEqual(row[key], before[key])
+
     def test_long_execution_disconnect_recovers_original_admission(self):
         self.accept()
         before = dict(ledger.read(self.conn, self.eid))
@@ -137,7 +173,7 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(row['state'], 'terminal')
         for key in ('admission_id', 'submission_id', 'reconcile_deadline', 'execution_deadline'):
             self.assertEqual(row[key], before[key])
-        remote.rpc.assert_called_once_with('prompt.receipt', session_id='sid', admission_id='a', timeout=30.0)
+        remote.rpc.assert_called_once_with('prompt.receipt', session_id='sid', admission_id='a', timeout=30.0, include_result=True)
 
     def test_unreachable_execution_still_has_original_execution_budget(self):
         self.accept()
@@ -218,13 +254,21 @@ class LedgerTests(unittest.TestCase):
         ledger.reconcile(client, self.conn, self.eid, now=180)  # remaining=85 → cap 30
         self.assertEqual(client.rpc.call_args_list[0].kwargs['timeout'], 30.0)
 
-    def test_reconcile_rpc_timeout_zero_when_budget_exhausted(self):
+    def test_reconcile_skips_rpc_when_budget_exhausted(self):
         self.accept()
         ledger.cancel(self.conn, self.eid, now=115)
         client = Mock()
         client.rpc.side_effect = [self.receipt(), {'execution_state': 'idle'}]
-        ledger.reconcile(client, self.conn, self.eid, now=270)  # remaining=0
-        self.assertEqual(client.rpc.call_args_list[0].kwargs['timeout'], 0.0)
+        row = ledger.reconcile(client, self.conn, self.eid, now=270)
+        self.assertEqual(row['state'], 'manual')
+        client.rpc.assert_not_called()
+
+    def test_started_receipt_after_cancel_deadline_becomes_manual(self):
+        self.accept()
+        ledger.cancel(self.conn, self.eid, now=115)
+        row = ledger.apply_receipt(self.conn, self.eid, self.receipt(), now=266)
+        self.assertEqual(row['state'], 'manual')
+        self.assertIsNone(row['ended_at'])
 
     def test_reconcile_rpc_timeout_keeps_thirty_when_not_cancelled(self):
         # 非取消 running 执行运行超 reconcile_deadline（started_at+150）时，

@@ -87,6 +87,17 @@ def get_app_version(identity=Depends(_resolve_identity)):
     return JSONResponse(version_info(), headers={"Cache-Control": "no-store"})
 
 
+@router_api.get('/system/logs')
+def get_engine_logs(identity=Depends(_resolve_identity)):
+    _admin_only(identity, '引擎日志仅限管理员查看')
+    from .engine_logs import snapshot
+    try:
+        data = snapshot()
+    except OSError as exc:
+        raise HTTPException(503, '引擎日志读取失败，请稍后重试') from exc
+    return JSONResponse(data, headers={'Cache-Control': 'no-store'})
+
+
 @router_api.get('/system/hermes-gateway')
 def get_hermes_gateway_status(identity=Depends(_resolve_identity)):
     _admin_only(identity, '网关状态仅限管理员使用')

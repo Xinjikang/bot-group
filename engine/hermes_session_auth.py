@@ -108,6 +108,11 @@ def execution(conn, scope, *, required=True):
     row = rows[0]
     if any(row[k] != scope[k] for k in ('profile', 'project', 'thread_id')):
         raise HTTPException(401, 'Session execution identity mismatch')
+    from . import hermes_delegations
+    if not hermes_delegations.owned(conn, row):
+        raise HTTPException(409, 'Execution no longer owns its task or topic turn')
+    if not required and hermes_delegations.waiting(conn, row):
+        return None
     return row
 
 
