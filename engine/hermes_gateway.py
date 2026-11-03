@@ -297,10 +297,12 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
             workdir=workdir, model_args=model_args)
         try:
             snapshot = hermes_session_auth.configure(conn, grant, client, snapshot)
-        except Exception:
+        except Exception as exc:
             pending = conn.execute('SELECT pending_generation FROM hermes_session_grants WHERE ' +
                                    hermes_session_auth.WHERE, hermes_session_auth.key(grant)).fetchone()
             if pending and pending['pending_generation'] is not None:
+                _native_busy_feedback(conn, snapshot['session_id'])
+                hermes_session_auth.log_deferred(grant, 'configure', exc)
                 return {'ok': False, 'busy': True, 'detail': 'gateway session credential handoff pending'}
             raise
         if signal is None:

@@ -211,6 +211,18 @@ def detach(conn, row):
             client.close()
 
 
+def log_deferred(row, phase, exc):
+    """Identify a failed session operation while redacting credential-bearing details."""
+    from .execution_errors import redact
+    detail = getattr(exc, 'detail', getattr(exc, 'reason', str(exc)))
+    detail = redact(detail).replace('\r', '\\r').replace('\n', '\\n')
+    LOG.warning('Session resource maintenance deferred: phase=%s profile=%r project=%r '
+                'session=%r session_id=%r home=%r signing_generation=%s '
+                'error=%s status=%s reason=%s', phase, row['profile'], row['project'],
+                row['session'], row['session_id'], row['home'], row['signing_generation'],
+                type(exc).__name__, getattr(exc, 'status_code', None), detail)
+
+
 def maintain():
     """Retry durable revocations and restart handoffs without blocking engine startup."""
     from . import hermes_gateway, hermes_gateway_ledger as ledger, signing_keys, wake
@@ -226,17 +238,24 @@ def maintain():
             if not guard.acquire(blocking=False):
                 continue
             client = None
+            phase = 'load_grant'
             try:
                 row = conn.execute('SELECT * FROM hermes_session_grants WHERE ' + WHERE, key(row)).fetchone()
+                if row is None:
+                    continue
                 if row['revoked']:
+                    phase = 'detach'
                     detach(conn, row)
                 elif not ledger.active(conn, row['session']) and not ledger.cleanup_pending(conn, row['session']):
+                    phase = 'connect'
                     client, _, _ = hermes_gateway.connection(row['profile'], home=row['home'],
                                                             command=json.loads(row['command']), read_only=True)
+                    phase = 'resume'
                     snapshot = client.rpc('session.resume', session_id=row['session_id'])
+                    phase = 'configure'
                     configure(conn, row, client, snapshot)
             except Exception as exc:
-                LOG.warning('Session resource maintenance deferred: %s', type(exc).__name__)
+                log_deferred(row, phase, exc)
                 conn.rollback()
             finally:
                 if client:

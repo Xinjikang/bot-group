@@ -32,6 +32,12 @@
 
 管理员接口 `GET /system/hermes-gateway` 被动读取全局模式和池状态，返回 `mode`、`state`、`updated_at`，设置 `Cache-Control: no-store`。浏览器每 3 秒读取，单次请求上限 4 秒，结果超过 15 秒或引擎失联显示状态未知。子进程模式隐藏顶栏状态；空闲释放显示待连接。设计与验证范围见 [连接复用与状态设计](../design/2026-10-30-hermes-gateway-connections.md) 和测试索引。
 
+## 换证等待与诊断
+
+签名换证失败且 `pending_generation` 存在时，保留原授权与待交接状态，将该绑定写入短期忙碌缓存，再把原 job 退回 queued。原生会话即使空闲，缓存有效期内也会跳过该候选，让其他独立会话获得投递机会；期满后重新核实，换证成功后沿用原会话和 job 继续派发。换证成功取决于网关及配置恢复，永久性错误需要诊断和管理员处置。普通 busy 重试保持原 ID、原顺序及既有失败计数语义。
+
+换证派发与后台维护警告记录操作阶段、profile、project、引擎会话、原生 session ID、home、签名代、异常类型、HTTP 状态及脱敏原因。后台维护分别标记 connect、resume、configure 或 detach，以区分连接故障、远端恢复失败和本地授权校验。维护诊断只记录运行身份及经过脱敏的错误信息。
+
 ## 会话、MCP 和原生审批
 
 新会话使用 `source=acp`，首次通过 `session.mutate editor_mcp` 注入会话级 task_queue。配置指纹按 profile/session/project 持久化；后续相同配置通过 `session.resume(editor=...)` 恢复私有传输参数，保留原生 agent 与 MCP 连接。model/provider/reasoning 仅在引擎指定值变化时更新；workspace/edit_policy 按会话快照比较。实际工具发现和调用由 Hermes 原生机制完成。
