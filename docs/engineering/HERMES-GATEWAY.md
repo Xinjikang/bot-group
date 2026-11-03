@@ -4,6 +4,8 @@
 
 结构化 `delegate_task` 后台派发回执把逻辑执行置为 `waiting_delegation`。原生父轮次终态保持当前任务及话题发言位，清除该轮思考显示；原生回调 admission 自动归入同一个 `execution_id`。全部委派回调处理完毕后进行逻辑执行收尾，回调工具写入继续校验当前任务/话题归属。相关表为 `hermes_delegation_cycles`、`hermes_delegations`、`hermes_native_turns` 和 `hermes_delegation_inputs`。
 
+正常等待跨过普通 `execution_deadline` 后继续保留归属，异常恢复依据明确的失效事实或用户停止。前端沿用父轮 final 的内容采集终态，同标识原生回调的实时思考刷新存在已接受的展示限制。维护与验收分别遵循设计中的[正常委派等待与超时](../design/2026-11-03-delegation-wait.md#正常委派等待与超时)和[思考展示边界](../design/2026-11-03-delegation-wait.md#思考展示边界)。
+
 恢复线程通过原执行 home 下的只读 `state.db/session_admissions` 查找已知委派的原生回调身份，再用 `prompt.receipt(include_result=True)` 对账。原生账本查询限时并与 HTTP 状态读路径分离；字段不兼容或读取失败保留未知执行并使用既有恢复期限。该本地适配契约已核对 Hermes `0431192d69d4afd2443a7da15bb9e129a424414c`，升级时运行原生验证脚本。
 
 等待中的工作会话可以接收实际定向未读消息，持久保存输入 ID 并幂等提交；候选选择跳过当前执行已入箱的消息，入箱事务重新检查执行归属、消息未读状态及撤回状态。成员授权撤销、任务移交或话题发言位变化终止旧写入资格，后台协调停止旧委派及原生执行。其他会话沿用 #276 的跳过忙会话调度。设计与边界见 [子代理等待](../design/2026-11-03-delegation-wait.md)。
