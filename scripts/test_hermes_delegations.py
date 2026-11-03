@@ -147,6 +147,85 @@ class DelegationTests(unittest.TestCase):
         ledger.cancel(self.conn, self.eid)
         self.assertEqual(self.fixture.send().status_code, 409)
 
+    def _unknown_callback_stop(self, *, expired=False, lost=False):
+        self.wait()
+        self.callback()
+        delegations.poll(self.conn, self.current(), Mock())
+        before = ledger.cancel(self.conn, self.eid, now=time.time() - (151 if expired else 0))
+        unknown = dict(admission_id='child-result', status='unknown', execution_generation=2)
+        resolved = False
+
+        def rpc(method, **kwargs):
+            nonlocal resolved
+            if method == 'process.stop':
+                return {}
+            if method == 'session.resume':
+                self.assertTrue(kwargs['omit_messages'])
+                return dict(running=False, pending=[] if resolved else [unknown])
+            if method == 'prompt.resolve_unknown':
+                self.assertEqual(kwargs['session_id'], 'sid')
+                self.assertEqual(kwargs['admission_id'], 'child-result')
+                self.assertEqual(kwargs['execution_generation'], 2)
+                resolved = True
+                if lost:
+                    raise TimeoutError('resolution response lost')
+                return self.receipt('child-result', 2, outcome='cancelled')
+            if method == 'prompt.receipt':
+                self.assertTrue(resolved)
+                self.assertEqual(kwargs['admission_id'], 'child-result')
+                return self.receipt('child-result', 2, outcome='cancelled')
+            raise AssertionError(method)
+
+        remote = Mock()
+        remote.rpc.side_effect = rpc
+        if lost:
+            with self.assertRaises(TimeoutError):
+                delegations.poll(self.conn, self.current(), remote)
+            self.assertTrue(gateway.active(self.row['session']))
+            self.assertEqual(self.current()['admission_id'], 'child-result')
+        with patch.object(gateway, 'connection', return_value=(remote, self.row['home'], [])), \
+             patch.object(gateway.sessions, 'attach', return_value={'messages': []}), \
+             patch.object(wake, '_handle_task_exit') as failed:
+            gateway._watch(self.eid, retry_manual=expired)
+        failed.assert_not_called()
+        self.assertFalse(gateway.active(self.row['session']))
+        self.assertEqual(self.current()['state'], 'terminal')
+        self.assertEqual(self.current()['outcome'], 'cancelled')
+        self.assertEqual(ledger.cleanup_pending(self.conn, self.row['session']), [])
+        for key in ('cancel_deadline', 'reconcile_deadline', 'admission_id', 'submission_id'):
+            self.assertEqual(self.current()[key], before[key])
+        methods = [call.args[0] for call in remote.rpc.call_args_list]
+        self.assertEqual(methods.count('prompt.resolve_unknown'), 1)
+        self.assertNotIn('prompt.submit', methods)
+
+    def test_unknown_callback_user_stop_releases_execution(self):
+        self._unknown_callback_stop()
+
+    def test_unknown_callback_manual_retry_releases_execution(self):
+        self._unknown_callback_stop(expired=True)
+
+    def test_unknown_callback_lost_resolution_response_recovers_on_manual_retry(self):
+        self._unknown_callback_stop(expired=True, lost=True)
+
+    def test_unknown_stop_preserves_foreign_admission_and_requires_user_intent(self):
+        self.wait()
+        self.callback()
+        delegations.poll(self.conn, self.current(), Mock())
+        remote = Mock()
+        for reason, aid, generation in [('user', 'foreign', 3),
+                                         ('superseded', 'child-result', 2),
+                                         ('user', 'child-result', None)]:
+            with self.subTest(reason=reason, admission=aid, generation=generation):
+                self.conn.execute('UPDATE hermes_executions SET cancel_reason=? WHERE execution_id=?',
+                                  (reason, self.eid))
+                self.conn.commit()
+                remote.reset_mock()
+                remote.rpc.return_value = dict(running=False, pending=[dict(
+                    status='unknown', admission_id=aid, execution_generation=generation)])
+                self.assertFalse(delegations.poll(self.conn, self.current(), remote))
+                self.assertNotIn('prompt.resolve_unknown', [c.args[0] for c in remote.rpc.call_args_list])
+                self.assertTrue(gateway.active(self.row['session']))
+
     def test_fast_callback_handoff_is_recorded_before_old_wait_cleanup(self):
         self.wait()
         self.callback()

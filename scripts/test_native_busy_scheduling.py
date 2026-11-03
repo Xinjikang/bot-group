@@ -497,9 +497,64 @@ class NativeObserverPoolContractTests(NativeBusyFixtures, unittest.TestCase):
         self.assertFalse(self.observer_remote.closed)  # 共享物理连接保持池契约
         call = self.observer_calls[-1]
         self.assertEqual(call['method'], 'session.resume')
+        self.assertTrue(call['params']['omit_messages'])
         self.assertEqual(call['timeout'], hermes_gateway._NATIVE_QUERY_TIMEOUT)  # 传输层显式超时
         self.assertNotIn('timeout', call['params'])  # timeout 不进 wire 载荷
         self.assertTrue(any(sid == 'native-observer' for _, sid in entry.subscriptions))  # 订阅登记
+
+    def test_large_history_precheck_keeps_shared_control_connection_usable(self):
+        import json
+        import threading
+        from websockets.sync.server import serve
+        from websockets.exceptions import ConnectionClosed
+        from engine import hermes_gateway_client as transport
+
+        history = 'x' * (9 * 1024 * 1024)
+        requests, sockets = [], []
+
+        def handler(socket):
+            sockets.append(socket)
+            try:
+                for raw in socket:
+                    call = json.loads(raw)
+                    requests.append(call)
+                    if call['method'] == 'session.resume':
+                        result = dict(running=False, pending=[], message_count=1,
+                                      messages=[] if call['params'].get('omit_messages') else [history])
+                    else:
+                        result = {'status': 'started'}
+                    socket.send(json.dumps(dict(jsonrpc='2.0', id=call['id'], result=result)))
+            except ConnectionClosed:
+                pass
+
+        transport.resume_connections()
+        with serve(handler, '127.0.0.1', 0, subprotocols=['hermes-gateway-v1']) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            endpoint = {'api_origin': 'http://127.0.0.1:' + str(server.socket.getsockname()[1])}
+            pool = connections.Pool(
+                lambda home, command, callback, **kw: transport.GatewayClient(endpoint, on_event=callback),
+                lambda: ('fixture', 'sha'), lambda home: False)
+            try:
+                with patch.object(transport, 'ticket', return_value='synthetic'), \
+                     patch.object(hermes_gateway, 'connection', side_effect=lambda *a, **kw: (
+                         pool.acquire(self.observer_home, [], business=False), self.observer_home, [])):
+                    with pool.acquire(self.observer_home, [], business=True) as control:
+                        self.assertEqual(control.rpc('prompt.receipt', session_id='other', timeout=2),
+                                         {'status': 'started'})
+                        self.assertIs(self._observe(), False)
+                        self.assertEqual(control.rpc('prompt.receipt', session_id='other', timeout=2),
+                                         {'status': 'started'})
+                        self.assertFalse(control.client.closed)
+                    self.assertEqual(len(sockets), 1)
+                    resume = [c for c in requests if c['method'] == 'session.resume']
+                    self.assertEqual(len(resume), 1)
+                    self.assertTrue(resume[0]['params']['omit_messages'])
+            finally:
+                pool.stop()
+                pool.join()
+                server.shutdown()
+                thread.join(2)
 
     def test_observer_transport_failure_releases_and_marks_pool(self):
         self.observer_fail[0] = GatewayTransportError('injected transport failure')

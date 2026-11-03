@@ -211,12 +211,24 @@ def poll(conn, row, client):
                 pass  # Cancellation remains available when native discovery is unavailable.
         client.rpc('process.stop', session_id=row['session_id'], timeout=5)
         snapshot = client.rpc('session.resume', session_id=row['session_id'], omit_messages=True, timeout=5)
+        resolved_unknown = False
         for item in snapshot.get('pending', []):
             if item['status'] == 'queued':
                 client.rpc('prompt.cancel', session_id=row['session_id'], admission_id=item['admission_id'], timeout=5)
             elif item['status'] == 'started':
                 client.rpc('session.interrupt', session_id=row['session_id'],
                            execution_generation=item['execution_generation'], timeout=5)
+            elif (item['status'] == 'unknown' and row['cancel_reason'] == 'user'
+                    and item['admission_id'] == row['admission_id']
+                    and type(item.get('execution_generation')) is int):
+                client.rpc('prompt.resolve_unknown', session_id=row['session_id'],
+                           admission_id=item['admission_id'],
+                           execution_generation=item['execution_generation'], timeout=5)
+                resolved_unknown = True
+        if resolved_unknown:
+            # Manual retry has one reconciliation pass. Confirm remote idleness
+            # after resolution, then collect the original admission's receipt.
+            snapshot = client.rpc('session.resume', session_id=row['session_id'], omit_messages=True, timeout=5)
         # Local cancellation revokes writes immediately. Existing execution deadlines
         # and cleanup reconciliation cover the remote shutdown acknowledgement.
         if snapshot.get('running') or snapshot.get('pending'):

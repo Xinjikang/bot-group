@@ -169,7 +169,7 @@ def _native_session_state(conn, profile, session):
     try:
         lease, _, _ = connection(profile, read_only=True)
         snapshot = lease.rpc('session.resume', session_id=binding['session_id'],
-                             timeout=_NATIVE_QUERY_TIMEOUT)
+                             omit_messages=True, timeout=_NATIVE_QUERY_TIMEOUT)
         running = snapshot.get('running')
         pending = snapshot.get('pending')
         if running is None and pending is None:

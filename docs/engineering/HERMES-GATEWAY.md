@@ -8,6 +8,10 @@
 
 等待中的工作会话可以接收实际定向未读消息，持久保存输入 ID 并幂等提交；候选选择跳过当前执行已入箱的消息，入箱事务重新检查执行归属、消息未读状态及撤回状态。成员授权撤销、任务移交或话题发言位变化终止旧写入资格，后台协调停止旧委派及原生执行。其他会话沿用 #276 的跳过忙会话调度。设计与边界见 [子代理等待](../design/2026-11-03-delegation-wait.md)。
 
+用户停止时，委派取消分支对当前父回调 admission 的 `unknown` 状态调用 `prompt.resolve_unknown`，携带快照中的 admission ID 和执行代次。随后重新确认会话空闲，并读取原 admission 的权威回执完成收尾。150 秒取消确认期限后的显式手动重试使用同一路径，保持原身份和截止时间；响应丢失后继续查询原回执。其他 admission、缺少执行代次及非用户停止保持占用待核实。子委派结果的 `unknown` 仍交给原生回调处理。
+
+调度忙闲预检查使用 `session.resume(omit_messages=True)`，只获取控制状态，避免完整历史超过共享控制连接的 8 MiB 接收上限。查询继续经过 Pool/Lease，保留共享连接、订阅和失败退避契约。
+
 ## 接口与版本
 
 `engine/hermes_gateway*.py` 使用公开 CLI `hermes gateway ensure --json`、本地 control 协议的 `session-ticket` 和 `/api/ws` 的 `hermes-gateway-v1`。执行与控制使用线协议，委派恢复另使用上节的只读账本发现；Hermes 源码保持独立。运行时核验 profile、协议、安装提交身份，以及 `durable-admission-v1`、`acp-session-mcp-v1` 能力。v0.22.5 验证基线为 `bf0203a794a07aac3ff764972ab9087baa4e4f4e`。
