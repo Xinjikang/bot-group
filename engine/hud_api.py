@@ -17,7 +17,6 @@ class Update(Revision):
 
 class Create(BaseModel):
     project: str | None = Field(default=None, max_length=200)
-    source_project: str | None = Field(default=None, max_length=200)
 
 
 class Answer(Revision):
@@ -89,7 +88,7 @@ def router(identity, admin):
 
     @protected.post('')
     def create(body: Create):
-        return hud.create(body.project, source_project=body.source_project)
+        return hud.create(body.project)
 
     @protected.get('/{sid}')
     def get(sid: str):

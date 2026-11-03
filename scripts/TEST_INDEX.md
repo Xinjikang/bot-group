@@ -2,7 +2,7 @@
 
 话题输入框自动填充：`python -X utf8 -B scripts/test_thread_creation_browser.py --screenshots <主目录报告下的绝对目录>`。需要 Python 3.11+、项目依赖、Playwright 与 Chrome；隔离 API 覆盖深浅主题、1280/390px、普通/自动填充及聚焦状态共 16 组合，继续回归图片开场白、重复提交和响应丢失重试。截图参数可省略。
 
-项目助手选择：`python -X utf8 -B scripts/test_hud_draft_selection_browser.py --evidence <主目录报告下的绝对目录>`。同上浏览器依赖；真实页面与隔离 HUD API 验证已有项目配置带入新建向导、未配置时要求用户选择并保存、设置中移除全局预选，检查桌面与 390px。后端使用 `scripts.run_isolated_tests` 运行 `scripts.test_project_hud` 与 `scripts.test_hud_preparation`，覆盖旧预选值忽略、当前项目引用、会话独立、不可用来源及创建绑定。
+项目助手选择：`python -X utf8 -B scripts/test_hud_draft_selection_browser.py --evidence <主目录报告下的绝对目录>`。同上浏览器依赖；真实页面与隔离 HUD API 验证从已配置及未配置的项目打开新建向导均要求单独选择并保存助手、设置中移除全局预选，检查桌面与 390px。后端使用 `scripts.run_isolated_tests` 运行 `scripts.test_project_hud` 与 `scripts.test_hud_preparation`，覆盖旧预选值忽略、新草稿空选择、已有草稿恢复、项目配置独立及创建绑定。
 
 Hermes 子代理等待与原生续接：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_hermes_delegations scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_session_reuse scripts.test_native_busy_scheduling scripts.test_topic_restart_recovery scripts.test_thinking_run_identity`。覆盖等待空闲显示、任务保持、回调投递空档、独立单元/嵌套委派、断线恢复、授权撤销、停止、点对点输入幂等及结束竞态、扫描队列转交定向消息，以及不同话题/不同 Bot 工作会话的并行投递。模拟原生账本只放在夹具 home，HTTP 状态读验证零网关调用。
 

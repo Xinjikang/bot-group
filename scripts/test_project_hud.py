@@ -576,12 +576,12 @@ class HudTests(unittest.TestCase):
         with hud.connection() as conn:
             self.assertFalse(conn.execute("SELECT 1 FROM hud_sessions WHERE project='p'").fetchone())
 
-    def test_new_draft_uses_current_project_assistant_without_copying_session(self):
+    def test_new_draft_requires_its_own_assistant_selection(self):
         current = self.session('p')
         response = self.client.post('/hud', json={'source_project': 'p'})
         self.assertEqual(response.status_code, 200, response.text)
         draft = response.json()
-        self.assertEqual(draft['bot_id'], current['bot_id'])
+        self.assertIsNone(draft['bot_id'])
         self.assertNotEqual(draft['id'], current['id'])
         self.assertIsNone(draft['project'])
         self.assertEqual(draft['status'], 'paused')
@@ -597,21 +597,19 @@ class HudTests(unittest.TestCase):
         self.conn.execute("INSERT INTO settings(key,project,value,updated_at) VALUES('hud_bot','',?,'fixture')", (str(future),))
         self.conn.commit()
         draft = self.client.post('/hud', json={'source_project': 'p'}).json()
-        self.assertEqual(draft['bot_id'], current['bot_id'])
+        self.assertIsNone(draft['bot_id'])
         self.assertIsNone(hud.create()['bot_id'])
         self.assertEqual(hud.view(current['id'])['bot_id'], current['bot_id'])
-        self.assertIsNone(hud.create('q', source_project='p')['bot_id'])
+        self.assertIsNone(hud.create('q')['bot_id'])
         self.assertNotIn('default_bot_id', self.client.get('/hud').json())
 
-    def test_new_draft_ignores_unavailable_source_project(self):
-        self.session('p')
-        for field in ('archived', 'removed'):
-            self.conn.execute(f'UPDATE projects SET {field}=1 WHERE name=?', ('p',))
-            self.conn.commit()
-            self.assertIsNone(hud.create(source_project='p')['bot_id'])
-            self.conn.execute(f'UPDATE projects SET {field}=0 WHERE name=?', ('p',))
-            self.conn.commit()
-        self.assertIsNone(hud.create(source_project='missing')['bot_id'])
+    def test_configured_draft_keeps_selection_on_resume_but_new_draft_is_empty(self):
+        selected = self.session()
+        resumed = self.client.get('/hud/' + selected['id']).json()
+        self.assertEqual(resumed['bot_id'], selected['bot_id'])
+        fresh = self.client.post('/hud', json={}).json()
+        self.assertNotEqual(fresh['id'], selected['id'])
+        self.assertIsNone(fresh['bot_id'])
 
     def test_background_probe_preserves_input_arriving_during_check(self):
         item = self.infer(self.session('p'), {'text': '检查完成'})

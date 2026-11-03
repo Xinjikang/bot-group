@@ -423,8 +423,7 @@
     activeTab='chat';
     const stamp=++version;remember();scope=project||'';errorText='';current=null;selected='';el('input').value='';render();
     try{
-      const data=id?await api('/hud/'+id):await api('/hud',{method:'POST',body:JSON.stringify({project:project||null,
-        source_project:draftMode&&!project?(S.currentProject||null):null})});
+      const data=id?await api('/hud/'+id):await api('/hud',{method:'POST',body:JSON.stringify({project:project||null})});
       if(stamp!==version)return null;setData(data);if(!project)draftId=data.id;return data;
     }catch(e){if(stamp===version){errorText=e.message;render();}return null;}
   }

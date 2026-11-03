@@ -44,7 +44,8 @@ def main():
                                 json=req.post_data_json if req.method in ('POST', 'PATCH') else None)
                             assert response.status_code == 200, response.text
                             data = response.json()
-                            if path == '/hud' and req.method == 'POST' and req.post_data_json.get('source_project'):
+                            if path == '/hud' and req.method == 'POST' and req.post_data_json.get('project') is None:
+                                assert 'source_project' not in req.post_data_json
                                 drafts.append(data)
                             request.fulfill(json=data)
                         elif path == '/profiles/candidates':
@@ -58,21 +59,18 @@ def main():
                     page.evaluate("project => {S.currentProject=project;showLogin(false);openProjectInitialization();}", project)
                     page.wait_for_function("document.querySelector('#hud-context').textContent.includes('项目目标')")
                     assert drafts and drafts[-1]['project'] is None
-                    if project == 'p':
-                        assert drafts[-1]['bot_id'] == configured['bot_id']
-                        assert page.locator('.hud-name').inner_text() == bot['display_name']
-                        assert '为 HUD 选择一个 AI' not in page.locator('#hud-content').inner_text()
-                    else:
-                        assert drafts[-1]['bot_id'] is None
-                        page.get_by_role('button', name='选择 AI', exact=True).click()
-                        page.wait_for_selector('#hud-settings select')
-                        assert page.get_by_label('维护 AI', exact=True).input_value() == ''
-                        assert page.locator('#hud-settings input[type=checkbox]').count() == 0
-                        page.get_by_label('维护 AI', exact=True).select_option('0')
-                        page.get_by_role('button', name='保存并开始维护', exact=True).click()
-                        page.wait_for_function("document.querySelector('.hud-name').textContent === '知夏'")
-                        saved = fixture.client.get('/hud/' + drafts[-1]['id']).json()
-                        assert saved['bot_id'] == configured['bot_id']
+                    assert drafts[-1]['bot_id'] is None
+                    page.get_by_role('button', name='选择 AI', exact=True).click()
+                    page.wait_for_selector('#hud-settings select')
+                    assert page.get_by_label('维护 AI', exact=True).input_value() == ''
+                    assert page.locator('#hud-settings input[type=checkbox]').count() == 0
+                    page.get_by_label('维护 AI', exact=True).select_option('0')
+                    page.get_by_role('button', name='保存并开始维护', exact=True).click()
+                    page.wait_for_function("document.querySelector('.hud-name').textContent === '知夏'")
+                    saved = fixture.client.get('/hud/' + drafts[-1]['id']).json()
+                    assert saved['bot_id'] == configured['bot_id']
+                    original = fixture.client.get('/hud/' + configured['id']).json()
+                    assert original['bot_id'] == configured['bot_id']
                     for width in (1440, 390):
                         page.set_viewport_size({'width': width, 'height': 1000})
                         page.screenshot(path=str(args.evidence / f'hud-{project}-{width}.png'))
@@ -81,9 +79,9 @@ def main():
             finally:
                 browser.close()
         (args.evidence / 'result.json').write_text(json.dumps({'passed': True,
-            'configured_project_reused': True, 'unconfigured_project_requires_save': True,
+            'fresh_drafts_require_selection': True, 'existing_project_preserved': True,
             'global_prefill_removed': True, 'viewports': [1440, 390]}), encoding='utf-8')
-        print('PASS: configured project assistant reused; unconfigured project requires selection and save; global prefill removed')
+        print('PASS: every new draft requires selection and save; existing project preserved; global prefill removed')
     finally:
         fixture.doCleanups()
 

@@ -91,7 +91,7 @@ def advance_generation(item):
         item['activity'] = time.time()
 
 
-def create(project=None, *, source_project=None):
+def create(project=None):
     with _LOCK, connection() as conn:
         if project:
             if not conn.execute('SELECT 1 FROM projects WHERE name=? AND removed=0 AND archived=0', (project,)).fetchone():
@@ -99,17 +99,9 @@ def create(project=None, *, source_project=None):
             old = conn.execute('SELECT id FROM hud_sessions WHERE project=?', (project,)).fetchone()
             if old:
                 return view(old[0], conn)
-        bot_id = None
-        if not project and source_project:
-            configured = conn.execute(
-                'SELECT h.bot_id FROM hud_sessions h JOIN projects p ON p.name=h.project '
-                'JOIN bots b ON b.id=h.bot_id WHERE h.project=? AND p.removed=0 AND p.archived=0 '
-                "AND b.runtime IN ('hermes','codex','dsh')", (source_project,)).fetchone()
-            if configured:
-                bot_id = configured['bot_id']
         sid, now = uuid.uuid4().hex, time.time()
         conn.execute("INSERT INTO hud_sessions(id,project,bot_id,stage,activity,updated,status) VALUES(?,?,?,?,?,?,'paused')",
-                     (sid, project, bot_id, 'maintenance' if project else 'purpose', now, now))
+                     (sid, project, None, 'maintenance' if project else 'purpose', now, now))
         return view(sid, conn)
 
 

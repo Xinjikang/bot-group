@@ -202,9 +202,8 @@ class PreparationTests(unittest.TestCase):
                 hud_documents.snapshot(str(self.root), {'path': 'docs/linked.md'})
 
     def test_created_project_with_configured_bot_starts_check_and_bind_retry_preserves_todo(self):
-        self.session('q')
-        item = hud.create(source_project='q')
-        self.assertEqual(item['status'], 'paused')
+        item = self.session()
+        self.assertEqual(item['status'], 'queued')
         with hud.connection() as conn:
             conn.execute("INSERT INTO project_setup_requests(id,digest,status,payload,result,updated_at) VALUES('auto-receipt','','ready','{}',?,?)",
                          (json.dumps({'project': 'p'}), time.time()))
