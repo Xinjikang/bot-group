@@ -567,15 +567,51 @@ class HudTests(unittest.TestCase):
         self.assertEqual(check['status'], 'ok')
         self.assertEqual(check['evidence']['configured'], 2)
 
-    def test_default_bot_does_not_enable_other_projects(self):
+    def test_configured_assistant_is_reused_only_for_its_project(self):
         item=self.session()
-        hud.update(item['id'],{'revision':item['revision'],'bot_id':item['bot_id'],'make_default':True})
         other=hud.create('q')
-        self.assertEqual(other['bot_id'],item['bot_id'])
+        self.assertIsNone(other['bot_id'])
         self.assertEqual(other['status'],'paused')
         self.assertNotIn(other['id'],hud.scan())
         with hud.connection() as conn:
             self.assertFalse(conn.execute("SELECT 1 FROM hud_sessions WHERE project='p'").fetchone())
+
+    def test_new_draft_uses_current_project_assistant_without_copying_session(self):
+        current = self.session('p')
+        response = self.client.post('/hud', json={'source_project': 'p'})
+        self.assertEqual(response.status_code, 200, response.text)
+        draft = response.json()
+        self.assertEqual(draft['bot_id'], current['bot_id'])
+        self.assertNotEqual(draft['id'], current['id'])
+        self.assertIsNone(draft['project'])
+        self.assertEqual(draft['status'], 'paused')
+        self.assertEqual(draft['entries'], [])
+        self.assertEqual(draft['state'], {})
+        self.assertEqual(hud.create('p')['id'], current['id'])
+        self.assertEqual(hud.create('p')['bot_id'], current['bot_id'])
+
+    def test_legacy_prefill_never_selects_an_assistant(self):
+        current = self.session('p')
+        self.join('q', 'future', 'hermes')
+        future = self.conn.execute("SELECT id FROM bots WHERE runtime='hermes'").fetchone()[0]
+        self.conn.execute("INSERT INTO settings(key,project,value,updated_at) VALUES('hud_bot','',?,'fixture')", (str(future),))
+        self.conn.commit()
+        draft = self.client.post('/hud', json={'source_project': 'p'}).json()
+        self.assertEqual(draft['bot_id'], current['bot_id'])
+        self.assertIsNone(hud.create()['bot_id'])
+        self.assertEqual(hud.view(current['id'])['bot_id'], current['bot_id'])
+        self.assertIsNone(hud.create('q', source_project='p')['bot_id'])
+        self.assertNotIn('default_bot_id', self.client.get('/hud').json())
+
+    def test_new_draft_ignores_unavailable_source_project(self):
+        self.session('p')
+        for field in ('archived', 'removed'):
+            self.conn.execute(f'UPDATE projects SET {field}=1 WHERE name=?', ('p',))
+            self.conn.commit()
+            self.assertIsNone(hud.create(source_project='p')['bot_id'])
+            self.conn.execute(f'UPDATE projects SET {field}=0 WHERE name=?', ('p',))
+            self.conn.commit()
+        self.assertIsNone(hud.create(source_project='missing')['bot_id'])
 
     def test_background_probe_preserves_input_arriving_during_check(self):
         item = self.infer(self.session('p'), {'text': '检查完成'})

@@ -1,5 +1,9 @@
 # 测试脚本索引
 
+话题输入框自动填充：`python -X utf8 -B scripts/test_thread_creation_browser.py --screenshots <主目录报告下的绝对目录>`。需要 Python 3.11+、项目依赖、Playwright 与 Chrome；隔离 API 覆盖深浅主题、1280/390px、普通/自动填充及聚焦状态共 16 组合，继续回归图片开场白、重复提交和响应丢失重试。截图参数可省略。
+
+项目助手选择：`python -X utf8 -B scripts/test_hud_draft_selection_browser.py --evidence <主目录报告下的绝对目录>`。同上浏览器依赖；真实页面与隔离 HUD API 验证已有项目配置带入新建向导、未配置时要求用户选择并保存、设置中移除全局预选，检查桌面与 390px。后端使用 `scripts.run_isolated_tests` 运行 `scripts.test_project_hud` 与 `scripts.test_hud_preparation`，覆盖旧预选值忽略、当前项目引用、会话独立、不可用来源及创建绑定。
+
 Hermes 子代理等待与原生续接：`.venv\Scripts\python.exe -X utf8 -B -m scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_hermes_delegations scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_hermes_session_reuse scripts.test_native_busy_scheduling scripts.test_topic_restart_recovery scripts.test_thinking_run_identity`。覆盖等待空闲显示、任务保持、回调投递空档、独立单元/嵌套委派、断线恢复、授权撤销、停止、点对点输入幂等及结束竞态、扫描队列转交定向消息，以及不同话题/不同 Bot 工作会话的并行投递。模拟原生账本只放在夹具 home，HTTP 状态读验证零网关调用。
 
 真实子代理等待链路：`.venv\Scripts\python.exe -X utf8 -B scripts/verify_delegation_wait_native.py --hermes-python <Hermes 解释器绝对路径> --hermes-source <匹配源码绝对目录> --run-dir <新建隔离运行绝对目录> --evidence <主目录 reports/tests 下的新绝对目录>`。Windows 运行目录宜用短名。脚本创建独立 home、工作目录、SQLite、回环模型/API，使用实际 Pool/Lease、网关、父子代理、原生自动回调及 stdio MCP 写消息/task node；受控模型支持原生 tool_search/tool_call 桥接，核对一条逻辑执行接续两个原生 admission、任务交接和零失败事件。模型仅产生合成工具调用；不评估模型指令遵循能力。成功/失败均停止自身网关并核对端口和 PID 文件释放，原始模型请求、数据库备份及结果存入 evidence。引擎重建、多个独立单元和并行队列由上述隔离回归覆盖；网关重启的原生生命周期使用 `verify_subagent_lifecycle_native.py --restart`。

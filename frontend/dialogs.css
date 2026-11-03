@@ -118,6 +118,12 @@ dialog [data-error="true"] { color: var(--danger) !important; }
 #dlg-project-import .import-permissions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
 #dlg-project-import .import-permissions label{margin:0;padding:8px;font-size:12px}
 #dlg-project-import input[type=checkbox]{width:14px;height:14px}
+#dlg-thread{color-scheme:dark}
+:root[data-theme=light] #dlg-thread{color-scheme:light}
+#dlg-thread input:autofill{
+  box-shadow:0 0 0 1000px var(--bg) inset;
+  -webkit-text-fill-color:var(--fg);caret-color:var(--fg);
+}
 #dlg-project-import{color-scheme:dark}
 :root[data-theme=light] #dlg-project-import{color-scheme:light}
 #dlg-project-import input:autofill{

@@ -401,10 +401,9 @@
       const botTools=node('div',null,'hud-settings-tools');
       botTools.append(action('新建 profile',()=>openProfileCreate({onCreated:()=>showSettings(true)})),action('刷新可选 Bot',()=>showSettings(true)));
       const botField=node('div',null,'hud-settings-bot');botField.append(label,botTools);
-      const checkLabel=node('label'),check=node('input');check.type='checkbox';check.checked=!current?.bot_id;checkLabel.append(check,node('span','下次预选这个 AI（各项目分别启用维护）'));
       const timeLabel=node('label','空闲多久后重置模型上下文'),timeSelect=node('select');timeSelect.setAttribute('aria-label','空闲重置时间');
       [[300,'5 分钟'],[1800,'30 分钟'],[3600,'1 小时'],[86400,'24 小时']].forEach(([v,t])=>timeSelect.add(new Option(t,String(v))));timeSelect.value=String(current?.idle_seconds||1800);timeLabel.append(timeSelect);
-      const botCard=node('section',null,'hud-settings-card');botCard.setAttribute('aria-label','维护 AI 配置');botCard.append(botField,checkLabel);
+      const botCard=node('section',null,'hud-settings-card');botCard.setAttribute('aria-label','维护 AI 配置');botCard.append(botField);
       const sessionCard=node('section',null,'hud-settings-card');sessionCard.setAttribute('aria-label','上下文重置配置');
       sessionCard.append(timeLabel,node('p','保存后启用当前项目维护，将项目配置、模板和项目内文档提供给所选 AI。','hud-muted'));
       const saveButtons=node('div',null,'hud-settings-buttons');
@@ -412,7 +411,7 @@
         if(!select.value)return;let bot=bots[Number(select.value)];
         try{
           if(!bot.bot_id){const registered=await api('/bots/register',{method:'POST',body:JSON.stringify({host_type:bot.host_type,profile:bot.profile,config_root:bot.config_root})});bot={...bot,bot_id:registered.bot_id};}
-          const result=await mutate('',{bot_id:bot.bot_id,make_default:check.checked,idle_seconds:Number(timeSelect.value)},'PATCH');
+          const result=await mutate('',{bot_id:bot.bot_id,idle_seconds:Number(timeSelect.value)},'PATCH');
           if(result)showAuxiliary('');
         }catch(e){errorText=e.message;render();}
       },'hud-primary'));
@@ -424,7 +423,8 @@
     activeTab='chat';
     const stamp=++version;remember();scope=project||'';errorText='';current=null;selected='';el('input').value='';render();
     try{
-      const data=id?await api('/hud/'+id):await api('/hud',{method:'POST',body:JSON.stringify({project:project||null})});
+      const data=id?await api('/hud/'+id):await api('/hud',{method:'POST',body:JSON.stringify({project:project||null,
+        source_project:draftMode&&!project?(S.currentProject||null):null})});
       if(stamp!==version)return null;setData(data);if(!project)draftId=data.id;return data;
     }catch(e){if(stamp===version){errorText=e.message;render();}return null;}
   }

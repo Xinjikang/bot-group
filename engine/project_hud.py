@@ -69,11 +69,6 @@ def row(conn, sid):
     raise HTTPException(409, '助手状态已变化，请刷新后重试')
 
 
-def default_bot(conn):
-    value = conn.execute("SELECT value FROM settings WHERE project='' AND key='hud_bot' ").fetchone()
-    return int(value[0]) if value and value[0] else None
-
-
 def valid_bot(conn, bot_id):
     if bot_id is None:
         return None
@@ -96,7 +91,7 @@ def advance_generation(item):
         item['activity'] = time.time()
 
 
-def create(project=None):
+def create(project=None, *, source_project=None):
     with _LOCK, connection() as conn:
         if project:
             if not conn.execute('SELECT 1 FROM projects WHERE name=? AND removed=0 AND archived=0', (project,)).fetchone():
@@ -104,9 +99,17 @@ def create(project=None):
             old = conn.execute('SELECT id FROM hud_sessions WHERE project=?', (project,)).fetchone()
             if old:
                 return view(old[0], conn)
+        bot_id = None
+        if not project and source_project:
+            configured = conn.execute(
+                'SELECT h.bot_id FROM hud_sessions h JOIN projects p ON p.name=h.project '
+                'JOIN bots b ON b.id=h.bot_id WHERE h.project=? AND p.removed=0 AND p.archived=0 '
+                "AND b.runtime IN ('hermes','codex','dsh')", (source_project,)).fetchone()
+            if configured:
+                bot_id = configured['bot_id']
         sid, now = uuid.uuid4().hex, time.time()
         conn.execute("INSERT INTO hud_sessions(id,project,bot_id,stage,activity,updated,status) VALUES(?,?,?,?,?,?,'paused')",
-                     (sid, project, default_bot(conn), 'maintenance' if project else 'purpose', now, now))
+                     (sid, project, bot_id, 'maintenance' if project else 'purpose', now, now))
         return view(sid, conn)
 
 
@@ -161,10 +164,6 @@ def update(sid, body):
             if body['bot_id'] != item['bot_id']:
                 item['generation'] += 1
             item['bot_id'] = body['bot_id']
-            if body.get('make_default'):
-                conn.execute("INSERT INTO settings(key,project,value,updated_at) VALUES('hud_bot','',?,?) "
-                             'ON CONFLICT(key,project) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',
-                             (str(body['bot_id'] or ''), db.now_iso()))
         if 'idle_seconds' in body:
             if type(body['idle_seconds']) is not int or not 300 <= body['idle_seconds'] <= 86400:
                 raise HTTPException(400, '空闲重置时间须为 5 分钟至 24 小时')

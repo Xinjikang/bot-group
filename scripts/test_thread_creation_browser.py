@@ -1,5 +1,6 @@
 """Real Chrome, isolated API: rapid submits and retry after a lost response."""
 import mimetypes
+import argparse
 import io
 import os
 from unittest.mock import patch
@@ -14,7 +15,43 @@ from scripts.test_thread_creation import ThreadCreationTests
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def main():
+def check_autofill(page, screenshots):
+    cdp = page.context.new_cdp_session(page)
+    cdp.send('DOM.enable'); cdp.send('CSS.enable')
+    doc = cdp.send('DOM.getDocument')
+    node = cdp.send('DOM.querySelector', {'nodeId': doc['root']['nodeId'], 'selector': '#dlg-title'})
+    for width in (1280, 390):
+        page.set_viewport_size({'width': width, 'height': 900})
+        for theme in ('dark', 'light'):
+            page.evaluate('(t) => applyTheme(t)', theme)
+            for filled in (False, True):
+                cdp.send('CSS.forcePseudoState', {'nodeId': node['nodeId'],
+                         'forcedPseudoClasses': ['autofill'] if filled else []})
+                for focused in (False, True):
+                    page.locator('#dlg-title' if focused else '#dlg-opening').focus()
+                    colors = page.locator('#dlg-title').evaluate('''input => {
+                        const s=getComputedStyle(input), sample=document.createElement('span');
+                        sample.style.cssText='color:var(--fg);background:var(--bg);border-color:var(--accent)';
+                        input.parentElement.append(sample); const expected=getComputedStyle(sample);
+                        const result={autofill:input.matches(':autofill'),bg:s.backgroundColor,
+                            shadow:s.boxShadow,fg:s.webkitTextFillColor,caret:s.caretColor,border:s.borderColor,
+                            expectedBg:expected.backgroundColor,expectedFg:expected.color,accent:expected.borderColor};
+                        sample.remove();return result;
+                    }''')
+                    assert colors['autofill'] == filled, colors
+                    assert colors['expectedBg'] in (colors['shadow'] if filled else colors['bg']), colors
+                    assert colors['fg'] == colors['caret'] == colors['expectedFg'], colors
+                    if focused:
+                        assert colors['border'] == colors['accent'], colors
+                if filled and screenshots:
+                    page.locator('#dlg-thread').screenshot(path=str(screenshots / f'thread-{theme}-{width}.png'))
+    cdp.send('CSS.forcePseudoState', {'nodeId': node['nodeId'], 'forcedPseudoClasses': []})
+    cdp.detach()
+    page.set_viewport_size({'width': 1280, 'height': 900})
+    page.evaluate("applyTheme('dark')")
+
+
+def main(screenshots=None):
     fixture = ThreadCreationTests()
     fixture.setUp()
     fixture.prepare()
@@ -56,6 +93,7 @@ def main():
             assert page.locator('#dlg-thread').is_visible()
             page.locator('#dlg-title').fill('Topic')
             page.locator('#dlg-opening').fill('Hello')
+            check_autofill(page, screenshots)
             page.locator('body').click(position={'x': 2, 'y': 2})
             assert page.locator('#dlg-thread').is_visible()
             assert page.locator('#dlg-opening').input_value() == 'Hello'
@@ -95,11 +133,18 @@ def main():
             assert fixture.conn.execute('SELECT COUNT(*) FROM threads').fetchone()[0] == 2
             assert not errors, errors
             browser.close()
-        print('PASS: protected creation dialog, other dialogs dismiss, image opening, retained draft, duplicate submit lock, lost-response retry')
+        print('PASS: 16 theme/viewport/autofill/focus states, protected dialog, image opening, retained draft, duplicate submit lock, lost-response retry')
     finally:
         env.stop()
         fixture.doCleanups()
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--screenshots', type=Path)
+    args = parser.parse_args()
+    if args.screenshots:
+        if not args.screenshots.is_absolute():
+            parser.error('--screenshots must be an absolute path')
+        args.screenshots.mkdir(parents=True, exist_ok=True)
+    main(args.screenshots)
