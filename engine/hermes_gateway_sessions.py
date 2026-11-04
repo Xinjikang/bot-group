@@ -3,19 +3,39 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import uuid
 
-from .hermes_gateway_client import GatewayRefusal
+from .hermes_gateway_client import GatewayRefusal, GatewayTransportError
+
+
+def initialization_rpc(client, method, **params):
+    """Retry one pooled initialization RPC with its exact durable request identity."""
+    from .hermes_connections import Lease
+    if method not in {'runtime.describe', 'session.list', 'session.resume', 'session.create', 'session.mutate'}:
+        raise ValueError('Unsupported initialization RPC')
+    if method in {'session.create', 'session.mutate'} and not params.get('request_id'):
+        raise ValueError('Initialization write requires a stable request ID')
+    try:
+        return client.rpc(method, **params)
+    except GatewayTransportError:
+        if not isinstance(client, Lease):
+            raise
+        logging.getLogger(__name__).warning('Hermes initialization reconnect method=%s retry=1', method)
+        client.reconnect()
+        # The native receipt checks the original payload, revision and generation
+        # before returning a committed result or admitting an uncommitted request.
+        return client.rpc(method, **params)
 
 
 def mutate(client, snapshot, operation, payload, *, request_id=None):
-    return client.rpc('session.mutate', session_id=snapshot['session_id'],
+    return initialization_rpc(client, 'session.mutate', session_id=snapshot['session_id'],
         request_id=request_id or uuid.uuid4().hex, expected_revision=snapshot['revision'],
         expected_generation=snapshot['execution_generation'], operation=operation, payload=payload)
 
 
 def attach(client, session_id):
-    return client.rpc('session.resume', session_id=session_id)
+    return initialization_rpc(client, 'session.resume', session_id=session_id)
 
 
 def new(client, *, title, workdir, system_prompt, model_args, request_id=None, launch_options=None, editor=None):
@@ -23,7 +43,7 @@ def new(client, *, title, workdir, system_prompt, model_args, request_id=None, l
     params = {key.lstrip('-'): value for key, value in options.items()
               if key in ('--model', '--provider', '--reasoning')}
     params.update(launch_options or {})
-    return client.rpc('session.create', request_id=request_id or uuid.uuid4().hex,
+    return initialization_rpc(client, 'session.create', request_id=request_id or uuid.uuid4().hex,
         title=title, source='acp', cwd=workdir, editor=editor if editor is not None else {'mcp_servers': []},
         client_env={'HERMES_EPHEMERAL_SYSTEM_PROMPT': system_prompt}, **params)
 
@@ -74,7 +94,7 @@ def configure(client, snapshot, *, workdir, model_args, server,
         mutate(client, snapshot, 'editor_mcp', {'mcp_servers': [spec]})
         snapshot = attach(client, sid)
     else:
-        snapshot = client.rpc('session.resume', session_id=sid, editor={'mcp_servers': [spec]})
+        snapshot = initialization_rpc(client, 'session.resume', session_id=sid, editor={'mcp_servers': [spec]})
     return snapshot
 
 

@@ -142,24 +142,36 @@ class Lease:
                 self.sessions.add(sid)
             if self.business:
                 self.entry.activity = self.pool.clock()
-        try:
-            if method in ('session.resume', 'session.create'):
-                with self.entry.gate:
-                    result = self.client.rpc(method, **params)
-                    if isinstance(result, dict) and result.get('subscription_id'):
-                        sid = result['session_id']
-                        with self.pool.lock:
-                            self.sessions.add(sid)
-                            self.entry.subscriptions[(self.client, sid)] = result['subscription_id']
-                    return result
-            result = self.client.rpc(method, **params)
-            if method == 'session.detach':
+        # The server dispatches control RPCs serially on each socket. A ping
+        # queued behind a slow RPC cannot measure the connection's liveness.
+        with self.entry.gate:
+            try:
+                result = self.client.rpc(method, **params)
                 with self.pool.lock:
-                    self.entry.subscriptions.pop((self.client, sid), None)
-            return result
-        except GatewayTransportError:
-            self.pool.failed(self.entry, self.client)
-            raise
+                    if method in ('session.resume', 'session.create') and isinstance(result, dict) and result.get('subscription_id'):
+                        sid = result['session_id']
+                        self.sessions.add(sid)
+                        self.entry.subscriptions[(self.client, sid)] = result['subscription_id']
+                    elif method == 'session.detach':
+                        self.entry.subscriptions.pop((self.client, sid), None)
+                return result
+            except GatewayTransportError:
+                self.pool.failed(self.entry, self.client, reason='rpc_transport_error')
+                raise
+
+    def reconnect(self):
+        """Rebind this lease for an explicit receipt retry; never replay an RPC."""
+        with self.entry.gate:
+            if self.closed or self.pool.stopped:
+                raise GatewayTransportError('Hermes connection lease closed')
+            if self.pool.revision() != self.entry.revision:
+                raise GatewayRefusal('gateway_restart_required')
+            client = self.entry.client
+            if client is None or client.closed:
+                client = self.pool._connect(self.entry, False)
+            with self.pool.lock:
+                self.client = client
+                self.sessions.clear()
 
     def close(self):
         with self.pool.lock:
@@ -289,7 +301,8 @@ class Pool:
                     entry.activity = self.clock()
             return lease
 
-    def failed(self, entry, client):
+    def failed(self, entry, client, *, reason='transport_error'):
+        _LOG.warning('Hermes connection closing connection=%x cause=%s', id(client), reason)
         with self.lock:
             if entry.client is client:
                 entry.state, entry.retry_at = 'error', self.clock()+1
@@ -303,6 +316,7 @@ class Pool:
         for entry in entries:
             if self.stopped or not entry.gate.acquire(blocking=False):
                 continue
+            phase = 'maintenance'
             try:
                 now = self.clock()
                 with self.lock:
@@ -343,11 +357,13 @@ class Pool:
                         entry.state = 'restart_required'
                         entry.checked = now
                         continue
+                    phase = 'heartbeat'
                     client.rpc('ping', timeout=3)
                     entry.checked, entry.state = now, 'connected'
-            except Exception:
+            except Exception as exc:
+                _LOG.warning('Hermes connection check failed phase=%s error=%s', phase, type(exc).__name__)
                 if entry.client:
-                    self.failed(entry, entry.client)
+                    self.failed(entry, entry.client, reason=phase + '_failed')
             finally:
                 entry.gate.release()
 

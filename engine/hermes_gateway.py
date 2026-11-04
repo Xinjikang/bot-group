@@ -50,7 +50,7 @@ def _binding(conn, client, bot, project, profile, kind, thread_id, title, workdi
             raise GatewayRefusal('session_switch_pending')
         snapshot = sessions.attach(client, row['session_id'])
     else:
-        found = client.rpc('session.list', title=title)['sessions']
+        found = sessions.initialization_rpc(client, 'session.list', title=title)['sessions']
         if len(found) > 1:
             raise GatewayRefusal('ambiguous_session_title')
         if found:
@@ -289,7 +289,7 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
         if ledger.cleanup_pending(conn, session):
             return {'ok': False, 'busy': True, 'detail': 'gateway cleanup pending'}
         client, home, command = connection(profile)
-        description = client.rpc('runtime.describe')
+        description = sessions.initialization_rpc(client, 'runtime.describe')
         if not {'durable-admission-v1', 'acp-session-mcp-v1'} <= set(description['capabilities']):
             raise GatewayRefusal('gateway_capabilities_unavailable')
         snapshot = _binding(conn, client, bot, project, profile, kind, thread_id, session, workdir, model_args)
@@ -310,6 +310,9 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
                 hermes_session_auth.log_deferred(grant, 'configure', exc)
                 return {'ok': False, 'busy': True, 'detail': 'gateway session credential handoff pending'}
             raise
+        if snapshot['running'] or snapshot['pending']:
+            _native_busy_feedback(conn, snapshot['session_id'])
+            return {'ok': False, 'busy': True, 'detail': 'native session became busy during initialization'}
         if signal is None:
             signal = wake._finalize_injection_signal(profile, kind, thread_id, project,
                                                      trigger_msg_id, bound_task, [])

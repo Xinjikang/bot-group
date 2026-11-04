@@ -28,7 +28,7 @@
 
 `engine/hermes_connections.py` 按 profile 维护 WS 和使用租约。业务优先通过 control identify 发现现有网关，发现、票据与握手共用 5 秒预算；所有候选 control 端点均缺失时才调用官方 `gateway ensure`。启动按根宿主与启动命令串行合并，失败结果保留 5 秒。身份、权限、协议与版本错误保留明确失败。安装身份取实际源码的 install-stamp 提交或 Git HEAD，运行实例提交必须一致；版本变化显示需要重启。control 的 epoch 属于启动 profile，`runtime.describe` 返回票据 profile 的独立正整数 epoch，并校验 profile、instance 和能力。
 
-同一 profile 的租约共享物理 WS，RPC 按请求 ID 分发，会话事件按 session ID 分发。轮次租约释放后保留订阅；会话撤权或业务空闲回收时调用 `session.detach`。后续轮次在同一订阅内恢复会话。事件队列有界，思考增量为辅助信息；RPC 回执和持久执行账本保持独立。连接传输失败交由原账本核对 admission/submission，连接池只重连传输。
+同一 profile 的租约共享物理 WS，RPC 按请求 ID 分发，会话事件按 session ID 分发。租约 RPC 持有 entry 互斥锁，维护线程无法立即取得锁时跳过本次心跳，避免串行服务端把 ping 排在慢请求后导致误断线。轮次租约释放后保留订阅；会话撤权或业务空闲回收时调用 `session.detach`。后续轮次在同一订阅内恢复会话。事件队列有界，思考增量为辅助信息；RPC 回执和持久执行账本保持独立。执行阶段的连接传输失败交由原账本核对 admission/submission，连接池只重连传输。
 
 业务空闲 600 秒、租约为空、执行账本与助手均无未决记录时先释放订阅，再关闭 WS。心跳间隔 20 秒，页面状态读取及只读查询保持业务空闲计时；运行中、取消中、结果未知和待清理记录保护连接。意外断线最多自动重连 3 次，后台重连只发现现有实例；新业务请求可以再次尝试连接。引擎退出停止连接池并通过集中连接注册表有界关闭 WS。
 
@@ -43,6 +43,8 @@
 ## 会话、MCP 和原生审批
 
 新会话使用 `source=acp`，首次通过 `session.mutate editor_mcp` 注入会话级 task_queue。配置指纹按 profile/session/project 持久化；后续相同配置通过 `session.resume(editor=...)` 恢复私有传输参数，保留原生 agent 与 MCP 连接。model/provider/reasoning 仅在引擎指定值变化时更新；workspace/edit_policy 按会话快照比较。实际工具发现和调用由 Hermes 原生机制完成。
+
+初始化的 describe/list/resume/create/mutate 在池租约传输失败后允许一次被动重连和一次原参数重试。create/mutate 保留原 request ID；mutation 同时保留 payload、revision 和 execution generation，由原生持久回执去重及检查状态。明确拒绝和第二次失败向上返回。配置后的快照若已 running/pending，提交前退回调度等待。prompt 提交继续走持久执行账本。断线日志记录连接标识、方法、耗时、关闭码及心跳阶段，省略远端关闭文本和请求内容。设计与验证范围见 [心跳与初始化恢复](../design/2026-11-04-hermes-rpc-heartbeat.md)。
 
 默认 ACP 工具集可通过 `tool_search` / `tool_call` 延迟发现并调用 task_queue 工具。判断工具可用性需核对实际搜索、调用及服务端写入结果。原生委派验收默认保留 ACP 工具集，裁剪为仅 `delegation` 的配置用于兼容性对照，具体边界见委派等待设计。
 

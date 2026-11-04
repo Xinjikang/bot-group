@@ -18,6 +18,8 @@ import threading
 import time
 from urllib.parse import urlsplit
 
+_LOG = logging.getLogger(__name__)
+
 
 class GatewayTransportError(RuntimeError):
     """An RPC outcome may be unknown; the caller must reconcile its receipt."""
@@ -310,6 +312,7 @@ class GatewayClient:
         threading.Thread(target=self._read, name='hermes-gateway-reader', daemon=True).start()
 
     def _read(self):
+        cause, sent_code, received_code = 'peer_closed', None, None
         try:
             for raw in self._socket:
                 frame = json.loads(raw)
@@ -325,16 +328,30 @@ class GatewayClient:
                     callback(frame)
         except Exception as exc:
             close = getattr(exc, 'sent', None)
+            received = getattr(exc, 'rcvd', None)
+            cause = type(exc).__name__
+            sent_code = getattr(close, 'code', None)
+            received_code = getattr(received, 'code', None)
             if close is not None and close.code == 1009:
                 self._read_error = 'Hermes response exceeds the WebSocket receive limit'
         finally:
             _unregister(self)
             with self._condition:
+                log = _LOG.info if self._closed else _LOG.warning
+                log('Hermes WS closed connection=%x cause=%s sent_code=%s received_code=%s pending=%d',
+                    id(self), 'local_close' if self._closed else cause,
+                    sent_code, received_code, len(self._pending))
                 self._closed = True
                 self._condition.notify_all()
 
+    def _rpc_failure(self, method, rid, started, cause):
+        safe_method = method if isinstance(method, str) and re.fullmatch(r'[a-zA-Z0-9_.]{1,80}', method) else 'invalid'
+        _LOG.warning('Hermes RPC failed connection=%x method=%s rpc_id=%d cause=%s elapsed=%.3fs',
+                     id(self), safe_method, rid, cause, time.monotonic() - started)
+
     def rpc(self, method, *, timeout=30, **params):
         from websockets.exceptions import ConnectionClosed
+        started = time.monotonic()
         with self._condition:
             if self._closed or _CLOSING.is_set():
                 raise GatewayTransportError('Hermes viewer disconnected')
@@ -344,9 +361,11 @@ class GatewayClient:
             try:
                 self._socket.send(json.dumps({'jsonrpc': '2.0', 'id': rid, 'method': method, 'params': params}))
                 if not self._condition.wait_for(lambda: self._closed or self._pending[rid] is not None, timeout):
+                    self._rpc_failure(method, rid, started, 'timeout')
                     raise GatewayTransportError('Hermes RPC timed out; reconcile its receipt')
                 frame = self._pending[rid]
                 if frame is None:
+                    self._rpc_failure(method, rid, started, 'disconnected')
                     raise GatewayTransportError(self._read_error or 'Hermes RPC outcome unknown; reconcile its receipt')
                 if 'error' in frame:
                     error = frame['error']
@@ -359,6 +378,7 @@ class GatewayClient:
                     raise GatewayRefusal(safe, error.get('code'), compacted_target=compacted)
                 return frame['result']
             except (OSError, ConnectionClosed) as exc:
+                self._rpc_failure(method, rid, started, type(exc).__name__)
                 raise GatewayTransportError('Hermes RPC outcome unknown; reconcile its receipt') from exc
             finally:
                 self._pending.pop(rid, None)

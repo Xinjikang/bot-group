@@ -1,5 +1,7 @@
 # 项目文档索引
 
+Hermes 慢 RPC 与心跳互斥、初始化回执恢复及断线诊断见 [心跳与初始化恢复](design/2026-11-04-hermes-rpc-heartbeat.md)。
+
 Hermes 旧路由故障、工作会话恢复与调度查询失败的诊断见 [会话恢复与调度故障](design/2026-11-04-session-routing-recovery.md)。
 
 数据库启动迁移、运行期连接边界与并发验收见 [数据库初始化与运行流量](design/2026-11-04-runtime-schema-boundary.md)。
