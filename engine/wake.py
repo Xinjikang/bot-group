@@ -203,7 +203,7 @@ def _find_codex_processes(profile, session):
     """
     conn = db.get_connection()
     try:
-        member = conn.execute('SELECT b.runtime FROM members m JOIN bots b ON b.id=m.bot_id '
+        member = conn.execute('SELECT b.runtime,b.runtime_entry FROM members m JOIN bots b ON b.id=m.bot_id '
                               'WHERE m.profile=?', (profile,)).fetchone()
         rows = conn.execute("SELECT session,started_at,pid,project,runtime FROM wake_runs WHERE profile=? "
                             "AND runtime IN ('codex','dsh') AND (ended_at IS NULL OR exit_code=-1) "
@@ -226,8 +226,18 @@ def _find_codex_processes(profile, session):
                 pids.append(owned[0].pid)
             continue
         if run['pid'] is None:
-            process_query.diagnostic(profile, 'codex_pid', ValueError())
-            return None
+            # A restart may have interrupted PID persistence. Recover identity
+            # from the execution token before declaring the session absent.
+            names = {'codex', 'node', 'cmd', 'dsh', 'electron', 'DeepSeek Harness'}
+            if member and member['runtime_entry']:
+                names.add(Path(member['runtime_entry']).name)
+            candidates = process_query.list_processes(names, scope=profile)
+            if candidates is None:
+                return None
+            match = (_matches_dsh_execution if run['runtime'] == 'dsh'
+                     else lambda argv, row: _matches_codex_execution(argv, profile, row))
+            pids.extend(pid for pid, argv in candidates if match(argv, run))
+            continue
         argv = process_query.command_line(run['pid'], scope=profile)
         if argv is None:
             return None
@@ -250,9 +260,9 @@ def _dsh_spawn_tag(session: str, wake_started_at) -> str:
 
 
 def _matches_dsh_execution(argv: list[str], run) -> bool:
-    """校验 dsh 内联执行身份：`--profile headless --patch <overlay>` 且 overlay
+    """校验 dsh 内联执行身份：命名 profile、JSON 模式及 overlay
     路径含本会话/启动时间标签（_dsh_spawn_tag）。"""
-    if '--patch' not in argv or 'headless' not in argv:
+    if '--patch' not in argv or not process_query.option(argv, '--profile') or '--json' not in argv:
         return False
     idx = argv.index('--patch')
     if idx + 1 >= len(argv):
@@ -1234,6 +1244,7 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         codex_tail = None  # codex 通道滚动尾部文本（供退出诊断），hermes 用 TemporaryFile
         dsh_reader = None
         dsh_err_reader = None
+        dsh_input_writer = None
         dsh_tail = None
         dsh_err_tail = None
         dsh_had_final = [False]
@@ -1251,16 +1262,16 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
             # JSONL 事件流分开收——损坏 JSON 计数只针对 stdout，不把诊断误计为损坏行。
             popen_kwargs["stderr"] = subprocess.PIPE
         proc = subprocess.Popen(cmd, **popen_kwargs)
-        if runtime == "dsh":
-            # 提示词整段写入 stdin 后关闭（task 省略时 DSH 读 stdin；--json 事件流走 stdout）。
-            try:
-                proc.stdin.write(signal or '')
-                proc.stdin.close()
-            except (BrokenPipeError, OSError):
-                pass
         if runtime in ('codex', 'dsh'):
             with _session_lock:
                 _native_procs[session] = (proc, wake_started_at)
+        conn = db.get_connection()
+        try:
+            conn.execute("UPDATE wake_runs SET pid=? WHERE session=? AND started_at=?",
+                         (proc.pid, session, wake_started_at))
+            conn.commit()
+        finally:
+            conn.close()
         import threading as _th
         # req#88 task#153：codex 流式 reader——逐行 parse JSONL，捕获 thread.started
         # 的 thread_id 及时回填绑定与 wake_runs.runtime_session_id。回填走
@@ -1386,6 +1397,18 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                             del dsh_err_tail[:-40]
             dsh_err_reader = _th.Thread(target=_dsh_err_reader, daemon=True, name=f"dsh-err-{profile}")
             dsh_err_reader.start()
+            def _dsh_send_prompt():
+                try:
+                    proc.stdin.write(signal or '')
+                except (BrokenPipeError, OSError):
+                    pass
+                finally:
+                    try:
+                        proc.stdin.close()
+                    except OSError:
+                        pass
+            dsh_input_writer = _th.Thread(target=_dsh_send_prompt, daemon=True, name=f"dsh-input-{profile}")
+            dsh_input_writer.start()
         # 进程退出事件：后台线程 wait()
         # 子进程，退出即清心跳+唤醒归属——心跳从「90s 超时推断」升级为「真退出事件」。
         # 90s TTL 保留为兜底（wait 线程意外死亡/进程被强杀时仍能超时清）。
@@ -1436,6 +1459,8 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                     dsh_reader.join(timeout=5)
                 if dsh_err_reader is not None:
                     dsh_err_reader.join(timeout=5)
+                if dsh_input_writer is not None:
+                    dsh_input_writer.join(timeout=5)
                 tail = "\n".join(dsh_tail or []) if dsh_tail else tail
                 err_text = "\n".join(dsh_err_tail or [])
                 error = _dsh_failure_detail(error or err_text, tail, dsh_had_final[0], dsh_corrupt[0])
@@ -1512,13 +1537,6 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         from . import events
         # 树模型：气泡按 parent_id 挂到所回应的消息后，
         # spawn 时从 threads 查当前 turn 的 parent_id/round，随事件带给前端
-        conn = db.get_connection()
-        try:
-            conn.execute("UPDATE wake_runs SET pid=? WHERE session=? AND started_at=?",
-                         (proc.pid, session, wake_started_at))
-            conn.commit()
-        finally:
-            conn.close()
         parent_id = None
         round_no = None
         if kind == "chat" and thread_id is not None:

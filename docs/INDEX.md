@@ -1,5 +1,7 @@
 # 项目文档索引
 
+DSH 缺失 PID 恢复、命名 profile 与 desktop 后台适配、项目助手接入见 [执行恢复与 HUD](design/2026-11-04-dsh-execution-recovery-hud.md)。
+
 Hermes 慢 RPC 与心跳互斥、初始化回执恢复及断线诊断见 [心跳与初始化恢复](design/2026-11-04-hermes-rpc-heartbeat.md)。
 
 Hermes 旧路由故障、工作会话恢复与调度查询失败的诊断见 [会话恢复与调度故障](design/2026-11-04-session-routing-recovery.md)。

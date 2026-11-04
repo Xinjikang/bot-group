@@ -51,11 +51,17 @@ def hermes_chat(profile, *, entry=None):
     return hermes_runtime.command(entry) + ['-p', profile, 'chat']
 
 
+def dsh_execution_profile(bot):
+    """Desktop uses the background adapter; named CLI profiles retain their identity."""
+    profile = bot.get('profile') or 'headless'
+    return 'headless' if profile == 'desktop' else profile
+
+
 def dsh(bot, *, overlay_path='', resume=None):
     """DSH headless 命令（req#137 task#266：spawn 分叉的 dsh 侧入口）。
 
     用已绑定的 ``bots.runtime_entry``（dsh.cmd，自带 ELECTRON_RUN_AS_NODE 与 exe/cli 定位），
-    ``--profile headless`` 启动；提示词经 stdin 提交（task 省略时读 stdin，``-`` 显式）。
+    使用成员的 CLI profile；desktop 使用 headless 适配。提示词经 stdin 提交。
     ``--session-id`` 续跑；``--patch`` 注入本次执行 overlay（认证/MCP/配置）。
     返回 ``(command, home)``。
     """
@@ -67,7 +73,7 @@ def dsh(bot, *, overlay_path='', resume=None):
         raise FileNotFoundError(f'DSH 入口不可用：{entry}')
     # 注意：--patch 必须位于 --json 之前（headless 子命令的 --json 之后不再识别顶层
     # --patch，实测 0.2.1-rc.5：--profile headless --json --patch X 报 unknown option）。
-    command = [entry, '--profile', 'headless', '--patch', str(overlay_path), '--json']
+    command = [entry, '--profile', dsh_execution_profile(bot), '--patch', str(overlay_path), '--json']
     if resume:
         command += ['--session-id', resume]
     command += ['-']  # task 读 stdin
@@ -111,6 +117,15 @@ def dsh_overlay(bot, *, credentials_path=None, mcp_entry=None, project_overrides
             from fastapi import HTTPException
             raise HTTPException(400, f'cordis.patch.yml 解析失败：{exc}') from exc
         entries = [e for e in (loaded or []) if isinstance(e, dict)]
+    if dsh_execution_profile(bot) == bot['profile']:
+        # The native loader applies this profile itself. Replaying inserts would
+        # register plugins twice; only the model's merged project override needs
+        # its original config in the execution layer.
+        controlled = {'credentials', 'authorization', 'deepseek-account',
+                      'session-log-deepseek', 'session-telemetry-otel'}
+        if project_overrides:
+            controlled.add('agent-default-model')
+        entries = [e for e in entries if e.get('id') in controlled]
     # 认证控制优先（credentials 路径/启停），同 id 覆盖 profile 原条目；按最终 provider 路由。
     final_provider = (project_overrides or {}).get('provider') or None
     for control in dsh_auth.overlay_entries(
