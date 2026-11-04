@@ -1,22 +1,37 @@
 """One-shot DSH project assistant with native profile and scoped tools."""
 import json
-from pathlib import Path
-
-from ruamel.yaml import YAML
-
 from . import dsh_auth, dsh_auto, native_runtime
 
 
+REQUIRED_TOOLS = frozenset(('read', 'write', 'edit', 'glob', 'grep', 'read_image',
+    'mcp__project_config__project_config', 'mcp__project_config__open_project_page'))
+TOOL_MARKER = '[hud-tools] ready '
+
 TOOL_ADAPTER = '''export const name = "hud-tool-scope";
-export const inject = ["tools", "agents"];
-export function apply(ctx) {
+export const inject = ["tools", "agents", "systemPrompt"];
+export function apply(ctx, config) {
+    ctx.systemPrompt.section({name: "hud:instructions",
+        order: ctx.systemPrompt.getSectionOrder("DEPLOYMENT_PERSONA_SUFFIX") + 1,
+        text: config.system});
     const allowed = new Set(["read", "write", "edit", "glob", "grep", "read_image",
         "mcp__project_config__project_config", "mcp__project_config__open_project_page"]);
     ctx.tools.guard(exec => allowed.has(exec.name) ? undefined : "Tool outside project assistant scope");
-    ctx.on("agent/created", ({agent}) => {
-        const names = ctx.tools.schemas().map(tool => tool.name).filter(name => allowed.has(name));
-        agent.ctx.tools.restrict({allow: names});
-        console.error("[hud-tools] ready");
+    ctx.on("agent/created", async ({agent, signal}) => {
+        const deadline = Date.now() + 10000;
+        for (;;) {
+            signal?.throwIfAborted();
+            const names = new Set(ctx.tools.schemas(agent).map(tool => tool.name));
+            const missing = [...allowed].filter(name => !names.has(name));
+            if (!missing.length) break;
+            if (Date.now() >= deadline)
+                throw new Error("DSH HUD missing required tools: " + missing.join(", "));
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        agent.ctx.tools.restrict({allow: [...allowed]});
+        const names = ctx.tools.schemas(agent).map(tool => tool.name);
+        if (names.length !== allowed.size || names.some(name => !allowed.has(name)))
+            throw new Error("DSH HUD tool scope mismatch");
+        console.error("[hud-tools] ready " + JSON.stringify(names));
     });
 }
 '''
@@ -40,28 +55,33 @@ def respond(bot, prompt, system, scratch, workdir, server, run, env):
         }}
     entries = native_runtime.dsh_overlay(bot, credentials_path=credentials,
                                          mcp_entry=private, auto_review=auto)
-    path = Path(bot['config_root']) / 'profiles' / bot['profile'] / 'cordis.patch.yml'
-    saved = YAML(typ='rt').load(path.read_text(encoding='utf-8-sig')) if path.is_file() else []
-    config = {}
-    for item in saved or []:
-        if isinstance(item, dict) and item.get('id') == 'system-prompt':
-            config = dict(item.get('config') or {})
-    config['personaSuffix'] = system
-    entries.append({'id': 'system-prompt', 'config': config})
     adapter = scratch / 'hud-tools.mjs'
     adapter.write_text(TOOL_ADAPTER, encoding='utf-8')
-    entries.append({'insert': [{'id': 'hud-tool-scope', 'name': str(adapter)}]})
+    entries.append({'insert': [{'id': 'hud-tool-scope', 'name': str(adapter),
+                                'config': {'system': system}}]})
     overlay = scratch / 'overlay.yml'
     overlay.write_text(native_runtime.overlay_yaml(entries), encoding='utf-8')
     command, home = native_runtime.dsh(bot, overlay_path=str(overlay))
+    env = dict(env)
+    for key in list(env):
+        if key.upper() in {'DEEPSEEK_API_KEY', 'DSH_PROFILE', 'DSH_HOME',
+                           'DSH_PERMISSION_MODE', 'DSH_TOOLS_MODE'}:
+            env.pop(key)
     env['DSH_HOME'] = home
+    env['DSH_PERMISSION_MODE'] = 'workspace-write'
     # The tool presentation remains a direct list of the scoped capabilities.
     env['DSH_TOOLS_MODE'] = 'native'
     state = {'tools': False, 'auto': []}
 
     def stderr(line):
-        if '[hud-tools] ready' in line:
-            state['tools'] = True
+        if TOOL_MARKER in line:
+            try:
+                names = json.loads(line.split(TOOL_MARKER, 1)[1])
+                state['tools'] = (isinstance(names, list) and len(names) == len(REQUIRED_TOOLS)
+                                  and all(isinstance(name, str) for name in names)
+                                  and set(names) == REQUIRED_TOOLS)
+            except ValueError:
+                state['tools'] = False
         if dsh_auto.STATE_MARKER in line:
             state['auto'][:] = [line]
 

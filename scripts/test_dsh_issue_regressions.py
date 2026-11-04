@@ -73,17 +73,18 @@ class ProfileAndHudTests(unittest.TestCase):
         self.assertTrue(any('insert' in e for e in entries))
         self.assertEqual(entries[1]['config']['personaPrefix'], 'own-persona')
 
-    def run_hud(self, output, *, tools=True, auto=True):
+    def run_hud(self, output, *, tools=True, auto=True, tool_names=None):
         def run(command, prompt, env, cwd, *, stderr_line):
             self.assertEqual(command[2], 'reviewer')
             self.assertNotIn('--session-id', command)
             self.assertEqual(env['DSH_HOME'], str(self.root))
             overlay = Path(command[command.index('--patch')+1]).read_text(encoding='utf-8')
-            self.assertIn('own-persona', overlay)
+            self.assertNotIn('personaPrefix', overlay)
             self.assertIn('hud-tool-scope', overlay)
             self.assertIn('hud-project-config', overlay)
             if tools:
-                stderr_line('[hud-tools] ready')
+                stderr_line(dsh_hud.TOOL_MARKER + json.dumps(
+                    sorted(dsh_hud.REQUIRED_TOOLS) if tool_names is None else tool_names))
             if auto:
                 stderr_line('[auto-enable] state preset=auto preexec=0 review=0 entry=0 blocked=0')
             return output
@@ -109,6 +110,32 @@ class ProfileAndHudTests(unittest.TestCase):
         for state in ({'tools': False}, {'auto': False}):
             with self.subTest(state=state), self.assertRaises(RuntimeError):
                 self.run_hud('{"type":"final","text":"done"}', **state)
+
+    def test_hud_rejects_incomplete_extra_duplicate_and_malformed_tool_evidence(self):
+        required = sorted(dsh_hud.REQUIRED_TOOLS)
+        for names in (required[:-1], required + ['pwsh'], required[:-1] + [required[0]],
+                      'ready', [None] * len(required)):
+            with self.subTest(names=names), self.assertRaises(RuntimeError):
+                self.run_hud('{"type":"final","text":"done"}', tool_names=names)
+
+    def test_hud_sanitizes_environment_without_mutating_parent(self):
+        env = {'DEEPSEEK_API_KEY': 'foreign', 'DSH_PROFILE': 'foreign',
+               'DSH_PERMISSION_MODE': 'danger-full-access', 'KEEP': 'yes'}
+        original = dict(env)
+        def run(command, prompt, child_env, cwd, *, stderr_line):
+            self.assertNotIn('DEEPSEEK_API_KEY', child_env)
+            self.assertNotIn('DSH_PROFILE', child_env)
+            self.assertEqual(child_env['DSH_HOME'], str(self.root))
+            self.assertEqual(child_env['DSH_PERMISSION_MODE'], 'workspace-write')
+            self.assertEqual(child_env['DSH_TOOLS_MODE'], 'native')
+            self.assertEqual(child_env['KEEP'], 'yes')
+            stderr_line(dsh_hud.TOOL_MARKER + json.dumps(sorted(dsh_hud.REQUIRED_TOOLS)))
+            return '{"type":"final","text":"done"}'
+        with patch('engine.dsh_auth.copy_credentials', return_value=None), \
+             patch('engine.dsh_auth.overlay_entries', return_value=[]), \
+             patch('engine.dsh_auto.plugin_available', return_value=False):
+            dsh_hud.respond(self.bot, 'prompt', 'system', self.root, str(self.root), None, run, env)
+        self.assertEqual(env, original)
 
 
 class SpawnIoTests(unittest.TestCase):

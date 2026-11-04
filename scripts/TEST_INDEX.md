@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+DSH HUD 配置继承与能力门禁：使用 `scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_dsh_issue_regressions scripts.test_dsh_hud_adapter scripts.test_hud_native_tools scripts.test_hud_review_regressions`。Node.js 须在 PATH；执行实际适配插件，覆盖 MCP 延迟注册、缺失、取消、八项工具清单与额外工具拒绝，环境污染清理、父环境保留、协议与 Auto 证据。HUD 配置校验覆盖已有空显示名的重复提交和纯空白输入，失败保持修订号。原生验证 `verify_dsh_hud_native.py` 支持 `--persona-source patch|home|bundle|desktop|layered`，分别验证 profile patch、HOME patch、自定义 bundle、desktop 后台适配及 HOME 覆盖 profile 的有效人格与后缀；`--dirty-env` 注入外来 key/profile/权限并断言清理，`--missing-tool` 验证缺少页面导航工具时在模型执行前失败。沿用必填 `--entry` 与绝对 `--evidence`；每次使用新证据目录，临时 HOME 和 MCP 自动清理，合成凭据仅供离线模型夹具。
+
 DSH 执行恢复与项目助手：通过 `scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_dsh_issue_regressions scripts.test_dsh_runtime scripts.test_dsh_lifecycle scripts.test_dsh_rework scripts.test_runtime_fork scripts.test_process_query scripts.test_topic_restart_recovery scripts.test_engine_shutdown scripts.test_project_hud scripts.test_hud_native_tools` 运行隔离回归。覆盖缺失 PID 的缺席/存活/未知、命名 profile 与 desktop 适配、overlay 单次插入、长输入前的 PID/读取器登记、HUD 协议与工具/Auto 证据门禁。
 
 DSH HUD 原生离线验证：`.venv\Scripts\python.exe -X utf8 -B scripts/verify_dsh_hud_native.py --entry <已安装 dsh.cmd 绝对路径> --evidence <主目录 reports/tests 下的新绝对目录>`。使用临时 HOME、base/headless 命名 profile、合成模型流及独立 stdio MCP；验证 persona、工具范围、Auto、真实文件读取与私有配置工具调用，禁止模型网络请求，临时资源结束清理。依赖项目 Python/MCP 和含 Auto 插件的 DSH 安装。
