@@ -22,9 +22,11 @@ Popen 成功后立即登记进程句柄并持久化 PID。DSH stdout/stderr 读�
 
 ## 项目助手
 
-DSH HUD 使用一次性独立原生会话，复用命名 profile、共享 HOME 凭据副本与 Auto 审批适配；每轮资料和历史由 HUD 提供。所选 profile 的人格保留，专用助手指令通过 system-prompt.personaSuffix 注入。
+DSH HUD 使用一次性独立原生会话，复用命名 profile、共享 HOME 凭据副本与 Auto 审批适配；每轮资料和历史由 HUD 提供。人格与已有后缀由原生 bundle → profile patch → HOME patch → 执行 overlay 顺序解析。专用助手指令通过 `systemPrompt.section` 注册独立 `hud:instructions` 段，排列在人格后缀之后，保留有效的 system-prompt 配置及其动态表达式。desktop 沿用 headless 加载与 desktop patch 适配范围。
 
-本轮私有 MCP 声明 project_config/open_project_page。原生工具通过 agent 范围 restrict 与执行 guard 限定为 read/write/edit/glob/grep/read_image 及两项私有 MCP。长期资料沿用所选 profile 的文件约定；当前 DSH 接入未声明独立 memory 工具。工具范围确认和已安装 Auto 的 preset 确认缺失时，本轮报告失败。
+每轮复制启动环境并清除继承的 `DEEPSEEK_API_KEY`、`DSH_PROFILE`，显式设置所选 `DSH_HOME`、`DSH_PERMISSION_MODE=workspace-write` 和 `DSH_TOOLS_MODE=native`。凭据由所选 HOME 的原生路由解析，父进程环境保持原值；已安装 Auto 时继续通过会话 preset 启用并核验。
+
+本轮私有 MCP 声明 project_config/open_project_page。原生工具通过 agent 范围 restrict 与执行 guard 限定为 read/write/edit/glob/grep/read_image 及两项私有 MCP。agent 创建时最多等待 10 秒，八项工具全部注册后安装限制；等待支持取消，超时报告缺失工具名称并阻止模型执行。限制后通过 `tools.schemas(agent)` 核对该 agent 的完整清单，向引擎输出 JSON 证据；引擎再次校验数量与名称完全匹配。长期资料沿用所选 profile 的文件约定；当前 DSH 接入未声明独立 memory 工具。工具范围确认和已安装 Auto 的 preset 确认缺失时，本轮报告失败。
 
 stdout 按 JSONL 协议解析，损坏行、错误事件和缺少最终正文均报告失败。stderr 独立排空并保留工具范围/Auto 状态证据；超时和取消复用 HUD 子进程树清理。临时 overlay、适配插件和凭据随轮次临时目录清理。项目配置写入继续受 HUD 会话、修订与本轮授权门禁约束。
 
