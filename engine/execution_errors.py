@@ -7,6 +7,7 @@ import re
 from . import db, events, hermes_profile_names
 
 MESSAGES = {
+    'session_state': '会话状态持续查询失败，工作唤醒已暂缓；请检查宿主会话及引擎诊断。',
     'configuration': '配置不完整或无效，请检查配置。',
     'authentication': '身份认证失败，请检查凭证。',
     'missing_credential': '缺少模型凭据，请检查凭据配置或环境变量。',
@@ -61,6 +62,8 @@ def classify(text):
     # 的「最后一个 JSON 错误事件优先」提取之前判定——否则被 'adapter broken' 之类
     # 终端错误事件吞掉，落 unknown。
     raw = str(text).lower()
+    if raw.startswith('session state query failed: '):
+        return 'session_state'
     if 'auto review capability unavailable' in raw or 'preset not confirmed' in raw:
         return 'auto_unavailable'
     text = _failure_text(text).lower()
@@ -187,6 +190,10 @@ def report(profile, project, thread_id, attempt, detail, *, exit_code=1, parent_
         if parent:
             round_no, depth = parent['round'], parent['depth'] + 1
         public_message = MESSAGES[category]
+        if category == 'session_state':
+            reason = str(detail).partition(': ')[2]
+            if reason.isidentifier():
+                public_message = f'会话状态持续查询失败（{reason}），唤醒已暂缓；任务保持原状态，请检查宿主会话。'
         failure = _failure_text(detail)
         reserved_message = hermes_profile_names.failure_message(failure)
         if reserved_message:

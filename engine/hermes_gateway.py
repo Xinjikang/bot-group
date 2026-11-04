@@ -173,14 +173,15 @@ def _native_session_state(conn, profile, session):
         running = snapshot.get('running')
         pending = snapshot.get('pending')
         if running is None and pending is None:
-            return _native_cache_failure(key, 'native session state unknown')
+            return _native_cache_failure(key, 'missing_state')
         state = 'busy' if (running or pending) else 'idle'
     except (GatewayTransportError, GatewayRefusal) as exc:
         # 超时/断连/会话不存在：只暂缓本会话，不按空闲放行
-        return _native_cache_failure(key, str(exc))
+        reason = exc.reason if isinstance(exc, GatewayRefusal) else 'transport_error'
+        return _native_cache_failure(key, reason)
     except Exception as exc:  # noqa: BLE001
         logger.exception('native session state query failed for %s', session)
-        return _native_cache_failure(key, str(exc))
+        return _native_cache_failure(key, type(exc).__name__)
     finally:
         if lease is not None:
             lease.close()
@@ -193,9 +194,13 @@ def _native_cache_failure(key, detail):
     """查询失败：退避从失败完成时起算（查询超时可能长于首档退避），成功即清零。"""
     now = time.monotonic()
     with _native_cache_lock:
-        fails = (_native_cache[key][2] if key in _native_cache else 0) + 1
-        ttl = min(_NATIVE_FAIL_BACKOFF_BASE * (2 ** (fails - 1)), _NATIVE_FAIL_BACKOFF_CAP)
-        _native_cache[key] = ('busy', now + ttl, fails)
+        previous = _native_cache.get(key)
+        fails = (previous[2] if previous else 0) + 1
+        ttl = min(_NATIVE_FAIL_BACKOFF_BASE * (2 ** min(fails - 1, 4)), _NATIVE_FAIL_BACKOFF_CAP)
+        first = previous[4] if previous and previous[0] == 'error' else now
+        # Only protocol codes/type names enter public diagnostics, never RPC payloads.
+        reason = detail if isinstance(detail, str) and detail.isidentifier() else 'query_error'
+        _native_cache[key] = ('error', now + ttl, fails, reason, first)
     return None
 
 

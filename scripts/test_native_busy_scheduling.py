@@ -310,8 +310,10 @@ class NativeBusySchedulingTests(NativeBusyFixtures, unittest.TestCase):
         session = wake.session_name('hermes-a', 'work', None, PROJECT)
         with patch.object(hermes_gateway.time, 'monotonic', side_effect=lambda: self.clock[0]):
             self.assertIsNone(hermes_gateway.process_state(session, profile='hermes-a'))
-            state, expiry, fails = hermes_gateway._native_cache[('native-a', 0)]
-            self.assertEqual(state, 'busy')
+            state, expiry, fails, reason, first = hermes_gateway._native_cache[('native-a', 0)]
+            self.assertEqual(state, 'error')
+            self.assertEqual(reason, 'transport_error')
+            self.assertEqual(first, 105.0)
             self.assertEqual(expiry, 108.0)  # 105 完成 + 3 退避，而非 103（从查询开始算）
             self.assertEqual(fails, 1)
             # 失败完成后的退避窗口内重复检查：不新增 RPC（查询/连接耗时与退避分开计）
@@ -323,7 +325,7 @@ class NativeBusySchedulingTests(NativeBusyFixtures, unittest.TestCase):
             self.clock[0] = 109.0
             self.assertIsNone(hermes_gateway.process_state(session, profile='hermes-a'))
             self.assertEqual(len(self.gateway_calls), calls_before + 1)
-            _, expiry2, fails2 = hermes_gateway._native_cache[('native-a', 0)]
+            _, expiry2, fails2, _, _ = hermes_gateway._native_cache[('native-a', 0)]
             self.assertEqual(expiry2, 120.0)  # 109 开始 + 5 完成于 114 + 6 退避
             self.assertEqual(fails2, 2)
 

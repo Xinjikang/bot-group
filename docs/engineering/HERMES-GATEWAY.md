@@ -1,5 +1,7 @@
 # Hermes 网关执行适配
 
+原生状态查询失败与正常忙碌分别记录。排队 job 保留具体错误码；持续至少三次且跨越 60 秒失败生成一次去重告警，任务与 job 保持可重试。恢复和绑定换代清理旧诊断。兼容边界和人工恢复步骤见 [会话恢复与调度故障](../design/2026-11-04-session-routing-recovery.md)。
+
 ## 子代理等待
 
 结构化 `delegate_task` 后台派发回执把逻辑执行置为 `waiting_delegation`。原生父轮次终态保持当前任务及话题发言位，清除该轮思考显示；原生回调 admission 自动归入同一个 `execution_id`。全部委派回调处理完毕后进行逻辑执行收尾，回调工具写入继续校验当前任务/话题归属。相关表为 `hermes_delegation_cycles`、`hermes_delegations`、`hermes_native_turns` 和 `hermes_delegation_inputs`。

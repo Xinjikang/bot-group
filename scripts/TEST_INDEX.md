@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+Hermes 调度查询故障：使用 `scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_scheduling_diagnostics scripts.test_native_busy_scheduling scripts.test_execution_errors`。隔离 SQLite、模拟 RPC 和时钟验证查询错误与正常忙碌区分、具体原因落库、跨 60 秒持续失败告警去重、缓存重建、绑定换代与原 job 恢复；不调用生产网关或模型。原生路由兼容在 Hermes 源码中通过 `scripts/run_tests.sh tests/gateway/test_local_standalone_route_recovery.py tests/gateway/test_local_receipt_missing_profile.py tests/gateway/test_local_recovery_pre_profile_origin.py` 验证，测试解释器通过 `HERMES_PYTHON` 注入，所有 home 使用临时夹具。
+
 数据库迁移与运行流量边界：使用 `scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_runtime_schema_boundary scripts.test_hermes_gateway_migration`。临时 SQLite 与真实 HTTP 路由验证持有写锁时页面读取可完成、Bot 忙碌状态下连续发消息与并发轮询、MCP 写入及幂等重放、队列/扫描器运行期间零 DDL，以及重复初始化保留 schema_version、旧索引升级和失败回滚。数据库 authorizer 禁止运行期间改表/建索引，busy_timeout 缩短为 250ms；无需生产数据库、真实 Bot 或模型。
 
 Hermes 根目录解析：使用 `scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_discovery scripts.test_profile_config scripts.test_member_identity scripts.test_project_roles`。临时目录与隔离数据库覆盖显式根目录、继承命名 profile、平台默认路径，以及扫描同级助手、配置读取和已登记成员的连接定位；无需生产目录或真实网关。

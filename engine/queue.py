@@ -81,8 +81,12 @@ def process_one(conn) -> bool:
         direct_wait = (candidate['kind'] == 'work'
                        and hermes_delegations.direct_wait(conn, candidate['profile'], candidate['project'],
                                                          candidate['trigger_msg_id']))
-        if not direct_wait and wake.session_busy(candidate["profile"], candidate["kind"], candidate["thread_id"], candidate["project"]):
-            continue
+        if not direct_wait:
+            busy = wake.session_busy(candidate["profile"], candidate["kind"], candidate["thread_id"], candidate["project"])
+            from . import scheduling_diagnostics
+            scheduling_diagnostics.record(conn, candidate)
+            if busy:
+                continue
         if candidate['kind'] == 'chat' and wake.topic_busy(conn, candidate['thread_id'], candidate['project']):
             continue
         job = candidate
