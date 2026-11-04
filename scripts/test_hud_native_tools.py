@@ -100,6 +100,8 @@ class NativeToolTests(unittest.TestCase):
         self.assertEqual(self.request(item, {'template': 'software'}).status_code, 400)
         self.assertEqual(self.request(item, {'unknown': 'value'}).status_code, 400)
         self.assertEqual(self.request(item, {'display_name': ''}).status_code, 400)
+        self.assertEqual(self.request(item, {'display_name': '   '}).status_code, 400)
+        self.assertEqual(hud.view(item['id'])['revision'], item['revision'])
         with hud.connection() as conn:
             conn.execute('UPDATE hud_sessions SET revision=revision+1 WHERE id=?', (item['id'],))
         self.assertEqual(self.request(item, {'description': '修改'}).status_code, 409)

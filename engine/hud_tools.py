@@ -83,14 +83,15 @@ def update(sid, token, changes, expected_version):
         if version(before) != expected_version:
             raise HTTPException(409, {'message': '配置已经变化，请核对当前值后重试',
                                       'configuration': before, 'config_version': version(before)})
+        if item['project']:
+            actual = ws.project(conn, item['project'])
+            ws.validate_config(changes, actual)
+            if 'display_name' in changes and not changes['display_name'].strip():
+                raise HTTPException(400, '显示名不能为空')
         changed = {key: value for key, value in changes.items() if value != before[key]}
         if not changed:
             return {'saved': True, 'changes': {}, 'configuration': before, 'config_version': version(before)}
         if item['project']:
-            actual = ws.project(conn, item['project'])
-            ws.validate_config(changed, actual)
-            if 'display_name' in changed and not changed['display_name'].strip():
-                raise HTTPException(400, '显示名不能为空')
             for key, value in changed.items():
                 conn.execute(f'UPDATE projects SET {key}=? WHERE name=?', (value, item['project']))
             ws.audit(conn, item['project'], 'project-assistant', 'project.update',
