@@ -77,7 +77,6 @@ def _advance_turn_on_exit(profile: str, thread_id: int | None = None) -> None:
         return
     conn = db.get_connection()
     try:
-        db.init_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
             "SELECT id, project, turn_parent_id, round FROM threads "

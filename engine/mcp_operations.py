@@ -85,7 +85,6 @@ def recorded(function):
         thread_id = scope.get('thread_id', body.get('thread_id'))
         conn = db.get_connection()
         try:
-            db.init_schema(conn)
             conn.execute('BEGIN IMMEDIATE')
             _check_access(conn, request, project, thread_id)
             row = conn.execute('SELECT * FROM mcp_operations WHERE owner=? AND operation_id=?',

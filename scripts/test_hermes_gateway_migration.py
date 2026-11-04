@@ -48,6 +48,34 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(row['cleanup_pending'], 1)       # 数据保留
         self.assertEqual(row['retry_count'], 0)          # 新列默认值
 
+    def test_current_index_keeps_schema_version_on_repeated_initialization(self):
+        db.init_schema(self.conn)
+        version = self.conn.execute('PRAGMA schema_version').fetchone()[0]
+        db.init_schema(self.conn)
+        self.assertEqual(self.conn.execute('PRAGMA schema_version').fetchone()[0], version)
+
+    def test_failed_index_rebuild_preserves_original_index_and_outer_transaction(self):
+        self.conn.execute('DROP INDEX hermes_execution_active')
+        self.conn.execute('CREATE INDEX hermes_execution_active ON hermes_executions(session)')
+        self.conn.execute("UPDATE hermes_executions SET state='started'")
+        self.conn.execute(
+            "INSERT INTO hermes_executions(execution_id,session,started_at,project,profile,kind,"
+            "source,python,home,workdir,session_id,profile_id,submission_id,submit_deadline,"
+            "reconcile_deadline,state) "
+            "VALUES('e2','s',101,'p','b','work','','','','','sid','pid','sub2',131,251,'started')")
+        self.conn.commit()
+        original = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='hermes_execution_active'").fetchone()[0]
+        self.conn.execute("UPDATE hermes_executions SET detail='outer change' WHERE execution_id='e1'")
+        with self.assertRaises(sqlite3.IntegrityError):
+            db._migrate_hermes_execution_cleanup(self.conn)
+        self.assertTrue(self.conn.in_transaction)
+        self.assertEqual(self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='hermes_execution_active'").fetchone()[0], original)
+        self.conn.commit()
+        self.assertEqual(self.conn.execute(
+            "SELECT detail FROM hermes_executions WHERE execution_id='e1'").fetchone()[0], 'outer change')
+
 
 if __name__ == '__main__':
     unittest.main()

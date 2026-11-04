@@ -47,9 +47,7 @@ _ENCODING_MSG = "文件不是有效 UTF-8，正文未载入；保存会整份覆
 
 
 def _conn() -> sqlite3.Connection:
-    c = db.get_connection()
-    db.init_schema(c)
-    return c
+    return db.get_connection()
 
 
 def _project_row(project: str) -> sqlite3.Row:

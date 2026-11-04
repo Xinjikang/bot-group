@@ -185,7 +185,6 @@ def _release_tasks(profile: str, project: str) -> int:
     # profile → role（members 表）
     conn = db.get_connection()
     try:
-        db.init_schema(conn)
         role = profile
         cur = conn.execute(
             "UPDATE tasks SET status='pending', claimed_by='', claimed_at='' "
@@ -269,7 +268,6 @@ def _stop_session(profile: str, project: str, thread_id: int | None) -> dict:
     #    会话名按最近一次唤醒的 kind/thread_id 派生
     conn = db.get_connection()
     try:
-        db.init_schema(conn)
         # 软删除定位限定 kind='work'——叫停的是「发错的
         # work 指令」，软删就该针对 work 会话。此前取「最近任意 job」：叫停前一刻
         # 若有 chat job 入队（话题里有人@它），会误删 chat 会话的讨论思考历史。

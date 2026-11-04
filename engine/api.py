@@ -44,9 +44,7 @@ def get_mcp_operation(operation_id: str, request: Request):
 
 
 def _conn() -> sqlite3.Connection:
-    c = db.get_connection()
-    db.init_schema(c)
-    return c
+    return db.get_connection()
 
 
 def _ensure_bot(conn: sqlite3.Connection, profile: str, display_name: str, role: str) -> int:

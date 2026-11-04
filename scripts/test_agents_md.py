@@ -280,14 +280,12 @@ class AgentsMdApiTests(unittest.TestCase):
         self.assertEqual(captured["name"], "plain")
 
     def test_routes_are_registered(self):
-        paths = {r.path for r in api.router_api.routes}
+        from fastapi import FastAPI
+        app = FastAPI()
+        app.include_router(api.router_api)
+        paths = app.openapi()['paths']
         self.assertIn("/projects/{name}/agents-md", paths)
-        methods = {
-            m
-            for r in api.router_api.routes
-            if r.path == "/projects/{name}/agents-md"
-            for m in r.methods
-        }
+        methods = {method.upper() for method in paths['/projects/{name}/agents-md']}
         self.assertEqual(methods, {"GET", "PUT"})
 
     def test_body_model_defers_type_and_length_checks_to_save(self):

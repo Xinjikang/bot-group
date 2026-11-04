@@ -73,6 +73,8 @@ HTTP 路由以 `engine/api.py`、`engine/main.py` 为准。FastAPI 默认 `/docs
 
 业务共用 `group.db`，连接使用 SQLite WAL 与 busy timeout。表结构以 `schema.sql` 加 `db.init_schema` 的增量迁移为准；跨模块读取统一通过配置解析数据库路径。
 
+`db.init_schema` 由引擎启动阶段调用，在请求服务和后台线程启动前完成。HTTP、MCP 操作、任务池、队列/扫描循环及停止/退出处理只获取连接并执行业务事务。独立升级工具和隔离测试夹具显式初始化各自数据库。迁移中的索引替换先核对现有定义，兼容定义保持原样；替换使用 savepoint，失败恢复原索引并传播异常。边界与验证见 [数据库初始化与运行流量](../design/2026-11-04-runtime-schema-boundary.md)。
+
 | 数据组 | 表 | 关键关系 |
 | --- | --- | --- |
 | 项目与身份 | `projects`、`bots`、`members`、`project_members`、`project_roles`、`project_permissions`、`settings` | 项目稳定 ID、Bot 物理身份、项目成员与角色授权；角色授权以 `role:<id>` 存储 |

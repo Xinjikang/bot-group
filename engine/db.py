@@ -60,10 +60,14 @@ def keep_wal_open():
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
-    """建表（schema.sql）。幂等。"""
+    """Initialize/migrate before serving requests or starting workers.
+
+    Standalone tools and test fixtures call this explicitly for their database.
+    Runtime connection acquisition must keep schema migrations out of traffic.
+    """
     from .operation_transaction import Lease
     if isinstance(conn, Lease):
-        return  # The operation owner initializes schema before starting its transaction.
+        return  # Request leases use the schema prepared by service startup.
     schema_path = Path(__file__).resolve().parent / "schema.sql"
     # Rename before schema.sql creates the index referencing the new column.
     cols = {r['name'] for r in conn.execute('PRAGMA table_info(tasks)')}
@@ -292,12 +296,24 @@ def _migrate_hermes_execution_cleanup(conn: sqlite3.Connection) -> None:
     _migrate_add_column(conn, "hermes_executions", "retry_count", "INTEGER NOT NULL DEFAULT 0")
     _migrate_add_column(conn, "hermes_executions", "next_retry_at", "REAL")
     _migrate_add_column(conn, "hermes_executions", "cleanup_deadline", "REAL")
-    # 旧宽口径唯一索引存在即保证「同一 session 至多一个非 terminal 行」，DROP 重建窄口径
-    # 必然成功；存量数据已违反窄口径的极端老库会在本层 CREATE 抛 OperationalError，
-    # 由上层启动流程 fail-fast 暴露，不静默吞掉（reviewer #255 次要①）。
-    conn.execute("DROP INDEX IF EXISTS hermes_execution_active")
-    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS hermes_execution_active "
-                 "ON hermes_executions(session) WHERE state != 'terminal'")
+    expected = ("CREATE UNIQUE INDEX hermes_execution_active "
+                "ON hermes_executions(session) WHERE state != 'terminal'")
+    existing = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name='hermes_execution_active'"
+    ).fetchone()
+    if existing and ' '.join(existing['sql'].split()).lower() == expected.lower():
+        return
+    # Keep the previous constraint if rebuilding fails, including within a
+    # caller-owned transaction. A compatible index needs no schema writes.
+    conn.execute('SAVEPOINT migrate_hermes_execution_active')
+    try:
+        conn.execute("DROP INDEX IF EXISTS hermes_execution_active")
+        conn.execute(expected)
+    except Exception:
+        conn.execute('ROLLBACK TO SAVEPOINT migrate_hermes_execution_active')
+        raise
+    finally:
+        conn.execute('RELEASE SAVEPOINT migrate_hermes_execution_active')
 
 
 # messages 表完整列定义（req#61 重建迁移用）：与 schema.sql 保持一致。

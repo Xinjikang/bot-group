@@ -375,7 +375,6 @@ def run_forever(stop_event) -> None:
             continue
         conn = db.get_connection()
         try:
-            db.init_schema(conn)
             run_once(conn)
         except Exception:  # noqa: BLE001
             logger.exception("scanner tick error")

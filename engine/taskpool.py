@@ -50,9 +50,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
 
 
 def _conn() -> sqlite3.Connection:
-    c = db.get_connection()
-    db.init_schema(c)
-    return c
+    return db.get_connection()
 
 
 def _log_event(conn, actor, event_type, project, requirement_id=None,

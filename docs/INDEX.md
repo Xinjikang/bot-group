@@ -1,5 +1,7 @@
 # 项目文档索引
 
+数据库启动迁移、运行期连接边界与并发验收见 [数据库初始化与运行流量](design/2026-11-04-runtime-schema-boundary.md)。
+
 Hermes 子代理等待、原生回调续接、任务归属与点对点调度见 [子代理等待设计](design/2026-11-03-delegation-wait.md)。
 
 DSH 成员编辑的三个页签、接口字段移除及插件检测后强制 Auto 审批见 [成员设置设计](design/2026-11-02-dsh-member-settings.md)。

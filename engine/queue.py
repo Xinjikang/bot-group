@@ -206,7 +206,6 @@ def run_forever(stop_event) -> None:
             continue
         conn = db.get_connection()
         try:
-            db.init_schema(conn)
             processed = process_one(conn)
             watchdog(conn)
         except Exception:  # noqa: BLE001
