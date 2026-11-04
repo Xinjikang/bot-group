@@ -76,6 +76,8 @@ HUD 展开时读取详情边界，将自身放在详情右侧并与其同高；�
 
 ## 模型与运行
 
+DSH 通过 `dsh_hud.py` 接入同一 HUD 调用链，每轮使用独立 headless 会话及临时执行 overlay，继承所选命名 profile 的模型与人格。desktop 使用已有后台适配。支持原生文件工具与私有配置/导航 MCP，保留 Auto 审批，协议或能力确认失败显式报错。详细加载、工具范围和历史会话边界见 [DSH 执行恢复与 HUD](../design/2026-11-04-dsh-execution-recovery-hud.md)。
+
 专用指令与项目资料分开传递：Hermes 网关创建会话时通过 `client_env.HERMES_EPHEMERAL_SYSTEM_PROMPT` 注入，旧版 CLI 使用隔离进程的同名环境变量；Codex 使用本次启动的 `developer_instructions` 参数覆盖。用户输入包含项目资料、检测结果、对话及当前明确执行指令。网关重试摘要同时覆盖专用指令和用户输入，保留原执行回执核对规则。
 
 `hud_runtime.py` 复用群聊的 `hermes_gateway.enabled()` 判定：具备新版网关布局的 Hermes 通过现有 `hermes_gateway.connection()` 连接公开 `/api/ws`；旧版通过公开 `hermes chat -Q --query-file -` 子进程调用。判定依据与群聊一致，由已安装入口对应的源码布局识别，连接错误继续报告网关错误。项目助手调用链使用公开 CLI 和 RPC，执行由所选 agent 原生运行时负责。

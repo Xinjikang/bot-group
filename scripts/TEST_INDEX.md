@@ -1,5 +1,9 @@
 # 测试脚本索引
 
+DSH 执行恢复与项目助手：通过 `scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_dsh_issue_regressions scripts.test_dsh_runtime scripts.test_dsh_lifecycle scripts.test_dsh_rework scripts.test_runtime_fork scripts.test_process_query scripts.test_topic_restart_recovery scripts.test_engine_shutdown scripts.test_project_hud scripts.test_hud_native_tools` 运行隔离回归。覆盖缺失 PID 的缺席/存活/未知、命名 profile 与 desktop 适配、overlay 单次插入、长输入前的 PID/读取器登记、HUD 协议与工具/Auto 证据门禁。
+
+DSH HUD 原生离线验证：`.venv\Scripts\python.exe -X utf8 -B scripts/verify_dsh_hud_native.py --entry <已安装 dsh.cmd 绝对路径> --evidence <主目录 reports/tests 下的新绝对目录>`。使用临时 HOME、base/headless 命名 profile、合成模型流及独立 stdio MCP；验证 persona、工具范围、Auto、真实文件读取与私有配置工具调用，禁止模型网络请求，临时资源结束清理。依赖项目 Python/MCP 和含 Auto 插件的 DSH 安装。
+
 Hermes 心跳与初始化断线恢复：使用 `scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_hermes_rpc_recovery scripts.test_hermes_connections scripts.test_hermes_gateway_sessions`。临时 home、操作系统分配的回环端口和实际 Pool/Lease/GatewayClient 验证串行慢请求期间跳过心跳、响应丢失后按原请求身份核对回执、重试上限和脱敏诊断。合成网关按单连接串行处理请求，无生产网关、模型或数据库访问。
 
 Hermes 调度查询故障：使用 `scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_scheduling_diagnostics scripts.test_native_busy_scheduling scripts.test_execution_errors`。隔离 SQLite、模拟 RPC 和时钟验证查询错误与正常忙碌区分、具体原因落库、跨 60 秒持续失败告警去重、缓存重建、绑定换代与原 job 恢复；不调用生产网关或模型。原生路由兼容在 Hermes 源码中通过 `scripts/run_tests.sh tests/gateway/test_local_standalone_route_recovery.py tests/gateway/test_local_receipt_missing_profile.py tests/gateway/test_local_recovery_pre_profile_origin.py` 验证，测试解释器通过 `HERMES_PYTHON` 注入，所有 home 使用临时夹具。
