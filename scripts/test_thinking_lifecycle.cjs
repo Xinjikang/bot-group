@@ -42,6 +42,43 @@ const legacyStorage = storage => {
 };
 const tick = () => new Promise(resolve => setImmediate(resolve));
 async function main() {
+  const delegation = harness();
+  const topicWait = {...wake(42), project: 'p', state: 'waiting_delegation'};
+  delegation.ctx.snapshot = {runs: [topicWait], thinking: []};
+  await delegation.ctx.loadThinking();
+  delegation.requests.shift().resolve({entries: [], latest_id: 0,
+    execution_state: 'waiting_delegation', process_ended_at: null});
+  await tick();
+  const waitingRun = [...delegation.ctx.S.thinkRuns.values()][0];
+  waitingRun.lastContentAt = Date.now() - 180000;
+  delegation.ctx.pollReasoning(waitingRun);
+  delegation.requests.shift().resolve({entries: [], latest_id: 0,
+    execution_state: 'waiting_delegation', process_ended_at: null,
+    replies: [{message_id: 17, sent_at: 101}]});
+  await tick();
+  let waitingTail = delegation.ctx.S.thinkBubbles.get(waitingRun.currentKey);
+  assert.equal(waitingTail.status, 'thinking', 'background wait retains a live bubble beyond silence timeout');
+  assert.equal(waitingTail.reply_message_id, null, 'an empty waiting tail survives reply reconciliation');
+  assert.equal(waitingRun.finished, false);
+  const restoredWait = harness(delegation.storage);
+  restoredWait.ctx.restoreThinkingState();
+  restoredWait.ctx.snapshot = {runs: [topicWait], thinking: []};
+  await restoredWait.ctx.loadThinking();
+  restoredWait.requests.shift().resolve({entries: [], latest_id: 0, execution_state: 'waiting_delegation'});
+  await tick();
+  assert.equal([...restoredWait.ctx.S.thinkRuns.values()][0].state, 'waiting_delegation');
+  delegation.ctx.pollReasoning(waitingRun);
+  delegation.requests.shift().resolve({entries: [{id: 2, reasoning: 'callback resumed', timestamp: 102}],
+    latest_id: 2, execution_state: 'running'});
+  await tick();
+  assert.equal(waitingRun.state, 'running');
+  assert.equal(delegation.ctx.S.thinkRuns.size, 1, 'callback continues the same logical bubble run');
+  delegation.ctx.pollReasoning(waitingRun);
+  delegation.requests.shift().resolve({entries: [], latest_id: 2,
+    execution_state: 'terminal', process_ended_at: 110});
+  await tick();
+  assert.equal(waitingRun.finished, true, 'logical completion ends the waiting bubble');
+
   const fresh = harness();
   const recovered = {...wake(42), project: 'p', spawned_at: '2026-09-22T10:00:00'};
   fresh.ctx.snapshot = {runs: [recovered, {profile: 'bot', thread_id: null}], thinking: []};

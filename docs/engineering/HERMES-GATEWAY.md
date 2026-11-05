@@ -4,9 +4,9 @@
 
 ## 子代理等待
 
-结构化 `delegate_task` 后台派发回执把逻辑执行置为 `waiting_delegation`。原生父轮次终态保持当前任务及话题发言位，清除该轮思考显示；原生回调 admission 自动归入同一个 `execution_id`。全部委派回调处理完毕后进行逻辑执行收尾，回调工具写入继续校验当前任务/话题归属。相关表为 `hermes_delegation_cycles`、`hermes_delegations`、`hermes_native_turns` 和 `hermes_delegation_inputs`。
+结构化 `delegate_task` 后台派发回执把逻辑执行置为 `waiting_delegation`。原生父轮次终态保持当前任务及话题发言位；话题气泡显示“子代理正在执行后台任务”，工作会话清除该轮思考显示。原生回调 admission 自动归入同一个 `execution_id`。全部委派回调处理完毕后进行逻辑执行收尾，回调工具写入继续校验当前任务/话题归属。相关表为 `hermes_delegation_cycles`、`hermes_delegations`、`hermes_native_turns` 和 `hermes_delegation_inputs`。
 
-正常等待跨过普通 `execution_deadline` 后继续保留归属，异常恢复依据明确的失效事实或用户停止。前端沿用父轮 final 的内容采集终态，同标识原生回调的实时思考刷新存在已接受的展示限制。维护与验收分别遵循设计中的[正常委派等待与超时](../design/2026-11-03-delegation-wait.md#正常委派等待与超时)和[思考展示边界](../design/2026-11-03-delegation-wait.md#思考展示边界)。
+正常等待跨过普通 `execution_deadline` 后继续保留归属，异常恢复依据明确的失效事实或用户停止。话题气泡按逻辑执行生命周期持续采集，后台等待与主 agent 续跑使用同一执行标识。维护与验收分别遵循设计中的[正常委派等待与超时](../design/2026-11-03-delegation-wait.md#正常委派等待与超时)和[思考展示边界](../design/2026-11-03-delegation-wait.md#思考展示边界)。
 
 恢复线程通过原执行 home 下的只读 `state.db/session_admissions` 查找已知委派的原生回调身份，再用 `prompt.receipt(include_result=True)` 对账。原生账本查询限时并与 HTTP 状态读路径分离；字段不兼容或读取失败保留未知执行并使用既有恢复期限。该本地适配契约已核对 Hermes `0431192d69d4afd2443a7da15bb9e129a424414c`，升级时运行原生验证脚本。
 

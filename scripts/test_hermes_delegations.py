@@ -352,7 +352,7 @@ class DelegationTests(unittest.TestCase):
         self.assertEqual(row['state'], 'terminal')
         self.assertFalse(delegations.pending(self.conn, row))
 
-    def test_waiting_topic_does_not_advance_on_timeout_or_block_another_topic(self):
+    def topic(self):
         for tid in (10, 20):
             self.conn.execute("INSERT INTO threads(id,project,title,creator,members,status,created_at,last_active_at,"
                 "turn_profile,turn_wake_at,round) VALUES(?,'alpha','fixture','user',?,'open',?,?,'default',?,1)",
@@ -363,6 +363,46 @@ class DelegationTests(unittest.TestCase):
                           (session, self.eid))
         self.conn.execute('UPDATE wake_runs SET session=?,thread_id=10 WHERE started_at=?', (session, self.row['started_at']))
         self.conn.commit()
+        self.row = self.current()
+
+    def test_topic_wait_snapshot_survives_refresh_and_resumes_same_execution(self):
+        from engine import api, events, reasoning, session_adapter
+        self.topic()
+        self.wait()
+        with patch.object(gateway, 'connection', side_effect=AssertionError('Snapshot queried gateway')), \
+             patch.object(events.bus, 'publish') as publish:
+            snapshot = api.get_thinking()
+            self.assertEqual(snapshot['thinking'], [])
+            self.assertEqual(len(snapshot['runs']), 1)
+            run = snapshot['runs'][0]
+            self.assertEqual((run['session'], run['thread_id'], run['wake_started_at'], run['state']),
+                             (self.row['session'], 10, self.row['started_at'], 'waiting_delegation'))
+            with patch.object(wake, '_running_wakes', {}):
+                self.assertEqual(api.get_thinking(), snapshot)
+            publish.assert_not_called()
+        # The parent's final message finishes a native turn, while the topic
+        # execution stays open until its callback has completed.
+        with patch.object(session_adapter, 'compression_tip', return_value='sid'), \
+             patch.object(reasoning, 'read_reasoning', return_value={
+                 'entries': [{'id': 1, 'finished': True}], 'latest_id': 1}):
+            result = api.get_reasoning('default', self.row['session'], self.row['started_at'])
+            self.assertEqual(result['execution_state'], 'waiting_delegation')
+            self.assertFalse(result['entries'][0]['finished'])
+            self.assertIsNone(result['process_ended_at'])
+        self.callback()
+        remote = Mock()
+        delegations.poll(self.conn, self.current(), remote)
+        gateway._sync_delegation_state(self.conn, self.current())
+        resumed = api.get_thinking()['runs'][0]
+        self.assertEqual(resumed['state'], 'submitting')
+        self.assertEqual(resumed['wake_started_at'], run['wake_started_at'])
+        final = ledger.apply_receipt(self.conn, self.eid, self.receipt('child-result', 2))
+        with patch.object(wake, '_handle_task_exit'), patch.object(heartbeat, 'on_exit'):
+            gateway._finish(self.conn, final, remote)
+        self.assertEqual(api.get_thinking()['runs'], [])
+
+    def test_waiting_topic_does_not_advance_on_timeout_or_block_another_topic(self):
+        self.topic()
         self.wait()
         wake.enqueue(self.conn, 'default', 'chat', 'scan:group', thread_id=20, project='alpha')
         with patch.object(wake, 'find_bot_processes', return_value=[]), \

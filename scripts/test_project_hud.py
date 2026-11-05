@@ -169,6 +169,38 @@ class HudTests(unittest.TestCase):
         self.assertNotIn('proposal', result['state'])
         self.assertEqual(result['status'], 'idle')
 
+    def test_answered_card_repeat_resolution_is_idempotent_across_retry(self):
+        item = self.session('p')
+        result = self.infer(item, {'text': '待办', 'cards': [
+            {'text': '备份文件', 'question': {'title': '备份如何处理？', 'reason': '确认范围'}},
+            {'text': '简介', 'proposal': {'changes': {'description': '建议简介'}}}]})
+        question_id = result['state']['cards'][0]['question']['id']
+        proposal_id = result['state']['cards'][1]['proposal']['id']
+        queued = hud.answer(item['id'], {'revision': result['revision'],
+                           'question_id': question_id, 'text': '已经处理了'})
+        self.assertEqual(len(queued['state']['cards']), 1)
+        # Simulate an existing failed attempt; history alone restores the identity.
+        with hud.connection() as conn:
+            conn.execute("UPDATE hud_sessions SET status='error',error='previous validation failure' WHERE id=?", (item['id'],))
+        failed = hud.view(item['id'])
+        retry = self.client.post('/hud/' + item['id'] + '/retry', json={'revision': failed['revision']})
+        self.assertEqual(retry.status_code, 200, retry.text)
+        queued = retry.json()
+        result = self.infer(queued, {'text': '已关闭该问题', 'resolved_todo_ids': [question_id]})
+        self.assertEqual(result['status'], 'waiting', result['error'])
+        self.assertEqual(result['error'], '')
+        self.assertEqual(result['state']['cards'][0]['proposal']['id'], proposal_id)
+        self.assertEqual(len(result['state']['cards']), 1)
+        self.assertEqual(self.conn.execute("SELECT description FROM projects WHERE name='p'").fetchone()[0], '')
+
+    def test_resolved_id_from_other_hud_session_is_rejected(self):
+        first = self.session('p')
+        first = self.infer(first, {'text': '问题', 'question': {'title': '资料？', 'reason': '确认'}})
+        foreign = first['state']['question']['id']
+        second = self.session()
+        result = self.infer(second, {'text': '已关闭', 'resolved_todo_ids': [foreign]})
+        self.assertEqual(result['status'], 'error')
+
     def test_draft_change_invalidates_only_proposal_cards(self):
         item = self.session()
         result = self.infer(item, {'text': '创建准备', 'cards': [

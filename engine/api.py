@@ -1377,6 +1377,13 @@ def get_thinking():
                              project=matches[0]['project'],
                              spawned_at=datetime.fromtimestamp(matches[0]['started_at']).isoformat())
         runs = {(r['session'], r['wake_started_at']): r for r in wake.active_runs()}
+        # Topic delegation waits retain their visible execution while the parent
+        # has no live heartbeat. This snapshot reads only the local ledger.
+        for row in conn.execute("SELECT * FROM hermes_executions WHERE kind='chat' AND state='waiting_delegation'"):
+            run = {key: row[key] for key in ('session', 'project', 'profile', 'kind', 'thread_id', 'parent_id', 'round', 'state', 'cancel_reason')}
+            run.update(wake_started_at=row['started_at'],
+                       spawned_at=datetime.fromtimestamp(row['started_at']).isoformat(), channel='hermes-gateway')
+            runs[(row['session'], row['started_at'])] = run
         for entry in entries:
             if 'session' in entry:
                 runs.setdefault((entry['session'], entry['wake_started_at']), entry)
@@ -1403,6 +1410,9 @@ def get_reasoning(profile: str, session: str, wake_started_at: float, after_id: 
     try:
         run = conn.execute("SELECT ended_at,exit_code,runtime_session_id,runtime FROM wake_runs WHERE session=? AND started_at=?",
                            (session, wake_started_at)).fetchone()
+        topic_execution = conn.execute(
+            "SELECT state,cancel_reason FROM hermes_executions WHERE session=? AND started_at=? AND kind='chat'",
+            (session, wake_started_at)).fetchone() if run and run['runtime'] == 'hermes' else None
     finally:
         conn.close()
     ended_at = run["ended_at"] if run else None
@@ -1425,6 +1435,14 @@ def get_reasoning(profile: str, session: str, wake_started_at: float, after_id: 
         result = reasoning.read_reasoning(profile, session, after_id, wake_started_at=wake_started_at, wake_ended_at=wake_ended_at, **options)
     result["process_ended_at"] = ended_at
     result["exit_code"] = run["exit_code"] if run else None
+    if topic_execution:
+        result['execution_state'] = topic_execution['state']
+        result['cancel_reason'] = topic_execution['cancel_reason']
+        if topic_execution['state'] != 'terminal' and ended_at is None:
+            # Native parent-turn finals can precede background delegation callbacks.
+            # The logical topic execution supplies the bubble's completion boundary.
+            for entry in result.get('entries', []):
+                entry['finished'] = False
     # Read links after Hermes entries: observing a final assistant row must also
     # observe every send committed before it, including the last HTTP reply.
     from .message_execution import replies

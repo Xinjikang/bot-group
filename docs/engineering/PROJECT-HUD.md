@@ -1,5 +1,7 @@
 # 项目维护 HUD
 
+已处理待办采用会话内幂等关闭：模型再次返回已回答或已确认卡片的 ID 时，根据本会话 assistant/system 历史中的结构化卡片身份核验，重复关闭成功且保留其他待办。未知 ID 和其他会话 ID 继续拒绝。此核验同时支持旧错误记录重新检查；配置写入继续经过原有确认与业务接口。设计见 [后台状态与待办幂等](../design/2026-11-05-topic-background-status.md)。
+
 范围与验收见[项目助手需求](../requirements/2026-10-31-project-assistant.md)，运行时隔离方法见[测试隔离契约](TEST-RUNTIME-ISOLATION.md)。
 
 旧版 Hermes CLI 的临时数据目录调用设置 `HERMES_DISABLE_LAZY_INSTALLS=1`，保持当前 CLI 解释器和依赖环境，防止临时 home 触发运行时切换。子进程错误输出仅保留末尾 16 KiB 用于分类；依赖导入错误提示修复运行环境，其他失败显示退出码，原始错误输出与凭据保持不向页面透传。

@@ -438,6 +438,19 @@ def validate_response(value):
     return value
 
 
+def issued_todo_ids(conn, sid):
+    """Read server-issued card identities from this session's durable history."""
+    ids = set()
+    for record in conn.execute("SELECT content FROM hud_entries WHERE session=? AND role IN ('assistant','system')", (sid,)):
+        content = json.loads(record['content'])
+        for container in [content, *content.get('cards', [])]:
+            for key in ('question', 'proposal'):
+                value = container.get(key)
+                if isinstance(value, dict) and isinstance(value.get('id'), str):
+                    ids.add(value['id'])
+    return ids
+
+
 def run_one(sid):
     from .hud_runtime import respond, progress_sink, tool_server
     from . import hud_tools
@@ -495,8 +508,11 @@ def run_one(sid):
             {'question': payload['pending_question'], 'proposal': payload['pending_proposal']},
             *payload['pending_cards']] for key in ('question', 'proposal')
             if (value := container.get(key)) and value.get('id')}
-        if set(response.get('resolved_todo_ids', [])) - pending_ids:
-            raise ValueError('已解决待办不属于本轮待办，请重新核对')
+        retired_ids = set(response.get('resolved_todo_ids', [])) - pending_ids
+        if retired_ids:
+            with connection() as conn:
+                if retired_ids - issued_todo_ids(conn, sid):
+                    raise ValueError('已解决待办不属于本会话待办，请重新核对')
         for result in [response, *response.get('cards', [])]:
             proposal = result.get('proposal')
             if proposal and set(proposal['changes']) - set(payload['allowed_changes']):
