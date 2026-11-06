@@ -400,7 +400,7 @@ class NativeBusySchedulingTests(NativeBusyFixtures, unittest.TestCase):
                           "VALUES(?,?,?,?,?,?,?)", (session_d, 'dsh-d', 0, 'dsh', started_d, 888, PROJECT))
         with patch.object(process_query, 'command_line', return_value=[
                 'dsh', '--profile', 'headless', '--patch',
-                wake._dsh_spawn_tag(session_d, started_d) + '/overlay']):
+                wake._dsh_spawn_tag(session_d, started_d) + '/overlay', '--json']):
             self._job('codex-c', 'work')
             self._job('dsh-d', 'work')
             self._job('hermes-b', 'work')  # 空闲对照
