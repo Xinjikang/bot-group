@@ -1,5 +1,7 @@
 # 项目文档索引
 
+Codex/DSH busy 跳过与恢复回归失败的独立范围、复现方法与验收标准见 [混合运行时 busy 回归](requirements/2026-11-06-mixed-runtime-busy-regression.md)。
+
 话题子代理后台任务的持续气泡展示与项目助手已处理待办的幂等关闭见 [后台状态与待办幂等](design/2026-11-05-topic-background-status.md)。
 
 DSH 缺失 PID 恢复、命名 profile 与 desktop 后台适配、项目助手接入见 [执行恢复与 HUD](design/2026-11-04-dsh-execution-recovery-hud.md)。

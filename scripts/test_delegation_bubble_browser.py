@@ -102,7 +102,7 @@ def run(evidence):
                 context.close()
         browser.close()
     (evidence / 'results.json').write_text(json.dumps(results, indent=2), encoding='utf-8')
-    print('PASS: topic waiting, refresh, callback, nested wait, completion; dark/light × 1280/390')
+    print('PASS: synthetic HTTP topic waiting, refresh, running, repeated waiting, completion; dark/light × 1280/390 message column')
 
 
 if __name__ == '__main__':
