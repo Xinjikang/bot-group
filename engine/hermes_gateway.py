@@ -13,6 +13,7 @@ import uuid
 from . import db, hermes_runtime
 from . import hermes_gateway_ledger as ledger, hermes_gateway_sessions as sessions
 from . import hermes_prompt_state as prompt_state
+from . import hermes_startup as startup
 from .hermes_gateway_client import GatewayClient, GatewayRefusal, GatewayTransportError, discover, ensure
 
 logger = logging.getLogger(__name__)
@@ -288,11 +289,13 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
             return {'ok': False, 'busy': True, 'detail': 'gateway execution still active'}
         if ledger.cleanup_pending(conn, session):
             return {'ok': False, 'busy': True, 'detail': 'gateway cleanup pending'}
-        client, home, command = connection(profile)
-        description = sessions.initialization_rpc(client, 'runtime.describe')
-        if not {'durable-admission-v1', 'acp-session-mcp-v1'} <= set(description['capabilities']):
-            raise GatewayRefusal('gateway_capabilities_unavailable')
-        snapshot = _binding(conn, client, bot, project, profile, kind, thread_id, session, workdir, model_args)
+        with startup.phase(profile, project, session, 'connect'):
+            client, home, command = connection(profile)
+        with startup.phase(profile, project, session, 'bind'):
+            description = sessions.initialization_rpc(client, 'runtime.describe')
+            if not {'durable-admission-v1', 'acp-session-mcp-v1'} <= set(description['capabilities']):
+                raise GatewayRefusal('gateway_capabilities_unavailable')
+            snapshot = _binding(conn, client, bot, project, profile, kind, thread_id, session, workdir, model_args)
         if snapshot['running'] or snapshot['pending']:
             # attach 复核发现原生忙：回写观察缓存，退回后同一 TTL 窗口内不再反复占队首
             _native_busy_feedback(conn, snapshot['session_id'])
@@ -301,7 +304,10 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
             kind=kind, thread_id=thread_id, session=session, home=home, command=command,
             workdir=workdir, model_args=model_args)
         try:
-            snapshot = hermes_session_auth.configure(conn, grant, client, snapshot)
+            with startup.phase(profile, project, session, 'configure'):
+                refresh = startup.force_refresh(conn, job_id)
+                snapshot = hermes_session_auth.configure(conn, grant, client, snapshot,
+                                                        **({'force_mcp': True} if refresh else {}))
         except Exception as exc:
             pending = conn.execute('SELECT pending_generation FROM hermes_session_grants WHERE ' +
                                    hermes_session_auth.WHERE, hermes_session_auth.key(grant)).fetchone()
@@ -339,7 +345,8 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
                                    session_context=hermes_session_auth.context(grant))
         conn.commit()
         attempted = True
-        receipt = client.rpc('prompt.submit', session_id=row['session_id'], submission_id=row['submission_id'], text=signal)
+        with startup.phase(profile, project, session, 'submit'):
+            receipt = client.rpc('prompt.submit', session_id=row['session_id'], submission_id=row['submission_id'], text=signal)
         ledger.apply_receipt(conn, row['execution_id'], receipt)
         _start_worker(row['execution_id'])
         return {'ok': True, 'channel': 'hermes-gateway', 'detail': 'admission ' + receipt['admission_id']}
@@ -357,6 +364,19 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
         if client:
             client.close()
         session_lock.release()
+
+
+def _notify_exit(row, code):
+    from . import wake
+    if row['cancel_reason'] in ('user', 'shutdown', 'superseded'):
+        return
+    if code:
+        wake._report_execution_error(row['profile'], row['project'], row['thread_id'], row['session'],
+            row['execution_id'], 'Hermes gateway execution failed: ' + (row['detail'] or row['outcome']),
+            exit_code=code, job_id=row['job_id'])
+    wake._handle_task_exit(row['profile'], row['project'], row['kind'], row['session'], row['started_at'],
+        row['ended_at'], code, row['event_floor'], task_id=row['task_id'], job_id=row['job_id'],
+        error=row['detail'] or row['outcome'])
 
 
 def _finish(conn, row, client):
@@ -393,30 +413,43 @@ def _finish(conn, row, client):
                     conn.commit()
     elif row['outcome'] != 'not_submitted':
         return False
+    if client is not None and row['outcome'] == 'failed' and not row['detail']:
+        receipt = client.rpc('prompt.receipt', session_id=row['session_id'], admission_id=row['admission_id'],
+                             include_result=True, timeout=10)
+        if isinstance(receipt, dict):
+            row = ledger.apply_receipt(conn, row['execution_id'], receipt)
     code = 0 if row['outcome'] == 'completed' else 1
+    recovery = code and startup.eligible(conn, row)
     conn.execute('UPDATE wake_runs SET ended_at=?,exit_code=? WHERE session=? AND started_at=?',
                  (row['ended_at'], code, row['session'], row['started_at']))
     conn.commit()
-    if row['cancel_reason'] not in ('user', 'shutdown', 'superseded'):
-        if code:
-            wake._report_execution_error(row['profile'], row['project'], row['thread_id'], row['session'],
-                row['execution_id'], 'Hermes gateway execution failed: ' + (row['detail'] or row['outcome']),
-                exit_code=code, job_id=row['job_id'])
-        wake._handle_task_exit(row['profile'], row['project'], row['kind'], row['session'], row['started_at'],
-            row['ended_at'], code, row['event_floor'], task_id=row['task_id'], job_id=row['job_id'],
-            error=row['detail'] or row['outcome'])
+    if not recovery:
+        _notify_exit(row, code)
     browser_resources.finish_run(row['session'], row['started_at'])
     steer_ledger.reconcile_targets(conn)
-    ledger.finish_cleanup(conn, row['execution_id'], detail=cleanup_detail)
-    with wake._session_lock:
-        wake._running_sessions.discard(row['session'])
-        wake._running_wakes.pop(row['session'], None)
-        wake._intentional_stops.discard(row['session'])
-    events.bus.publish('wake.finished', {'session': row['session'], 'wake_started_at': row['started_at'], 'ended_at': row['ended_at']})
+    ledger.finish_cleanup(conn, row['execution_id'], detail=cleanup_detail or (row['detail'] if code else ''))
     run = conn.execute('SELECT pid FROM wake_runs WHERE session=? AND started_at=?',
                        (row['session'], row['started_at'])).fetchone()
-    heartbeat.on_exit(row['profile'], pid=(run['pid'] or 0) if run else 0, thread_id=row['thread_id'],
-                      advance=row['cancel_reason'] != 'superseded' and hermes_delegations.owned(conn, row))
+    retried = False
+    with wake._session_lock:
+        stopped = row['session'] in wake._intentional_stops
+        wake._running_sessions.discard(row['session'])
+        wake._running_wakes.pop(row['session'], None)
+        if recovery:
+            heartbeat.on_exit(row['profile'], pid=(run['pid'] or 0) if run else 0,
+                              thread_id=row['thread_id'], advance=False)
+            retried = startup.requeue(conn, row)
+        wake._intentional_stops.discard(row['session'])
+    events.bus.publish('wake.finished', {'session': row['session'], 'wake_started_at': row['started_at'], 'ended_at': row['ended_at']})
+    advance = (row['cancel_reason'] != 'superseded' and hermes_delegations.owned(conn, row)
+               and startup.same_turn(conn, row))
+    if not recovery:
+        heartbeat.on_exit(row['profile'], pid=(run['pid'] or 0) if run else 0,
+                          thread_id=row['thread_id'], advance=advance)
+    elif not retried and not stopped:
+        _notify_exit(row, code)
+        if advance and not wake._shutting_down.is_set():
+            heartbeat._advance_turn_on_exit(row['profile'], row['thread_id'])
     return True
 
 

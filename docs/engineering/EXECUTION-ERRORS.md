@@ -5,6 +5,7 @@
 | 分类 | 群聊提示 |
 | --- | --- |
 | configuration | 配置不完整或无效，请检查配置。 |
+| mcp_initialization | 任务工具连接初始化失败，请重试；详细原因已记录日志。 |
 | authentication（401） | 身份认证失败，请检查凭证。 |
 | permission（403） | 访问被拒绝，请检查权限。 |
 | rate_limit（429） | 请求受限，请稍后重试或检查配额。 |
@@ -25,4 +26,6 @@ Hermes 返回 `Profile name '<name>' is reserved` 时归入 configuration，通�
 
 任务退出处理优先采用引擎超时结果；正常退出（退出码 0）采用 incomplete 提示，由任务状态及本轮交接事件判断是否实际记入重试。工具输出中的权限、认证、配置或超时文字保持为执行过程记录。非零退出沿用运行时失败分类。已完成、已交接、主动停止和停机的既有保护继续生效。
 
-升级后手动重启引擎创建新表，再刷新页面。验证命令见 [测试索引](../../scripts/TEST_INDEX.md)。
+Hermes 网关失败回执的 `result.error` 经凭据脱敏后保留到执行账本；首份终态缺少结果时查询原 admission 补齐诊断，补读校验 profile、session、admission、generation 和 epoch。只有明确的 MCP 初始化失败、空执行消息和未完成标志组合允许原作业自动恢复一次。恢复过程保留发言位，耗尽后才按正常失败流程通知并处理任务。接入阶段日志记录 connect、bind、configure、submit 的状态与耗时，异常日志保留错误类型和脱敏原因。契约见 [初始化恢复](../design/2026-11-06-mcp-startup-recovery.md)。
+
+升级后手动重启引擎，再刷新页面。验证命令见 [测试索引](../../scripts/TEST_INDEX.md)。

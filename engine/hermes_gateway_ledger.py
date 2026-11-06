@@ -149,8 +149,16 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
                 or status not in ('queued', 'started', 'unknown', 'terminal')):
             raise ValueError('Receipt identity or state mismatch')
         if row['state'] == 'terminal':
+            if (status == 'terminal' and receipt.get('outcome') == row['outcome'] and not row['detail']
+                    and receipt.get('execution_generation') == row['generation']
+                    and type(receipt.get('authority_epoch')) is int
+                    and receipt['authority_epoch'] >= row['authority_epoch']):
+                from .hermes_startup import failure_detail
+                detail = failure_detail(conn, row, receipt)
+                if detail:
+                    conn.execute('UPDATE hermes_executions SET detail=? WHERE execution_id=?', (detail, execution_id))
             conn.commit()
-            return row
+            return read(conn, execution_id)
         gen, epoch = receipt.get('execution_generation'), receipt.get('authority_epoch')
         if gen is not None and type(gen) is not int or type(epoch) is not int:
             raise ValueError('Receipt generation or epoch invalid')
@@ -168,10 +176,12 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
                              "execution_deadline=?,detail='' WHERE execution_id=?",
                              (aid, gen, epoch, now + 3600, execution_id))
             else:
+                from .hermes_startup import failure_detail
+                detail = failure_detail(conn, row, receipt)
                 conn.execute("UPDATE hermes_executions SET admission_id=?,generation=?,authority_epoch=?,"
-                             "state='terminal',outcome=?,ended_at=?,cleanup_pending=1,cleanup_deadline=?,detail='' "
+                             "state='terminal',outcome=?,ended_at=?,cleanup_pending=1,cleanup_deadline=?,detail=? "
                              "WHERE execution_id=?",
-                             (aid, gen, epoch, receipt['outcome'], now, now + CLEANUP_BUDGET_SECONDS, execution_id))
+                             (aid, gen, epoch, receipt['outcome'], now, now + CLEANUP_BUDGET_SECONDS, detail, execution_id))
         else:
             state = 'running' if status == 'started' else 'submitting' if status == 'queued' else 'unknown'
             deadline = (row['reconcile_deadline'] if row['cancel_reason'] or row['admission_id'] is None

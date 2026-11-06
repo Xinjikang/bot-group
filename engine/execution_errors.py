@@ -12,6 +12,7 @@ MESSAGES = {
     'authentication': '身份认证失败，请检查凭证。',
     'missing_credential': '缺少模型凭据，请检查凭据配置或环境变量。',
     'init': '初始化失败，请检查宿主配置、bundle 与版本。',
+    'mcp_initialization': '任务工具连接初始化失败，请重试；详细原因已记录日志。',
     'refused': '模型拒绝了本次请求，请调整内容后重试。',
     'cancelled': '本轮执行已被取消。',
     'corrupt': '执行输出解析异常，请查看诊断日志。',
@@ -67,6 +68,8 @@ def classify(text):
     if 'auto review capability unavailable' in raw or 'preset not confirmed' in raw:
         return 'auto_unavailable'
     text = _failure_text(text).lower()
+    if 'acp_mcp_discovery_failed' in text or 'mcp_initialization_unavailable' in text:
+        return 'mcp_initialization'
     if hermes_profile_names.failure_message(text) or '被 hermes 保留' in text:
         return 'configuration'
     if re.search(r'\bmodel\b[^\n.]{0,80}\bat capacity\b', text):

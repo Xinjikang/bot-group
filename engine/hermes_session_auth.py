@@ -171,7 +171,7 @@ def server(row, generation):
     return spec
 
 
-def configure(conn, row, client, snapshot):
+def configure(conn, row, client, snapshot, *, force_mcp=False):
     from . import hermes_gateway_sessions as sessions, signing_keys
     current = _signing_generation()
     if snapshot['running'] or snapshot['pending']:
@@ -180,7 +180,7 @@ def configure(conn, row, client, snapshot):
         conn.execute('UPDATE hermes_session_grants SET pending_generation=? WHERE ' + WHERE, (current, *key(row)))
         conn.commit()
     result = sessions.configure_tracked(conn, row['project'], client, snapshot, workdir=row['workdir'],
-        model_args=json.loads(row['model_args']), server=server(row, current))
+        model_args=json.loads(row['model_args']), server=server(row, current), force_mcp=force_mcp)
     validate(conn, {**context(row), 'signing_generation': current})
     conn.execute('UPDATE hermes_session_grants SET signing_generation=?,pending_generation=NULL WHERE ' + WHERE,
                  (current, *key(row)))

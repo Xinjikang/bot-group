@@ -1,5 +1,7 @@
 # 项目文档索引
 
+Hermes MCP 初始化失败的原始诊断、阶段日志及一次受限队列恢复见 [MCP 初始化恢复](design/2026-11-06-mcp-startup-recovery.md)。
+
 Codex/DSH busy 跳过与恢复回归失败的独立范围、复现方法与验收标准见 [混合运行时 busy 回归](requirements/2026-11-06-mixed-runtime-busy-regression.md)。
 
 话题子代理后台任务的持续气泡展示与项目助手已处理待办的幂等关闭见 [后台状态与待办幂等](design/2026-11-05-topic-background-status.md)。

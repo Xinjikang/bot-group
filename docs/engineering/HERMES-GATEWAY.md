@@ -1,5 +1,7 @@
 # Hermes 网关执行适配
 
+MCP 初始化失败恢复使用现有终态结果与 `session.mutate editor_mcp`：明确未执行模型及工具的失败至多恢复一次，沿用原 wake job ID 和队列顺序，恢复前验证 task_queue 出现在重连回执中。详细边界见 [MCP 初始化恢复](../design/2026-11-06-mcp-startup-recovery.md)。Hermes 源码及内部连接期限保持宿主契约。
+
 原生状态查询失败与正常忙碌分别记录。排队 job 保留具体错误码；持续至少三次且跨越 60 秒失败生成一次去重告警，任务与 job 保持可重试。恢复和绑定换代清理旧诊断。兼容边界和人工恢复步骤见 [会话恢复与调度故障](../design/2026-11-04-session-routing-recovery.md)。
 
 ## 子代理等待

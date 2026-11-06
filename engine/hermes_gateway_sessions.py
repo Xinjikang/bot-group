@@ -50,7 +50,7 @@ def new(client, *, title, workdir, system_prompt, model_args, request_id=None, l
 
 def configure(client, snapshot, *, workdir, model_args, server,
               reset_reasoning=False, reasoning_applied=None, edit_approval_policy='workspace_session',
-              previous=None):
+              previous=None, force_mcp=False):
     """Apply changed policy and restore an unchanged private MCP transport on resume."""
     previous = previous or {}
     sid = snapshot['session_id']
@@ -90,15 +90,17 @@ def configure(client, snapshot, *, workdir, model_args, server,
     spec = {'name': 'task_queue', 'command': server['command'], 'args': server['args'],
             'env': [{'name': key, 'value': value} for key, value in sorted(server['env'].items())]}
     fingerprint = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
-    if previous.get('mcp') != fingerprint:
-        mutate(client, snapshot, 'editor_mcp', {'mcp_servers': [spec]})
+    if force_mcp or previous.get('mcp') != fingerprint:
+        result = mutate(client, snapshot, 'editor_mcp', {'mcp_servers': [spec]})
+        if force_mcp and 'task_queue' not in result.get('mcp_servers', []):
+            raise GatewayRefusal('mcp_initialization_unavailable')
         snapshot = attach(client, sid)
     else:
         snapshot = initialization_rpc(client, 'session.resume', session_id=sid, editor={'mcp_servers': [spec]})
     return snapshot
 
 
-def configure_tracked(conn, project, client, snapshot, *, workdir, model_args, server):
+def configure_tracked(conn, project, client, snapshot, *, workdir, model_args, server, force_mcp=False):
     """Reset removed engine overrides while preserving native session choices."""
     from . import db, edit_policy
     identity = json.dumps([client.endpoint['profile_id'], snapshot['session_id']])
@@ -119,7 +121,7 @@ def configure_tracked(conn, project, client, snapshot, *, workdir, model_args, s
     prior = json.loads(saved['value']) if saved else {}
     result = configure(client, snapshot, workdir=workdir, model_args=model_args, server=server,
                        reset_reasoning=previous is not None, reasoning_applied=applied,
-                       edit_approval_policy=edit_policy.read(conn), previous=prior)
+                       edit_approval_policy=edit_policy.read(conn), previous=prior, force_mcp=force_mcp)
     options = dict(zip(model_args[::2], model_args[1::2]))
     spec = {'name': 'task_queue', 'command': server['command'], 'args': server['args'],
             'env': [{'name': k, 'value': v} for k, v in sorted(server['env'].items())]}
