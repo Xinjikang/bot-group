@@ -2223,8 +2223,11 @@ function updateComposerState() {
   const ta = $("#composer-text"), btn = $("#btn-send");
   const t = S.currentThread ? S.threads.find(x => x.id === S.currentThread) : null;
   const closed = t && t.status === "closed";
+  const sending = imageSends.has(imageDestinationKey({project: S.currentProject, thread_id: S.currentThread}));
   ta.disabled = !!closed;
-  $("#btn-send").disabled = !!closed;
+  btn.disabled = !!closed || sending;
+  btn.textContent = sending ? '发送中…' : '发送';
+  $("#composer").setAttribute('aria-busy', String(sending));
   ta.placeholder = closed
     ? "话题已关闭，重新打开后才能回复"
     : "发消息。@bot名 点名；[收口] 开头=收口当前话题（回车发送，Alt+回车换行）";

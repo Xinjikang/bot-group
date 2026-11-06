@@ -1,5 +1,7 @@
 # 项目文档索引
 
+消息发送的单事务持久化、阶段耗时日志与发送中反馈见 [发送延迟设计](design/2026-11-06-message-send-latency.md) 和 [发送工程契约](engineering/MESSAGE-SEND.md)。
+
 Hermes MCP 初始化失败的原始诊断、阶段日志及一次受限队列恢复见 [MCP 初始化恢复](design/2026-11-06-mcp-startup-recovery.md)。
 
 Codex/DSH busy 跳过与恢复回归失败的独立范围、复现方法与验收标准见 [混合运行时 busy 回归](requirements/2026-11-06-mixed-runtime-busy-regression.md)。

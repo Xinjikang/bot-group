@@ -632,8 +632,10 @@ def route_message(
     need_reply（req#55）：1=必须回复（窄闸门照旧），0=原发送者声明不需要回复，
     被 @ 者可静默标已读、窄闸门豁免。
     """
+    started = time.perf_counter()
     if not conn.in_transaction:
         conn.execute("BEGIN IMMEDIATE")
+    locked = time.perf_counter()
     silent = text is None
     skip = silent or (not attachment_ids and _is_ack_message(text))
     if silent and (sender_type != "bot" or thread_id is None):
@@ -787,13 +789,20 @@ def route_message(
             # 某轮全员 pass/弃权后暂停自动讨论，等待用户新消息。
             settle_thread(conn, thread_id)
 
-    conn.commit()
-
-    # 入队唤醒（去重由 partial unique index 保证）
+    prepared = time.perf_counter()
+    # Persist the message and its wake jobs atomically with one durable commit.
     enqueued = []
     for p, kind, trigger in wake_list:
-        if wake.enqueue(conn, p, kind, trigger, message_id, thread_id=thread_id, project=project):
+        if wake.enqueue(conn, p, kind, trigger, message_id, thread_id=thread_id, project=project, commit=False):
             enqueued.append((p, kind, trigger))
+    queued = time.perf_counter()
+    conn.commit()
+    finished = time.perf_counter()
+    if sender_type == 'user' or finished - started >= .1:
+        logger.info('message.persist message_id=%s thread_id=%s lock_ms=%.1f prepare_ms=%.1f '
+                    'enqueue_ms=%.1f commit_ms=%.1f total_ms=%.1f',
+                    message_id, thread_id, (locked-started)*1000, (prepared-locked)*1000,
+                    (queued-prepared)*1000, (finished-queued)*1000, (finished-started)*1000)
 
     return {
         "message_id": message_id,

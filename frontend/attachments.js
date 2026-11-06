@@ -45,6 +45,7 @@ function createImageComposer(container, textarea, destination) {
   };
   function refresh() {
     renderCommandReceipt();
+    if (container.id === 'composer') updateComposerState();
     previews.replaceChildren();
     const key = imageDestinationKey(destination());
     addButton.disabled = imageSends.has(key);

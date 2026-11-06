@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
+import time
 from datetime import datetime
 from typing import Any, Optional
 
@@ -19,6 +21,7 @@ from .task_api import create_router as _task_router
 from .access import authorize, resolve_identity as _resolve_identity
 
 router_api = APIRouter(dependencies=[Depends(authorize)])
+logger = logging.getLogger(__name__)
 
 
 def _utf16_len(text: str) -> int:
@@ -296,15 +299,23 @@ def post_msg(
     if not text and not silent and not attachment_ids:
         raise HTTPException(status_code=400, detail="text is required")
 
-    conn = _conn()
+    started = time.perf_counter()
+    connected = routed = published = None
+    outcome, message_id, conn = 'error', None, None
     try:
+        conn = _conn()
+        connected = time.perf_counter()
         # 收口检测：text 以 [收口] 开头且 thread_id 非空
         execution = None
         if kind == "bot":
             from .message_execution import validate
             execution = validate(conn, sender, body)
         if text is not None and text.startswith("[收口]") and thread_id is not None:
-            return _settle_thread(conn, sender, text, thread_id, attachment_ids, execution)
+            result = _settle_thread(conn, sender, text, thread_id, attachment_ids, execution)
+            message_id = result.get('message_id')
+            routed = published = time.perf_counter()
+            outcome = 'settlement'
+            return result
 
         # 话题消息：project 从 thread 取（权威），忽略 body 传的
         if thread_id is not None:
@@ -317,27 +328,42 @@ def post_msg(
         if kind in ("user", "dev") and db.is_builtin_user(sender):
             cmd_result = commands.dispatch(conn, project, sender, "user", text, thread_id)
             if cmd_result is not None:
+                routed = time.perf_counter()
                 events.bus.publish("command.executed", {
                     "command": cmd_result.get("command"),
                     "ok": cmd_result.get("ok"),
                     "project": project, "sender": sender, "thread_id": thread_id,
                 })
+                published = time.perf_counter()
+                outcome = 'command_ok' if cmd_result.get('ok') else 'command_error'
                 return cmd_result
 
         result = router.route_message(conn, sender, text, "bot" if kind == "bot" else "user", thread_id, project,
                                       attachment_ids=attachment_ids, need_reply=body.get("need_reply", 1), execution=execution)
+        routed = time.perf_counter()
+        message_id = result['message_id']
         if result["message_id"] is not None:
             events.bus.publish("message.new", {"message_id": result["message_id"], "thread_id": thread_id,
                                                "sender": sender, "project": project, "execution": execution})
         if thread_id is not None:
             events.bus.publish("thread.updated", {"thread_id": thread_id})
+        published = time.perf_counter()
+        outcome = 'ok'
         return result
     except commands.CommandError as e:
         raise HTTPException(status_code=400, detail=e.message) from e
     except router.RouteError as e:
         raise HTTPException(status_code=e.status, detail=str(e)) from e
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
+        if kind != 'bot':
+            finished = time.perf_counter()
+            logger.info('message.send message_id=%s thread_id=%s outcome=%s connect_ms=%.1f '
+                        'route_ms=%.1f publish_ms=%.1f total_ms=%.1f',
+                        message_id, thread_id, outcome, ((connected or finished)-started)*1000,
+                        ((routed or finished)-connected)*1000 if connected is not None else 0,
+                        ((published or finished)-routed)*1000 if routed is not None else 0, (finished-started)*1000)
 
 
 def _settle_thread(conn: sqlite3.Connection, sender: str, text: str, thread_id: int,
