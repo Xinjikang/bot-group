@@ -10,6 +10,71 @@ class ProjectModelTests(unittest.TestCase):
     setUp = test_project_roles.ProjectRoleTests.setUp
     join = test_project_roles.ProjectRoleTests.join
 
+    def test_unsaved_hermes_settings_inherit_all_displayed_host_fields(self):
+        from engine import hermes_gateway_sessions
+        from unittest.mock import Mock
+        member = self.join(host='hermes')
+        home = self.root / 'hermes'
+        home.mkdir(exist_ok=True)
+        config = home / 'config.yaml'
+        config.write_text('model:\n  default: host-pro\n  provider: host-cloud\nagent:\n  reasoning_effort: max\n', encoding='utf-8')
+        original = config.read_bytes()
+        before = [tuple(row) for row in self.conn.execute('SELECT * FROM settings')]
+        args = project_models.arguments(self.conn, 'p', member)
+        self.assertEqual(args, ['--model', 'host-pro', '--provider', 'host-cloud', '--reasoning', 'max'])
+        snapshot = dict(session_id='existing-session', revision=1, execution_generation=1,
+                        running=False, pending=False, info=dict(source='acp', cwd='/workspace',
+                        edit_approval_policy='workspace_session', model='old-flash'))
+        client = Mock()
+        client.rpc.return_value = snapshot
+        result = hermes_gateway_sessions.configure(client, snapshot, workdir='/workspace',
+            model_args=args, server={'command': 'python', 'args': [], 'env': {}})
+        changes = [call.kwargs for call in client.rpc.call_args_list if call.args[0] == 'session.mutate']
+        self.assertIn({'model': 'host-pro', 'provider': 'host-cloud'},
+                      [call['payload'] for call in changes if call['operation'] == 'model'])
+        self.assertIn({'effort': 'max'},
+                      [call['payload'] for call in changes if call['operation'] == 'reasoning'])
+        self.assertEqual(result['session_id'], 'existing-session')
+        self.assertEqual(config.read_bytes(), original)
+        self.assertEqual([tuple(row) for row in self.conn.execute('SELECT * FROM settings')], before)
+
+    def test_hermes_partial_override_merges_and_host_changes_apply_next_wake(self):
+        member = self.join(host='hermes')
+        home = self.root / 'hermes'
+        home.mkdir(exist_ok=True)
+        config = home / 'config.yaml'
+        config.write_text('model:\n  default: host-first\n  provider: host-cloud\nagent:\n  reasoning_effort: high\n', encoding='utf-8')
+        current, _ = project_models.read(self.conn, 'p', member)
+        project_models.save(self.conn, 'p', member, dict(model='project-model', provider='',
+            reasoning_effort='', revision=current['revision']))
+        self.assertEqual(project_models.arguments(self.conn, 'p', member),
+                         ['--model', 'project-model', '--provider', 'host-cloud', '--reasoning', 'high'])
+        config.write_text('model:\n  default: host-next\n  provider: next-cloud\nagent:\n  reasoning_effort: false\n', encoding='utf-8')
+        self.assertEqual(project_models.arguments(self.conn, 'p', member),
+                         ['--model', 'project-model', '--provider', 'next-cloud', '--reasoning', 'none'])
+        current, _ = project_models.read(self.conn, 'p', member)
+        project_models.save(self.conn, 'p', member, dict(model='', provider='',
+            reasoning_effort='', revision=current['revision']))
+        self.assertEqual(project_models.arguments(self.conn, 'p', member),
+                         ['--model', 'host-next', '--provider', 'next-cloud', '--reasoning', 'none'])
+
+    def test_unsaved_named_hermes_profile_uses_its_physical_config(self):
+        member = self.join(host='hermes', profile='review')
+        folder = self.root / 'hermes' / 'profiles' / 'review'
+        folder.mkdir(parents=True)
+        (folder / 'config.yaml').write_text('model:\n  default: named-model\n  provider: named-cloud\nagent:\n  reasoning_effort: low\n', encoding='utf-8')
+        (self.root / 'hermes' / 'config.yaml').write_text('model: root-model\n', encoding='utf-8')
+        self.assertEqual(project_models.arguments(self.conn, 'p', member),
+                         ['--model', 'named-model', '--provider', 'named-cloud', '--reasoning', 'low'])
+
+    def test_unsaved_hermes_missing_default_fails_before_gateway_use(self):
+        member = self.join(host='hermes')
+        home = self.root / 'hermes'
+        home.mkdir(exist_ok=True)
+        (home / 'config.yaml').write_text('model: {}\n', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'configured default model'):
+            project_models.arguments(self.conn, 'p', member)
+
     def test_scope_conflict_permissions_and_clear(self):
         member = self.join()
         self.join('q')

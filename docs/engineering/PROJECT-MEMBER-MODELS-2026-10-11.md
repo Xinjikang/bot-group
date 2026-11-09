@@ -15,20 +15,30 @@ Every chat/work wake reads these settings. Codex receives `--model` and TOML
 `--provider`, and `--reasoning`. Changes affect subsequent wakes; in-flight runs
 retain their arguments and existing conversation bindings remain intact.
 
-Hermes restores a historical model on resume unless `--model` is explicit.
-For a saved project setting with an empty model, the engine therefore reads the
-current physical profile's default model and passes it explicitly. This also
-handles clearing an override and provider-only overrides. Supported host model
-forms include strings, default/model/name aliases and nested model mappings.
-A missing default fails the wake with a diagnostic; configure a project model
-or host default. Projects that have never saved model settings retain the
-existing launch behavior.
+Hermes restores historical session policy on resume unless the desired fields
+are explicit. On every registered Hermes chat/work wake, the engine resolves
+each empty project field from the current physical profile's `config.yaml`,
+including projects with no saved override row. It passes the effective model,
+provider and reasoning effort explicitly when configured. Project overrides
+win field by field, YAML `false` reasoning maps to `none`, and clearing an
+override resumes host inheritance. This matches the values displayed by the
+unified member editor without creating a project setting or changing host files.
+Supported host model forms include strings, default/model/name aliases and
+nested model mappings. A missing effective model fails the wake with a
+diagnostic; configure a project model or host default. Existing bindings and
+conversation history remain intact; in-flight runs retain their policy.
+
+The distinction between configured defaults and retained native session policy,
+the effective launch arguments and validation boundaries are described in
+[Hermes model inheritance](../design/2026-11-09-hermes-model-inheritance.md).
 
 Validation uses isolated SQLite/config directories, mocked subprocess launches,
 and real Chrome with synthetic HTTP responses. Production models/sessions are
 not used for tests. Restart the engine manually and refresh the page to enable
 the new API and launch behavior.
 
-The optional native probe `python -B scripts/verify_project_model_resume.py`
+The optional native Codex probe `python -B scripts/verify_project_model_resume.py`
 uses a disposable home and loopback fake Responses provider to inspect the
-requested model on creation and resume. Record its results in reports/tests/.
+requested Codex model on creation and resume. Hermes gateway mutation payloads
+are covered by the isolated project-model and session-policy regressions.
+Record native probe results in reports/tests/.

@@ -46,26 +46,42 @@ def save(conn, project, member, values):
     return read(conn, project, member)[0]
 
 
+def _hermes_defaults(bot):
+    home = Path(bot['config_root'])
+    if bot['profile'] != 'default':
+        home = home / 'profiles' / bot['profile']
+    try:
+        with (home / 'config.yaml').open(encoding='utf-8') as stream:
+            config = YAML(typ='safe').load(stream) or {}
+    except FileNotFoundError:
+        config = {}
+    if not isinstance(config, dict):
+        raise ValueError('Hermes config.yaml must be a mapping')
+    model = config.get('model') or {}
+    default = (model.get('default') or model.get('model') or model.get('name') or '') if isinstance(model, dict) else model
+    if isinstance(default, dict):
+        default = default.get('model') or default.get('default') or ''
+    agent = config.get('agent') or {}
+    if not isinstance(agent, dict):
+        raise ValueError('Hermes config.yaml agent must be a mapping')
+    effort = agent.get('reasoning_effort')
+    return dict(model=str(default).strip(),
+                provider=str(model.get('provider') or '').strip() if isinstance(model, dict) else '',
+                reasoning_effort='none' if effort is False else str(effort or '').strip())
+
+
 def arguments(conn, project, member):
     # Legacy/unregistered members continue using their host defaults.
     bot = bot_identity.resolve(conn, project, member)
     if not bot:
         return []
-    values, key = read(conn, project, member)
-    configured = conn.execute('SELECT 1 FROM settings WHERE project=? AND key=?', (project, key)).fetchone()
-    if configured and values['runtime'] == 'hermes' and not values['model']:
-        # Hermes resume restores its stored route unless -m was explicit.
-        # Resolve the current host default on every wake, including after clear.
-        home = Path(bot['config_root'])
-        if bot['profile'] != 'default':
-            home = home / 'profiles' / bot['profile']
-        with (home / 'config.yaml').open(encoding='utf-8') as stream:
-            config = YAML(typ='safe').load(stream) or {}
-        model = config.get('model') or {}
-        default = (model.get('default') or model.get('model') or model.get('name') or '') if isinstance(model, dict) else model
-        if isinstance(default, dict):
-            default = default.get('model') or default.get('default') or ''
-        values['model'] = str(default).strip()
+    values, _ = read(conn, project, member)
+    if values['runtime'] == 'hermes':
+        # Explicit inherited fields prevent resume from restoring stale policy.
+        if any(not values[field] for field in FIELDS):
+            defaults = _hermes_defaults(bot)
+            for field in FIELDS:
+                values[field] = values[field] or defaults[field]
         if not values['model']:
             raise ValueError('Hermes project model fallback requires a configured default model')
     args = []

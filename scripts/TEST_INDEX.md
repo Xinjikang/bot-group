@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+Hermes 模型继承与旧会话路由：`python -X utf8 -B -m scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_project_models scripts.test_hermes_gateway_sessions scripts.test_hermes_session_reuse scripts.test_profile_config scripts.test_runtime_fork`。临时配置、SQLite 与模拟 RPC 验证未保存覆盖时继承模型/供应商/推理强度、字段级覆盖、全局修改后下一次唤醒生效、false→none、命名 profile、缺失默认值及原会话保留；网关及进程启动使用既有隔离夹具，零生产模型调用。
+
 v0.2.13 发布验收见 [发布说明](../docs/releases/v0.2.13.md)。复用本文“正式 Release 验收”的专用 unittest 组合，使用临时默认数据库、宿主和数据目录；缺省数据库路径与旧版升级子进程用例由各自夹具隔离。修复相关 121 项回归沿用旧版唤醒分流组合；公开发布后使用 `verify_public_install.py`，传入登记的隔离端口与新的报告目录，验证匿名安装、重复安装、BAT 启停和默认更新索引。
 
 Hermes 旧版唤醒分流（Issue #28）：使用 `python -X utf8 -B -m scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_hermes_legacy_scheduling scripts.test_native_busy_scheduling scripts.test_scheduling_diagnostics scripts.test_hermes_handoff_scheduling scripts.test_hermes_gateway scripts.test_process_query scripts.test_hermes_compatibility`。需要项目 Python 依赖；临时源码布局和 SQLite 验证旧版已有绑定的 CLI 进程检查、忙/空闲/未知三态、切换与未结束执行保护、网关失败保持暂缓，以及重启后原话题 job ID、入队时间、绑定与发言顺序保留。网关 RPC 与进程清单使用确定性夹具，Windows 进程查询模块另启动自身临时 Python 子进程，启动器命令验证显式使用临时 home；零生产网关、模型和业务写入。
