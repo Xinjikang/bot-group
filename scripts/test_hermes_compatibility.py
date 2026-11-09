@@ -99,7 +99,7 @@ class HermesCompatibilityTests(unittest.TestCase):
         wrapper, code = self.write_launcher()
         with patch.dict(os.environ, {'HERMES_BIN': str(wrapper)}), \
              patch.object(hermes_connections, 'acquire') as acquire:
-            _, home, argv = gateway.connection('default')
+            _, home, argv = gateway.connection('default', home=self.home)
         self.assertEqual(argv, [sys.executable, '-I', '-c', code])
         self.assertEqual(home, self.home)
         acquire.assert_called_once_with(self.home, argv, callback=None, business=True)

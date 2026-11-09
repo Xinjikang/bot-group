@@ -1,5 +1,7 @@
 # 项目文档索引
 
+Hermes 旧版已有会话绑定的唤醒状态分流、执行保护及原话题队列恢复见 [旧版状态分流](design/2026-11-09-hermes-legacy-state-routing.md) 和 [兼容契约](engineering/HERMES-COMPATIBILITY.md)。
+
 消息发送的单事务持久化、阶段耗时日志与发送中反馈见 [发送延迟设计](design/2026-11-06-message-send-latency.md) 和 [发送工程契约](engineering/MESSAGE-SEND.md)。
 
 Hermes MCP 初始化失败的原始诊断、阶段日志及一次受限队列恢复见 [MCP 初始化恢复](design/2026-11-06-mcp-startup-recovery.md)。
@@ -46,7 +48,7 @@ Codex 与 Hermes 连续唤醒的规则正文、原生系统文本和工具 schem
 
 Hermes 新旧会话接口、安装定位和兼容提示见 [Hermes 兼容性](engineering/HERMES-COMPATIBILITY.md) 与 [设计依据](design/2026-10-27-hermes-compatibility.md)。
 
-当前发布说明：[v0.2.12](releases/v0.2.12.md)。历史版本：[v0.2.11](releases/v0.2.11.md)、[v0.2.10](releases/v0.2.10.md)、[v0.2.9](releases/v0.2.9.md)、[v0.2.8](releases/v0.2.8.md)、[v0.2.7](releases/v0.2.7.md)、[v0.2.6](releases/v0.2.6.md)、[v0.2.5](releases/v0.2.5.md)、[v0.2.4](releases/v0.2.4.md)、[v0.2.3](releases/v0.2.3.md)、[v0.2.2](releases/v0.2.2.md)、[v0.2.1](releases/v0.2.1.md)、[v0.2.0](releases/v0.2.0.md)、[v0.1.9](releases/v0.1.9.md)、[v0.1.8](releases/v0.1.8.md)、[v0.1.7](releases/v0.1.7.md)、[v0.1.6](releases/v0.1.6.md)、[v0.1.5](releases/v0.1.5.md)、[v0.1.4](releases/v0.1.4.md)、[v0.1.3](releases/v0.1.3.md)、[v0.1.2](releases/v0.1.2.md)。
+当前发布说明：[v0.2.13](releases/v0.2.13.md)。历史版本：[v0.2.12](releases/v0.2.12.md)、[v0.2.11](releases/v0.2.11.md)、[v0.2.10](releases/v0.2.10.md)、[v0.2.9](releases/v0.2.9.md)、[v0.2.8](releases/v0.2.8.md)、[v0.2.7](releases/v0.2.7.md)、[v0.2.6](releases/v0.2.6.md)、[v0.2.5](releases/v0.2.5.md)、[v0.2.4](releases/v0.2.4.md)、[v0.2.3](releases/v0.2.3.md)、[v0.2.2](releases/v0.2.2.md)、[v0.2.1](releases/v0.2.1.md)、[v0.2.0](releases/v0.2.0.md)、[v0.1.9](releases/v0.1.9.md)、[v0.1.8](releases/v0.1.8.md)、[v0.1.7](releases/v0.1.7.md)、[v0.1.6](releases/v0.1.6.md)、[v0.1.5](releases/v0.1.5.md)、[v0.1.4](releases/v0.1.4.md)、[v0.1.3](releases/v0.1.3.md)、[v0.1.2](releases/v0.1.2.md)。
 
 需求超时拆解、部分任务恢复和队列空唤醒抑制见 [需求恢复契约](engineering/REQUIREMENT-RECOVERY.md) 与 [设计依据](design/2026-10-27-requirement-recovery.md)。
 
