@@ -83,6 +83,7 @@
   el('input').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)&&!e.isComposing){e.preventDefault();el('compose').requestSubmit();}});
   host.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();toggle(false);el('toggle').focus();}});
   function updateSend() {
+    el('hint').textContent=busy?'正在发送…':current?.status==='running'?'正在回复，输入会为你保留':'Ctrl + Enter 发送';
     el('send').disabled=busy||!current?.bot||current?.status==='running'||!(selected||el('input').value.trim());
     host.querySelectorAll('#hud-todos button').forEach(button=>button.disabled=busy||!current?.bot||['running','queued'].includes(current?.status));
   }
@@ -292,7 +293,7 @@
           }
           if(changes.length)await loadProjects();
         }
-      },'hud-primary'),action('暂不处理',()=>mutate('/answer',{text:'这项建议暂不处理，请继续当前问题。',question_id:null,dismiss_proposal:proposal.id})));todos.append(box);
+      },'hud-primary'),action('暂不处理',()=>dismissProposal(proposal.id)));todos.append(box);
     }
     const reminder=actionable?notification.action:'';
     if(reminder){
@@ -305,7 +306,6 @@
     syncTabs();
     el('error').textContent=errorText||item?.error||'';el('error').hidden=!el('error').textContent;
     el('retry').hidden=!item?.bot||state!=='error';
-    el('hint').textContent=busy?'正在发送…':state==='running'?'正在回复，输入会为你保留':'Ctrl + Enter 发送';
     el('input').disabled=!item?.bot;
     const history=el('history');history.replaceChildren();
     el('history-toggle').hidden=!item?.state.facts?.length;
@@ -368,6 +368,20 @@
   });
   el('latest').onclick=showLatest;
   el('history-toggle').onclick=()=>showAuxiliary(auxiliary==='history'?'':'history');
+  async function dismissProposal(id) {
+    if(!current||busy)return;
+    const previous=current,stamp=version;
+    const state={...current.state,cards:(current.state.cards||[]).filter(card=>card.proposal?.id!==id)};
+    if(state.proposal?.id===id)delete state.proposal;
+    if(state.notification?.id===id||(!state.question&&!state.proposal&&!state.cards.some(card=>card.question||card.proposal))){
+      const urgent=state.cards.find(card=>card.notification?.kind==='user_action');
+      const todo=urgent&&(urgent.question||urgent.proposal);
+      state.notification=urgent?{...urgent.notification,id:todo.id}:{kind:'none'};
+    }
+    current={...current,state};render();
+    const data=await mutate('/answer',{text:'这项建议暂不处理，请继续当前问题。',question_id:null,dismiss_proposal:id});
+    if(!data&&stamp===version&&current?.id===previous.id&&current.revision===previous.revision)setData(previous);
+  }
   async function mutate(path,body={},method='POST') {
     if(!current||busy)return null;
     const sid=current.id,stamp=version;busy=true;errorText='';updateSend();

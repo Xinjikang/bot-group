@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+HUD 暂不处理即时关闭：`python -X utf8 -B scripts/test_hud_dismiss_browser.py --evidence <主目录报告目录>`。需要 Playwright 与 Chrome；全部 HTTP 由合成夹具拦截，零业务服务和模型调用。覆盖 1440/390px 下延迟请求完成前撤下卡片、目标行动提醒与数量同步、其他卡片及草稿保留、后台继续讨论消息、提交与补读均失败时恢复卡片及重试入口、最后一张卡片空状态、发送提示恢复。后端复用隔离运行器的 `scripts.test_project_hud` 验证撤下 ID、超时换代与会话隔离。
+
 Hermes 模型继承与旧会话路由：`python -X utf8 -B -m scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_project_models scripts.test_hermes_gateway_sessions scripts.test_hermes_session_reuse scripts.test_profile_config scripts.test_runtime_fork`。临时配置、SQLite 与模拟 RPC 验证未保存覆盖时继承模型/供应商/推理强度、字段级覆盖、全局修改后下一次唤醒生效、false→none、命名 profile、缺失默认值及原会话保留；网关及进程启动使用既有隔离夹具，零生产模型调用。
 
 v0.2.13 发布验收见 [发布说明](../docs/releases/v0.2.13.md)。复用本文“正式 Release 验收”的专用 unittest 组合，使用临时默认数据库、宿主和数据目录；缺省数据库路径与旧版升级子进程用例由各自夹具隔离。修复相关 121 项回归沿用旧版唤醒分流组合；公开发布后使用 `verify_public_install.py`，传入登记的隔离端口与新的报告目录，验证匿名安装、重复安装、BAT 启停和默认更新索引。
