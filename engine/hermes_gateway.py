@@ -161,6 +161,9 @@ def _native_session_state(conn, profile, session):
         return False
     if binding['switching']:
         return None  # /new 切换进行中：暂缓投递
+    # Legacy CLI hosts use scoped OS process checks for their existing bindings.
+    if not enabled():
+        return False
     key = (binding['session_id'], binding['generation'])
     with _native_cache_lock:
         hit = _native_cache.get(key)

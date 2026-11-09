@@ -4,6 +4,8 @@
 
 `hermes_runtime.gateway_source()` 按 `gateway_runtime_cli.py` 与 `gateway_chat_startup.py` 源码布局识别网关路径，连接时继续校验协议及所需能力。旧版继续由 CLI 子进程执行，使用 `hermes_overlay` 注入每次执行的 MCP 配置与凭据；网关版使用官方会话级 MCP 和 admission 回执，详见 [网关执行适配](HERMES-GATEWAY.md)。版本字符串用于诊断。
 
+已有 `runtime='hermes'` 绑定的唤醒状态检查复用相同能力分流。旧版在读取原生查询缓存与获取网关连接前返回 CLI 进程检查；按 profile、引擎会话名和原生会话 ID 匹配，空闲、忙碌和未知状态继续保持三态语义。会话切换、未结束网关执行及待清理状态继续保护原归属。网关版查询失败继续暂缓该会话。设计与恢复边界见 [旧版状态分流](../design/2026-11-09-hermes-legacy-state-routing.md)。
+
 ## 入口与源码
 
 `engine.hermes_runtime` 供安装检查、唤醒和会话适配共用。入口按 `HERMES_BIN`、`HERMES_HOME/bin`、该 home 下源码虚拟环境、PATH、默认安装目录顺序选择。Windows 默认安装目录覆盖 `%LOCALAPPDATA%/hermes` 的 bin 启动器与 `hermes-agent/venv/Scripts/hermes.exe`。
@@ -40,6 +42,7 @@ Windows 支持纯转发 CMD/BAT，以及 Hermes 0.22.x 安装器生成的单条 
 
 ## 故障处理
 
+- 旧版已有绑定持续提示 `transport_error`：更新包含旧版状态分流修复的 bot-group 后手动重启引擎、刷新页面。仍有效的 queued 作业按原 ID 和顺序恢复调度，保留话题发言位、会话及绑定代次；运行中的 CLI 或未知进程状态继续等待。安装或更换 Hermes 后重启引擎，重新核对实际入口和源码归属。
 - `HermesCompatibilityError`：检查日志中的缺失模块或接口，更新或修复 Hermes 后重启引擎。
 - `HermesConfigurationError`：统一 `HERMES_BIN` 与 `HERMES_HOME` 指向的安装；修正后重启引擎。
 - 两类异常均归为 `configuration`，聊天给出对应操作提示，具体路径与模块详情保留在诊断日志。

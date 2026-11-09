@@ -123,6 +123,15 @@ class NativeBusyFixtures:
         self.addCleanup(hermes_gateway._native_cache.clear)
         self.addCleanup(wake._native_procs.clear)
 
+    def _setup_gateway_source(self):
+        source = Path(self.tmp.name) / 'hermes-source'
+        (source / 'hermes_cli').mkdir(parents=True)
+        for name in ('gateway_runtime_cli.py', 'gateway_chat_startup.py'):
+            (source / 'hermes_cli' / name).touch()
+        patcher = patch.object(hermes_gateway.hermes_runtime, 'source_directory', return_value=source)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _fake_deliver(self, profile, kind, **kwargs):
         self.delivered.append((profile, kind, kwargs.get('thread_id')))
         return {'ok': True, 'detail': 'probe'}
@@ -150,6 +159,7 @@ class NativeBusyFixtures:
 class NativeBusySchedulingTests(NativeBusyFixtures, unittest.TestCase):
     def setUp(self):
         self._setup_db()
+        self._setup_gateway_source()
         # 状态夹具
         self.native_states = {}
         self.gateway_calls = []
@@ -458,6 +468,7 @@ class NativeObserverPoolContractTests(NativeBusyFixtures, unittest.TestCase):
 
     def setUp(self):
         self._setup_db()
+        self._setup_gateway_source()
         self.delivered = []
         self._setup_queue_and_process_fixtures()
         self.observer_calls = []

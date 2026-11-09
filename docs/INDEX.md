@@ -1,5 +1,7 @@
 # 项目文档索引
 
+Hermes 旧版已有会话绑定的唤醒状态分流、执行保护及原话题队列恢复见 [旧版状态分流](design/2026-11-09-hermes-legacy-state-routing.md) 和 [兼容契约](engineering/HERMES-COMPATIBILITY.md)。
+
 消息发送的单事务持久化、阶段耗时日志与发送中反馈见 [发送延迟设计](design/2026-11-06-message-send-latency.md) 和 [发送工程契约](engineering/MESSAGE-SEND.md)。
 
 Hermes MCP 初始化失败的原始诊断、阶段日志及一次受限队列恢复见 [MCP 初始化恢复](design/2026-11-06-mcp-startup-recovery.md)。
