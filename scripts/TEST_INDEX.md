@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+v0.2.13 发布验收见 [发布说明](../docs/releases/v0.2.13.md)。复用本文“正式 Release 验收”的专用 unittest 组合，使用临时默认数据库、宿主和数据目录；缺省数据库路径与旧版升级子进程用例由各自夹具隔离。修复相关 121 项回归沿用旧版唤醒分流组合；公开发布后使用 `verify_public_install.py`，传入登记的隔离端口与新的报告目录，验证匿名安装、重复安装、BAT 启停和默认更新索引。
+
 Hermes 旧版唤醒分流（Issue #28）：使用 `python -X utf8 -B -m scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_hermes_legacy_scheduling scripts.test_native_busy_scheduling scripts.test_scheduling_diagnostics scripts.test_hermes_handoff_scheduling scripts.test_hermes_gateway scripts.test_process_query scripts.test_hermes_compatibility`。需要项目 Python 依赖；临时源码布局和 SQLite 验证旧版已有绑定的 CLI 进程检查、忙/空闲/未知三态、切换与未结束执行保护、网关失败保持暂缓，以及重启后原话题 job ID、入队时间、绑定与发言顺序保留。网关 RPC 与进程清单使用确定性夹具，Windows 进程查询模块另启动自身临时 Python 子进程，启动器命令验证显式使用临时 home；零生产网关、模型和业务写入。
 
 消息发送延迟：`scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_message_send_latency scripts.test_runtime_schema_boundary scripts.test_message_execution scripts.test_queue_claim_race`。隔离 SQLite 验证消息/inbox/多个唤醒作业一次提交、提交前不可见、入队异常整笔回滚、重复入队和正文脱敏耗时日志。浏览器运行 `python -X utf8 -B scripts/test_message_send_browser.py --evidence <主目录报告下的新绝对目录>`，需要 Playwright 与 Chrome；全拦截合成 HTTP，验证发送中反馈、重复提交门禁、成功清空、失败保留、切换项目与新草稿保留，覆盖深浅主题及 1280/390px。零生产消息、消费者和模型调用，退出关闭自有浏览器。
