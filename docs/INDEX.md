@@ -1,5 +1,7 @@
 # 项目文档索引
 
+全站事件循环阻塞的根因、认证数据库段线程隔离、心跳写入迁移与 WAL 实例初始化见 [authorize 阻塞修复](design/2026-11-10-authorize-lock-isolation.md)。
+
 Hermes 后台终端进程的完成通知、原任务持续等待与界面状态见 [后台进程等待](design/2026-11-10-hermes-background-process-wait.md)。
 
 Hermes 成员界面继承值与实际唤醒参数的一致性、覆盖记录缺省和旧会话模型更新见 [模型继承](design/2026-11-09-hermes-model-inheritance.md)。
