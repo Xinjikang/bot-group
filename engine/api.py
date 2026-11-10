@@ -1357,12 +1357,30 @@ def post_heartbeat(body: dict[str, Any], request: Request = None, identity=Depen
         raise HTTPException(403, "Heartbeat requires a member credential")
     profile = identity[0]
     session_scope = getattr(getattr(request, 'state', None), 'session_scope', None)
-    if session_scope:
-        from . import hermes_session_auth
+    authorized_run = getattr(getattr(request, 'state', None), 'heartbeat_execution', None)
+    if session_scope is not None and authorized_run is None:
+        return {'ok': True, 'profile': profile, 'idle': True}
+    if authorized_run is not None:
+        from .access import _authorize_member
         conn = db.get_connection()
         try:
-            if hermes_session_auth.execution(conn, session_scope, required=False) is None:
+            # Acquire the write lock before rechecking membership and execution state.
+            conn.execute('BEGIN IMMEDIATE')
+            current_run = _authorize_member(request, profile, ('POST', '/heartbeat'), body, connection=conn)
+            if (current_run is None or authorized_run is None
+                    or current_run['execution_id'] != authorized_run['execution_id']):
                 return {'ok': True, 'profile': profile, 'idle': True}
+            updated = conn.execute(
+                'UPDATE wake_runs SET pid=? WHERE session=? AND started_at=? AND ended_at IS NULL',
+                (body['pid'], current_run['session'], current_run['started_at']))
+            if updated.rowcount != 1:
+                return {'ok': True, 'profile': profile, 'idle': True}
+            conn.commit()
+        except sqlite3.OperationalError as exc:
+            if db.is_lock_error(exc):
+                raise HTTPException(503, 'Database busy; retry the request',
+                                    headers={'Retry-After': '1'}) from None
+            raise
         finally:
             conn.close()
     if not profile:

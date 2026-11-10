@@ -1,7 +1,7 @@
 """group.db 连接与建表。
 
 铁律（ENGINEERING.md）：
-- 所有连接统一 PRAGMA journal_mode=WAL + busy_timeout=30000（实测：多写者由库锁串行化，阻塞~2s 正常完成）
+- 数据库初始化 WAL，各连接配置 busy_timeout=30000 与 foreign_keys
 - messages 表只 INSERT，永不 UPDATE/DELETE
 - 重启恢复：wake_jobs 的 running → queued 重新发信号；inbox 原样不动
 """
@@ -29,7 +29,7 @@ def now_iso(seconds_offset: int = 0) -> str:
 
 
 def get_connection() -> sqlite3.Connection:
-    """打开 group.db 连接，统一 WAL + busy_timeout=30s + foreign_keys。"""
+    """Open an initialized database with per-connection timeout and foreign keys."""
     from .operation_transaction import current
     transaction = current.get()
     if transaction is not None:
@@ -39,11 +39,30 @@ def get_connection() -> sqlite3.Connection:
     if parent:
         os.makedirs(parent, exist_ok=True)
     conn = sqlite3.connect(path, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=30000")
-    conn.execute("PRAGMA foreign_keys=ON")
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA foreign_keys=ON")
+    except Exception:
+        conn.close()
+        raise
     return conn
+
+
+def is_lock_error(exc: sqlite3.OperationalError) -> bool:
+    """Recognize SQLite busy/locked errors, including extended result codes."""
+    return (getattr(exc, 'sqlite_errorcode', 0) & 0xff) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+
+
+def _initialize_wal(conn: sqlite3.Connection) -> None:
+    """Use the actual database's persisted journal mode as its initialization state."""
+    mode = conn.execute('PRAGMA journal_mode').fetchone()[0].lower()
+    if mode == 'wal':
+        return
+    if mode == 'memory' and not any(row[2] for row in conn.execute('PRAGMA database_list') if row[1] == 'main'):
+        return
+    if conn.execute('PRAGMA journal_mode=WAL').fetchone()[0].lower() != 'wal':
+        raise sqlite3.OperationalError('Database WAL initialization failed')
 
 
 @contextmanager
@@ -51,6 +70,7 @@ def keep_wal_open():
     """Keep WAL sidecars stable between short requests without retaining a transaction."""
     connection = get_connection()
     try:
+        _initialize_wal(connection)
         connection.execute('SELECT count(*) FROM sqlite_master').fetchone()
         if connection.in_transaction:
             raise RuntimeError('Idle database connection unexpectedly holds a transaction')
@@ -68,6 +88,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     from .operation_transaction import Lease
     if isinstance(conn, Lease):
         return  # Request leases use the schema prepared by service startup.
+    _initialize_wal(conn)
     schema_path = Path(__file__).resolve().parent / "schema.sql"
     # Rename before schema.sql creates the index referencing the new column.
     cols = {r['name'] for r in conn.execute('PRAGMA table_info(tasks)')}

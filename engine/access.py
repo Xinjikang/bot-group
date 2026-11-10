@@ -1,9 +1,11 @@
 """HTTP authentication and the default-deny member resource contract."""
 
 import json
+import sqlite3
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 
 from . import auth, db
 
@@ -134,7 +136,19 @@ async def authorize(request: Request, identity=Depends(resolve_identity)):
         # 停派发：新的写工具请求明确未受理（客户端按 X-Group-Not-Accepted 不重放，设计 4.4/7.2）。
         raise HTTPException(503, "Engine is shutting down; request not accepted",
                             headers={"X-Group-Not-Accepted": "1"})
-    conn = db.get_connection()
+    body = None
+    if request.method == 'POST' and route[1] in ('/msg', '/thread', '/thread/task-update', '/heartbeat'):
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeError):
+            pass  # Validate the body after credential and resource checks.
+    request.state.heartbeat_execution = await run_in_threadpool(
+        _authorize_member, request, profile, route, body)
+
+
+def _authorize_member(request, profile, route, body, *, connection=None):
+    """Check member resources using a connection owned by the calling worker."""
+    conn = connection if connection is not None else db.get_connection()
     try:
         if not conn.execute("SELECT 1 FROM members WHERE profile=?", (profile,)).fetchone():
             raise HTTPException(403, "Unknown member")
@@ -220,10 +234,6 @@ async def authorize(request: Request, identity=Depends(resolve_identity)):
         if request.method == "POST" and path in (
             "/msg", "/thread", "/thread/task-update", "/heartbeat",
         ):
-            try:
-                body = await request.json()
-            except (ValueError, UnicodeError):
-                raise HTTPException(422, "JSON object required")
             if not isinstance(body, dict):
                 raise HTTPException(422, "JSON object required")
             if session_scope is not None:
@@ -237,9 +247,6 @@ async def authorize(request: Request, identity=Depends(resolve_identity)):
                 pid = body.get('pid')
                 if type(pid) is not int or pid <= 0:
                     raise HTTPException(422, 'Heartbeat process required')
-                conn.execute('UPDATE wake_runs SET pid=? WHERE session=? AND started_at=? AND ended_at IS NULL',
-                             (pid, scope['session'], scope['wake_started_at']))
-                conn.commit()
             if path == "/msg":
                 if session_scope is not None:
                     from . import task_access
@@ -270,5 +277,13 @@ async def authorize(request: Request, identity=Depends(resolve_identity)):
                     raise HTTPException(403, "Topic project mismatch")
             elif path in ("/msg", "/thread"):
                 require_project(conn, profile, body.get("project", ""))
+        if path == '/heartbeat' and gateway_run is not None:
+            return dict(gateway_run)
+    except sqlite3.OperationalError as exc:
+        if db.is_lock_error(exc):
+            raise HTTPException(503, 'Database busy; retry the request',
+                                headers={'Retry-After': '1'}) from None
+        raise
     finally:
-        conn.close()
+        if connection is None:
+            conn.close()

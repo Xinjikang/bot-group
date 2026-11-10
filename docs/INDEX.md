@@ -1,6 +1,6 @@
 # 项目文档索引
 
-全站事件循环阻塞的根因、认证数据库段线程隔离、心跳写入迁移与 WAL 实例初始化见 [authorize 阻塞修复](design/2026-11-10-authorize-lock-isolation.md)。
+全站事件循环阻塞的根因、认证数据库段线程隔离、心跳写入迁移与 WAL 实例初始化见 [authorize 阻塞修复](design/2026-11-10-authorize-lock-isolation.md)，已实现的线程边界、事务与响应契约见 [认证数据库隔离](engineering/AUTHORIZE-LOCK-ISOLATION.md)。
 
 Hermes 后台终端进程的完成通知、原任务持续等待与界面状态见 [后台进程等待](design/2026-11-10-hermes-background-process-wait.md)。
 

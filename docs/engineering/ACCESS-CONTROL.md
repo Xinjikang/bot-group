@@ -1,5 +1,7 @@
 # HTTP 访问控制与成员凭据
 
+数据库认证在线程池执行，心跳在同步端点取得写锁后复查授权并提交；线程、事务和锁超时响应契约见 [认证数据库隔离](AUTHORIZE-LOCK-ISOLATION.md)。
+
 ## 认证与路由边界
 
 `engine/access.py` 为业务路由提供统一入口。公开入口为 `GET /auth/status` 与 `POST /auth/login`。静态 `/app/`、接口模式文档和 `/health` 的基本存活字段可公开访问。`/health` 的程序根和数据库路径只向管理员身份返回。
