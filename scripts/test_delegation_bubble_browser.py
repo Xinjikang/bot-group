@@ -1,5 +1,6 @@
-"""Topic background-wait UI with synthetic HTTP and isolated Chrome contexts."""
+"""Topic delegation and work process waits with synthetic HTTP and isolated Chrome."""
 import argparse
+import itertools
 import json
 import mimetypes
 from pathlib import Path
@@ -35,6 +36,7 @@ def run(evidence):
         elif path == '/reasoning':
             request.fulfill(json={'entries': [], 'latest_id': 0, 'replies': [],
                                  'execution_state': execution['state'],
+                                 'background_kind': execution.get('background_kind', 'delegation'),
                                  'process_ended_at': 110 if state['ended'] else None})
         elif path == '/appearance/background':
             request.fulfill(status=404)
@@ -45,64 +47,68 @@ def run(evidence):
                                  'tasks': [], 'requirements': [], 'pending_approval': [], 'runs': []})
 
     def show_topic(page, theme, width):
-        page.evaluate("""({theme, narrow}) => {
+        page.evaluate("""({theme, narrow, process}) => {
             document.documentElement.dataset.theme = theme;
-            S.currentProject = 'p'; S.currentThread = 10;
+            S.currentProject = 'p'; S.currentThread = process ? null : 10;
             S.threads = [{id:10, project:'p', title:'隔离话题', status:'open', members:[]}];
             if (narrow) {
                 document.querySelector('.col-threads').style.display = 'none';
                 document.querySelector('.col-tasks').style.display = 'none';
             }
             renderMessages();
-        }""", {'theme': theme, 'narrow': width == 390})
+        }""", {'theme': theme, 'narrow': width == 390, 'process': execution['kind'] == 'work'})
 
     results = []
     with sync_playwright() as pw:
         browser = pw.chromium.launch(channel='chrome', headless=True)
-        for theme in ('dark', 'light'):
-            for width in (1280, 390):
-                state['ended'] = False
-                execution['state'] = 'waiting_delegation'
-                context = browser.new_context(viewport={'width': width, 'height': 800})
-                page = context.new_page()
-                page.route('**/*', route)
-                page.goto('http://delegation-bubble.test/app/')
-                page.wait_for_function('S.thinkRuns.size === 1')
-                show_topic(page, theme, width)
-                head = page.locator('.think-bubble-head')
-                head.filter(has_text=LABEL).wait_for()
-                assert page.locator('.tb-stop').count() == 1
-                assert page.locator('.tb-dots-still').count() == 1
-                assert '思考中' not in head.inner_text()
-                assert page.locator('.think-bubble-body').is_visible()
-                assert page.evaluate("""() => {
-                    const head = document.querySelector('.think-bubble-head');
-                    return head.clientWidth > 240 && head.scrollWidth <= head.clientWidth + 1;
-                }"""), 'background status must fit the message column'
-                page.screenshot(path=str(evidence / f'waiting-{theme}-{width}.png'))
-                page.reload()
-                page.wait_for_function('S.thinkRuns.size === 1')
-                show_topic(page, theme, width)
-                head.filter(has_text=LABEL).wait_for()
-                execution['state'] = 'running'
-                page.evaluate('loadThinking()')
-                head.filter(has_text='思考中').wait_for()
-                assert page.locator('.tb-dots-still').count() == 0
-                assert page.evaluate('S.thinkRuns.size') == 1
-                execution['state'] = 'waiting_delegation'
-                page.evaluate('loadThinking()')
-                head.filter(has_text=LABEL).wait_for()
-                execution['state'] = 'terminal'
-                state['ended'] = True
-                page.evaluate('loadThinking()')
-                page.wait_for_function('[...S.thinkRuns.values()][0].finished')
-                assert page.locator('.tb-stop').count() == 0
-                assert LABEL not in head.inner_text()
-                results.append({'theme': theme, 'width': width, 'result': 'passed'})
-                context.close()
+        for kind, theme, width in itertools.product(('delegation', 'process'), ('dark', 'light'), (1280, 390)):
+            label = '后台进程正在执行' if kind == 'process' else LABEL
+            execution.update(kind='work' if kind == 'process' else 'chat',
+                             thread_id=None if kind == 'process' else 10,
+                             session='bot-p-work' if kind == 'process' else 'bot-p-chat-10',
+                             background_kind=kind)
+            state['ended'] = False
+            execution['state'] = 'waiting_delegation'
+            context = browser.new_context(viewport={'width': width, 'height': 800})
+            page = context.new_page()
+            page.route('**/*', route)
+            page.goto('http://delegation-bubble.test/app/')
+            page.wait_for_function('S.thinkRuns.size === 1')
+            show_topic(page, theme, width)
+            head = page.locator('.think-bubble-head')
+            head.filter(has_text=label).wait_for()
+            assert page.locator('.tb-stop').count() == 1
+            assert page.locator('.tb-dots-still').count() == 1
+            assert '思考中' not in head.inner_text()
+            assert page.locator('.think-bubble-body').is_visible()
+            assert page.evaluate("""() => {
+                const head = document.querySelector('.think-bubble-head');
+                return head.clientWidth > 240 && head.scrollWidth <= head.clientWidth + 1;
+            }"""), 'background status must fit the message column'
+            page.screenshot(path=str(evidence / f'waiting-{kind}-{theme}-{width}.png'))
+            page.reload()
+            page.wait_for_function('S.thinkRuns.size === 1')
+            show_topic(page, theme, width)
+            head.filter(has_text=label).wait_for()
+            execution['state'] = 'running'
+            page.evaluate('loadThinking()')
+            head.filter(has_text='思考中').wait_for()
+            assert page.locator('.tb-dots-still').count() == 0
+            assert page.evaluate('S.thinkRuns.size') == 1
+            execution['state'] = 'waiting_delegation'
+            page.evaluate('loadThinking()')
+            head.filter(has_text=label).wait_for()
+            execution['state'] = 'terminal'
+            state['ended'] = True
+            page.evaluate('loadThinking()')
+            page.wait_for_function('[...S.thinkRuns.values()][0].finished')
+            assert page.locator('.tb-stop').count() == 0
+            assert label not in head.inner_text()
+            results.append({'kind': kind, 'theme': theme, 'width': width, 'result': 'passed'})
+            context.close()
         browser.close()
     (evidence / 'results.json').write_text(json.dumps(results, indent=2), encoding='utf-8')
-    print('PASS: synthetic HTTP topic waiting, refresh, running, repeated waiting, completion; dark/light × 1280/390 message column')
+    print('PASS: topic delegation/work process waiting, refresh, running, completion; dark/light × 1280/390 (8 combinations)')
 
 
 if __name__ == '__main__':

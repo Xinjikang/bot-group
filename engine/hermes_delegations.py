@@ -12,6 +12,8 @@ import sqlite3
 import time
 import uuid
 
+from . import hermes_background as background
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS hermes_delegation_cycles (
     execution_id TEXT PRIMARY KEY, binding_generation INTEGER NOT NULL
@@ -33,6 +35,7 @@ CREATE TABLE IF NOT EXISTS hermes_delegation_inputs (
     PRIMARY KEY(execution_id, request_id), UNIQUE(execution_id, message_id)
 );
 """
+SCHEMA += background.SCHEMA
 
 
 def cycle(conn, row):
@@ -116,14 +119,24 @@ def capture(conn, row, receipt):
     """Called inside receipt settlement's transaction, before any exit side effects."""
     ids = set()
     result = receipt.get('result') or {}
-    for message in result.get('messages', []) if isinstance(result, dict) else []:
-        if message.get('role') != 'tool' or message.get('name', message.get('tool_name')) != 'delegate_task':
+    messages = result.get('messages', []) if isinstance(result, dict) else []
+    if not isinstance(messages, list):
+        messages = []
+    for message in messages:
+        if (not isinstance(message, dict) or message.get('role') != 'tool'
+                or message.get('name', message.get('tool_name')) != 'delegate_task'):
             continue
         try:
             value = json.loads(message.get('content', ''))
         except (TypeError, ValueError):
             continue
         ids.update(_dispatched(value))
+    processes = background.process_updates(messages)
+    ids.update(key for key, waiting in processes.items() if waiting)
+    for key, waiting in processes.items():
+        if not waiting:
+            conn.execute('UPDATE hermes_delegations SET consumed=1 WHERE execution_id=? AND delegation_id=?',
+                         (row['execution_id'], key))
     if ids:
         binding = conn.execute('SELECT generation FROM session_bindings WHERE project=? AND profile=? '
             'AND kind=? AND thread_id=? AND session_id=?',
@@ -153,11 +166,15 @@ def capture(conn, row, receipt):
     if did and receipt['status'] == 'terminal':
         conn.execute('UPDATE hermes_delegations SET consumed=1 WHERE execution_id=? AND delegation_id=?',
                      (row['execution_id'], did))
+    if receipt['status'] == 'terminal':
+        conn.execute('UPDATE hermes_delegations SET consumed=1 WHERE execution_id=? AND delegation_id IN '
+            '(SELECT wait_id FROM hermes_background_callbacks WHERE execution_id=? AND admission_id=? AND settles=1)',
+            (row['execution_id'], row['execution_id'], receipt['admission_id']))
     return (receipt['status'] == 'terminal' and receipt.get('outcome') == 'completed'
             and not row['cancel_reason'] and pending(conn, row))
 
 
-def native_turns(row, delegation_ids, request_ids):
+def native_turns(row, delegation_ids, request_ids, *, process_ids=(), known_admissions=()):
     """Bounded, read-only discovery from the recorded profile home; never writes native state."""
     path = (Path(row['home']) / 'state.db').resolve()
     with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.25)) as native:
@@ -165,10 +182,25 @@ def native_turns(row, delegation_ids, request_ids):
         native.execute('PRAGMA query_only=ON')
         deadline = time.monotonic() + .5
         native.set_progress_handler(lambda: time.monotonic() >= deadline, 1000)
-        values = native.execute('SELECT admission_id,request_id,status,generation,owner_epoch FROM session_admissions '
+        values = native.execute('SELECT seq,admission_id,request_id,status,generation,owner_epoch FROM session_admissions '
             'WHERE target_session_id=? ORDER BY seq', (row['session_id'],)).fetchall()
-        return [dict(r) for r in values if _delegation_id(r['request_id']) in delegation_ids
-                or r['request_id'] in request_ids]
+        found = [dict(r) for r in values if _delegation_id(r['request_id']) in delegation_ids
+                 or r['request_id'] in request_ids]
+        if process_ids:
+            roots = [r['seq'] for r in values if r['admission_id'] in known_admissions]
+            if not roots:
+                raise sqlite3.OperationalError('Native process-wait origin admission is unavailable')
+            floor = min(roots)
+            for value in values:
+                if value['seq'] <= floor or background.identity(value['request_id']) is None:
+                    continue
+                proof = native.execute('SELECT principal_id,payload_json FROM session_admissions '
+                    'WHERE admission_id=? AND target_session_id=?',
+                    (value['admission_id'], row['session_id'])).fetchone()
+                waits = background.callback_waits(value, proof['principal_id'], proof['payload_json'], process_ids)
+                if waits:
+                    found.append(dict(value, background_waits=waits))
+        return sorted(found, key=lambda item: item['seq'])
 
 
 def adopt(conn, row, discovered):
@@ -180,6 +212,9 @@ def adopt(conn, row, discovered):
             continue
         conn.execute('INSERT OR IGNORE INTO hermes_native_turns(execution_id,admission_id,request_id) VALUES(?,?,?)',
                      (row['execution_id'], item['admission_id'], item['request_id']))
+        conn.executemany('INSERT OR IGNORE INTO hermes_background_callbacks VALUES(?,?,?,?)',
+            [(row['execution_id'], item['admission_id'], key, done)
+             for key, done in item.get('background_waits', [])])
         conn.execute("UPDATE hermes_executions SET admission_id=?,generation=NULL,authority_epoch=NULL,"
             "state=?,detail='',execution_deadline=? WHERE execution_id=? AND state<>'terminal'",
             (item['admission_id'], 'cancelling' if row['cancel_reason'] else 'submitting',
@@ -192,7 +227,20 @@ def adopt(conn, row, discovered):
 def discover_turns(conn, row):
     ids = {r[0] for r in conn.execute('SELECT delegation_id FROM hermes_delegations WHERE execution_id=?', (row['execution_id'],))}
     requests = {r[0] for r in conn.execute('SELECT request_id FROM hermes_delegation_inputs WHERE execution_id=?', (row['execution_id'],))}
-    return native_turns(row, ids, requests)
+    processes = {key[len(background.PREFIX):] for key in ids if key.startswith(background.PREFIX)}
+    if not processes:
+        return native_turns(row, ids, requests)
+    admissions = {r[0] for r in conn.execute('SELECT admission_id FROM hermes_native_turns WHERE execution_id=?',
+                                            (row['execution_id'],))}
+    return native_turns(row, ids - {background.PREFIX + key for key in processes}, requests,
+                        process_ids=processes, known_admissions=admissions)
+
+
+def background_kind(conn, row):
+    ids = [r[0] for r in conn.execute('SELECT delegation_id FROM hermes_delegations '
+                                     'WHERE execution_id=? AND consumed=0', (row['execution_id'],))]
+    processes = sum(key.startswith(background.PREFIX) for key in ids)
+    return 'mixed' if processes and processes < len(ids) else 'process' if processes else 'delegation'
 
 
 def poll(conn, row, client):

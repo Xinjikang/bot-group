@@ -6,6 +6,10 @@ MCP 初始化失败恢复使用现有终态结果与 `session.mutate editor_mcp`
 
 ## 子代理等待
 
+`terminal` / `process_manage` 的结构化 `notify_on_complete=true` 回执也建立后台等待，以 `process:<原生进程 ID>` 保存到同一等待账本。工作和话题会话显示“后台进程正在执行”，混合等待显示“后台任务正在执行”。父轮次结束保留逻辑执行，完成回调收尾后才进入任务退出检查。进程状态、显式关闭通知及回调映射的协议见 [后台进程等待](../design/2026-11-10-hermes-background-process-wait.md)。
+
+进程回调发现限定原生 session、原执行 admission 之后的序号、`automation:` principal 与结构化自动通知身份，继续通过公开回执结算。观察通知保持等待，完成通知在回调 terminal 后结算对应进程；`hermes_background_callbacks` 在启动建表并持久保存多进程映射。恢复时保留原执行身份，HTTP 查询只返回本地 `background_kind`。任务取消、当前归属与重试预算遵循现有规则。
+
 结构化 `delegate_task` 后台派发回执把逻辑执行置为 `waiting_delegation`。原生父轮次终态保持当前任务及话题发言位；话题气泡显示“子代理正在执行后台任务”，工作会话清除该轮思考显示。原生回调 admission 自动归入同一个 `execution_id`。全部委派回调处理完毕后进行逻辑执行收尾，回调工具写入继续校验当前任务/话题归属。相关表为 `hermes_delegation_cycles`、`hermes_delegations`、`hermes_native_turns` 和 `hermes_delegation_inputs`。
 
 正常等待跨过普通 `execution_deadline` 后继续保留归属，异常恢复依据明确的失效事实或用户停止。话题气泡按逻辑执行生命周期持续采集，后台等待与主 agent 续跑使用同一执行标识。维护与验收分别遵循设计中的[正常委派等待与超时](../design/2026-11-03-delegation-wait.md#正常委派等待与超时)和[思考展示边界](../design/2026-11-03-delegation-wait.md#思考展示边界)。

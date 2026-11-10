@@ -1,5 +1,7 @@
 # 项目文档索引
 
+Hermes 后台终端进程的完成通知、原任务持续等待与界面状态见 [后台进程等待](design/2026-11-10-hermes-background-process-wait.md)。
+
 Hermes 成员界面继承值与实际唤醒参数的一致性、覆盖记录缺省和旧会话模型更新见 [模型继承](design/2026-11-09-hermes-model-inheritance.md)。
 
 Hermes 旧版已有会话绑定的唤醒状态分流、执行保护及原话题队列恢复见 [旧版状态分流](design/2026-11-09-hermes-legacy-state-routing.md) 和 [兼容契约](engineering/HERMES-COMPATIBILITY.md)。

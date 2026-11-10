@@ -79,6 +79,27 @@ async function main() {
   await tick();
   assert.equal(waitingRun.finished, true, 'logical completion ends the waiting bubble');
 
+  const processWait = harness();
+  const processRun = {...wake(null), project: 'p', kind: 'work', state: 'waiting_delegation', background_kind: 'process'};
+  processWait.ctx.snapshot = {runs: [processRun], thinking: []};
+  await processWait.ctx.loadThinking();
+  processWait.requests.shift().resolve({entries: [], latest_id: 0,
+    execution_state: 'waiting_delegation', background_kind: 'process'});
+  await tick();
+  const processSource = [...processWait.ctx.S.thinkRuns.values()][0];
+  assert.equal(processSource.background_kind, 'process');
+  assert.equal(processSource.finished, false);
+  const processRestored = harness(processWait.storage);
+  processRestored.ctx.restoreThinkingState();
+  assert.equal([...processRestored.ctx.S.thinkRuns.values()][0].background_kind, 'process');
+  assert.equal(processWait.ctx.syncThinkRunState(processSource,
+    {state: 'waiting_delegation', background_kind: 'mixed'}), true, 'kind-only updates trigger a redraw');
+  processWait.ctx.pollReasoning(processSource);
+  processWait.requests.shift().resolve({entries: [], latest_id: 0, execution_state: 'running', background_kind: 'process'});
+  await tick();
+  assert.equal(processSource.state, 'running');
+  assert.equal(processWait.ctx.S.thinkRuns.size, 1, 'process callback retains one logical run');
+
   const fresh = harness();
   const recovered = {...wake(42), project: 'p', spawned_at: '2026-09-22T10:00:00'};
   fresh.ctx.snapshot = {runs: [recovered, {profile: 'bot', thread_id: null}], thinking: []};

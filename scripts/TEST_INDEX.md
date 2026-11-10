@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+Hermes 后台进程等待：`python -X utf8 -B -m scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_hermes_process_waits scripts.test_hermes_delegations scripts.test_task_retry scripts.test_hermes_gateway_ledger scripts.test_thinking_run_identity scripts.test_reasoning_window scripts.test_runtime_schema_boundary`。临时原生 admission 库、模拟 RPC 与引擎 SQLite 验证 notify_on_complete 的等待归属、完成/观察通知区分、批量完成、混合委派、重放、可信生产者与会话/序号边界、重启恢复及停止；状态读取保持零原生连接，测试保持零生产模型和业务写入。前端运行 `node scripts/test_thinking_lifecycle.cjs`、`node scripts/test_thinking_cache.cjs`，浏览器运行 `python -X utf8 -B scripts/test_delegation_bubble_browser.py --evidence <主目录报告下的新绝对目录>`。需要 Playwright 与 Chrome；全拦截合成 HTTP，在独立上下文覆盖话题委派/工作进程 × 深浅主题 × 1280/390px 共八组，检查等待标签、静止指示点、停止入口、刷新、续跑与完成；窄屏隐藏侧栏以隔离消息列。退出关闭自有浏览器，设计见[后台进程等待](../docs/design/2026-11-10-hermes-background-process-wait.md)。
+
 HUD 暂不处理即时关闭：`python -X utf8 -B scripts/test_hud_dismiss_browser.py --evidence <主目录报告目录>`。需要 Playwright 与 Chrome；全部 HTTP 由合成夹具拦截，零业务服务和模型调用。覆盖 1440/390px 下延迟请求完成前撤下卡片、目标行动提醒与数量同步、其他卡片及草稿保留、后台继续讨论消息、提交与补读均失败时恢复卡片及重试入口、最后一张卡片空状态、发送提示恢复。后端复用隔离运行器的 `scripts.test_project_hud` 验证撤下 ID、超时换代与会话隔离。
 
 Hermes 模型继承与旧会话路由：`python -X utf8 -B -m scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_project_models scripts.test_hermes_gateway_sessions scripts.test_hermes_session_reuse scripts.test_profile_config scripts.test_runtime_fork`。临时配置、SQLite 与模拟 RPC 验证未保存覆盖时继承模型/供应商/推理强度、字段级覆盖、全局修改后下一次唤醒生效、false→none、命名 profile、缺失默认值及原会话保留；网关及进程启动使用既有隔离夹具，零生产模型调用。

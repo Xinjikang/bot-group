@@ -4330,6 +4330,9 @@ function applyExecutionState(source) {
 function syncThinkRunState(source, run) {
   if (!source || !run) return false;
   if (run.cancel_reason !== undefined) source.cancel_reason = run.cancel_reason || "";
+  const previousKind = source.background_kind;
+  if (run.background_kind !== undefined) source.background_kind = run.background_kind;
+  const kindChanged = previousKind !== source.background_kind;
   const state = typeof run.state === "string" ? run.state : "";
   const previous = source.state || "";
   const stateChanged = state !== previous;
@@ -4346,8 +4349,8 @@ function syncThinkRunState(source, run) {
     source.stallNotified = true;
     showAlert(`${NAME_OF(source.profile)}：停止请求已发送，结束状态确认超时（150 秒内未确认结束）。`);
   }
-  if (stateChanged || labelChanged) renderThinkBubbles();
-  return stateChanged || labelChanged;
+  if (stateChanged || labelChanged || kindChanged) renderThinkBubbles();
+  return stateChanged || labelChanged || kindChanged;
 }
 
 // 判活纯函数（req#58 ②：判定逻辑收纯函数，不再散在 pollReasoning——96e22a2 修过一次
@@ -4405,7 +4408,8 @@ async function pollReasoning(source, refreshReply = false) {
     if (r.process_ended_at != null) source.processEndedAt = r.process_ended_at;
     if (end !== source.wake_ended_at) return;
     if (typeof r.execution_state === "string") {
-      syncThinkRunState(source, {state: r.execution_state, cancel_reason: r.cancel_reason});
+      syncThinkRunState(source, {state: r.execution_state, cancel_reason: r.cancel_reason,
+        background_kind: r.background_kind});
     }
     for (const entry of r.entries || []) {
       if (entry.id <= source.after_id) continue;
@@ -4550,7 +4554,7 @@ function thinkingLayoutSignature() {
 function thinkingBubbleSignature(bubble) {
   const source = S.thinkRuns.get(bubble.sourceKey);
   return JSON.stringify([bubble.status, bubble.stallLabel, bubble.collapsed, bubble.entries, bubble.displayKeys,
-    bubble.spawned_at, source?.stopped, source?.finished, source?.state, NAME_OF(bubble.profile)]);
+    bubble.spawned_at, source?.stopped, source?.finished, source?.state, source?.background_kind, NAME_OF(bubble.profile)]);
 }
 
 function renderThinkBubbles() {
@@ -4759,6 +4763,9 @@ function renderThinkBubble(bubble, attached = false) {
   const stalled = bubble.status === "stalled";
   const backgroundWaiting = bubble.status === "thinking" &&
     S.thinkRuns.get(bubble.sourceKey)?.state === "waiting_delegation";
+  const backgroundKind = S.thinkRuns.get(bubble.sourceKey)?.background_kind;
+  const backgroundLabel = backgroundKind === "process" ? "后台进程正在执行"
+    : backgroundKind === "mixed" ? "后台任务正在执行" : "子代理正在执行后台任务";
   const quiet = attached || bubble.status !== "thinking";
   div.className = "think-bubble" + (bubble.collapsed ? " collapsed" : "")
     + (stalled ? " stalled" : "")
@@ -4774,7 +4781,7 @@ function renderThinkBubble(bubble, attached = false) {
   const name = NAME_OF(bubble.profile);
   const state = bubble.status === "replied" ? "已回复"
     : stalled ? (bubble.stallLabel || "执行状态未能确认")
-    : backgroundWaiting ? "子代理正在执行后台任务"
+    : backgroundWaiting ? backgroundLabel
     : bubble.status === "inactive" ? "未检测到活跃状态" : "思考中";
   // Dots reflect activity; folding only controls content visibility.
   const dots = bubble.status !== "thinking" || backgroundWaiting
@@ -4848,7 +4855,7 @@ function renderThinkBubble(bubble, attached = false) {
   if (!bubble.entries.length) {
     body.textContent = bubble.cacheTruncated ? "较早内容已超出浏览器缓存保留范围。"
       : stalled ? "执行状态未能确认。"
-      : backgroundWaiting ? "子代理正在执行后台任务，完成后主 agent 将继续处理。"
+      : backgroundWaiting ? `${backgroundLabel}，完成后主 agent 将继续处理。`
       : "（正在思考…）";
   } else {
     for (const e of bubble.entries) {
