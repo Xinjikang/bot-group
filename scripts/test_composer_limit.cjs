@@ -34,10 +34,11 @@ const element = selector => {
     appendChild(n) { return n; }, querySelector() { return null; }});
   return elements.get(selector);
 };
-let alerts = [], posted = [];
+let alerts = [], posted = [], refreshes = 0;
 const ctx = {S: {currentThread: null, currentProject: null},
   $: element, esc: s => s, NAME_OF: p => p, showAlert: m => alerts.push(m),
   requestSubmit() {}, composerImages: {refresh() {}},
+  refreshAfterMessageChange() { refreshes++; },
   sendImageMessage: async (body) => { posted.push(body); return true; },
   api(url, options) { posted.push({url, options}); return Promise.resolve({}); },
 };
@@ -70,6 +71,7 @@ form.submit({preventDefault() {}});
 await new Promise(r => setImmediate(r));
 assert.equal(alerts.length, 0, 'exactly 2000 code units passes');
 assert.equal(posted.length, 1, 'message posted');
+assert.equal(refreshes, 1, 'only the successful send refreshes the timeline');
 
 console.log('PASS: composer-text maxlength=2000 (UTF-16 code units) + send-path double guard');
 })().catch(e=>{console.error(e);process.exitCode=1;});

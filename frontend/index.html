@@ -1439,6 +1439,7 @@ const S = {
   messageView: 0,
   messagesReady: false,
   messageRequest: null,
+  messageRefreshPending: null,
   historyRequest: null,
   hasOlderMessages: false,
   historyError: false,
@@ -1549,7 +1550,7 @@ function handleEvent(evt) {
   switch (evt.type) {
     case "user.display_name.changed": refreshUserDisplayName(); break;
     case "message.new":
-      refreshMessages(); loadThreads();
+      refreshAfterMessageChange(); loadThreads();
       // Message events refresh collectors; only persisted send results bind replies.
       if (evt.data && evt.data.sender && evt.data.sender !== "user") {
         refreshThinkRunsForMessage(evt.data);
@@ -2247,30 +2248,43 @@ async function refreshMessages() {
     ? `/messages?thread_id=${S.currentThread}&since_id=0`
     : initial ? '/messages?limit=100' : `/messages?since_id=${S.lastMsgId}`;
   try {
-  const r = await api(messageProjectUrl(url));
-  if (view !== S.messageView) return;
-  const incoming = r.messages || [];
-  const box = $("#msg-list");
-  if (S.currentThread) {
-    S.msgs = incoming;
-  } else {
-    // 总视图增量合并
-    const seen = new Set(S.msgs.map(m => m.id));
-    for (const m of incoming) if (!seen.has(m.id)) S.msgs.push(m);
-    if (S.msgs.length) S.lastMsgId = S.msgs[S.msgs.length - 1].id;
-    if (initial) S.hasOlderMessages = r.has_more === true;
-  }
-  S.messagesReady = true;
-  renderMessages();
-  if (initial) $("#msg-list").scrollTop = $("#msg-list").scrollHeight;
-  globalThis.messageNavigation?.observe(incoming);
-  globalThis.messageNavigation?.refresh();
-  if (S.currentThread && globalThis.document?.visibilityState === 'visible') {
-    await markVisibleThreadRead(S.currentThread, incoming, view);
-  }
+    const r = await api(messageProjectUrl(url));
+    if (view !== S.messageView) return;
+    const incoming = r.messages || [];
+    if (S.currentThread) {
+      S.msgs = incoming;
+    } else {
+      // 总视图增量合并
+      const seen = new Set(S.msgs.map(m => m.id));
+      for (const m of incoming) if (!seen.has(m.id)) S.msgs.push(m);
+      if (S.msgs.length) S.lastMsgId = S.msgs[S.msgs.length - 1].id;
+      if (initial) S.hasOlderMessages = r.has_more === true;
+    }
+    S.messagesReady = true;
+    renderMessages();
+    if (initial) $("#msg-list").scrollTop = $("#msg-list").scrollHeight;
+    globalThis.messageNavigation?.observe(incoming);
+    globalThis.messageNavigation?.refresh();
+    if (S.currentThread && globalThis.document?.visibilityState === 'visible') {
+      void markVisibleThreadRead(S.currentThread, incoming, view);
+    }
   } finally {
-    if (S.messageRequest === view) S.messageRequest = null;
+    if (S.messageRequest === view) {
+      S.messageRequest = null;
+      if (S.messageRefreshPending === view) {
+        S.messageRefreshPending = null;
+        refreshAfterMessageChange();
+      }
+    }
   }
+}
+
+function refreshAfterMessageChange() {
+  if (S.messageRequest === S.messageView) {
+    S.messageRefreshPending = S.messageView;
+    return;
+  }
+  refreshMessages().catch(err => console.warn('Message refresh failed:', err));
 }
 
 async function markVisibleThreadRead(threadId, messages, view) {
@@ -2288,6 +2302,7 @@ async function markVisibleThreadRead(threadId, messages, view) {
 function resetMessageWindow() {
   globalThis.messageNavigation?.reset();
   S.messageView++;
+  S.messageRefreshPending = null;
   S.messagesReady = false;
   S.hasOlderMessages = false;
   S.historyError = false;
@@ -2989,6 +3004,7 @@ $("#composer").addEventListener("submit", async (e) => {
   // JS string .length 本身就是 UTF-16 码元数，与引擎 post_msg 校验口径一致。
   if (text.length > 2000) { showAlert(`消息超长：${text.length}/2000 字符，请拆分发送`); return; }
   const body = { text, sender: "user" };
+  const view = S.messageView;
   if (S.currentThread) body.thread_id = S.currentThread;
   if (S.currentProject) body.project = S.currentProject;
   try {
@@ -2998,6 +3014,7 @@ $("#composer").addEventListener("submit", async (e) => {
       if (S.currentProject === body.project && (S.currentThread || null) === (body.thread_id || null)
           && $("#composer-text").value.trim() === text) $("#composer-text").value = "";
       composerImages.refresh();
+      if (view === S.messageView) refreshAfterMessageChange();
     }
   } catch (err) { showAlert("发送失败: " + err.message); }
 });
