@@ -24,7 +24,6 @@ from fastapi import FastAPI, Depends, HTTPException, Request
 from . import db
 from . import config
 from .api import router_api, _resolve_identity, _admin_only
-from .message_send_diagnostics import MessageSendDiagnostics  # TEMP_SEND_TRACE
 from . import queue, scanner
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
@@ -129,7 +128,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="group-engine", version="0.1.0", lifespan=lifespan)
-app.add_middleware(MessageSendDiagnostics)  # TEMP_SEND_TRACE
 app.include_router(router_api)
 from .ui_presence import router as ui_presence_router
 app.include_router(ui_presence_router)

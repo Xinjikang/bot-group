@@ -1415,7 +1415,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 .image-preview img{display:block;width:auto;height:auto;max-width:calc(100vw - 58px);max-height:calc(100dvh - 112px);object-fit:contain;flex-shrink:0}
 </style>
 <script src="/app/dialogs.js?v=20261021-field-errors"></script>
-<script src="/app/attachments.js?v=20261111-test-send-timing"></script>
+<script src="/app/attachments.js?v=20261015-thread-opening"></script>
 <script src="/app/commands.js"></script>
 <script src="/app/member_identity.js?v=20260930-mentions"></script>
 <script src="/app/user_settings.js?v=20261023"></script>
@@ -1455,14 +1455,10 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({
   "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 
 // ======================== API ========================
-async function api(path, opts = {}, sendTrace = null) { // TEMP_SEND_TRACE
+async function api(path, opts = {}) {
   const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
   if (S.token) headers["Authorization"] = "Bearer " + S.token;
   const res = await fetch(path, { ...opts, headers });
-  if (sendTrace) { // TEMP_SEND_TRACE
-    sendTrace.headersAt = performance.now();
-    sendTrace.status = res.status;
-  }
   if (res.status === 401 && !path.includes("/auth/")) { logout(); throw new Error("unauthorized"); }
   if (!res.ok) {
     let detail = res.statusText;
@@ -3010,7 +3006,7 @@ $("#composer").addEventListener("submit", async (e) => {
   try {
     body.text = serializeMemberMentions($("#composer-text"), S.currentProject, mentionCandidates(S.currentThread));
     if (body.text.length > 2000) throw new Error(`消息过长（${body.text.length}/2000 字符），请删减字符`);
-    if (await sendImageMessage(body, e.timeStamp)) { // TEMP_SEND_TRACE
+    if (await sendImageMessage(body)) {
       if (S.currentProject === body.project && (S.currentThread || null) === (body.thread_id || null)
           && $("#composer-text").value.trim() === text) $("#composer-text").value = "";
       composerImages.refresh();

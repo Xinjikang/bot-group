@@ -121,50 +121,10 @@ function setCommandReceipt(body, text, state) {
   renderCommandReceipt();
 }
 
-// TEMP_SEND_TRACE: test instrumentation. Remove after send stalls are diagnosed.
-function createMessageSendTrace(submittedAt) {
-  const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
-  const path = `/msg?send_trace=${id}`;
-  const url = new URL(path, location.href).href;
-  const trace = {id, path, submittedAt};
-  if (globalThis.PerformanceObserver?.supportedEntryTypes?.includes('resource')) {
-    // Observe live entries even if the page's Resource Timing buffer is full.
-    trace.observer = new PerformanceObserver(list => {
-      trace.resource = list.getEntriesByName(url)[0] || trace.resource;
-    });
-    trace.observer.observe({type: 'resource'});
-  }
-  // Resource Timing entries may be delivered just after the JSON callback.
-  trace.finish = (outcome, buttonAt) => setTimeout(() => {
-    const pending = trace.observer?.takeRecords().find(entry => entry.name === url);
-    trace.observer?.disconnect();
-    const timing = trace.resource || pending || performance.getEntriesByName(url, 'resource').at(-1);
-    const ms = (from, to) => Number.isFinite(from) && Number.isFinite(to)
-      ? Math.round((to - from) * 10) / 10 : null;
-    const requestAt = timing?.requestStart || null;
-    const responseAt = timing?.responseStart || null;
-    console.info('[TEST TEMP_SEND_TRACE] finish', JSON.stringify({
-      trace_id: id, outcome, status: trace.status ?? null,
-      before_fetch_ms: ms(submittedAt, trace.fetchAt),
-      browser_wait_ms: ms(trace.fetchAt, requestAt),
-      request_to_response_ms: ms(requestAt, responseAt),
-      response_body_ms: ms(responseAt, timing?.responseEnd),
-      response_to_headers_callback_ms: ms(responseAt, trace.headersAt),
-      read_receipt_ms: ms(trace.headersAt, trace.receiptAt),
-      receipt_to_button_ms: ms(trace.receiptAt, buttonAt),
-      total_ms: ms(submittedAt, buttonAt),
-    }));
-  }, 100);
-  console.info('[TEST TEMP_SEND_TRACE] start', id);
-  return trace;
-}
-
-async function sendImageMessage(body, submittedAt) {
+async function sendImageMessage(body) {
   const key = imageDestinationKey(body);
   const draft = imageDrafts.get(key) || [];
   if ((!body.text && !draft.length) || imageSends.has(key)) return false;
-  const trace = submittedAt == null ? null : createMessageSendTrace(submittedAt); // TEMP_SEND_TRACE
-  let traceOutcome = 'error'; // TEMP_SEND_TRACE
   imageSends.add(key);
   const isCommand = body.text?.trim().startsWith('/');
   let commandResultReceived = false;
@@ -181,14 +141,7 @@ async function sendImageMessage(body, submittedAt) {
       }
       ids.push(item.id);
     }
-    const options = {method: 'POST', body: JSON.stringify({...body, attachment_ids: ids})};
-    if (trace) trace.fetchAt = performance.now(); // TEMP_SEND_TRACE
-    let result;
-    try {
-      result = await api(trace?.path || '/msg', options, trace);
-    } finally {
-      if (trace) trace.receiptAt = performance.now(); // TEMP_SEND_TRACE
-    }
+    const result = await api('/msg', {method: 'POST', body: JSON.stringify({...body, attachment_ids: ids})});
     if (result.handled) {
       commandResultReceived = true;
       setCommandReceipt(body, result.detail || `${result.command} ${result.ok ? '已完成' : '执行失败'}`,
@@ -198,7 +151,6 @@ async function sendImageMessage(body, submittedAt) {
     }
     draft.forEach(item => URL.revokeObjectURL(item.url));
     imageDrafts.delete(key);
-    traceOutcome = 'ok'; // TEMP_SEND_TRACE
     return true;
   } catch (err) {
     if (isCommand && !commandResultReceived) setCommandReceipt(body, err.message, 'error');
@@ -206,7 +158,6 @@ async function sendImageMessage(body, submittedAt) {
   } finally {
     imageSends.delete(key);
     refreshImageEditors();
-    trace?.finish(traceOutcome, performance.now()); // TEMP_SEND_TRACE
   }
 }
 

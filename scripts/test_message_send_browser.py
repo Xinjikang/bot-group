@@ -2,7 +2,6 @@
 import argparse
 import json
 import mimetypes
-import re
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -15,7 +14,7 @@ def run(evidence):
     if not evidence.is_absolute():
         raise ValueError('--evidence must be absolute')
     evidence.mkdir(parents=True, exist_ok=False)
-    pending, posts, errors, results, traces = [], [], [], [], []
+    pending, posts, errors, results = [], [], [], []
 
     def route(req):
         path = urlparse(req.request.url).path
@@ -58,7 +57,6 @@ def run(evidence):
                         context.route('**/*', route)
                         page = context.new_page()
                         page.on('pageerror', lambda e: errors.append(str(e)))
-                        prefix = '[TEST TEMP_SEND_TRACE] finish '
                         page.goto('http://message-send.test/app/')
                         page.wait_for_function('S.messagesReady')
                         page.evaluate("""({theme, narrow}) => {
@@ -81,31 +79,16 @@ def run(evidence):
                         page.wait_for_timeout(50)
                         assert len(posts) == before + 1, 'one in-flight send per destination'
                         page.screenshot(path=str(evidence / f'pending-{theme}-{width}.png'))
-                        request = pending.pop(0)
-                        query = urlparse(request.request.url).query
-                        assert re.fullmatch(r'send_trace=[a-f0-9]{32}', query), query
-                        trace_id = query.split('=', 1)[1]
-                        with page.expect_console_message(predicate=lambda m: m.text.startswith(prefix)
-                                                         and trace_id in m.text) as printed:
-                            request.fulfill(json={'message_id': 10})
+                        pending.pop(0).fulfill(json={'message_id': 10})
                         page.wait_for_function('document.querySelector("#composer-text").value === ""')
                         assert button.is_enabled()
                         assert button.inner_text() == '发送'
-                        timing = json.loads(printed.value.text[len(prefix):])
-                        assert timing['status'] == 200 and timing['outcome'] == 'ok'
-                        assert timing['total_ms'] >= timing['receipt_to_button_ms'] >= 0
-                        assert 'send probe' not in json.dumps(timing)
-                        traces.append(timing)
 
                         field.fill('@bot retained on failure')
                         field.press('Enter')
                         page.wait_for_function('document.querySelector("#btn-send").disabled')
                         page.wait_for_timeout(30)
-                        with page.expect_console_message(predicate=lambda m: m.text.startswith(prefix)) as printed:
-                            pending.pop(0).fulfill(status=503, json={'detail': 'Isolated send failure'})
-                        timing = json.loads(printed.value.text[len(prefix):])
-                        assert timing['status'] == 503 and timing['outcome'] == 'error'
-                        traces.append(timing)
+                        pending.pop(0).fulfill(status=503, json={'detail': 'Isolated send failure'})
                         page.wait_for_function('!document.querySelector("#btn-send").disabled')
                         assert field.input_value() == '@bot retained on failure'
                         page.locator('#app-alert .primary').click()
@@ -143,8 +126,7 @@ def run(evidence):
         finally:
             browser.close()
     assert not errors, errors
-    (evidence / 'results.json').write_text(json.dumps({'cases': results, 'posts': len(posts), 'errors': errors,
-                                                      'send_traces': traces}, indent=2), encoding='utf-8')
+    (evidence / 'results.json').write_text(json.dumps({'cases': results, 'posts': len(posts), 'errors': errors}, indent=2), encoding='utf-8')
     print('PASS: pending feedback, duplicate gate, success, failure, project switch, newer draft; dark/light x 1280/390')
 
 

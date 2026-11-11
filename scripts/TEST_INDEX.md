@@ -1,7 +1,5 @@
 # 测试脚本索引
 
-临时发送计时 `TEMP_SEND_TRACE`：复用下文的消息发送延迟组合及 `scripts/test_message_send_browser.py`。隔离 ASGI 与 SQLite 验证同一编号串联请求入口、处理及回执日志，非诊断请求沿用普通发送，诊断日志排除消息正文。Chrome 合成 HTTP 验证发送成功与失败都输出状态和耗时，保留重复发送门禁、草稿和主题行为。定位完成后随诊断提交一并撤除临时用例。
-
 v0.2.14 发布验收见 [发布说明](../docs/releases/v0.2.14.md)。发布专项使用本文“正式 Release 验收”的专用 unittest 组合；功能回归复用模型继承、后台进程等待、HUD 暂不处理和 authorize 锁竞争条目。公开发布后使用 `verify_public_install.py --shell powershell --port <分配后端端口> --evidence <新的主目录报告目录>` 验证匿名安装、重复安装、BAT 启停与默认升级检查。
 
 authorize 锁竞争与心跳事务：`python -X utf8 -B -m scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_authorize_lock_isolation scripts.test_access_contract scripts.test_hermes_session_reuse scripts.test_runtime_schema_boundary scripts.test_database_layout scripts.test_task_api scripts.test_message_execution scripts.test_message_send_latency scripts.test_mcp_operations scripts.test_hermes_gateway`。隔离 SQLite 验证认证连接的创建/查询/关闭均在同一工作线程、认证只读、心跳写锁超时 503 与重试、撤权/终态/换轮竞态、数据库实例/替换/初始化失败重试、逐连接配置与 checkpoint，以及消息幂等/原子提交。真实 HTTP/SSE 验证使用 `python -X utf8 -B scripts/verify_authorize_lock_isolation.py --host <分配监听地址> --port <分配后端端口> --data-dir <分配测试数据目录> --evidence <主目录报告下的新绝对目录>`；依赖项目 Python、httpx、uvicorn、psutil。全部参数必填，端口冲突在写入前报错；仅启动真实业务路由及健康检查，临时库、合成执行凭据、禁用原生网关/模型，记录实际监听、数据库/数据目录、持锁期间读接口与 SSE 时延、事件循环调度、解锁成功、超时与资源释放。忙等待预算在探针中缩短为 3000/150ms；退出关闭服务线程与连接、移除分配测试目录内本次临时数据并核对端口释放。
