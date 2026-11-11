@@ -6,6 +6,7 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from engine import api, auth, db, events, router, wake
+from engine.message_send_diagnostics import MessageSendDiagnostics
 from scripts.unified_test_support import isolated_database
 
 
@@ -88,6 +89,27 @@ class MessageSendTests(unittest.TestCase):
         self.assertIn('outcome=ok', lines)
         self.assertIn(f'message_id={response.json()["message_id"]}', lines)
         self.assertNotIn('PRIVATE-SEND-CONTENT', lines)
+
+    def test_temporary_trace_correlates_http_and_persistence(self):
+        app = FastAPI()
+        app.add_middleware(MessageSendDiagnostics)
+        app.include_router(api.router_api)
+        trace_id = 'abc12300' * 4
+        with TestClient(app, client=('127.0.0.1', 0)) as client, \
+             patch.object(auth, 'configured', return_value=False), patch.object(events.bus, 'publish'), \
+             self.assertLogs('engine', level='INFO') as captured:
+            response = client.post('/msg', params={'send_trace': trace_id}, json={
+                'project': 'alpha', 'sender': 'user', 'text': '@default PRIVATE-TRACE-CONTENT'})
+            ordinary = client.post('/msg', params={'send_trace': 'PRIVATE-INVALID-ID'}, json={
+                'project': 'alpha', 'sender': 'user', 'text': '@default regular send'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(ordinary.status_code, 200)
+        traced = [line for line in captured.output if f'trace_id={trace_id}' in line]
+        self.assertEqual(len(traced), 3)
+        self.assertIn('test.message_send.request', traced[0])
+        self.assertIn(f'message.send message_id={response.json()["message_id"]}', traced[1])
+        self.assertRegex(traced[2], r'status=200 pre_handler_ms=\d+\.\d headers_ms=\d+\.\d response_ms=\d+\.\d')
+        self.assertNotIn('PRIVATE-', '\n'.join(captured.output))
 
 
 if __name__ == '__main__':

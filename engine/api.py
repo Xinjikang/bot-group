@@ -252,6 +252,10 @@ def post_msg(
     x_group_key: Optional[str] = Header(default=None),
     request: Request = None,
 ):
+    # TEMP_SEND_TRACE: correlate the application entry with the normal send timer.
+    send_trace = getattr(getattr(request, 'state', None), 'message_send_trace', None)
+    if send_trace is not None:
+        send_trace['handler_at'] = time.perf_counter()
     identity, kind = _resolve_identity(x_group_profile, authorization, x_group_key, request)
     sender = body.get("sender", "")
     if kind == "bot":
@@ -360,10 +364,11 @@ def post_msg(
         if kind != 'bot':
             finished = time.perf_counter()
             logger.info('message.send message_id=%s thread_id=%s outcome=%s connect_ms=%.1f '
-                        'route_ms=%.1f publish_ms=%.1f total_ms=%.1f',
+                        'route_ms=%.1f publish_ms=%.1f total_ms=%.1f%s',
                         message_id, thread_id, outcome, ((connected or finished)-started)*1000,
                         ((routed or finished)-connected)*1000 if connected is not None else 0,
-                        ((published or finished)-routed)*1000 if routed is not None else 0, (finished-started)*1000)
+                        ((published or finished)-routed)*1000 if routed is not None else 0, (finished-started)*1000,
+                        f' trace_id={send_trace["id"]}' if send_trace is not None else '')  # TEMP_SEND_TRACE
 
 
 def _settle_thread(conn: sqlite3.Connection, sender: str, text: str, thread_id: int,
