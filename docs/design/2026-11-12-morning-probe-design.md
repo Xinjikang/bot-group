@@ -25,7 +25,7 @@ engine.log 已包含真实请求的分段计时，可直接作为探针的「真
 - 引擎 PID 轻量指标：窗口内固定 1s 一采（Win32_Process 的 UserModeTime/KernelModeTime 增量，进程级卡顿的直接观测），实现后先实测探针自身开销并记录；
 - 全进程快照：默认 30s 一次，采集 CPU 占用与 IO 字节率（`\Process(*)\% Processor Time`、`\Process(*)\IO Data Bytes/sec`；权限不足时降级为仅引擎 PID 采样，并在输出中注明权限档位），检测到更新相关事件（RestartManager 10000 或 AppX 603）后升频至 1s，事件窗口结束（该类事件停止出现 5min 后）恢复 30s——固定低频会漏采 19s 级卡顿现场；
 - 事件采集：通道逐项核实——RestartManager 10000/10001/10002 在 Application、AppX 603/400/613 在 Microsoft-Windows-AppXDeploymentServer/Operational、Windows Defender 在 Microsoft-Windows-Windows Defender/Operational、WER 在 Application（2026-11-12 reviewer-02 已在机器上抽查属实）；以短轮询（≤5s）或事件订阅进行，每条记录两个时间戳（事件发生时间与收到时间）；每通道把「读到事件 / 读不到（记录错误码与权限档位） / 查询成功但无事件」三种状态分开落盘，不混记；
-- 引擎进程定位与盘符：按进程命令行匹配引擎进程（与 find_bot_processes 同款 wmic 命令行匹配模式），目标盘符从注入的项目主目录推导；不读环境变量或配置文件，维持零触碰约束；
+- 引擎进程定位与盘符：使用进程查询模块（engine/process_query.py）的 psutil 列表匹配方式定位引擎进程——wmic 命令行匹配已退役；find_bot_processes 会按机器人前缀查库，零触碰探针不得直接调用；目标盘符从注入的项目主目录推导；不读环境变量或配置文件，维持零触碰约束；
 
 ### 取连接四段计时的取得方式（三档，按需升级）
 
