@@ -2,9 +2,9 @@
 
 ## 背景与目标
 
-2026-11-12 08:29:57-08:30:20 引擎首条消息 POST /msg 总耗时 22.4s，分解为取连接 19.3s、消息路由 3.1s、写锁 0.5s。慢窗口与 Codex 自更新会话（RestartManager 10000/10001/10002，08:29:53-08:30:32）逐秒重叠，且为 11-10/11-11/11-12 三天中唯一一次（其余两早晨首条消息 56/112ms）。同盘 IO 吞吐饱和受控实验未复现（取连接 p50=1.1ms，详见文末实验记录）。机制未证。现场持久化分解已排除落盘等待：enqueue_ms+commit_ms 合计约 0.12s（99.6+24.3ms），慢的 2.4s 在 prepare（事务内对 group.db 的查询与写入）；候选收窄为两类——页面读取（含过滤驱动阻塞、随机 IO 风暴或队列深度异常）与进程停顿（CPU 饥饿、系统级锁），探针分别用磁盘传输秒/队列长度与进程 CPU 增量判别。
+2026-11-12 08:29:57-08:30:20 引擎首条消息 POST /msg 总耗时 22.4s，分解为取连接 19.3s、消息路由 3.1s、写锁 0.5s。慢窗口与 Codex 自更新会话（RestartManager 10000/10001/10002，08:29:53-08:30:32）逐秒重叠，且为 11-10/11-11/11-12 三天中唯一一次（其余两早晨首条消息 56/112ms）。同盘 IO 吞吐饱和受控实验未复现（取连接 p50=1.1ms，详见文末实验记录）。机制未证。可确认的只有 commit 阶段短（24.3ms）与 enqueue 阶段 99.6ms，这两段之外的耗时尚未定位；prepare=2.4s 同时包含 SQL 与 Python 逻辑，落盘与计算未分离，「已排除落盘等待」不成立。待区分的阶段：取连接四段（.env 读/makedirs/connect/两条 PRAGMA）与 prepare 内部。磁盘队列、CPU 增量与事件重叠只能形成关联线索；机制验证靠线程等待位置观测或受控复现。
 
-目标：在早晨窗口采集现场证据，定位 19.3s 落在取连接路径的哪一步及同期系统状态；不改变首条消息的发生条件。
+目标：在早晨窗口采集现场证据，为 19.3s 的落点建立关联线索；首轮只采集系统级关联证据，真实请求内部的四段分解属后续分段观测；不改变首条消息的发生条件。
 
 ## 观测对象与数据源
 
@@ -14,7 +14,7 @@ engine.log 已包含真实请求的分段计时，可直接作为探针的「真
 
 - message.send 行：connect_ms（取连接总耗时）/ route_ms / publish_ms / total_ms；
 - message.persist 行：lock_ms / prepare_ms / enqueue_ms / commit_ms / total_ms；
-- 当日首条消息判据：当天第一条 message.persist 的 total_ms 与时间戳；
+- 当日首条消息判据：当天第一条 message.send 行（该行只记录非 bot 消息），并按 message_id 关联 sender=user 与目标项目——message.persist 包含 bot 消息，可能混入慢 bot 消息，不能作为首条用户消息判据；
 - 墙钟对齐：日志时间戳与探测进程采样记录使用同一机器时钟。
 
 真实请求取连接内部四段的分解（.env 读 / makedirs / connect / PRAGMA）现有日志没有，取得方式见下节三档方案。
@@ -22,22 +22,23 @@ engine.log 已包含真实请求的分段计时，可直接作为探针的「真
 ### 探测进程的观测（独立进程，不改引擎代码）
 
 - 磁盘指标：typeperf 采集 `\LogicalDisk(E:)\Current Disk Queue Length` 与 `\LogicalDisk(E:)\Avg. Disk sec/Transfer`，每 10s 一次；
-- 进程快照：每 30s 一次，采集 CPU 占用与 IO 字节率（`\Process(*)\% Processor Time`、`\Process(*)\IO Data Bytes/sec`；权限不足时降级为仅对引擎 PID 做 Win32_Process 的 UserModeTime/KernelModeTime 增量采样——进程级 CPU 卡顿的直接观测）；
-- 事件日志增量：每 300s 拉 Application 日志新增事件（RestartManager、AppX 603/400/613、Windows Defender、WER），只记时间戳与 EventID，不落正文。
+- 引擎 PID 轻量指标：窗口内固定 1s 一采（Win32_Process 的 UserModeTime/KernelModeTime 增量，进程级卡顿的直接观测），实现后先实测探针自身开销并记录；
+- 全进程快照：默认 30s 一次，采集 CPU 占用与 IO 字节率（`\Process(*)\% Processor Time`、`\Process(*)\IO Data Bytes/sec`；权限不足时降级为仅引擎 PID 采样，并在输出中注明权限档位），检测到更新相关事件（RestartManager 10000 或 AppX 603）后升频至 1s，事件窗口结束（该类事件停止出现 5min 后）恢复 30s——固定低频会漏采 19s 级卡顿现场；
+- 事件采集：通道逐项核实——RestartManager 10000/10001/10002 在 Application、AppX 603/400/613 在 Microsoft-Windows-AppXDeploymentServer/Operational、Windows Defender 在 Microsoft-Windows-Windows Defender/Operational、WER 在 Application；以短轮询（≤5s）或事件订阅进行，每条记录两个时间戳（事件发生时间与收到时间）；每通道把「读到事件 / 读不到（记录错误码与权限档位） / 查询成功但无事件」三种状态分开落盘，不混记；
 
 ### 取连接四段计时的取得方式（三档，按需升级）
 
-1. 首选（零预热）：不改引擎。探测进程第一轮不触碰 .env 与 group.db，只采系统指标与事件日志。若现场复现时引擎 connect_ms 异常且系统指标可归因（队列长度持续高位、某进程 IO 突增、RM/AppX 事件同步出现），即完成归因，无需四段分解。
-2. 次选（有预热）：探测进程复刻 db_path 同款代码路径（engine/config.py 的 db_path → data_dir → _dotenv_data_dir → sqlite3.connect → 两条 PRAGMA），对四段分别计时，每周期一次。分段计时必须关联当前线程（threading.get_ident()）并成对记录单调时钟（perf_counter）与墙钟（time.time()），同一周期内两种时钟成对落盘。注意：这会预热 .env 与 group.db 文件头的系统页缓存，可能改变首条消息条件，只能作为第一轮拿到现场后的补充取证。
+1. 首选（零预热）：不改引擎。探测进程第一轮不触碰 .env 与 group.db，只采系统指标与事件。现场复现时引擎 connect_ms 异常与系统指标（队列长度、磁盘传输秒、引擎 PID CPU 增量、更新事件）的同步关系只作关联线索，不作为归因结论；机制验证需线程等待位置观测或受控复现。
+2. 次选（有预热）：探测进程复刻 db_path 同款代码路径（engine/config.py 的 db_path → data_dir → _dotenv_data_dir → sqlite3.connect → 两条 PRAGMA），对四段分别计时，每周期一次。分段计时必须关联当前线程（threading.get_ident()）并成对记录单调时钟（perf_counter）与墙钟（time.time()），同一周期内两种时钟成对落盘；该线程 ID 归属独立探测进程，不代表真实请求线程。注意：这会预热 .env 与 group.db 文件头的系统页缓存，可能改变首条消息条件，只能作为第一轮拿到现场后的补充取证。
 3. 末选（改代码）：在 engine/db.py get_connection 内加四段 perf_counter 并打进 message.send 日志。需改引擎代码并重启；重启会重置 .env 解析缓存、连接池与页缓存状态，观测条件被污染，仅在无法归因时采用，且报告必须注明重启时间点。
 
 ## 采样参数
 
 - 采样窗口：每日 08:00-09:30（覆盖 08:30 现场及其前后）；手动单次运行时由调用方指定窗口。
-- 采样周期：磁盘计数器 10s、进程快照默认 30s、事件日志增量 300s；检测到更新相关事件（RestartManager 10000 或 AppX 603）后进程快照临时升频至 1s，更新窗口结束（停止出现该类事件 5min 后）恢复 30s——固定 30s 周期会漏采 19s 级卡顿现场。
+- 采样周期：引擎 PID 轻量指标 1s；磁盘计数器 10s；全进程快照默认 30s（更新事件窗口内升频 1s）；事件轮询 ≤5s。
 - 权限要求：LogicalDisk/PhysicalDisk 性能计数器普通用户可读；Process 计数器部分实例需管理员权限，不足时按上节降级方案处理，并在输出中注明实际权限档位。
-- 输出目录：由运行时注入（环境变量或命令行参数），不写死个人路径；默认 `E:\Code\bot-group\reports\research\2026-11-12-morning-probe\`，按日期分文件；目录创建被系统拒绝时由调用方注入备用路径，并在报告注明实际路径。
-- 容量上限：单文件 10MB 轮转，每日最多 3 个文件；目录总上限 100MB，超限删最旧文件。
+- 输出目录：必填参数（环境变量或命令行注入），不设硬编码默认值；可从注入的项目主目录推导子路径；目标目录不可创建或无写权限时明确退出并报错，不静默换路径；
+- 容量上限：轮转只管理探针自有文件；单文件 10MB 轮转，每日最多 3 个文件，目录总上限 100MB；达到总上限时保留异常窗口证据并停止采集，不删除目录内其他报告文件；
 - 失败与清理：脚本启动即写运行标记与启动时刻；正常结束或异常退出均落 exit/error 日志；退出后不留常驻进程与临时文件（临时文件用完即删）。
 
 ## 低干扰对照设计
