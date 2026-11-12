@@ -621,6 +621,110 @@ class ManagerRecheckRegressionTests(ProbeHarness):
             self.assertEqual(code, 1, 'exit 汇总放不下必须显式失败状态')
             self.assertTrue(stderr.write.called, 'exit 写不进必须 stderr 明确报错')
 
+    def _run_identity_clock(self, locate, sample_cpu, ticks) -> dict:
+        """虚拟时钟跑 run_probe：按 ticks 推进时间，只调度 engine 采样轮。"""
+        import contextlib
+        import io
+        clock = [100.0]
+        tick_iter = iter(ticks)
+
+        def fake_due(scheduler):
+            clock[0] = next(tick_iter)
+            if clock[0] >= 201:
+                return []
+            return [(entry[0], entry[1], entry[3])
+                    for entry in scheduler._due if entry[0] == 'engine']
+        args = _args(str(self.out_dir), window=100)
+        with contextlib.redirect_stdout(io.StringIO()), \
+                patch.object(probe, 'locate_engine', side_effect=locate), \
+                patch.object(probe, 'sample_engine_cpu', side_effect=sample_cpu), \
+                patch.object(probe.time, 'time', side_effect=lambda: clock[0]), \
+                patch.object(probe.Scheduler, 'next_delay', return_value=0), \
+                patch.object(probe.Scheduler, 'due', fake_due):
+            code = probe.run_probe(args)
+        return {'exit_code': code}
+
+    def test_replaced_foreign_revalidates_no_new_sample(self):
+        # manager MANAGER-IDENTITY.md 反例：owned 采样后被 foreign 替代（同 PID 新身份）
+        # → 失效清 pid 强制重定位 → foreign 拒绝，只保留原始身份样本
+        original = probe.sample_engine_cpu
+        samples = []
+        queries = []
+
+        def locate(root):
+            ownership = 'owned' if not queries else 'foreign'
+            queries.append(ownership)
+            return [{'pid': 1234, 'argv': ['python', '-m', 'engine.main'],
+                     'ownership': ownership, 'listening': True, 'total_cpu': 15}], None
+
+        def switching_cpu(process, previous):
+            samples.append(process.create_time())
+            row = original(process, previous)
+            self.fake_engine._create_time = 2000.0  # 同 PID 新进程身份
+            return row
+        result = self._run_identity_clock(locate, switching_cpu, [100.0, 161.0, 162.0, 201.0])
+        self.assertEqual(result['exit_code'], 0)
+        self.assertEqual(samples, [1000.0], 'foreign 替代不得产生新样本')
+        self.assertEqual(queries, ['owned', 'foreign'], '替代后必须再次 locate 复核归属')
+        events = self.read_stream('engine-events')
+        self.assertTrue(any(e.get('event') == 'engine_replaced' for e in events), events)
+        self.assertTrue(any(e.get('event') == 'engine_missing' for e in events), events)
+
+    def test_replaced_owned_resamples_after_recheck(self):
+        # owned 替代（同 PID 新身份）：失效后重定位复核通过，新身份才恢复采样
+        original = probe.sample_engine_cpu
+        samples = []
+        queries = []
+
+        def locate(root):
+            queries.append('owned')
+            return [{'pid': 1234, 'argv': ['python', '-m', 'engine.main'],
+                     'ownership': 'owned', 'listening': True, 'total_cpu': 15}], None
+
+        def switching_cpu(process, previous):
+            samples.append(process.create_time())
+            row = original(process, previous)
+            self.fake_engine._create_time = 2000.0
+            return row
+        result = self._run_identity_clock(locate, switching_cpu, [100.0, 161.0, 162.0, 201.0])
+        self.assertEqual(result['exit_code'], 0)
+        self.assertIn(1000.0, samples)
+        self.assertIn(2000.0, samples, 'owned 替代复核后新身份恢复采样')
+        self.assertEqual(queries, ['owned', 'owned'])
+        events = self.read_stream('engine-events')
+        self.assertTrue(any(e.get('event') == 'engine_replaced' for e in events), events)
+        self.assertTrue(any(e.get('event') == 'relocated' for e in events), events)
+
+    def test_exited_pid_reuse_requires_relocate(self):
+        # engine_exited 后 PID 被复用（新进程同 PID）：失效清 pid，重定位复核后才恢复
+        original = probe.sample_engine_cpu
+        samples = []
+        queries = []
+        calls = {'n': 0}
+
+        def locate(root):
+            queries.append('owned')
+            return [{'pid': 1234, 'argv': ['python', '-m', 'engine.main'],
+                     'ownership': 'owned', 'listening': True, 'total_cpu': 15}], None
+
+        def cpu_then_exit(process, previous):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                samples.append(process.create_time())
+                return original(process, previous)
+            raise probe.psutil.NoSuchProcess(1234)
+
+        # PID 复用场景：重定位时进程可构造（同 PID 新进程），采样时才检测退出
+        def fake_process(pid=None, **kw):
+            return self.fake_engine
+        with patch.object(probe.psutil, 'Process', side_effect=fake_process):
+            result = self._run_identity_clock(locate, cpu_then_exit,
+                                              [100.0, 161.0, 162.0, 201.0])
+        self.assertEqual(result['exit_code'], 0)
+        self.assertGreaterEqual(len(queries), 2, 'PID 复用必须再次 locate 复核')
+        events = self.read_stream('engine-events')
+        self.assertTrue(any(e.get('event') == 'engine_exited' for e in events), events)
+
     def test_prefilled_output_exit_write_failure_explicit(self):
         # 预满输出（既有 probe- 文件已超数据预算）：exit 汇总写不进 → stderr + exit 1
         with tempfile.TemporaryDirectory() as tmp:

@@ -544,12 +544,26 @@ def run_probe(args) -> int:
     self_previous = {'ts': time.monotonic(), 'cpu': 0.0}
     summary: dict = {}
 
+    def _invalidate_engine(event: str, extra: dict | None = None) -> None:
+        """引擎目标失效统一处理：清 pid/process/create_time 并落事件行。
+
+        失效后下一轮必须经 pick_owned 重定位（归属复核）才能恢复采样——
+        缓存的 PID 不跨失效复用，PID 复用/foreign 替代不会绕过归属校验。
+        """
+        payload = {'ts': time.time(), 'event': event, 'pid': engine_state['pid']}
+        if extra:
+            payload.update(extra)
+        sink.write('engine-events', payload)
+        engine_state['pid'] = None
+        engine_state['process'] = None
+        engine_state['create_time'] = None
+        engine_previous.clear()
+
     def sample_engine() -> None:
         nonlocal engine_state, engine_previous
         t0 = time.monotonic()
         # 60s 内复用进程句柄；到期或进程失效时重建，并核验 create_time 身份
-        # （PID 被回收/进程替换 → engine_replaced 落事件 + 基线重置 + 强制重定位
-        # 复核归属，恢复采样前先走 pick_owned 目标选择）
+        # （PID 被回收/进程替换 → _invalidate_engine 清 pid 强制重定位复核归属）
         if engine_state['process'] is None or time.time() - engine_state['last_locate'] > 60:
             engine_state['process'] = None
             if engine_state['pid'] is not None:
@@ -561,13 +575,8 @@ def run_probe(args) -> int:
                         create_time = process.create_time()
                         if (engine_state['create_time'] is not None
                                 and create_time != engine_state['create_time']):
-                            sink.write('engine-events',
-                                       {'ts': time.time(), 'event': 'engine_replaced',
-                                        'pid': engine_state['pid']})
-                            engine_previous.clear()
-                            # PID 被回收：身份失效，强制重定位复核归属后再恢复采样
-                            engine_state['process'] = None
-                            engine_state['create_time'] = None
+                            # 身份变化：统一失效（含 pid），下一轮必须重定位复核
+                            _invalidate_engine('engine_replaced')
                             _record_cost('engine', time.monotonic() - t0)
                             return
                         engine_state['create_time'] = create_time
@@ -586,7 +595,11 @@ def run_probe(args) -> int:
             if owned:
                 engine_state['pid'] = owned[0]['pid']
                 engine_state['process'] = psutil.Process(owned[0]['pid'])
-                engine_state['create_time'] = None  # 新进程身份在下次采样建立
+                # 取得目标时即记录身份（create_time），供后续身份核验
+                try:
+                    engine_state['create_time'] = engine_state['process'].create_time()
+                except (psutil.Error, OSError):
+                    engine_state['create_time'] = None
                 engine_previous.clear()
                 sink.write('engine-events',
                            {'ts': time.time(), 'event': 'relocated',
@@ -602,10 +615,7 @@ def run_probe(args) -> int:
         try:
             record = sample_engine_cpu(engine_state['process'], engine_previous)
         except psutil.NoSuchProcess:
-            engine_state['process'] = None
-            engine_state['create_time'] = None
-            sink.write('engine-events',
-                       {'ts': time.time(), 'event': 'engine_exited', 'pid': engine_state['pid']})
+            _invalidate_engine('engine_exited')
             return
         except psutil.Error as exc:
             sink.write('engine-events',
