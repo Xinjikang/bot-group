@@ -124,7 +124,11 @@ class OutputSink:
         raise CapacityReached(f'rotation exhausted for {stream}')
 
     def write(self, stream: str, record: dict) -> None:
-        """追加一行 JSON；容量上限按写前预算抛出 CapacityReached（调用方安全停止）。"""
+        """追加一行 JSON；容量上限按写前预算抛出 CapacityReached（调用方安全停止）。
+
+        预算按序列化行字节精确计算（json.dumps + '\\n'，UTF-8），文件以
+        newline='\\n' 打开禁用 Windows 换行转换，确保写入字节与预算一致。
+        """
         line = json.dumps(record, ensure_ascii=False, default=str) + '\n'
         encoded = line.encode('utf-8')
         path = self._target(stream)
@@ -137,7 +141,7 @@ class OutputSink:
         if handle is None or getattr(handle, 'name', None) != str(path):
             if handle is not None:
                 handle.close()
-            handle = open(path, 'a', encoding='utf-8')
+            handle = open(path, 'a', encoding='utf-8', newline='\n')
             self._handles[stream] = handle
         if path.stat().st_size + len(encoded) > self.max_file_bytes:
             self._index[stream] = self._index.get(stream, 0) + 1
@@ -145,6 +149,25 @@ class OutputSink:
             return
         handle.write(line)
         handle.flush()
+
+    def write_exit(self, record: dict) -> bool:
+        """最终 exit 汇总写入：同样受真实字节预算约束（总上限，不扣预留）。
+
+        可用空间放不下该行时返回 False（不删除已采证据腾空间）；写入成功
+        返回 True。序列化按确切字节（含平台换行行为）计算。
+        """
+        line = json.dumps(record, ensure_ascii=False, default=str) + '\n'
+        encoded = line.encode('utf-8')
+        if self._total_bytes() + len(encoded) > self.max_total_bytes:
+            return False
+        try:
+            day = datetime.now().strftime('%Y%m%d')
+            path = self.directory / f'probe-{day}-exit-log-0.jsonl'
+            with open(path, 'a', encoding='utf-8', newline='\n') as handle:
+                handle.write(line)
+        except OSError:
+            return False
+        return True
 
     def close(self) -> None:
         for handle in self._handles.values():
@@ -165,11 +188,12 @@ def derive_drive(project_root: Path) -> str:
 
 
 def locate_engine(project_root: Path) -> tuple[list[dict], str | None]:
-    """psutil 列表匹配定位引擎进程：python/pythonw + `-m engine.main`。
+    """psutil 列表匹配定位引擎进程：python/pythonw + `-m engine.main` 精确配对。
 
-    目标根归属校验：候选进程 cwd 与注入的项目主目录前缀匹配（大小写不敏感）
-    才作为 owned 目标；外项目（foreign）与不可读（unreadable）候选保留证据
-    落盘但不作为采样目标，避免把外项目引擎指标记到本项目 engine.log。
+    目标根归属校验：候选进程 cwd 与注入的项目主目录按路径段边界匹配
+    （cwd == root 或以 root + 分隔符开头，大小写不敏感）——兄弟目录
+    （如 root-other）不会误判 owned；外项目（foreign）与不可读（unreadable）
+    候选保留证据落盘但不作为采样目标，避免把外项目引擎指标记到本项目日志。
     排序：owned 优先，同归属按（有 LISTENING 连接、CPU 累计）降序。
     返回 (候选列表 [{pid, argv, ownership, listening, total_cpu}], 错误说明)。
     """
@@ -178,7 +202,9 @@ def locate_engine(project_root: Path) -> tuple[list[dict], str | None]:
         return [], 'enumerate_failed'
     matches = []
     for pid, argv in candidates:
-        if '-m' in argv and 'engine.main' in ' '.join(argv):
+        # 精确 `-m engine.main` 参数配对（相邻参数对），不拼接匹配
+        if any(argv[index] == '-m' and argv[index + 1] == 'engine.main'
+               for index in range(len(argv) - 1)):
             matches.append((pid, argv))
     if not matches:
         return [], 'not_found'
@@ -188,7 +214,11 @@ def locate_engine(project_root: Path) -> tuple[list[dict], str | None]:
         try:
             process = psutil.Process(pid)
             cwd_norm = os.path.normcase(os.path.abspath(process.cwd()))
-            ownership = 'owned' if cwd_norm.startswith(root_norm) else 'foreign'
+            # 路径段边界：cwd == root 或以 root + 分隔符开头才算 owned
+            ownership = ('owned'
+                         if cwd_norm == root_norm
+                         or cwd_norm.startswith(root_norm + os.sep)
+                         else 'foreign')
             listening = any(conn.status == 'LISTEN' for conn in
                             process.net_connections(kind='tcp'))
             cpu = process.cpu_times()
@@ -201,6 +231,16 @@ def locate_engine(project_root: Path) -> tuple[list[dict], str | None]:
     scored.sort(key=lambda item: (order.get(item['ownership'], 9),
                                   not item['listening'], -item['total_cpu']))
     return scored, None
+
+
+def pick_owned(candidates: list[dict]) -> list[dict]:
+    """启动与重定位共用的目标选择策略：只取 owned/injected 候选。
+
+    foreign/unreadable 候选保留证据（marker/重定位事件落盘）但绝不作为
+    采样目标；无 owned 候选返回空列表，调用方按 engine_missing 处理。
+    """
+    return [candidate for candidate in candidates
+            if candidate['ownership'] in ('owned', 'injected')]
 
 
 def sample_engine_cpu(process: psutil.Process, previous: dict) -> dict:
@@ -508,7 +548,8 @@ def run_probe(args) -> int:
         nonlocal engine_state, engine_previous
         t0 = time.monotonic()
         # 60s 内复用进程句柄；到期或进程失效时重建，并核验 create_time 身份
-        # （PID 被回收/进程替换 → engine_replaced 落事件 + 基线重置）
+        # （PID 被回收/进程替换 → engine_replaced 落事件 + 基线重置 + 强制重定位
+        # 复核归属，恢复采样前先走 pick_owned 目标选择）
         if engine_state['process'] is None or time.time() - engine_state['last_locate'] > 60:
             engine_state['process'] = None
             if engine_state['pid'] is not None:
@@ -524,6 +565,11 @@ def run_probe(args) -> int:
                                        {'ts': time.time(), 'event': 'engine_replaced',
                                         'pid': engine_state['pid']})
                             engine_previous.clear()
+                            # PID 被回收：身份失效，强制重定位复核归属后再恢复采样
+                            engine_state['process'] = None
+                            engine_state['create_time'] = None
+                            _record_cost('engine', time.monotonic() - t0)
+                            return
                         engine_state['create_time'] = create_time
                 except psutil.NoSuchProcess:
                     process = None
@@ -536,18 +582,22 @@ def run_probe(args) -> int:
         if process is None:
             candidates, locate_error = locate_engine(root)
             engine_state['last_locate'] = time.time()
-            if candidates:
-                engine_state['pid'] = candidates[0]['pid']
-                engine_state['process'] = psutil.Process(candidates[0]['pid'])
+            owned = pick_owned(candidates)
+            if owned:
+                engine_state['pid'] = owned[0]['pid']
+                engine_state['process'] = psutil.Process(owned[0]['pid'])
                 engine_state['create_time'] = None  # 新进程身份在下次采样建立
                 engine_previous.clear()
                 sink.write('engine-events',
                            {'ts': time.time(), 'event': 'relocated',
                             'pid': engine_state['pid'], 'locate_error': locate_error})
             else:
+                # 无 owned 候选：不采 foreign/unreadable，全部候选作为证据落盘
                 sink.write('engine-events',
                            {'ts': time.time(), 'event': 'engine_missing',
-                            'locate_error': locate_error})
+                            'locate_error': locate_error,
+                            'candidates': [{'pid': c['pid'], 'ownership': c['ownership']}
+                                           for c in candidates]})
                 return
         try:
             record = sample_engine_cpu(engine_state['process'], engine_previous)
@@ -593,15 +643,8 @@ def run_probe(args) -> int:
         for name, channel, predicate in _CHANNELS:
             events, error = run_wevtutil(channel, predicate,
                                          event_state['after_record_id'].get(name, 0))
-            if error:
-                sink.write('events-read-errors',
-                           {'ts': time.time(), 'channel': name, 'error': error})
-                continue
-            if not events:
-                sink.write('events-none',
-                           {'ts': time.time(), 'channel': name,
-                            'after_record_id': event_state['after_record_id'].get(name, 0)})
-                continue
+            # partial 页：先落盘已返回事件（游标只推进到成功落盘的记录），
+            # 页错误独立记录，不丢弃已采部分
             for event in events:
                 event['channel'] = name
                 sink.write('events', event)
@@ -612,6 +655,13 @@ def run_probe(args) -> int:
                     event_state['last_fast_event'] = time.time()
                     scheduler.set_period('snapshot', args.snapshot_fast)
                     snapshot_period['value'] = args.snapshot_fast
+            if error:
+                sink.write('events-read-errors',
+                           {'ts': time.time(), 'channel': name, 'error': error})
+            elif not events:
+                sink.write('events-none',
+                           {'ts': time.time(), 'channel': name,
+                            'after_record_id': event_state['after_record_id'].get(name, 0)})
         sample_counts['events'] = sample_counts.get('events', 0) + 1
         _record_cost('events', time.monotonic() - t0)
 
@@ -664,8 +714,7 @@ def run_probe(args) -> int:
                   'engine_candidates': candidates,
                   'locate_error': locate_error}
         sink.write('run-marker', marker)
-        owned = [candidate for candidate in candidates
-                 if candidate['ownership'] in ('owned', 'injected')]
+        owned = pick_owned(candidates)
         engine_state['pid'] = owned[0]['pid'] if owned else None
         engine_state['last_locate'] = time.time()
         # 事件基线：启动时静默查询各通道当前最新 EventRecordID（专用倒序单条
@@ -739,16 +788,15 @@ def run_probe(args) -> int:
                    'engine_final_pid': engine_state['pid'],
                    'snapshot_permissions_skipped': '见快照帧 skipped 计数'}
         if sink is not None:
+            # exit 汇总同样受真实字节预算约束（write_exit 不绕过总上限）；
+            # 写不进（容量已满/目录不可写）以 stderr 明确报错并保留显式失败状态
+            if not sink.write_exit(summary):
+                print(f'exit 日志写入失败（容量已满或不可写）: {output_dir}', file=sys.stderr)
+                exit_code = max(exit_code, 1)
             sink.close()
-        # exit 日志绕过容量上限直接追加（达限也要留下停止原因）；写入失败时
-        # 用 stderr 兜底（输出本身不可写的唯一明确出口）
-        try:
-            day = datetime.now().strftime('%Y%m%d')
-            with open(output_dir / f'probe-{day}-exit-log-0.jsonl', 'a',
-                      encoding='utf-8') as handle:
-                handle.write(json.dumps(summary, ensure_ascii=False, default=str) + '\n')
-        except OSError as exc:
-            print(f'exit 日志写入失败: {output_dir} ({exc})', file=sys.stderr)
+        else:
+            # 输出目录本身不可用：唯一明确出口是 stderr
+            print(json.dumps(summary, ensure_ascii=False), file=sys.stderr)
     print(json.dumps(summary, ensure_ascii=False))
     return exit_code
 

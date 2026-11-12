@@ -34,6 +34,9 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 
 import morning_send_probe as probe  # noqa: E402
 
+# setUp 打桩 probe.locate_engine 之前保存原始实现，供归属类测试直接调用
+REAL_LOCATE = probe.locate_engine
+
 
 class FakeProcess:
     def __init__(self, pid=1234, cwd=None, create_time=1000.0,
@@ -122,7 +125,10 @@ class ProbeHarness(unittest.TestCase):
             name = self._channel_name(channel)
             events, error = self.fake_events.get(name, ([], None))
             if error is not None:
-                return [], error
+                # partial 页：模拟真实分页语义——已返回事件与页错误同时返回
+                collected = [event for event in events
+                             if event['record_id'] > after_record_id][:limit]
+                return collected, error
             # 模拟真实分页语义：单轮调用内按游标连续取批，游标推进到已返回记录
             collected = []
             cursor = after_record_id
@@ -163,8 +169,10 @@ class ProbeHarness(unittest.TestCase):
         return {'exit_code': exit_code, 'out_dir': self.out_dir}
 
     def read_stream(self, stream: str) -> list[dict]:
+        # 精确流文件匹配：stream 名后必须紧跟数字（排除 events-none/read-errors 等
+        # 前缀重叠的流文件被宽泛 glob 连带匹配）
         rows = []
-        for path in self.out_dir.glob(f'probe-*-{stream}-*.jsonl'):
+        for path in self.out_dir.glob(f'probe-????????-{stream}-[0-9]*.jsonl'):
             for line in path.read_text(encoding='utf-8').splitlines():
                 if line.strip():
                     rows.append(json.loads(line))
@@ -468,10 +476,9 @@ class StartupExitBoundaryTests(unittest.TestCase):
 
             def failing_write(stream, record):
                 raise OSError('permission denied')
-            with patch.object(probe, 'OutputSink') as sink_cls, \
+            with patch.object(probe.OutputSink, 'write', side_effect=failing_write), \
                     patch.object(probe, 'locate_engine', return_value=([], 'not_found')), \
                     patch('sys.stderr') as stderr:
-                sink_cls.return_value.write.side_effect = failing_write
                 code = probe.run_probe(_args(str(out)))
             self.assertEqual(code, 2)
             self.assertTrue(stderr.write.called, '输出不可写必须明确 stderr 错误')
@@ -485,9 +492,8 @@ class StartupExitBoundaryTests(unittest.TestCase):
 
             def failing_write(stream, record):
                 raise probe.CapacityReached('total size budget exceeded')
-            with patch.object(probe, 'OutputSink') as sink_cls, \
+            with patch.object(probe.OutputSink, 'write', side_effect=failing_write), \
                     patch.object(probe, 'locate_engine', return_value=([], 'not_found')):
-                sink_cls.return_value.write.side_effect = failing_write
                 code = probe.run_probe(_args(str(out)))
             self.assertEqual(code, 0, '容量停止保留证据按受控路径退出')
             exit_rows = self._exit_rows(out)
@@ -505,6 +511,130 @@ class StartupExitBoundaryTests(unittest.TestCase):
             self.assertEqual(code, 1)
             exit_rows = self._exit_rows(out)
             self.assertIn('error: baseline boom', exit_rows[-1]['stop_reason'])
+
+
+class ManagerRecheckRegressionTests(ProbeHarness):
+    """manager node1873 完整运行路径反例回归（MANAGER-RECHECK.md 三组）。"""
+
+    @staticmethod
+    def _candidate(pid, ownership, listening=True):
+        return {'pid': pid, 'argv': ['python', '-m', 'engine.main'],
+                'ownership': ownership, 'listening': listening, 'total_cpu': 15.0}
+
+    def test_foreign_only_run_no_foreign_samples(self):
+        # 完整 run_probe：只有 foreign 候选 → 不产生任何 engine 样本，落 engine_missing
+        with patch.object(probe, 'locate_engine',
+                          return_value=([self._candidate(9001, 'foreign')], None)):
+            result = self.run_probe_args([])
+        self.assertEqual(result['exit_code'], 0)
+        self.assertEqual(self.read_stream('engine'), [], 'foreign 进程不得被采样')
+        events = self.read_stream('engine-events')
+        missing = [e for e in events if e.get('event') == 'engine_missing']
+        self.assertTrue(missing, events)
+        self.assertEqual(missing[-1]['candidates'],
+                         [{'pid': 9001, 'ownership': 'foreign'}], '候选证据保留')
+
+    def test_unreadable_only_run_missing(self):
+        with patch.object(probe, 'locate_engine',
+                          return_value=([self._candidate(9002, 'unreadable')], None)):
+            result = self.run_probe_args([])
+        self.assertEqual(result['exit_code'], 0)
+        self.assertEqual(self.read_stream('engine'), [], 'unreadable 候选不得被采样')
+
+    def test_sibling_prefix_not_owned(self):
+        # 兄弟目录 project-other 不得被 startswith 误判 owned
+        from engine import process_query
+        root = ROOT / 'project'
+        fake = FakeProcess(pid=9003, cwd=str(root) + '-other')
+        with patch.object(process_query, 'list_processes',
+                          return_value=[(9003, ['python', '-m', 'engine.main'])]), \
+                patch.object(probe.psutil, 'Process', return_value=fake), \
+                patch.object(probe, 'locate_engine', new=REAL_LOCATE):
+            found, error = probe.locate_engine(root)
+        self.assertIsNone(error)
+        self.assertEqual(found[0]['ownership'], 'foreign', '兄弟目录前缀不得判 owned')
+
+    def test_owned_exits_to_foreign_relocates_without_foreign_samples(self):
+        # owned 引擎退出后重定位只见 foreign → 不采 foreign，落 engine_missing
+        original = probe.sample_engine_cpu
+        alive = [True]
+
+        def dying_cpu(process, previous):
+            if alive[0]:
+                alive[0] = False
+                return original(process, previous)
+            raise probe.psutil.NoSuchProcess(1234)
+
+        def fake_process(pid=None, **kw):
+            if not alive[0]:
+                raise probe.psutil.NoSuchProcess(1234)
+            return self.fake_engine
+        locate_calls = {'n': 0}
+
+        def flaky_locate(root):
+            locate_calls['n'] += 1
+            if locate_calls['n'] == 1:
+                return [self._candidate(1234, 'owned')], None
+            return [self._candidate(9001, 'foreign')], None
+        with patch.object(probe.psutil, 'Process', side_effect=fake_process), \
+                patch.object(probe, 'locate_engine', side_effect=flaky_locate), \
+                patch.object(probe, 'sample_engine_cpu', side_effect=dying_cpu):
+            result = self.run_probe_args([])
+        self.assertEqual(result['exit_code'], 0)
+        engine_pids = [r['pid'] for r in self.read_stream('engine')]
+        self.assertEqual(engine_pids, [1234], '切换后 foreign 不得被采样')
+        events = self.read_stream('engine-events')
+        self.assertTrue(any(e.get('event') == 'engine_exited' for e in events), events)
+        self.assertTrue(any(e.get('event') == 'engine_missing' for e in events), events)
+
+    def test_partial_event_pages_persisted_with_error(self):
+        # 四通道各返回 1 条事件 + 页错误：事件先落盘（含升频触发），错误独立记录
+        for name in ('rm', 'wer', 'appx', 'defender'):
+            self.fake_events[name] = (
+                [{'record_id': 1, 'event_id': 10000 if name == 'rm' else 603,
+                  'provider': 'test', 'time_created': '2026-11-12T00:00:00Z',
+                  'received_ts': 1.0}], 'page_2_read_failed')
+        result = self.run_probe_args(['--snapshot-fast', '0.05'])
+        self.assertEqual(result['exit_code'], 0)
+        self.assertEqual(len(self.read_stream('events')), 4,
+                         '已返回事件不得因页错误被丢弃（原 4 错误 0 事件）')
+        errors = self.read_stream('events-read-errors')
+        self.assertGreaterEqual(len(errors), 4)
+        self.assertTrue(all(e.get('error') == 'page_2_read_failed' for e in errors))
+        # rm 10000 事件仍触发升频
+        frames = self.read_stream('snapshot')
+        self.assertTrue(any(frame.get('interval') == 0.05 for frame in frames),
+                        'partial 页中的触发事件必须保留升频语义')
+
+    def test_capacity_exit_bounded_total_bytes(self):
+        # 空输出 + 200 字节上限：最终总字节 ≤ 上限（原实写 357）；exit 汇总
+        # 行放不下时显式失败（stderr + exit 1），不绕过预算
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            args = _args(str(out), window=0.0)
+            args.max_total_mb = 200 / (1024 * 1024)
+            with patch.object(probe, 'locate_engine', return_value=([], 'not_found')), \
+                    patch('sys.stderr') as stderr:
+                code = probe.run_probe(args)
+            total = sum(p.stat().st_size for p in out.glob('probe-*'))
+            self.assertLessEqual(total, 200, f'exit 汇总绕过预算：实写 {total} 字节')
+            self.assertEqual(code, 1, 'exit 汇总放不下必须显式失败状态')
+            self.assertTrue(stderr.write.called, 'exit 写不进必须 stderr 明确报错')
+
+    def test_prefilled_output_exit_write_failure_explicit(self):
+        # 预满输出（既有 probe- 文件已超数据预算）：exit 汇总写不进 → stderr + exit 1
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / 'probe-20261112-pre-0.jsonl').write_text('x' * 190, encoding='utf-8')
+            args = _args(str(out), window=0.0)
+            args.max_total_mb = 200 / (1024 * 1024)
+            with patch.object(probe, 'locate_engine', return_value=([], 'not_found')), \
+                    patch('sys.stderr') as stderr:
+                code = probe.run_probe(args)
+            self.assertEqual(code, 1, '最终输出写失败必须显式失败状态')
+            self.assertTrue(stderr.write.called, 'exit 写不进必须 stderr 明确报错')
+            # 已采证据不被删除腾空间
+            self.assertTrue((out / 'probe-20261112-pre-0.jsonl').exists())
 
 
 class ProbeEndToEndTests(ProbeHarness):
