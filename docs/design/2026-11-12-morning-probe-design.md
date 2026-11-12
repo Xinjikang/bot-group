@@ -14,7 +14,7 @@ engine.log 已包含真实请求的分段计时，可直接作为探针的「真
 
 - message.send 行：connect_ms（取连接总耗时）/ route_ms / publish_ms / total_ms；
 - message.persist 行：lock_ms / prepare_ms / enqueue_ms / commit_ms / total_ms；
-- 当日首条消息判据：当天第一条 message.send 行（该行只记录非 bot 消息），并按 message_id 关联 sender=user 与目标项目——message.persist 包含 bot 消息，可能混入慢 bot 消息，不能作为首条用户消息判据；
+- 当日首条消息判据：当天第一条 message.send 行（该行只记录 kind!=bot 的请求，同时包含 user 与 dev 消息，行内无 sender/project 字段）——判据为「当天第一条非机器人发送行」；局限：可能选中 dev 消息，在复查阶段按 message_id 回查 messages 表补 sender 与目标项目；
 - 墙钟对齐：日志时间戳与探测进程采样记录使用同一机器时钟。
 
 真实请求取连接内部四段的分解（.env 读 / makedirs / connect / PRAGMA）现有日志没有，取得方式见下节三档方案。
@@ -24,12 +24,13 @@ engine.log 已包含真实请求的分段计时，可直接作为探针的「真
 - 磁盘指标：typeperf 采集 `\LogicalDisk(E:)\Current Disk Queue Length` 与 `\LogicalDisk(E:)\Avg. Disk sec/Transfer`，每 10s 一次；
 - 引擎 PID 轻量指标：窗口内固定 1s 一采（Win32_Process 的 UserModeTime/KernelModeTime 增量，进程级卡顿的直接观测），实现后先实测探针自身开销并记录；
 - 全进程快照：默认 30s 一次，采集 CPU 占用与 IO 字节率（`\Process(*)\% Processor Time`、`\Process(*)\IO Data Bytes/sec`；权限不足时降级为仅引擎 PID 采样，并在输出中注明权限档位），检测到更新相关事件（RestartManager 10000 或 AppX 603）后升频至 1s，事件窗口结束（该类事件停止出现 5min 后）恢复 30s——固定低频会漏采 19s 级卡顿现场；
-- 事件采集：通道逐项核实——RestartManager 10000/10001/10002 在 Application、AppX 603/400/613 在 Microsoft-Windows-AppXDeploymentServer/Operational、Windows Defender 在 Microsoft-Windows-Windows Defender/Operational、WER 在 Application；以短轮询（≤5s）或事件订阅进行，每条记录两个时间戳（事件发生时间与收到时间）；每通道把「读到事件 / 读不到（记录错误码与权限档位） / 查询成功但无事件」三种状态分开落盘，不混记；
+- 事件采集：通道逐项核实——RestartManager 10000/10001/10002 在 Application、AppX 603/400/613 在 Microsoft-Windows-AppXDeploymentServer/Operational、Windows Defender 在 Microsoft-Windows-Windows Defender/Operational、WER 在 Application（2026-11-12 reviewer-02 已在机器上抽查属实）；以短轮询（≤5s）或事件订阅进行，每条记录两个时间戳（事件发生时间与收到时间）；每通道把「读到事件 / 读不到（记录错误码与权限档位） / 查询成功但无事件」三种状态分开落盘，不混记；
+- 引擎进程定位与盘符：按进程命令行匹配引擎进程（与 find_bot_processes 同款 wmic 命令行匹配模式），目标盘符从注入的项目主目录推导；不读环境变量或配置文件，维持零触碰约束；
 
 ### 取连接四段计时的取得方式（三档，按需升级）
 
 1. 首选（零预热）：不改引擎。探测进程第一轮不触碰 .env 与 group.db，只采系统指标与事件。现场复现时引擎 connect_ms 异常与系统指标（队列长度、磁盘传输秒、引擎 PID CPU 增量、更新事件）的同步关系只作关联线索，不作为归因结论；机制验证需线程等待位置观测或受控复现。
-2. 次选（有预热）：探测进程复刻 db_path 同款代码路径（engine/config.py 的 db_path → data_dir → _dotenv_data_dir → sqlite3.connect → 两条 PRAGMA），对四段分别计时，每周期一次。分段计时必须关联当前线程（threading.get_ident()）并成对记录单调时钟（perf_counter）与墙钟（time.time()），同一周期内两种时钟成对落盘；该线程 ID 归属独立探测进程，不代表真实请求线程。注意：这会预热 .env 与 group.db 文件头的系统页缓存，可能改变首条消息条件，只能作为第一轮拿到现场后的补充取证。
+2. 次选（有预热）：探测进程直接 import 引擎真实代码路径（engine/config.py 的 db_path / data_dir，不手写复刻以防漂移），分段计时以真实函数调用为界（.env 读含在 data_dir() 调用内），每周期一次。分段计时必须关联当前线程（threading.get_ident()）并成对记录单调时钟（perf_counter）与墙钟（time.time()），同一周期内两种时钟成对落盘；该线程 ID 归属独立探测进程，不代表真实请求线程。注意：这会预热 .env 与 group.db 文件头的系统页缓存，可能改变首条消息条件，只能作为第一轮拿到现场后的补充取证。
 3. 末选（改代码）：在 engine/db.py get_connection 内加四段 perf_counter 并打进 message.send 日志。需改引擎代码并重启；重启会重置 .env 解析缓存、连接池与页缓存状态，观测条件被污染，仅在无法归因时采用，且报告必须注明重启时间点。
 
 ## 采样参数
@@ -40,6 +41,7 @@ engine.log 已包含真实请求的分段计时，可直接作为探针的「真
 - 输出目录：必填参数（环境变量或命令行注入），不设硬编码默认值；可从注入的项目主目录推导子路径；目标目录不可创建或无写权限时明确退出并报错，不静默换路径；
 - 容量上限：轮转只管理探针自有文件；单文件 10MB 轮转，每日最多 3 个文件，目录总上限 100MB；达到总上限时保留异常窗口证据并停止采集，不删除目录内其他报告文件；
 - 失败与清理：脚本启动即写运行标记与启动时刻；正常结束或异常退出均落 exit/error 日志；退出后不留常驻进程与临时文件（临时文件用完即删）。
+- 退出判据：采样窗口结束正常退出；窗口内未复现（引擎无异常 connect_ms）时记为「本次未复现」，保留采集证据后按正常路径退出，不延长窗口；
 
 ## 低干扰对照设计
 
@@ -51,6 +53,7 @@ engine.log 已包含真实请求的分段计时，可直接作为探针的「真
 ## 部署方式
 
 - 手动运行：单次或临时窗口运行探测脚本，无持久配置，随时可做。
+- 顺序约束：先完成短窗口采集验证（验证采样周期、事件通道、探针开销与未复现退出判据），通过后才提交定时部署方案供主人确认。
 - 定时任务：每日 08:00 自动启动属持久系统配置，按 AGENTS.md 修改前同意要求，在方案经主人确认后单独落，不与探测脚本本身捆绑。
 
 ## 本轮负载实验记录（2026-11-12，architect 执行）
