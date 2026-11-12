@@ -80,15 +80,22 @@ class OutputSink:
     """probe- 前缀输出管理：单文件 10MB 轮转、每日最多 3 个、总上限 100MB。
 
     只轮转/核算自有前缀文件，不删除目录内其他报告；达限时抛 CapacityReached 由
-    主循环安全停止（保留已采集证据）。
+    主循环安全停止（保留已采集证据）。总容量按「写前行字节预算」执行：
+    已用字节 + 待写行编码长度 > 总上限 - 预留空间时拒绝写入；预留空间
+    （bounded reserved）保证最终 exit 汇总在容量达限后仍可落盘。
     """
 
     def __init__(self, directory: Path, *, max_file_bytes=10 * 1024 * 1024,
-                 max_daily_files=3, max_total_bytes=100 * 1024 * 1024):
+                 max_daily_files=3, max_total_bytes=100 * 1024 * 1024,
+                 reserved_bytes=None):
         self.directory = directory
         self.max_file_bytes = max_file_bytes
         self.max_daily_files = max_daily_files
         self.max_total_bytes = max_total_bytes
+        # 有界预留：默认 64KB，且不超过总上限的 1/8（小上限注入时仍成比例）
+        if reserved_bytes is None:
+            reserved_bytes = min(64 * 1024, max_total_bytes // 8)
+        self.reserved_bytes = reserved_bytes
         self._handles: dict[str, object] = {}
         self._index: dict[str, int] = {}
 
@@ -107,8 +114,6 @@ class OutputSink:
         if self._daily_count(day, stream) >= self.max_daily_files:
             raise CapacityReached(
                 f'daily file limit {self.max_daily_files} reached for {stream}')
-        if self._total_bytes() >= self.max_total_bytes:
-            raise CapacityReached(f'total size limit {self.max_total_bytes} reached')
         index = self._index.get(stream, 0)
         for _ in range(self.max_daily_files):
             path = self.directory / f'probe-{day}-{stream}-{index}.jsonl'
@@ -119,16 +124,22 @@ class OutputSink:
         raise CapacityReached(f'rotation exhausted for {stream}')
 
     def write(self, stream: str, record: dict) -> None:
-        """追加一行 JSON；容量上限抛出 CapacityReached（调用方安全停止）。"""
+        """追加一行 JSON；容量上限按写前预算抛出 CapacityReached（调用方安全停止）。"""
+        line = json.dumps(record, ensure_ascii=False, default=str) + '\n'
+        encoded = line.encode('utf-8')
         path = self._target(stream)
+        # 写前总容量预算（含待写行字节），预留空间给最终 exit 汇总
+        if self._total_bytes() + len(encoded) > self.max_total_bytes - self.reserved_bytes:
+            raise CapacityReached(
+                f'total size budget {self.max_total_bytes - self.reserved_bytes} '
+                f'exceeded (pending {len(encoded)} bytes)')
         handle = self._handles.get(stream)
         if handle is None or getattr(handle, 'name', None) != str(path):
             if handle is not None:
                 handle.close()
             handle = open(path, 'a', encoding='utf-8')
             self._handles[stream] = handle
-        line = json.dumps(record, ensure_ascii=False, default=str) + '\n'
-        if path.stat().st_size + len(line.encode('utf-8')) > self.max_file_bytes:
+        if path.stat().st_size + len(encoded) > self.max_file_bytes:
             self._index[stream] = self._index.get(stream, 0) + 1
             self.write(stream, record)  # 轮转后重写
             return
@@ -153,11 +164,14 @@ def derive_drive(project_root: Path) -> str:
     return drive
 
 
-def locate_engine(project_root: Path) -> tuple[list[tuple[int, list[str]]], str | None]:
+def locate_engine(project_root: Path) -> tuple[list[dict], str | None]:
     """psutil 列表匹配定位引擎进程：python/pythonw + `-m engine.main`。
 
-    多候选时按（有 LISTENING 连接、CPU 累计）排序，全部候选由调用方落盘。
-    返回 (候选列表, 错误说明)；候选列表按优先级排序。
+    目标根归属校验：候选进程 cwd 与注入的项目主目录前缀匹配（大小写不敏感）
+    才作为 owned 目标；外项目（foreign）与不可读（unreadable）候选保留证据
+    落盘但不作为采样目标，避免把外项目引擎指标记到本项目 engine.log。
+    排序：owned 优先，同归属按（有 LISTENING 连接、CPU 累计）降序。
+    返回 (候选列表 [{pid, argv, ownership, listening, total_cpu}], 错误说明)。
     """
     candidates = process_query.list_processes({'python', 'pythonw'}, scope='morning-probe')
     if candidates is None:
@@ -168,29 +182,49 @@ def locate_engine(project_root: Path) -> tuple[list[tuple[int, list[str]]], str 
             matches.append((pid, argv))
     if not matches:
         return [], 'not_found'
+    root_norm = os.path.normcase(os.path.abspath(str(project_root)))
     scored = []
     for pid, argv in matches:
         try:
             process = psutil.Process(pid)
+            cwd_norm = os.path.normcase(os.path.abspath(process.cwd()))
+            ownership = 'owned' if cwd_norm.startswith(root_norm) else 'foreign'
             listening = any(conn.status == 'LISTEN' for conn in
                             process.net_connections(kind='tcp'))
             cpu = process.cpu_times()
             total_cpu = cpu.user + cpu.system
         except (psutil.Error, OSError):
-            listening, total_cpu = False, 0.0
-        scored.append((listening, total_cpu, pid, argv))
-    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return [(pid, argv) for _, _, pid, argv in scored], None
+            ownership, listening, total_cpu = 'unreadable', False, 0.0
+        scored.append({'pid': pid, 'argv': argv, 'ownership': ownership,
+                       'listening': listening, 'total_cpu': total_cpu})
+    order = {'owned': 0, 'unreadable': 1, 'foreign': 2}
+    scored.sort(key=lambda item: (order.get(item['ownership'], 9),
+                                  not item['listening'], -item['total_cpu']))
+    return scored, None
 
 
-def sample_engine_cpu(process: psutil.Process, previous: dict) -> dict | None:
-    """Win32_Process UserModeTime/KernelModeTime 增量（psutil cpu_times）。"""
+def sample_engine_cpu(process: psutil.Process, previous: dict) -> dict:
+    """Win32_Process UserModeTime/KernelModeTime 增量（psutil cpu_times）。
+
+    PID 复用防护：previous 中记录的 create_time 与当前进程不一致（PID 被回收
+    或进程替换）时重置基线，首帧增量记 0 而非跨进程负差值；负增量钳制为 0。
+    """
     now = time.time()
     times = process.cpu_times()
-    delta_user = times.user - previous.get('user', times.user)
-    delta_system = times.system - previous.get('system', times.system)
+    try:
+        create_time = process.create_time()
+    except (psutil.Error, OSError):
+        create_time = None
+    if previous.get('create_time') is not None and create_time != previous['create_time']:
+        previous.clear()  # 进程身份变化：重置基线，不跨进程差分
+    if previous:
+        delta_user = max(0.0, times.user - previous['user'])
+        delta_system = max(0.0, times.system - previous['system'])
+    else:
+        delta_user = delta_system = 0.0
     previous['user'] = times.user
     previous['system'] = times.system
+    previous['create_time'] = create_time
     return {'ts': now, 'pid': process.pid, 'user_ms': round(delta_user * 1000, 3),
             'system_ms': round(delta_system * 1000, 3),
             'rss_mb': round(process.memory_info().rss / 1048576, 1)}
@@ -231,12 +265,15 @@ def run_typeperf(drive: str) -> tuple[dict | None, str | None]:
             'avg_sec_transfer': float(value_line[-1])}, None
 
 
-def run_wevtutil(channel: str, predicate: str, after_record_id: int,
-                 limit: int = 30) -> tuple[list[dict], str | None]:
-    """wevtutil 短轮询单通道事件；返回 (新事件列表, 错误说明)。"""
+def _wevtutil_once(channel: str, predicate: str, after_record_id: int,
+                   limit: int) -> tuple[list[dict], str | None]:
+    """单次 wevtutil 查询：RecordID > after_record_id 的最近 limit 条。
+
+    /rd:false 正序（最旧在前），保证增量批次从游标处连续推进不跳过。
+    """
     query = f"*[System[{predicate} and EventRecordID>{after_record_id}]]"
     command = ['wevtutil', 'qe', channel, '/q:' + query,
-               '/c:%d' % limit, '/rd:true', '/f:xml']
+               '/c:%d' % limit, '/rd:false', '/f:xml']
     try:
         completed = subprocess.run(command, capture_output=True, timeout=20,
                                    encoding='utf-8', errors='replace')
@@ -271,6 +308,65 @@ def run_wevtutil(channel: str, predicate: str, after_record_id: int,
                        'received_ts': time.time()})
     events.sort(key=lambda item: item['record_id'] or 0)
     return events, None
+
+
+def run_wevtutil(channel: str, predicate: str, after_record_id: int,
+                 limit: int = 30, max_pages: int = 10) -> tuple[list[dict], str | None]:
+    """wevtutil 短轮询单通道事件：正序有界分页增量采集。
+
+    游标完整性：RecordID > after_record_id 按最旧在前逐批取 limit 条，批满
+    继续下一批（最多 max_pages 批），批不足即停。游标只推进到已返回并落盘
+    的记录，突发 >30 条时跨批取全，前批不会被最新批挤掉（原 /rd:true /c:30
+    只回最新 30 条，1..70 的突发会永久漏掉 1..40）。
+    """
+    collected: list[dict] = []
+    cursor = after_record_id
+    for _ in range(max_pages):
+        events, error = _wevtutil_once(channel, predicate, cursor, limit)
+        if error:
+            return collected, error  # 已采部分保留，错误显式返回
+        if not events:
+            return collected, None
+        collected.extend(events)
+        next_cursor = max((event['record_id'] or 0) for event in events)
+        if next_cursor <= cursor:
+            break  # 防御：RecordID 未推进，避免死循环
+        cursor = next_cursor
+        if len(events) < limit:
+            break
+    return collected, None
+
+
+def latest_record_id(channel: str, predicate: str) -> tuple[int, str | None]:
+    """启动基线专用：单条倒序查询当前最新 EventRecordID（不落历史事件）。"""
+    query = f"*[System[{predicate}]]"
+    command = ['wevtutil', 'qe', channel, '/q:' + query,
+               '/c:1', '/rd:true', '/f:xml']
+    try:
+        completed = subprocess.run(command, capture_output=True, timeout=20,
+                                   encoding='utf-8', errors='replace')
+    except FileNotFoundError:
+        return 0, 'launch_failed'
+    except subprocess.TimeoutExpired:
+        return 0, 'timeout'
+    if completed.returncode != 0:
+        return 0, f'exit_{completed.returncode}'
+    if not completed.stdout.strip():
+        return 0, None  # 通道无任何历史事件：基线 0
+    try:
+        root = ET.fromstring('<root>' + completed.stdout + '</root>')
+    except ET.ParseError:
+        return 0, 'parse_failed'
+    ns = {'ns': 'http://schemas.microsoft.com/win/2004/08/events/event'}
+    record_ids = []
+    for event in root.findall('ns:Event', ns):
+        system = event.find('ns:System', ns)
+        if system is None:
+            continue
+        record_id = system.findtext('ns:EventRecordID', default=None, namespaces=ns)
+        if record_id:
+            record_ids.append(int(record_id))
+    return max(record_ids, default=0), None
 
 
 def read_engine_sends(log_path: Path, offset: int) -> tuple[list[dict], int]:
@@ -309,7 +405,11 @@ def read_engine_sends(log_path: Path, offset: int) -> tuple[list[dict], int]:
 
 
 def snapshot_all(previous: dict) -> dict:
-    """全进程快照：CPU 增量（%）与 IO 字节率（B/s），权限不足实例跳过并计数。"""
+    """全进程快照：CPU 增量（%）与 IO 字节率（B/s），权限不足实例跳过并计数。
+
+    PID 复用防护：基线按 (pid, create_time) 匹配，PID 被回收（同 PID 新进程）
+    时旧基线不参与差分，重建基线并记首帧增量为空（不产生跨进程负值）。
+    """
     now = time.time()
     procs = []
     skipped = 0
@@ -319,19 +419,22 @@ def snapshot_all(previous: dict) -> dict:
             name = process.info['name'] or ''
             times = process.cpu_times()
             counters = process.io_counters()
+            create_time = process.create_time()
         except (psutil.Error, OSError):
             skipped += 1
             continue
         base = previous.get(pid)
         elapsed = now - base['ts'] if base else None
+        same_identity = bool(base) and base.get('create_time') == create_time
         cpu_pct = None
         io_r_bps = io_w_bps = None
-        if base and elapsed and elapsed > 0:
-            cpu_pct = round((times.user + times.system - base['cpu']) / elapsed * 100, 2)
-            io_r_bps = round((counters.read_bytes - base['read']) / elapsed, 1)
-            io_w_bps = round((counters.write_bytes - base['write']) / elapsed, 1)
+        if same_identity and elapsed and elapsed > 0:
+            cpu_pct = round(max(0.0, times.user + times.system - base['cpu']) / elapsed * 100, 2)
+            io_r_bps = round(max(0, counters.read_bytes - base['read']) / elapsed, 1)
+            io_w_bps = round(max(0, counters.write_bytes - base['write']) / elapsed, 1)
         previous[pid] = {'ts': now, 'cpu': times.user + times.system,
-                         'read': counters.read_bytes, 'write': counters.write_bytes}
+                         'read': counters.read_bytes, 'write': counters.write_bytes,
+                         'create_time': create_time}
         procs.append([pid, name, cpu_pct, io_r_bps, io_w_bps])
     return {'ts': now, 'procs': procs, 'skipped': skipped}
 
@@ -369,7 +472,11 @@ class Scheduler:
 def run_probe(args) -> int:
     root = Path(args.project_root)
     output_dir = Path(args.output_dir)
-    drive = derive_drive(root)
+    try:
+        drive = derive_drive(root)
+    except ValueError as exc:
+        print(f'参数错误: {exc}', file=sys.stderr)
+        return 2
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -378,57 +485,30 @@ def run_probe(args) -> int:
     if not output_dir.is_dir():
         print(f'输出目录不可用: {output_dir}', file=sys.stderr)
         return 2
-    sink = OutputSink(output_dir, max_file_bytes=args.max_file_mb * 1024 * 1024,
-                      max_daily_files=args.max_daily_files,
-                      max_total_bytes=args.max_total_mb * 1024 * 1024)
     start = time.time()
     started_at = datetime.now().isoformat(timespec='seconds')
-    # 引擎定位（psutil 列表匹配；全部候选落盘，注入 PID 优先）
-    candidates, locate_error = locate_engine(root)
-    if args.engine_pid:
-        candidates = [(args.engine_pid, ['<injected>'])] + candidates
-    marker = {'started_at': started_at, 'pid': os.getpid(),
-              'project_root': str(root), 'drive': drive,
-              'output_dir': str(output_dir), 'window': args.window,
-              'connect_threshold_ms': args.connect_threshold,
-              'engine_candidates': [{'pid': pid, 'argv': argv} for pid, argv in candidates],
-              'locate_error': locate_error}
-    sink.write('run-marker', marker)
-    engine_previous: dict = {}
-    engine_state: dict = {'pid': candidates[0][0] if candidates else None,
-                          'process': None, 'last_locate': time.time()}
-    snapshot_previous: dict = {}
-    # 事件基线：启动时静默查询各通道当前最新 EventRecordID（不落历史事件，
-    # 避免把窗口前的更新事件误判为当前更新窗口触发升频）
-    after_record_id: dict[str, int] = {}
-    for name, channel, predicate in _CHANNELS:
-        events, _ = run_wevtutil(channel, predicate, 0)
-        after_record_id[name] = max((event['record_id'] or 0 for event in events), default=0)
-    event_state: dict = {'after_record_id': after_record_id,
-                         'last_fast_event': 0.0}
-    snapshot_period: dict = {'value': args.snapshot_interval}
-    log_offset = 0
-    try:
-        with open(root / 'logs' / 'engine.log', 'rb') as handle:
-            handle.seek(0, 2)
-            log_offset = handle.tell()
-    except (FileNotFoundError, OSError):
-        log_offset = 0  # 无日志文件：首轮从 0 开始，后续按文件出现跟踪
-    scheduler = Scheduler()
-    scheduler.add('engine', args.engine_interval, lambda: sample_engine())
-    scheduler.add('disk', args.disk_interval, lambda: sample_disk())
-    scheduler.add('snapshot', snapshot_period['value'], lambda: sample_snapshot())
-    scheduler.add('events', args.event_interval, lambda: sample_events())
-    scheduler.add('sends', args.log_interval, lambda: sample_sends())
-    scheduler.add('self', 30.0, lambda: sample_self())
-    self_previous = {'ts': time.monotonic(), 'cpu': 0.0}
+    sink = None
+    stop_reason = 'startup'
+    exit_code = 0
     sample_counts: dict[str, int] = {}
     anomaly_count = 0
     send_count = 0
+    engine_state: dict = {'pid': None, 'process': None, 'last_locate': 0.0,
+                          'create_time': None}
+    engine_previous: dict = {}
+    snapshot_previous: dict = {}
+    event_state: dict = {'after_record_id': {}, 'last_fast_event': 0.0}
+    snapshot_period: dict = {'value': args.snapshot_interval}
+    log_offset = 0
+    scheduler = Scheduler()
+    self_previous = {'ts': time.monotonic(), 'cpu': 0.0}
+    summary: dict = {}
 
     def sample_engine() -> None:
         nonlocal engine_state, engine_previous
         t0 = time.monotonic()
+        # 60s 内复用进程句柄；到期或进程失效时重建，并核验 create_time 身份
+        # （PID 被回收/进程替换 → engine_replaced 落事件 + 基线重置）
         if engine_state['process'] is None or time.time() - engine_state['last_locate'] > 60:
             engine_state['process'] = None
             if engine_state['pid'] is not None:
@@ -436,6 +516,15 @@ def run_probe(args) -> int:
                     process = psutil.Process(engine_state['pid'])
                     if not process.is_running():
                         process = None
+                    else:
+                        create_time = process.create_time()
+                        if (engine_state['create_time'] is not None
+                                and create_time != engine_state['create_time']):
+                            sink.write('engine-events',
+                                       {'ts': time.time(), 'event': 'engine_replaced',
+                                        'pid': engine_state['pid']})
+                            engine_previous.clear()
+                        engine_state['create_time'] = create_time
                 except psutil.NoSuchProcess:
                     process = None
                 except psutil.Error:
@@ -448,8 +537,10 @@ def run_probe(args) -> int:
             candidates, locate_error = locate_engine(root)
             engine_state['last_locate'] = time.time()
             if candidates:
-                engine_state['pid'] = candidates[0][0]
-                engine_state['process'] = psutil.Process(candidates[0][0])
+                engine_state['pid'] = candidates[0]['pid']
+                engine_state['process'] = psutil.Process(candidates[0]['pid'])
+                engine_state['create_time'] = None  # 新进程身份在下次采样建立
+                engine_previous.clear()
                 sink.write('engine-events',
                            {'ts': time.time(), 'event': 'relocated',
                             'pid': engine_state['pid'], 'locate_error': locate_error})
@@ -462,6 +553,7 @@ def run_probe(args) -> int:
             record = sample_engine_cpu(engine_state['process'], engine_previous)
         except psutil.NoSuchProcess:
             engine_state['process'] = None
+            engine_state['create_time'] = None
             sink.write('engine-events',
                        {'ts': time.time(), 'event': 'engine_exited', 'pid': engine_state['pid']})
             return
@@ -469,8 +561,7 @@ def run_probe(args) -> int:
             sink.write('engine-events',
                        {'ts': time.time(), 'event': 'engine_read_failed', 'error': str(exc)})
             return
-        if record is not None:
-            sink.write('engine', record)
+        sink.write('engine', record)
         sample_counts['engine'] = sample_counts.get('engine', 0) + 1
         _record_cost('engine', time.monotonic() - t0)
 
@@ -501,7 +592,7 @@ def run_probe(args) -> int:
         t0 = time.monotonic()
         for name, channel, predicate in _CHANNELS:
             events, error = run_wevtutil(channel, predicate,
-                                         event_state['after_record_id'][name])
+                                         event_state['after_record_id'].get(name, 0))
             if error:
                 sink.write('events-read-errors',
                            {'ts': time.time(), 'channel': name, 'error': error})
@@ -509,14 +600,14 @@ def run_probe(args) -> int:
             if not events:
                 sink.write('events-none',
                            {'ts': time.time(), 'channel': name,
-                            'after_record_id': event_state['after_record_id'][name]})
+                            'after_record_id': event_state['after_record_id'].get(name, 0)})
                 continue
             for event in events:
                 event['channel'] = name
                 sink.write('events', event)
                 if event['record_id']:
                     event_state['after_record_id'][name] = \
-                        max(event_state['after_record_id'][name], event['record_id'])
+                        max(event_state['after_record_id'].get(name, 0), event['record_id'])
                 if (name, event['event_id']) in _FAST_EVENTS:
                     event_state['last_fast_event'] = time.time()
                     scheduler.set_period('snapshot', args.snapshot_fast)
@@ -554,9 +645,51 @@ def run_probe(args) -> int:
     def _record_cost(name: str, cost: float) -> None:
         sink.write('self-cost', {'ts': time.time(), 'sampler': name, 'cost_ms': round(cost * 1000, 1)})
 
-    stop_reason = None
-    exit_code = 0
+    # 初始化、运行与容量停止统一走同一 try/finally：启动后任何异常都在
+    # finally 中落 exit 汇总；输出本身不可写（OSError）以 exit 2 + stderr 明确退出。
     try:
+        sink = OutputSink(output_dir, max_file_bytes=args.max_file_mb * 1024 * 1024,
+                          max_daily_files=args.max_daily_files,
+                          max_total_bytes=args.max_total_mb * 1024 * 1024)
+        # 引擎定位（psutil 列表匹配 + 目标根归属；全部候选含归属落盘，注入 PID 优先）
+        candidates, locate_error = locate_engine(root)
+        if args.engine_pid:
+            candidates = [{'pid': args.engine_pid, 'argv': ['<injected>'],
+                           'ownership': 'injected', 'listening': False,
+                           'total_cpu': 0.0}] + candidates
+        marker = {'started_at': started_at, 'pid': os.getpid(),
+                  'project_root': str(root), 'drive': drive,
+                  'output_dir': str(output_dir), 'window': args.window,
+                  'connect_threshold_ms': args.connect_threshold,
+                  'engine_candidates': candidates,
+                  'locate_error': locate_error}
+        sink.write('run-marker', marker)
+        owned = [candidate for candidate in candidates
+                 if candidate['ownership'] in ('owned', 'injected')]
+        engine_state['pid'] = owned[0]['pid'] if owned else None
+        engine_state['last_locate'] = time.time()
+        # 事件基线：启动时静默查询各通道当前最新 EventRecordID（专用倒序单条
+        # 查询，与正序增量采集分离，不落历史事件）；失败显式落 read-error，
+        # 基线回退 0，通道在后续轮询中失败即显式 unavailable（read-errors）。
+        for name, channel, predicate in _CHANNELS:
+            baseline, baseline_error = latest_record_id(channel, predicate)
+            if baseline_error:
+                sink.write('events-read-errors',
+                           {'ts': time.time(), 'channel': name,
+                            'error': f'baseline_{baseline_error}'})
+            event_state['after_record_id'][name] = baseline
+        try:
+            with open(root / 'logs' / 'engine.log', 'rb') as handle:
+                handle.seek(0, 2)
+                log_offset = handle.tell()
+        except (FileNotFoundError, OSError):
+            log_offset = 0  # 无日志文件：首轮从 0 开始，后续按文件出现跟踪
+        scheduler.add('engine', args.engine_interval, lambda: sample_engine())
+        scheduler.add('disk', args.disk_interval, lambda: sample_disk())
+        scheduler.add('snapshot', snapshot_period['value'], lambda: sample_snapshot())
+        scheduler.add('events', args.event_interval, lambda: sample_events())
+        scheduler.add('sends', args.log_interval, lambda: sample_sends())
+        scheduler.add('self', 30.0, lambda: sample_self())
         while time.time() - start < args.window:
             delay = scheduler.next_delay()
             if delay > 0:
@@ -573,6 +706,11 @@ def run_probe(args) -> int:
                                       'event_id': 'fast_snapshot_end'})
                 event_state['last_fast_event'] = 0.0
         stop_reason = 'window_ended'
+    except OSError as exc:
+        # 输出目录不可写（启动或运行期）——明确 stderr 错误，统一 exit 2
+        stop_reason = f'output_write_failed: {exc}'
+        print(f'输出写入失败: {output_dir} ({exc})', file=sys.stderr)
+        exit_code = 2
     except CapacityReached as exc:
         stop_reason = f'capacity_reached: {exc}'
     except KeyboardInterrupt:
@@ -581,9 +719,10 @@ def run_probe(args) -> int:
         stop_reason = f'error: {exc}'
         traceback.print_exc()
         try:
-            sink.write('error-log', {'ts': time.time(), 'error': repr(exc),
-                                     'traceback': traceback.format_exc()})
-        except CapacityReached:
+            if sink is not None:
+                sink.write('error-log', {'ts': time.time(), 'error': repr(exc),
+                                         'traceback': traceback.format_exc()})
+        except (CapacityReached, OSError):
             pass
         exit_code = 1
     finally:
@@ -592,17 +731,24 @@ def run_probe(args) -> int:
         else:
             verdict = f'复现 {anomaly_count} 条异常 connect_ms（阈值 {args.connect_threshold}ms）'
         summary = {'stop_reason': stop_reason, 'verdict': verdict,
-                   'started_at': started_at, 'ended_at': datetime.now().isoformat(timespec='seconds'),
+                   'started_at': started_at,
+                   'ended_at': datetime.now().isoformat(timespec='seconds'),
                    'window_s': round(time.time() - start, 1),
                    'sample_counts': sample_counts, 'send_count': send_count,
                    'anomaly_count': anomaly_count,
                    'engine_final_pid': engine_state['pid'],
                    'snapshot_permissions_skipped': '见快照帧 skipped 计数'}
-        sink.close()
-        # exit 日志绕过容量上限直接追加（达限也要留下停止原因）
-        day = datetime.now().strftime('%Y%m%d')
-        with open(output_dir / f'probe-{day}-exit-log-0.jsonl', 'a', encoding='utf-8') as handle:
-            handle.write(json.dumps(summary, ensure_ascii=False, default=str) + '\n')
+        if sink is not None:
+            sink.close()
+        # exit 日志绕过容量上限直接追加（达限也要留下停止原因）；写入失败时
+        # 用 stderr 兜底（输出本身不可写的唯一明确出口）
+        try:
+            day = datetime.now().strftime('%Y%m%d')
+            with open(output_dir / f'probe-{day}-exit-log-0.jsonl', 'a',
+                      encoding='utf-8') as handle:
+                handle.write(json.dumps(summary, ensure_ascii=False, default=str) + '\n')
+        except OSError as exc:
+            print(f'exit 日志写入失败: {output_dir} ({exc})', file=sys.stderr)
     print(json.dumps(summary, ensure_ascii=False))
     return exit_code
 

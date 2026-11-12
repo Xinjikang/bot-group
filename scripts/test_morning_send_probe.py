@@ -1,13 +1,17 @@
 """req#159 晨间发送卡顿只读探针回归（隔离夹具，不触达生产引擎/事件日志/磁盘计数器）。
 
-覆盖验收 1-7 模拟层：
+覆盖验收 1-7 模拟层与 manager 返修三组（node1869）：
 - CLI 参数校验与输出目录权限失败明确退出；
-- 盘符推导与引擎进程定位（多候选/未找到/枚举失败）；
+- 盘符推导与引擎进程定位（目标根归属/多候选排序/未找到/枚举失败/不可读保留）；
 - typeperf/wevtutil 输出解析（含本地化提示行、平铺 XML、错误码）；
-- 事件三态分开落盘、双时间戳、EventRecordID 增量过滤；
+- 事件正序有界分页增量（>30 条突发跨批取全、游标不跳过、最旧批触发事件）；
+- 事件三态分开落盘、双时间戳、EventRecordID 增量过滤、启动基线分离；
 - 更新事件（RM 10000/AppX 603）升频全进程快照；
 - engine.log 尾随解析与异常 connect_ms 复现判据、「本次未复现」退出；
-- 容量上限（单文件轮转/每日上限/总上限）与只管理自有文件；
+- PID 复用/create_time 身份变化（引擎采样与全进程快照负增量防护）；
+- 容量上限（写前行字节预算/单文件轮转/每日上限/总上限/不删非自有文件）；
+- 启动与运行统一退出边界（输出不可写 exit 2 + stderr、启动容量停止受控、
+  marker 后启动异常受控、exit 汇总落盘）；
 - 零触碰：源码静态断言 + 运行路径断言（不读 .env/group.db/配置/环境变量）；
 - 退出清理（无残留子进程/临时文件）与运行标记/exit 日志。
 
@@ -15,6 +19,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import sys
@@ -31,14 +36,24 @@ import morning_send_probe as probe  # noqa: E402
 
 
 class FakeProcess:
-    def __init__(self, pid=1234):
+    def __init__(self, pid=1234, cwd=None, create_time=1000.0,
+                 cpu_user=10.0, cpu_system=5.0, rss_mb=50):
         self.pid = pid
-        self._user = 10.0
-        self._system = 5.0
-        self._rss = 50 * 1048576
+        self._cwd = cwd if cwd is not None else str(ROOT)
+        self._create_time = create_time
+        self._user = cpu_user
+        self._system = cpu_system
+        self._rss = rss_mb * 1048576
+        self.info = {'pid': pid, 'name': 'pythonw.exe'}
 
     def name(self):
         return 'pythonw.exe'
+
+    def cwd(self):
+        return self._cwd
+
+    def create_time(self):
+        return self._create_time
 
     def cpu_times(self):
         times = MagicMock()
@@ -51,11 +66,26 @@ class FakeProcess:
         info.rss = self._rss
         return info
 
+    def io_counters(self):
+        counters = MagicMock()
+        counters.read_bytes = 0
+        counters.write_bytes = 0
+        return counters
+
     def is_running(self):
         return True
 
     def net_connections(self, kind=None):
         return [MagicMock(status='LISTEN')]
+
+
+def _args(output_dir: str, window: float = 0.6) -> argparse.Namespace:
+    return argparse.Namespace(
+        project_root=str(ROOT), output_dir=output_dir, window=window,
+        engine_pid=None, connect_threshold=5000.0, engine_interval=0.1,
+        disk_interval=0.2, snapshot_interval=0.2, snapshot_fast=0.05,
+        event_interval=0.2, log_interval=0.2, max_file_mb=10.0,
+        max_daily_files=3, max_total_mb=100.0)
 
 
 class ProbeHarness(unittest.TestCase):
@@ -71,7 +101,10 @@ class ProbeHarness(unittest.TestCase):
         # 打桩外部系统接口
         patchers = [
             patch.object(probe, 'locate_engine',
-                         return_value=([(1234, ['<fake>', '-m', 'engine.main'])], None)),
+                         return_value=([{'pid': 1234, 'argv': ['<fake>', '-m', 'engine.main'],
+                                         'ownership': 'owned', 'listening': True,
+                                         'total_cpu': 15.0}], None)),
+            patch.object(probe, 'latest_record_id', return_value=(0, None)),
             patch.object(probe, 'run_typeperf',
                          return_value=({'ts': 1.0, 'drive': 'E:', 'queue_length': 0.0,
                                         'avg_sec_transfer': 0.001}, None)),
@@ -85,13 +118,28 @@ class ProbeHarness(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-        def fake_wevtutil(channel, predicate, after_record_id, limit=30):
-            return self.fake_events.get(self._channel_name(channel), ([], None))
+        def fake_wevtutil(channel, predicate, after_record_id, limit=30, max_pages=10):
+            name = self._channel_name(channel)
+            events, error = self.fake_events.get(name, ([], None))
+            if error is not None:
+                return [], error
+            # 模拟真实分页语义：单轮调用内按游标连续取批，游标推进到已返回记录
+            collected = []
+            cursor = after_record_id
+            for _ in range(max_pages):
+                page = [event for event in events
+                        if event['record_id'] > cursor][:limit]
+                if not page:
+                    break
+                collected.extend(page)
+                cursor = max(event['record_id'] for event in page)
+                if len(page) < limit:
+                    break
+            return collected, None
 
         patcher = patch.object(probe, 'run_wevtutil', side_effect=fake_wevtutil)
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.wevtutil_calls = []
 
     @staticmethod
     def _channel_name(channel: str) -> str:
@@ -158,30 +206,50 @@ class CliAndPathTests(unittest.TestCase):
 
 
 class LocateEngineTests(unittest.TestCase):
-    def test_matches_module_form_and_ranks_listening(self):
+    def test_matches_module_form_ranks_owned_first(self):
         from engine import process_query
-        candidates = [(100, ['python.exe', '-m', 'engine.main']),
-                      (200, ['pythonw.exe', '-m', 'engine.main']),
-                      (300, ['python.exe', '-c', 'other'])]
-        with patch.object(process_query, 'list_processes', return_value=candidates):
-            found, error = probe.locate_engine(Path(r'E:\Code\bot-group'))
+        candidates = [(1, ['python.exe', '-m', 'engine.main']),
+                      (2, ['pythonw.exe', '-m', 'engine.main']),
+                      (3, ['python.exe', '-c', 'other'])]
+
+        def proc_factory(pid=None, **kw):
+            if pid == 1:
+                return FakeProcess(pid=1, cwd=str(ROOT), cpu_user=10.0)
+            return FakeProcess(pid=pid, cwd='D:/other-instance', cpu_user=100.0)
+        with patch.object(process_query, 'list_processes', return_value=candidates), \
+                patch.object(probe.psutil, 'Process', side_effect=proc_factory):
+            found, error = probe.locate_engine(ROOT)
         self.assertIsNone(error)
-        self.assertEqual([pid for pid, _ in found], [100, 200])
-        # 有 LISTENING 连接的优先（打桩 psutil.Process）
-        with patch.object(probe.psutil, 'Process', side_effect=FakeProcess), \
-                patch.object(process_query, 'list_processes', return_value=candidates):
-            found, error = probe.locate_engine(Path(r'E:\Code\bot-group'))
+        # 外项目进程（LISTENING + CPU 100）不得排在 owned 之前
+        self.assertEqual(found[0]['pid'], 1)
+        self.assertEqual(found[0]['ownership'], 'owned')
+        self.assertEqual(found[1]['ownership'], 'foreign')
+
+    def test_unreadable_candidate_preserved_not_selected(self):
+        from engine import process_query
+
+        def proc_factory(pid=None, **kw):
+            if pid == 2:
+                raise probe.psutil.AccessDenied(2)
+            return FakeProcess(pid=pid, cwd=str(ROOT))
+        with patch.object(process_query, 'list_processes',
+                          return_value=[(1, ['python', '-m', 'engine.main']),
+                                        (2, ['python', '-m', 'engine.main'])]), \
+                patch.object(probe.psutil, 'Process', side_effect=proc_factory):
+            found, error = probe.locate_engine(ROOT)
         self.assertIsNone(error)
-        self.assertEqual([pid for pid, _ in found], [100, 200])
+        self.assertEqual(found[0]['pid'], 1)
+        self.assertEqual(found[0]['ownership'], 'owned')
+        self.assertEqual(found[1]['ownership'], 'unreadable')  # 证据保留不静默丢弃
 
     def test_not_found_and_enumerate_failed(self):
         from engine import process_query
         with patch.object(process_query, 'list_processes', return_value=[]):
-            found, error = probe.locate_engine(Path(r'E:\Code\bot-group'))
+            found, error = probe.locate_engine(ROOT)
             self.assertEqual(found, [])
             self.assertEqual(error, 'not_found')
         with patch.object(process_query, 'list_processes', return_value=None):
-            found, error = probe.locate_engine(Path(r'E:\Code\bot-group'))
+            found, error = probe.locate_engine(ROOT)
             self.assertEqual(found, [])
             self.assertEqual(error, 'enumerate_failed')
 
@@ -241,6 +309,66 @@ class WevtutilParseTests(unittest.TestCase):
         self.assertEqual(events, [])
         self.assertEqual(error, 'exit_5')
 
+    def test_latest_record_id_baseline(self):
+        xml = self.EVENT_XML.replace('5001', '7000')
+        completed = subprocess.CompletedProcess(['wevtutil'], 0, xml, '')
+        with patch.object(probe.subprocess, 'run', return_value=completed):
+            record_id, error = probe.latest_record_id('Application', 'x')
+        self.assertIsNone(error)
+        self.assertEqual(record_id, 7000)
+        # 空通道（无历史事件）：基线 0
+        completed = subprocess.CompletedProcess(['wevtutil'], 0, '', '')
+        with patch.object(probe.subprocess, 'run', return_value=completed):
+            record_id, error = probe.latest_record_id('Application', 'x')
+        self.assertEqual((record_id, error), (0, None))
+
+
+class EventPaginationTests(unittest.TestCase):
+    """manager node1869 返修 1：>30 条突发跨批取全、游标不跳过。"""
+
+    @staticmethod
+    def _xml(record_id):
+        return (f'<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">'
+                f'<System><Provider Name="test"/><EventID>603</EventID>'
+                f'<EventRecordID>{record_id}</EventRecordID>'
+                f'<TimeCreated SystemTime="2026-11-12T00:00:00Z"/></System></Event>')
+
+    @staticmethod
+    def _after(command):
+        query = next(part[3:] for part in command if part.startswith('/q:'))
+        return int(query.split('EventRecordID>')[1].split(']')[0])
+
+    def test_burst_70_collected_fully_in_order(self):
+        # 正序分页：1..70 突发 → 三批（30+30+10）取全，无 1..40 永久漏
+        def fake_run(command, **kwargs):
+            ids = [i for i in range(1, 71) if i > self._after(command)][:30]
+            return subprocess.CompletedProcess(command, 0,
+                                               ''.join(self._xml(i) for i in ids), '')
+        with patch.object(probe.subprocess, 'run', side_effect=fake_run):
+            events, error = probe.run_wevtutil('test', 'x', 0)
+        self.assertIsNone(error)
+        self.assertEqual([event['record_id'] for event in events], list(range(1, 71)))
+        # 游标推进到 70 后：无新事件，且不重复
+        with patch.object(probe.subprocess, 'run', side_effect=fake_run):
+            events, error = probe.run_wevtutil('test', 'x', 70)
+        self.assertEqual((events, error), ([], None))
+
+    def test_partial_page_then_error_keeps_collected(self):
+        # 第二页失败：已采部分保留，错误显式返回
+        calls = {'n': 0}
+
+        def fake_run(command, **kwargs):
+            calls['n'] += 1
+            if calls['n'] == 2:
+                return subprocess.CompletedProcess(command, 5, '', 'denied')
+            ids = [i for i in range(1, 71) if i > self._after(command)][:30]
+            return subprocess.CompletedProcess(command, 0,
+                                               ''.join(self._xml(i) for i in ids), '')
+        with patch.object(probe.subprocess, 'run', side_effect=fake_run):
+            events, error = probe.run_wevtutil('test', 'x', 0)
+        self.assertEqual(error, 'exit_5')
+        self.assertEqual(len(events), 30)  # 第一页保留
+
 
 class EngineLogTailTests(unittest.TestCase):
     def test_parses_send_lines_and_rotation(self):
@@ -260,8 +388,32 @@ class EngineLogTailTests(unittest.TestCase):
             self.assertEqual(offset, 0)
 
 
+class PidReuseTests(unittest.TestCase):
+    """manager node1869 返修 2：PID 复用/create_time 身份变化不产生负增量。"""
+
+    def test_engine_cpu_pid_reuse_resets_baseline(self):
+        previous = {}
+        old = FakeProcess(pid=9, create_time=1000.0, cpu_user=100.0, cpu_system=0.0)
+        new = FakeProcess(pid=9, create_time=2000.0, cpu_user=10.0, cpu_system=0.0)
+        probe.sample_engine_cpu(old, previous)
+        record = probe.sample_engine_cpu(new, previous)  # 同 PID 新进程（100s → 10s）
+        self.assertEqual(record['user_ms'], 0.0, 'create_time 变化重置基线，禁止 -90000 负差')
+
+    def test_snapshot_pid_reuse_rebuilds_baseline(self):
+        # 同 PID 新进程（create_time 变化）：CPU 回退不产生负 cpu_pct
+        previous = {}
+        with patch.object(probe.psutil, 'process_iter') as process_iter:
+            iter1 = [FakeProcess(pid=7, create_time=1000.0, cpu_user=50.0)]
+            iter2 = [FakeProcess(pid=7, create_time=2000.0, cpu_user=10.0)]
+            process_iter.side_effect = [iter1, iter2]
+            probe.snapshot_all(previous)
+            frame = probe.snapshot_all(previous)
+        pid7 = next(proc for proc in frame['procs'] if proc[0] == 7)
+        self.assertIsNone(pid7[2], '同 PID 新进程：基线重建，cpu_pct 为空不产生负值')
+
+
 class OutputSinkCapacityTests(unittest.TestCase):
-    def test_rotation_daily_limit_and_total_limit(self):
+    def test_rotation_daily_limit(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             sink = probe.OutputSink(directory, max_file_bytes=100,
@@ -273,6 +425,19 @@ class OutputSinkCapacityTests(unittest.TestCase):
             engine_files = sorted(directory.glob('probe-*-engine-*.jsonl'))
             self.assertEqual(len(engine_files), 2, 'daily per-stream rotation cap')
 
+    def test_total_budget_counts_pending_bytes(self):
+        # manager node1869 返修 3：写前行字节预算，200 限不再实写 236
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            sink = probe.OutputSink(directory, max_file_bytes=1000,
+                                    max_daily_files=3, max_total_bytes=200)
+            sink.write('a', {'pad': 'x' * 150})
+            with self.assertRaises(probe.CapacityReached):
+                sink.write('b', {'pad': 'y' * 60})
+            sink.close()
+            total = sum(p.stat().st_size for p in directory.iterdir())
+            self.assertLess(total, 200, f'预算失效：实写 {total} 字节')
+
     def test_total_limit_stops_and_keeps_other_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -280,12 +445,66 @@ class OutputSinkCapacityTests(unittest.TestCase):
             sink = probe.OutputSink(directory, max_file_bytes=10 ** 6,
                                     max_daily_files=3, max_total_bytes=200)
             sink.write('engine', {'pad': 'x' * 150})
-            sink.write('snapshot', {'pad': 'y' * 60})
             with self.assertRaises(probe.CapacityReached):
                 sink.write('snapshot', {'pad': 'z' * 10})
             sink.close()
             self.assertTrue((directory / 'other-report.md').exists(),
                             '容量管理不得删除非自有文件')
+
+
+class StartupExitBoundaryTests(unittest.TestCase):
+    """manager node1869 返修 3：初始化/运行/容量停止统一受控退出。"""
+
+    @staticmethod
+    def _exit_rows(out: Path) -> list[dict]:
+        return [json.loads(line)
+                for path in out.glob('probe-*-exit-log-*.jsonl')
+                for line in path.read_text(encoding='utf-8').splitlines()
+                if line.strip()]
+
+    def test_startup_unwritable_output_exits_2_with_stderr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+
+            def failing_write(stream, record):
+                raise OSError('permission denied')
+            with patch.object(probe, 'OutputSink') as sink_cls, \
+                    patch.object(probe, 'locate_engine', return_value=([], 'not_found')), \
+                    patch('sys.stderr') as stderr:
+                sink_cls.return_value.write.side_effect = failing_write
+                code = probe.run_probe(_args(str(out)))
+            self.assertEqual(code, 2)
+            self.assertTrue(stderr.write.called, '输出不可写必须明确 stderr 错误')
+            exit_rows = self._exit_rows(out)
+            self.assertEqual(len(exit_rows), 1, 'exit 汇总在 finally 统一落盘')
+            self.assertIn('output_write_failed', exit_rows[-1]['stop_reason'])
+
+    def test_startup_capacity_failure_controlled_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+
+            def failing_write(stream, record):
+                raise probe.CapacityReached('total size budget exceeded')
+            with patch.object(probe, 'OutputSink') as sink_cls, \
+                    patch.object(probe, 'locate_engine', return_value=([], 'not_found')):
+                sink_cls.return_value.write.side_effect = failing_write
+                code = probe.run_probe(_args(str(out)))
+            self.assertEqual(code, 0, '容量停止保留证据按受控路径退出')
+            exit_rows = self._exit_rows(out)
+            self.assertIn('capacity_reached', exit_rows[-1]['stop_reason'])
+
+    def test_startup_exception_after_marker_controlled_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+
+            def fail_baseline(channel, predicate):
+                raise RuntimeError('baseline boom')
+            with patch.object(probe, 'latest_record_id', side_effect=fail_baseline), \
+                    patch.object(probe, 'locate_engine', return_value=([], 'not_found')):
+                code = probe.run_probe(_args(str(out)))
+            self.assertEqual(code, 1)
+            exit_rows = self._exit_rows(out)
+            self.assertIn('error: baseline boom', exit_rows[-1]['stop_reason'])
 
 
 class ProbeEndToEndTests(ProbeHarness):
@@ -298,6 +517,7 @@ class ProbeEndToEndTests(ProbeHarness):
         marker_rows = self.read_stream('run-marker')
         self.assertEqual(marker_rows[0]['drive'], 'E:')
         self.assertEqual(marker_rows[0]['engine_candidates'][0]['pid'], 1234)
+        self.assertEqual(marker_rows[0]['engine_candidates'][0]['ownership'], 'owned')
         # 三态分开落盘（打桩事件全部无事件 → events-none）
         none_rows = self.read_stream('events-none')
         self.assertGreater(len(none_rows), 0)
@@ -328,18 +548,22 @@ class ProbeEndToEndTests(ProbeHarness):
         self.assertEqual(anomaly_rows[0]['connect_ms'], 19314.9)
 
     def test_update_event_fast_snapshot(self):
-        # 首轮后出现 RM 10000 → 全进程快照升频至 --snapshot-fast
-        self.fake_events['rm'] = ([{'record_id': 9001, 'event_id': 10000,
-                                    'provider': 'Microsoft-Windows-RestartManager',
-                                    'time_created': '2026-11-12T00:00:00Z',
-                                    'received_ts': 1.0}], None)
+        # 突发 70 条 AppX 603：触发事件在最旧批（record_id=1），分页取全仍触发升频
+        self.fake_events['appx'] = (
+            [{'record_id': i, 'event_id': 603,
+              'provider': 'Microsoft-Windows-AppXDeploymentServer',
+              'time_created': '2026-11-12T00:00:00Z', 'received_ts': 1.0}
+             for i in range(1, 71)], None)
         result = self.run_probe_args(['--snapshot-fast', '0.05'])
         self.assertEqual(result['exit_code'], 0)
         frames = self.read_stream('snapshot')
         self.assertTrue(any(frame.get('interval') == 0.05 for frame in frames),
-                        '更新事件后全进程快照应升频')
+                        '最旧批更新事件后全进程快照应升频')
         event_rows = self.read_stream('events')
-        self.assertTrue(any(e.get('event_id') == 10000 for e in event_rows))
+        # read_stream 的 glob 会连带匹配 events-none：按 event_id 精确过滤
+        appx_events = [event for event in event_rows
+                       if event.get('channel') == 'appx' and event.get('event_id') == 603]
+        self.assertEqual(len(appx_events), 70, '突发事件恰好一次全部落盘')
 
     def test_engine_pid_exit_relocates(self):
         # 前两轮正常采样，之后引擎进程退出（采样抛 NoSuchProcess）→ 重定位找不到
@@ -361,7 +585,8 @@ class ProbeEndToEndTests(ProbeHarness):
         def flaky_locate(root):
             locate_calls['n'] += 1
             if locate_calls['n'] == 1:  # 启动定位成功，引擎死亡后重定位失败
-                return [(1234, ['<fake>', '-m', 'engine.main'])], None
+                return [{'pid': 1234, 'argv': ['<fake>', '-m', 'engine.main'],
+                         'ownership': 'owned', 'listening': True, 'total_cpu': 15.0}], None
             return [], 'not_found'
         with patch.object(probe.psutil, 'Process', side_effect=fake_process), \
                 patch.object(probe, 'locate_engine', side_effect=flaky_locate), \
@@ -375,7 +600,6 @@ class ProbeEndToEndTests(ProbeHarness):
     def test_zero_touch_no_business_files_or_env_reads(self):
         # 运行路径断言：探针不读 .env / group.db / 配置文件 / 环境变量
         accessed: list[str] = []
-        real_open = probe.os.open if hasattr(probe.os, 'open') else None
         import builtins
         original_open = builtins.open
 
