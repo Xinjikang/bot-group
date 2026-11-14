@@ -1104,10 +1104,11 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         except (OSError, ValueError, TypeError):
             _shutil_rmtree(dsh_tmp)
             return {'ok': False, 'detail': 'DSH Auto 插件检测失败，请检查绑定的运行时安装'}
+        dsh_native_auto = dsh_auto_enabled and dsh_auto.native_selection(bot)
         dsh_auto_overlay = None
         if dsh_auto_enabled:
             dsh_adapter_path = Path(dsh_tmp) / dsh_auto.ADAPTER_FILE
-            dsh_adapter_path.write_text(dsh_auto.adapter_source(), encoding='utf-8')
+            dsh_adapter_path.write_text(dsh_auto.adapter_source(native_selection=dsh_native_auto), encoding='utf-8')
             dsh_auto_overlay = {'adapter_path': str(dsh_adapter_path)}
         dsh_overlay = native_runtime.dsh_overlay(
             bot, credentials_path=dsh_cred,
@@ -1119,7 +1120,7 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         dsh_overlay_path.write_text(native_runtime.overlay_yaml(dsh_overlay), encoding='utf-8')
         try:
             cmd_without_q, dsh_home = native_runtime.dsh(bot, overlay_path=str(dsh_overlay_path),
-                                                         resume=dsh_resume_sid)
+                                                         resume=dsh_resume_sid, native_auto=dsh_native_auto)
         except FileNotFoundError as exc:
             _shutil_rmtree(dsh_tmp)
             return {'ok': False, 'detail': str(exc)}

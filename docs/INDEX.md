@@ -1,5 +1,7 @@
 # 项目文档索引
 
+DSH 0.2.2 启动和凭据权限修复见 [兼容设计](design/2026-11-14-dsh-v022-compatibility.md)，版本变更见 [v0.2.15](releases/v0.2.15.md)。
+
 清晨首条消息卡顿的现场证据、取连接四段分解三档方案与清晨窗口探针设计见 [清晨卡顿探针设计](design/2026-11-12-morning-probe-design.md)。
 
 全站事件循环阻塞的根因、认证数据库段线程隔离、心跳写入迁移与 WAL 实例初始化见 [authorize 阻塞修复](design/2026-11-10-authorize-lock-isolation.md)，已实现的线程边界、事务与响应契约见 [认证数据库隔离](engineering/AUTHORIZE-LOCK-ISOLATION.md)。

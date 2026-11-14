@@ -40,10 +40,11 @@ export function apply(ctx, config) {
 def respond(bot, prompt, system, scratch, workdir, server, run, env):
     credentials = dsh_auth.copy_credentials(bot['config_root'], str(scratch))
     auto_enabled = dsh_auto.plugin_available(bot)
+    native_auto = auto_enabled and dsh_auto.native_selection(bot)
     auto = None
     if auto_enabled:
         adapter = scratch / dsh_auto.ADAPTER_FILE
-        adapter.write_text(dsh_auto.adapter_source(), encoding='utf-8')
+        adapter.write_text(dsh_auto.adapter_source(native_selection=native_auto), encoding='utf-8')
         auto = {'adapter_path': str(adapter)}
     private = None
     if server:
@@ -61,7 +62,7 @@ def respond(bot, prompt, system, scratch, workdir, server, run, env):
                                 'config': {'system': system}}]})
     overlay = scratch / 'overlay.yml'
     overlay.write_text(native_runtime.overlay_yaml(entries), encoding='utf-8')
-    command, home = native_runtime.dsh(bot, overlay_path=str(overlay))
+    command, home = native_runtime.dsh(bot, overlay_path=str(overlay), native_auto=native_auto)
     env = dict(env)
     for key in list(env):
         if key.upper() in {'DEEPSEEK_API_KEY', 'DSH_PROFILE', 'DSH_HOME',

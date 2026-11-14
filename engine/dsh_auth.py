@@ -277,6 +277,10 @@ def restrict_dir(path: str) -> str | None:
     if not private.is_dir():
         private.mkdir(parents=True, exist_ok=True)
     if sys.platform != 'win32':
+        try:
+            os.chmod(private, 0o700)
+        except OSError as exc:
+            raise AuthSyncError('无法限制凭据目录权限，已中止') from exc
         return None
     current_sid = _current_user_sid()
     identity = _windows_identity()
@@ -313,7 +317,12 @@ def copy_credentials(home: str, private_dir: str) -> str | None:
         raise AuthSyncError('凭据副本目标文件已存在，中止（防止沿用既有宽泛 ACL）')
     current_sid = restrict_dir(private)
     try:
-        dest.write_bytes(source.read_bytes())
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError as exc:
+        raise AuthSyncError('无法创建独占凭据副本，已中止') from exc
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(source.read_bytes())
     except Exception:
         dest.unlink(missing_ok=True)
         raise AuthSyncError('无法写入凭据副本，已中止') from None

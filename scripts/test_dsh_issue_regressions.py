@@ -73,10 +73,11 @@ class ProfileAndHudTests(unittest.TestCase):
         self.assertTrue(any('insert' in e for e in entries))
         self.assertEqual(entries[1]['config']['personaPrefix'], 'own-persona')
 
-    def run_hud(self, output, *, tools=True, auto=True, tool_names=None):
+    def run_hud(self, output, *, tools=True, auto=True, tool_names=None, native=False):
         def run(command, prompt, env, cwd, *, stderr_line):
             self.assertEqual(command[2], 'reviewer')
             self.assertNotIn('--session-id', command)
+            self.assertEqual('--permission-mode' in command, native)
             self.assertEqual(env['DSH_HOME'], str(self.root))
             overlay = Path(command[command.index('--patch')+1]).read_text(encoding='utf-8')
             self.assertNotIn('personaPrefix', overlay)
@@ -92,12 +93,17 @@ class ProfileAndHudTests(unittest.TestCase):
         with patch('engine.dsh_auth.copy_credentials', return_value=None), \
              patch('engine.dsh_auth.overlay_entries', return_value=[]), \
              patch('engine.dsh_auto.plugin_available', return_value=True), \
+             patch('engine.dsh_auto.native_selection', return_value=native), \
              patch.object(hud_runtime, '_run', side_effect=run), \
              hud_runtime.tool_server(server):
             return hud_runtime.respond(self.bot, {'project': {'root': str(self.root)}, 'user_request': 'check'})
 
     def test_hud_parses_final_and_cleans_private_overlay(self):
         result = self.run_hud(json.dumps({'type': 'final', 'text': '{"text":"done"}'}))
+        self.assertEqual(result['text'], 'done')
+
+    def test_hud_native_auto_uses_cli_selection(self):
+        result = self.run_hud(json.dumps({'type': 'final', 'text': '{"text":"done"}'}), native=True)
         self.assertEqual(result['text'], 'done')
 
     def test_hud_rejects_corrupt_missing_final_and_error_events(self):

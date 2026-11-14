@@ -151,9 +151,27 @@ def plugin_available(bot) -> bool:
     return True
 
 
-def adapter_source() -> str:
+def adapter_source(*, native_selection=False) -> str:
     """受控适配插件源码（tools/execute 主体入口 + REVIEW_POLICY 准确特征 + temp0 审查识别）。"""
-    return ADAPTER_SOURCE
+    if not native_selection:
+        return ADAPTER_SOURCE
+    # Native headless selects Auto after session creation and before turn/start.
+    return ADAPTER_SOURCE.replace('''    ctx.on("session/created", (session) => {
+        ctx.permissionPresets.set(session, "auto");''', '''    ctx.on("session/event", (session, event) => {
+        if (event.type !== "turn/start") return;''').replace(
+        '        const callId = exec.callId ?? "?";',
+        '        presetConfirmed = preset === "auto";\n        const callId = exec.callId ?? "?";').replace(
+        'return;  // fail-closed：能力失效即阻断，不 next，工具不执行',
+        'return {kind: "deny", reason: "Auto preset unavailable"};')
+
+
+def native_selection(bot) -> bool:
+    """Use native headless permission selection introduced in DSH 0.2.2."""
+    import re
+    from . import native_runtime
+    version = native_runtime.dsh_version(bot.get('runtime_entry') or '')
+    match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)(?:[-+].*)?', version)
+    return bool(match and tuple(map(int, match.groups())) >= (0, 2, 2))
 
 
 def overlay_inserts(adapter_path: str) -> list:
@@ -219,7 +237,7 @@ def preset_evidence(stderr_lines) -> dict:
 
 AUDIT_FAIL_TEXT = (
     'auto review capability unavailable: session preset not confirmed (preset=auto not '
-    'observed on session/created); execution blocked for this session')
+    'observed before execution); execution blocked for this session')
 
 
 def audit(conn, *, session, wake_started_at, enabled, evidence, tool_calls,

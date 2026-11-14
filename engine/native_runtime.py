@@ -57,7 +57,7 @@ def dsh_execution_profile(bot):
     return 'headless' if profile == 'desktop' else profile
 
 
-def dsh(bot, *, overlay_path='', resume=None):
+def dsh(bot, *, overlay_path='', resume=None, native_auto=False):
     """DSH headless 命令（req#137 task#266：spawn 分叉的 dsh 侧入口）。
 
     用已绑定的 ``bots.runtime_entry``（dsh.cmd，自带 ELECTRON_RUN_AS_NODE 与 exe/cli 定位），
@@ -74,6 +74,8 @@ def dsh(bot, *, overlay_path='', resume=None):
     # 注意：--patch 必须位于 --json 之前（headless 子命令的 --json 之后不再识别顶层
     # --patch，实测 0.2.1-rc.5：--profile headless --json --patch X 报 unknown option）。
     command = [entry, '--profile', dsh_execution_profile(bot), '--patch', str(overlay_path), '--json']
+    if native_auto:
+        command += ['--permission-mode', 'auto', '--approval-policy', 'never']
     if resume:
         command += ['--session-id', resume]
     command += ['-']  # task 读 stdin
@@ -222,13 +224,25 @@ _dsh_version_cache: dict[str, tuple] = {}
 
 
 def dsh_version(entry: str) -> str:
-    """读 DSH 安装的包版本（app.asar 头里 package.json 的 version，按 mtime 缓存）。
+    """Read the bound CLI package or desktop app.asar version.
 
-    ``entry`` 为 dsh.cmd；asar 位于其上级三级目录 ``resources/app.asar``。返回 '' 表示
-    不可读（入口失效/布局变化），调用方提示重新扫描或按未知版本处理。
+    CLI wrappers resolve through adjacent package manifests. Desktop archive
+    versions are cached by mtime. An unreadable installation returns an empty value.
     """
     try:
         from pathlib import Path
+        if not entry:
+            return ''
+        # CLI packages and unpacked desktop bundles expose their own manifest.
+        parents = list(Path(entry).resolve().parents)[:5]
+        manifests = [base / 'package.json' for parent in parents for base in (
+            parent, parent / 'node_modules' / '@deepseek-ai' / 'dsh',
+            parent / '@deepseek-ai' / 'dsh')]
+        for manifest in manifests:
+            if manifest.is_file():
+                info = json.loads(manifest.read_text(encoding='utf-8'))
+                if info.get('name') == '@deepseek-ai/dsh':
+                    return str(info.get('version') or '')
         asar = Path(entry).resolve().parent.parent.parent.parent / 'app.asar'
         if not asar.is_file():
             return ''
