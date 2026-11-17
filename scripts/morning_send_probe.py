@@ -21,8 +21,12 @@
   603/400/613=Microsoft-Windows-AppXDeploymentServer/Operational、Defender=
   Microsoft-Windows-Windows Defender/Operational；每条记事件发生时间与收到时间，
   三态（读到 / 读不到记错误码 / 查询成功无事件）分开落盘；
-- 真实侧：尾随只读 <项目主目录>/logs/engine.log 的 message.send 行（connect_ms
-  超阈值记异常）；窗口内无异常 connect_ms 记「本次未复现」正常退出，不延长窗口。
+- 真实侧：尾随只读 <项目主目录>/logs/engine.log 的 message.send 行；三阈值
+  独立判定（connect_ms/route_ms/total_ms 默认 5000/3000/5000ms，命令行可调，
+  >= 触发，等于也触发），任一命中记一条异常（每请求只计一次），trigger 明细
+  记录全部命中项（字段、实测值、阈值），原始发送数据完整保留；
+- 结论三态：conclusion_enum = no_samples / samples_no_anomaly / anomaly_captured
+  机器枚举落盘，中文文本仅展示；窗口结束正常退出，不延长窗口。
 
 退出与清理：窗口结束正常退出；输出目录不可创建/无写权限明确报错退出；单文件
 10MB 轮转、每日最多 3 个、目录总上限 100MB 达限保留证据停止采集；启动写运行
@@ -74,6 +78,37 @@ _SEND_RE = re.compile(
     r'message\.send message_id=(\S+) .*connect_ms=([\d.]+) route_ms=([\d.]+) '
     r'publish_ms=([\d.]+) total_ms=([\d.]+)')
 _LOG_TS_RE = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+')
+
+# 三阈值独立判定字段（req#165）：任一 >= 阈值即记异常
+_THRESHOLD_FIELDS = ('connect_ms', 'route_ms', 'total_ms')
+
+
+def hit_triggers(record: dict, thresholds: dict) -> list[dict]:
+    """三阈值独立判定：字段值 >= 阈值即命中（等于也触发）。
+
+    返回全部命中项 [{field, value, threshold}]；一条请求无论命中几项只计
+    一次异常，trigger 明细保留全部命中项供复核。
+    """
+    hits = []
+    for field in _THRESHOLD_FIELDS:
+        value = record.get(field)
+        threshold = thresholds[field]
+        if value is not None and value >= threshold:
+            hits.append({'field': field, 'value': value, 'threshold': threshold})
+    return hits
+
+
+def conclusion_for(send_count: int, anomaly_count: int) -> tuple[str, str]:
+    """三态结论：机器枚举 + 中文展示文本（文本仅展示，枚举供程序解析）。
+
+    无发送样本=no_samples；有发送未触阈值=samples_no_anomaly；
+    捕获异常=anomaly_captured。废除仅按 connect 判「未复现」的单一结论。
+    """
+    if send_count == 0:
+        return 'no_samples', '无发送样本'
+    if anomaly_count == 0:
+        return 'samples_no_anomaly', '有发送未触发阈值'
+    return 'anomaly_captured', f'捕获 {anomaly_count} 条异常'
 
 
 class OutputSink:
@@ -679,12 +714,17 @@ def run_probe(args) -> int:
         nonlocal log_offset, anomaly_count, send_count
         t0 = time.monotonic()
         sends, log_offset = read_engine_sends(root / 'logs' / 'engine.log', log_offset)
+        thresholds = {'connect_ms': args.connect_threshold,
+                      'route_ms': args.route_threshold,
+                      'total_ms': args.total_threshold}
         for record in sends:
-            sink.write('engine-sends', record)
+            sink.write('engine-sends', record)  # 原始发送数据完整保留
             send_count += 1
-            if record['connect_ms'] >= args.connect_threshold:
-                anomaly_count += 1
-                sink.write('anomalies', {**record, 'threshold_ms': args.connect_threshold})
+            hits = hit_triggers(record, thresholds)
+            if hits:
+                anomaly_count += 1  # 每条请求只计一次异常
+                sink.write('anomalies', {**record, 'triggers': hits,
+                                         'thresholds': thresholds})
         sample_counts['sends'] = sample_counts.get('sends', 0) + 1
         _record_cost('sends', time.monotonic() - t0)
 
@@ -720,7 +760,9 @@ def run_probe(args) -> int:
         marker = {'started_at': started_at, 'pid': os.getpid(),
                   'project_root': str(root), 'drive': drive,
                   'output_dir': str(output_dir), 'window': args.window,
-                  'connect_threshold_ms': args.connect_threshold,
+                  'thresholds': {'connect_ms': args.connect_threshold,
+                                 'route_ms': args.route_threshold,
+                                 'total_ms': args.total_threshold},
                   'engine_candidates': candidates,
                   'locate_error': locate_error}
         sink.write('run-marker', marker)
@@ -785,16 +827,17 @@ def run_probe(args) -> int:
             pass
         exit_code = 1
     finally:
-        if not anomaly_count:
-            verdict = '本次未复现'
-        else:
-            verdict = f'复现 {anomaly_count} 条异常 connect_ms（阈值 {args.connect_threshold}ms）'
+        conclusion_enum, verdict = conclusion_for(send_count, anomaly_count)
         summary = {'stop_reason': stop_reason, 'verdict': verdict,
+                   'conclusion_enum': conclusion_enum,
                    'started_at': started_at,
                    'ended_at': datetime.now().isoformat(timespec='seconds'),
                    'window_s': round(time.time() - start, 1),
                    'sample_counts': sample_counts, 'send_count': send_count,
                    'anomaly_count': anomaly_count,
+                   'thresholds': {'connect_ms': args.connect_threshold,
+                                  'route_ms': args.route_threshold,
+                                  'total_ms': args.total_threshold},
                    'engine_final_pid': engine_state['pid'],
                    'snapshot_permissions_skipped': '见快照帧 skipped 计数'}
         if sink is not None:
@@ -820,7 +863,11 @@ def main() -> int:
     parser.add_argument('--window', type=float, default=1800.0, help='采样窗口秒数')
     parser.add_argument('--engine-pid', type=int, default=None, help='引擎 PID 显式注入（可选）')
     parser.add_argument('--connect-threshold', type=float, default=5000.0,
-                        help='connect_ms 异常阈值（毫秒）')
+                        help='connect_ms 异常阈值（毫秒，>= 触发）')
+    parser.add_argument('--route-threshold', type=float, default=3000.0,
+                        help='route_ms 异常阈值（毫秒，>= 触发）')
+    parser.add_argument('--total-threshold', type=float, default=5000.0,
+                        help='total_ms 异常阈值（毫秒，>= 触发）')
     parser.add_argument('--engine-interval', type=float, default=1.0)
     parser.add_argument('--disk-interval', type=float, default=10.0)
     parser.add_argument('--snapshot-interval', type=float, default=30.0)

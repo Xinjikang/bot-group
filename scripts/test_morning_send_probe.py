@@ -85,7 +85,8 @@ class FakeProcess:
 def _args(output_dir: str, window: float = 0.6) -> argparse.Namespace:
     return argparse.Namespace(
         project_root=str(ROOT), output_dir=output_dir, window=window,
-        engine_pid=None, connect_threshold=5000.0, engine_interval=0.1,
+        engine_pid=None, connect_threshold=5000.0, route_threshold=3000.0,
+        total_threshold=5000.0, engine_interval=0.1,
         disk_interval=0.2, snapshot_interval=0.2, snapshot_fast=0.05,
         event_interval=0.2, log_interval=0.2, max_file_mb=10.0,
         max_daily_files=3, max_total_mb=100.0)
@@ -746,12 +747,16 @@ class ProbeEndToEndTests(ProbeHarness):
         result = self.run_probe_args([])
         self.assertEqual(result['exit_code'], 0)
         exit_rows = self.read_stream('exit-log')
-        self.assertEqual(exit_rows[-1]['verdict'], '本次未复现')
+        # 三态：无发送样本 → no_samples（旧「本次未复现」断言随三态改造）
+        self.assertEqual(exit_rows[-1]['conclusion_enum'], 'no_samples')
+        self.assertEqual(exit_rows[-1]['verdict'], '无发送样本')
         self.assertEqual(exit_rows[-1]['stop_reason'], 'window_ended')
+        self.assertEqual(exit_rows[-1]['thresholds']['route_ms'], 3000.0)
         marker_rows = self.read_stream('run-marker')
         self.assertEqual(marker_rows[0]['drive'], 'E:')
         self.assertEqual(marker_rows[0]['engine_candidates'][0]['pid'], 1234)
         self.assertEqual(marker_rows[0]['engine_candidates'][0]['ownership'], 'owned')
+        self.assertEqual(marker_rows[0]['thresholds']['total_ms'], 5000.0)
         # 三态分开落盘（打桩事件全部无事件 → events-none）
         none_rows = self.read_stream('events-none')
         self.assertGreater(len(none_rows), 0)
@@ -761,11 +766,11 @@ class ProbeEndToEndTests(ProbeHarness):
             self.assertTrue(path.name.startswith('probe-'),
                             f'意外文件 {path.name}')
 
-    def test_anomalous_connect_ms_reported(self):
-        # 打桩 engine.log 尾随：仅第一轮返回一条异常 connect_ms，之后无新行
-        anomaly = {'log_ts': '2026-11-12 09:00:00', 'received_ts': 1.0,
-                   'message_id': '9', 'connect_ms': 19314.9,
-                   'route_ms': 3100.0, 'publish_ms': 500.0, 'total_ms': 22400.0}
+    def test_11542_replay_triggers_all_three_thresholds(self):
+        # 现场 11542（2026-11-12 08:30）：connect/route/total 三阈值全触发
+        anomaly = {'log_ts': '2026-11-12 08:30:00', 'received_ts': 1.0,
+                   'message_id': '11542', 'connect_ms': 19314.9,
+                   'route_ms': 3102.5, 'publish_ms': 2.4, 'total_ms': 22435.4}
         calls = {'n': 0}
 
         def fake_read(path, offset):
@@ -774,12 +779,44 @@ class ProbeEndToEndTests(ProbeHarness):
                 return [anomaly], offset + 100
             return [], offset + 100
         with patch.object(probe, 'read_engine_sends', side_effect=fake_read):
-            result = self.run_probe_args(['--connect-threshold', '5000'])
+            result = self.run_probe_args([])
         self.assertEqual(result['exit_code'], 0)
         exit_rows = self.read_stream('exit-log')
-        self.assertIn('复现 1 条', exit_rows[-1]['verdict'])
+        self.assertEqual(exit_rows[-1]['conclusion_enum'], 'anomaly_captured')
+        self.assertEqual(exit_rows[-1]['verdict'], '捕获 1 条异常')
         anomaly_rows = self.read_stream('anomalies')
-        self.assertEqual(anomaly_rows[0]['connect_ms'], 19314.9)
+        self.assertEqual(len(anomaly_rows), 1, '每条请求只计一次异常')
+        fields = [hit['field'] for hit in anomaly_rows[0]['triggers']]
+        self.assertEqual(sorted(fields), ['connect_ms', 'route_ms', 'total_ms'],
+                         '11542 三阈值全触发')
+        # trigger 明细：字段、实测值、阈值
+        connect_hit = next(h for h in anomaly_rows[0]['triggers'] if h['field'] == 'connect_ms')
+        self.assertEqual(connect_hit['value'], 19314.9)
+        self.assertEqual(connect_hit['threshold'], 5000.0)
+        # 原始发送数据保留
+        self.assertEqual(anomaly_rows[0]['publish_ms'], 2.4)
+
+    def test_11670_replay_triggers_route_and_total_only(self):
+        # 现场 11670（2026-11-17 14:33）：connect 不触发，route/total 触发——新口径不漏报
+        anomaly = {'log_ts': '2026-11-17 14:33:18', 'received_ts': 1.0,
+                   'message_id': '11670', 'connect_ms': 1685.2,
+                   'route_ms': 5148.2, 'publish_ms': 0.5, 'total_ms': 6834.7}
+        calls = {'n': 0}
+
+        def fake_read(path, offset):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                return [anomaly], offset + 100
+            return [], offset + 100
+        with patch.object(probe, 'read_engine_sends', side_effect=fake_read):
+            result = self.run_probe_args([])
+        self.assertEqual(result['exit_code'], 0)
+        exit_rows = self.read_stream('exit-log')
+        self.assertEqual(exit_rows[-1]['conclusion_enum'], 'anomaly_captured')
+        anomaly_rows = self.read_stream('anomalies')
+        fields = [hit['field'] for hit in anomaly_rows[0]['triggers']]
+        self.assertEqual(sorted(fields), ['route_ms', 'total_ms'],
+                         '11670 仅 route/total 触发，connect 不触发')
 
     def test_update_event_fast_snapshot(self):
         # 突发 70 条 AppX 603：触发事件在最旧批（record_id=1），分页取全仍触发升频
@@ -853,6 +890,97 @@ class ProbeEndToEndTests(ProbeHarness):
                      or 'config' in p]
         self.assertEqual(sensitive, [], f'零触碰违反：{sensitive}')
         self.assertEqual(env_reads, [], f'环境变量读取：{env_reads}')
+
+
+class DetectionPatchTests(ProbeHarness):
+    """req#165 检测口径回归：三阈值/trigger/三态枚举/边界与命令行生效。"""
+
+    @staticmethod
+    def _send(message_id, connect_ms, route_ms, total_ms, **extra):
+        record = {'log_ts': '2026-11-17 14:00:00', 'received_ts': 1.0,
+                  'message_id': message_id, 'connect_ms': connect_ms,
+                  'route_ms': route_ms, 'publish_ms': 0.5, 'total_ms': total_ms}
+        record.update(extra)
+        return record
+
+    def test_hit_triggers_unit(self):
+        thresholds = {'connect_ms': 5000.0, 'route_ms': 3000.0, 'total_ms': 5000.0}
+        # 全部低于阈值
+        self.assertEqual(probe.hit_triggers(
+            self._send('1', 100.0, 200.0, 300.0), thresholds), [])
+        # 等于阈值触发（>= 语义）
+        hits = probe.hit_triggers(self._send('2', 5000.0, 3000.0, 5000.0), thresholds)
+        self.assertEqual(len(hits), 3)
+        self.assertTrue(all(hit['value'] == hit['threshold'] for hit in hits))
+        # 缺失字段不触发
+        record = self._send('3', 100.0, 200.0, 300.0)
+        del record['route_ms']
+        self.assertEqual(probe.hit_triggers(record, thresholds), [])
+
+    def test_conclusion_for_unit(self):
+        self.assertEqual(probe.conclusion_for(0, 0), ('no_samples', '无发送样本'))
+        self.assertEqual(probe.conclusion_for(3, 0),
+                         ('samples_no_anomaly', '有发送未触发阈值'))
+        enum, text = probe.conclusion_for(3, 2)
+        self.assertEqual(enum, 'anomaly_captured')
+        self.assertIn('2', text)
+
+    def test_threshold_boundary_equals_triggers(self):
+        # route_ms 精确等于阈值 3000 → 触发（>= 语义锁定）
+        record = self._send('boundary', 100.0, 3000.0, 1000.0)
+        calls = {'n': 0}
+
+        def fake_read(path, offset):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                return [record], offset + 100
+            return [], offset + 100
+        with patch.object(probe, 'read_engine_sends', side_effect=fake_read):
+            result = self.run_probe_args([])
+        self.assertEqual(result['exit_code'], 0)
+        exit_rows = self.read_stream('exit-log')
+        self.assertEqual(exit_rows[-1]['conclusion_enum'], 'anomaly_captured')
+        fields = [hit['field'] for hit in self.read_stream('anomalies')[0]['triggers']]
+        self.assertEqual(fields, ['route_ms'], '等于阈值触发且仅 route 命中')
+
+    def test_samples_no_anomaly_conclusion(self):
+        # 有发送样本但全部低于阈值 → samples_no_anomaly
+        record = self._send('ok', 800.0, 1200.0, 2000.0)
+        calls = {'n': 0}
+
+        def fake_read(path, offset):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                return [record], offset + 100
+            return [], offset + 100
+        with patch.object(probe, 'read_engine_sends', side_effect=fake_read):
+            result = self.run_probe_args([])
+        self.assertEqual(result['exit_code'], 0)
+        exit_rows = self.read_stream('exit-log')
+        self.assertEqual(exit_rows[-1]['conclusion_enum'], 'samples_no_anomaly')
+        self.assertEqual(exit_rows[-1]['send_count'], 1)
+        self.assertEqual(exit_rows[-1]['anomaly_count'], 0)
+        self.assertEqual(self.read_stream('anomalies'), [])
+        self.assertEqual(len(self.read_stream('engine-sends')), 1, '原始发送数据保留')
+
+    def test_custom_thresholds_via_cli(self):
+        # 命令行阈值生效：route-threshold 提到 6000 → 11670 仅 total 触发
+        record = self._send('11670', 1685.2, 5148.2, 6834.7)
+        calls = {'n': 0}
+
+        def fake_read(path, offset):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                return [record], offset + 100
+            return [], offset + 100
+        with patch.object(probe, 'read_engine_sends', side_effect=fake_read):
+            result = self.run_probe_args(['--route-threshold', '6000'])
+        self.assertEqual(result['exit_code'], 0)
+        exit_rows = self.read_stream('exit-log')
+        self.assertEqual(exit_rows[-1]['thresholds']['route_ms'], 6000.0)
+        self.assertEqual(exit_rows[-1]['conclusion_enum'], 'anomaly_captured')
+        fields = [hit['field'] for hit in self.read_stream('anomalies')[0]['triggers']]
+        self.assertEqual(fields, ['total_ms'], '自定义 route 阈值生效后仅 total 命中')
 
 
 class ZeroTouchStaticTests(unittest.TestCase):
