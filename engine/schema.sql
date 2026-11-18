@@ -168,6 +168,17 @@ CREATE TABLE IF NOT EXISTS threads (
     close_conclusion TEXT                    -- 收口结论（修订/仲裁指针）
 );
 
+-- Deleting the durable queue head advances the topic's scheduling cursor.
+CREATE TABLE IF NOT EXISTS topic_dispatch (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id INTEGER NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    through_id INTEGER NOT NULL,
+    trigger_msg_id INTEGER,
+    consumes_turn INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_topic_dispatch_thread ON topic_dispatch(thread_id, id);
+CREATE INDEX IF NOT EXISTS idx_topic_dispatch_consumed ON topic_dispatch(thread_id,id) WHERE consumes_turn=1;
+
 -- 同一次创建请求的重试复用话题；作用域为项目和已解析的创建者。
 CREATE TABLE IF NOT EXISTS thread_create_requests (
     project TEXT NOT NULL,

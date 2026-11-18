@@ -26,6 +26,10 @@ class ThreadCreationTests(unittest.TestCase):
         self.assertEqual([r.status_code for r in replies], [200, 200])
         self.assertEqual(replies[0].json()['thread_id'], replies[1].json()['thread_id'])
         self.assertEqual(publish.call_count, 1)
+        from engine import topic_dispatch
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM topic_dispatch').fetchone()[0], 1)
+        self.assertTrue(topic_dispatch.process_one(self.conn))
+        self.assertFalse(topic_dispatch.process_one(self.conn))
         for table in ('threads', 'inbox', 'wake_jobs', 'thread_create_requests'):
             self.assertEqual(self.conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0], 1, table)
         tid = replies[0].json()['thread_id']

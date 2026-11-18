@@ -2949,6 +2949,7 @@ function renderMsg(m, thinking = []) {
       <div class="msg-meta">
         <span class="sender">${esc(m.sender_type === "engine" ? "系统通知" : NAME_OF(m.sender))}</span>
         <span>${esc(fmtTs(m.ts))}</span>
+        ${m.sender === "user" && m.thread_id && !isClose && !failed.delivery_failed ? "<span>已发送</span>" : ""}
         ${threadTag}${atTag}${closeTag}
         ${S.isUserIdentity ? `<button type="button" class="msg-retract-btn" data-retract="${m.id}" title="撤回这条消息">撤回</button>` : ""}
       </div>

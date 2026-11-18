@@ -24,7 +24,7 @@ from fastapi import FastAPI, Depends, HTTPException, Request
 from . import db
 from . import config
 from .api import router_api, _resolve_identity, _admin_only
-from . import queue, scanner
+from . import queue, scanner, topic_dispatch
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 
@@ -91,12 +91,14 @@ async def _engine_lifespan(app: FastAPI):
 
     t_queue = threading.Thread(target=queue.run_forever, args=(stop_event,), daemon=True, name="queue-worker")
     t_scanner = threading.Thread(target=scanner.run_forever, args=(stop_event,), daemon=True, name="scanner")
+    t_topics = threading.Thread(target=topic_dispatch.run_forever, args=(stop_event,), daemon=True, name="topic-dispatch")
+    t_topics.start()
     t_queue.start()
     t_scanner.start()
     from . import project_hud
     t_hud = threading.Thread(target=project_hud.run_forever, args=(stop_event,), daemon=True, name='project-hud')
     t_hud.start()
-    logger.info("后台线程已启动：queue-worker + scanner")
+    logger.info("后台线程已启动：queue-worker + topic-dispatch + scanner")
 
     try:
         yield
@@ -104,6 +106,8 @@ async def _engine_lifespan(app: FastAPI):
         wake._shutting_down.set()
         await asyncio.to_thread(hermes_gateway.close_connections, 5)
         stop_event.set()
+        topic_dispatch.changed.set()
+        await asyncio.to_thread(t_topics.join)
         from . import hud_runtime
         await asyncio.to_thread(hud_runtime.cancel_active)
         await asyncio.to_thread(t_queue.join, 5)

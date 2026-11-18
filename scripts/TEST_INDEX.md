@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+话题消息提交与后台选人使用 `python -X utf8 -B -m scripts.run_isolated_tests --report <主目录 reports/tests 下的绝对目录> scripts.test_topic_dispatch scripts.test_thread_creation scripts.test_topic_skip scripts.test_runtime_schema_boundary scripts.test_message_send_latency`。临时 SQLite/WAL 上覆盖选人历史上界、失败回滚与重启续办、成员变更、项目就绪、话题关闭、跨轮插话及创建重试。浏览器验收运行 `python -X utf8 -B -m scripts.verify_topic_dispatch_browser --evidence <主目录 reports/tests 下的新绝对目录>`。需要项目依赖、Playwright 和 Chrome。测试使用动态分配的回环端口、临时数据库和真实消息读写接口；选人暂停五秒期间检查两条发送回执、时间线“已发送”状态、顺序与后台持锁耗时，并写出截图和原始数据。Bot 投递消费者在此夹具中关闭。
+
 [v0.2.16 发布验收](../docs/releases/v0.2.16.md) 复用本文的 Hermes 断连与数据库写锁、Windows 重启断连、晨间探针及正式 Release 验收条目。发布后在隔离目录验证匿名安装和默认升级检查。
 
 Windows 重启断连回归使用 `python -X utf8 -B -m scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_engine_shutdown scripts.test_service`。停机轮询覆盖 Windows 连接中止、旧 PID 存活和端口暂时中止探测。真实页面重启单独运行 `python -X utf8 -B -m unittest scripts.test_service_restart`，使用模块自行创建的隔离程序副本、临时数据库及动态分配的本地端口。

@@ -304,7 +304,10 @@ class DiagStepTests(DiagHarness):
         thread_id = self.conn.execute("SELECT id FROM threads").fetchone()["id"]
         result = router.route_message(self.conn, "default", None, "bot", thread_id, "alpha")
         self.assertIsNone(result["message_id"])
-        self.assertEqual(len(result["wake"]), 1)
+        self.assertEqual(result["wake"], [])
+        from engine import topic_dispatch
+        self.assertTrue(topic_dispatch.process_one(self.conn))
+        self.assertEqual(self.observer.execute("SELECT COUNT(*) FROM wake_jobs WHERE thread_id=?", (thread_id,)).fetchone()[0], 1)
         skipped = self.observer.execute(
             "SELECT turn_skipped FROM threads WHERE id=?", (thread_id,)).fetchone()[0]
         self.assertIn("r:0:default", skipped)
@@ -331,7 +334,7 @@ class DiagStepTests(DiagHarness):
 
     def test_s6_injection_locates_step(self):
         self.enable_diag()
-        # 话题消息才走 _next_speaker（S6 段）
+        # 话题 S6 登记持久化的选人待办。
         self.conn.execute("INSERT INTO threads (project, title, creator, members, "
                           "status, created_at, last_active_at) "
                           "VALUES ('alpha', 't', 'user', '[\"user\",\"default\"]', "
@@ -339,11 +342,14 @@ class DiagStepTests(DiagHarness):
         self.conn.commit()
         thread_id = self.conn.execute("SELECT id FROM threads").fetchone()["id"]
 
-        def slow_next_speaker(conn, tid):
-            time.sleep(0.4)  # S6 注入：下一发言者树计算暂停
-            return self._real_next(conn, tid)
-        self._real_next = router._next_speaker
-        with patch.object(router, "_next_speaker", side_effect=slow_next_speaker):
+        from engine import topic_dispatch
+        schedule = topic_dispatch.schedule
+
+        def slow_schedule(*args, **kwargs):
+            time.sleep(0.4)
+            schedule(*args, **kwargs)
+
+        with patch.object(topic_dispatch, "schedule", side_effect=slow_schedule):
             router.route_message(self.conn, "user", "hi", "user", thread_id, "alpha")
         rows = _read_diag(self.diag_path)
         s6 = next(r for r in rows if r["kind"] == "step" and r["name"] == "S6")

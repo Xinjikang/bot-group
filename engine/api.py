@@ -567,20 +567,13 @@ def post_thread(
                     "INSERT INTO inbox (message_id, profile, status) VALUES (?, ?, 'pending')",
                     (opening_msg_id, m),
                 )
+        from . import topic_dispatch
+        topic_dispatch.schedule(conn, thread_id, opening_msg_id)
         conn.commit()
-
-        # 树模型：开场白后 DFS 找第一个发言者（Round 1 第一个成员），
-        # 只唤醒一个，不是全体。
-        from . import router as _router
-        enqueued = []
-        nxt = _router._next_speaker(conn, thread_id)
-        if nxt is not None:
-            _router._set_turn(conn, thread_id, nxt["profile"], nxt["parent_id"], nxt["round"])
-            if wake.enqueue(conn, nxt["profile"], "chat", "thread-open", opening_msg_id, thread_id=thread_id, project=project):
-                enqueued.append(nxt["profile"])
+        topic_dispatch.changed.set()
 
         events.bus.publish("thread.created", {"thread_id": thread_id, "creator": creator})
-        return {"thread_id": thread_id, "members": member_list, "wake": enqueued}
+        return {"thread_id": thread_id, "members": member_list, "wake": []}
     finally:
         conn.close()
 
@@ -1841,7 +1834,10 @@ def get_threads(include_hidden: bool = False, request: Request = None):
                 except Exception:  # noqa: BLE001
                     members = []
                 bots = [m for m in members if not db.is_builtin_user(m)]
-                if bots:
+                d["dispatch_pending"] = conn.execute(
+                    "SELECT COUNT(*) FROM topic_dispatch WHERE thread_id=?", (d["id"],)
+                ).fetchone()[0]
+                if bots and not d["dispatch_pending"]:
                     d["all_responded"] = router._next_speaker(conn, d["id"]) is None
             threads.append(d)
         return {"threads": threads, "count": len(threads)}

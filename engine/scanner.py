@@ -135,36 +135,26 @@ def scan_inbox(conn) -> int:
         if wake.enqueue(conn, r["profile"], "work", "scan:group", project=r["project"]):
             enqueued += 1
 
-    # 话题：按 thread 分组，每个 thread 只唤醒「下一个该发言的发言位」（chat）
-    threads = conn.execute(
-        """
-        SELECT DISTINCT m.thread_id, m.project
-        FROM inbox i
-        JOIN messages m ON m.id = i.message_id
-        WHERE i.status = 'pending' AND m.thread_id IS NOT NULL
-        """
-    ).fetchall()
-    for t in threads:
-        if not project_readiness.is_ready(conn, t['project']):
-            continue
-        tid = t["thread_id"]
-        row = conn.execute("SELECT status, turn_profile FROM threads WHERE id=?", (tid,)).fetchone()
-        if row is None or row["status"] != "open":
-            continue
-        # req#59 修法（chat 空转根因）：turn 已被占着时，scanner 不再拿「该话题还有
-        # pending」当理由去空转唤醒 turn_profile。chat 的推进纯靠「发言即推进 + 超时
-        # 弃权」两个驱动（route_message 的 _next_speaker+_set_turn / advance_timed_out_turns），
-        # 与 pending 无关。turn_profile 自己 pending 已空（已实质回应过）时，这里再
-        # enqueue 只会让它醒来读空、空转（req#59 空转 bug 的机制）。只有 turn 为空
-        # （发言推进链断了）才轮到 scanner 兜底 _next_speaker 重算。
-        if row["turn_profile"]:
-            continue
-        nxt = router._next_speaker(conn, tid)
-        if nxt is not None:
-            router._set_turn(conn, tid, nxt["profile"], nxt["parent_id"], nxt["round"])
-            if wake.enqueue(conn, nxt["profile"], "chat", "scan:group", thread_id=tid, project=t["project"]):
-                enqueued += 1
-
+    # Upgrade/recovery for an older open topic with no assigned turn. Only
+    # enqueue a durable selection request; the dispatcher owns the decision.
+    candidates = conn.execute("""
+        SELECT DISTINCT t.id FROM inbox i JOIN messages m ON m.id=i.message_id
+        JOIN threads t ON t.id=m.thread_id
+        JOIN projects p ON p.name=t.project AND p.archived=0 AND p.readiness_status='ready'
+        WHERE i.status='pending' AND t.status='open' AND COALESCE(t.turn_profile,'')=''
+          AND NOT EXISTS (SELECT 1 FROM topic_dispatch d WHERE d.thread_id=t.id)
+    """).fetchall()
+    if candidates:
+        from . import topic_dispatch
+        with conn:
+            for row in candidates:
+                conn.execute("""
+                    INSERT INTO topic_dispatch(thread_id,through_id,trigger_msg_id)
+                    SELECT id,(SELECT COALESCE(MAX(id),0) FROM messages),NULL FROM threads t
+                    WHERE id=? AND status='open' AND COALESCE(turn_profile,'')=''
+                      AND NOT EXISTS (SELECT 1 FROM topic_dispatch d WHERE d.thread_id=t.id)
+                """, (row["id"],))
+        topic_dispatch.changed.set()
     return enqueued
 
 
@@ -261,6 +251,7 @@ def _scan_thread_idle(conn) -> int:
         SELECT t.id, t.creator, t.last_active_at, t.project
         FROM threads t
         WHERE t.status='open'
+          AND NOT EXISTS (SELECT 1 FROM topic_dispatch d WHERE d.thread_id=t.id)
         """
     ).fetchall()
     now = time.time()
@@ -306,6 +297,7 @@ def _scan_thread_all_responded(conn) -> int:
         SELECT t.id, t.creator, t.project
         FROM threads t
         WHERE t.status='open'
+          AND NOT EXISTS (SELECT 1 FROM topic_dispatch d WHERE d.thread_id=t.id)
         """
     ).fetchall()
     enqueued = 0
