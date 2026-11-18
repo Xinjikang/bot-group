@@ -1016,5 +1016,157 @@ class RelayConnectionSplitTests(RelayBase):
             hermes_gateway.connection(REMOTE)
 
 
+class RelaySpawnRaceTests(RelayBase):
+    """manager node1985：提交与点名关联的竞态——生产派发路径受控网关测试。"""
+
+    def _injected_mention(self, conn):
+        """造一条带 @REMOTE 的 pending inbox 消息（真实注入快照会包含它）。"""
+        conn.execute(
+            "INSERT INTO messages(project,ts,sender,sender_type,content,mentions,thread_id) "
+            "VALUES('alpha',?,'user','user',?,?,?)",
+            (db.now_iso(), "@" + REMOTE + " hi", json.dumps([REMOTE]), None))
+        message_id = conn.execute("SELECT MAX(id) FROM messages").fetchone()[0]
+        thread_id = conn.execute(
+            "INSERT INTO threads(project,title,creator,members,status,round,turn_profile,"
+            "turn_parent_id,turn_skipped,created_at,last_active_at) "
+            "VALUES('alpha','t','user',?,'open',0,?,NULL,'[]',?,?)",
+            (json.dumps(["user", REMOTE]), REMOTE, db.now_iso(), db.now_iso())).lastrowid
+        conn.execute("UPDATE messages SET thread_id=? WHERE id=?", (thread_id, message_id))
+        conn.execute("INSERT INTO inbox(profile,message_id,status) VALUES(?,?,?)",
+                     (REMOTE, message_id, "pending"))
+        conn.commit()
+        return thread_id, message_id
+
+    def test_attach_persists_before_submit_and_settle_keeps_waiting(self):
+        # manager node1985 竞态：submit 期间收口不得误标 expired——attach 须
+        # 在 prompt.submit 到达网关前落盘（与 prepare 同一事务边界）。
+        from unittest.mock import patch
+        from engine import hermes_gateway as gateway, wake
+        from engine import router
+        conn = self.conn()
+        try:
+            thread_id, message_id = self._injected_mention(conn)
+            relay.upsert_offline_mention(conn, message_id=message_id, member=REMOTE,
+                                         project="alpha", thread_id=thread_id)
+            # fake submit：收口发生在 submit 期间，收口后立即断言点名行未 expired
+            # 且已带 submission_id
+            settle_seen = {}
+
+            def rpc(method, **kwargs):
+                if method == 'runtime.describe':
+                    return dict(profile_id='fixture',
+                                capabilities=['durable-admission-v1', 'acp-session-mcp-v1'])
+                if method == 'prompt.submit':
+                    c = self.conn()
+                    try:
+                        router.settle_thread(c, thread_id)
+                        row = relay.read_offline_mention(c, message_id, REMOTE)
+                        settle_seen.update(state=row["state"],
+                                           submission_id=row["submission_id"])
+                    finally:
+                        c.close()
+                    return dict(status='queued', admission_id='adm-1',
+                                authority_epoch=1, execution_generation=None,
+                                ref={'profile_id': 'fixture', 'session_id': 'sid-1'})
+                if method == 'session.resume':
+                    return dict(session_id='sid-1', running=False, pending=[])
+                raise AssertionError(method)
+
+            from unittest.mock import Mock
+            remote = Mock()
+            remote.rpc.side_effect = rpc
+            snapshot = dict(session_id='sid-1', running=False, pending=[])
+            from engine import browser_resources, hermes_session_auth
+            with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
+                    patch.object(gateway.sessions, 'initialization_rpc', return_value={
+                        'profile_id': 'fixture', 'capabilities': ['durable-admission-v1', 'acp-session-mcp-v1']}), \
+                    patch.object(gateway, '_binding', return_value=snapshot), \
+                    patch.object(hermes_session_auth, 'grant', return_value={
+                        'project': 'alpha', 'profile': REMOTE, 'kind': 'chat',
+                        'thread_id': thread_id, 'session': 's', 'session_id': 'sid-1',
+                        'signing_generation': 1, 'home': '/isolated',
+                        'command': ['hermes'], 'workdir': '/w', 'model_args': [],
+                        'bot_id': 1}), \
+                    patch.object(hermes_session_auth, 'configure', return_value=snapshot), \
+                    patch.object(hermes_session_auth, 'context', return_value={}), \
+                    patch.object(browser_resources, 'register'), \
+                    patch.object(gateway, '_start_worker'), patch.object(gateway, '_publish'), \
+                    patch.object(wake, 'wake_system_prompt', return_value='fixture'):
+                result = gateway.spawn(REMOTE, 'chat', None, thread_id, 'alpha',
+                                       bot={'id': 1}, workdir='/w', model_args=[])
+            # 收口瞬间：未 expired、已带 submission_id（attach 先于 submit 落盘）
+            self.assertEqual(settle_seen["state"], "offline_waiting",
+                             "submit 期间收口不得误标 expired")
+            self.assertTrue(settle_seen["submission_id"],
+                            "收口瞬间点名必须已关联 submission")
+            # spawn 返回 admitted，权威回执已按同一 submission 结算
+            self.assertTrue(result.get("admitted"))
+            self.assertEqual(result.get("injected_message_ids"), [message_id])
+            row = relay.read_offline_mention(conn, message_id, REMOTE)
+            self.assertEqual(row["state"], "submitted",
+                             "权威回执按同一 submission 结算为 submitted")
+            self.assertEqual(row["submission_id"], result["submission_id"])
+            # 无重复投递
+            submits = [c for c in remote.rpc.call_args_list if c.args[0] == 'prompt.submit']
+            self.assertEqual(len(submits), 1, "同一派发最多投递一次")
+        finally:
+            conn.close()
+
+    def test_never_submitted_mention_still_expires(self):
+        # 对照：确实未提交（无注入、无 submission 关联）的点名照常过期。
+        from unittest.mock import patch
+        from engine import hermes_gateway as gateway, wake
+        from engine import router
+        from engine import browser_resources, hermes_session_auth
+        conn = self.conn()
+        try:
+            thread_id, message_id = self._injected_mention(conn)
+            # 点名行存在，但本次 spawn 传显式 signal（无注入 ids）→ 未关联 submission
+            relay.upsert_offline_mention(conn, message_id=message_id, member=REMOTE,
+                                         project="alpha", thread_id=thread_id)
+            # 显式 signal：spawn 不再注入快照（injected_ids 空）
+            # 但 inbox 里消息仍在——用 signal 传入时 injected_ids=[]，attach 0 行
+            def rpc(method, **kwargs):
+                if method == 'runtime.describe':
+                    return dict(profile_id='fixture',
+                                capabilities=['durable-admission-v1', 'acp-session-mcp-v1'])
+                if method == 'prompt.submit':
+                    return dict(status='queued', admission_id='adm-2',
+                                authority_epoch=1, execution_generation=None,
+                                ref={'profile_id': 'fixture', 'session_id': 'sid-1'})
+                if method == 'session.resume':
+                    return dict(session_id='sid-1', running=False, pending=[])
+                raise AssertionError(method)
+
+            from unittest.mock import Mock
+            remote = Mock()
+            remote.rpc.side_effect = rpc
+            snapshot = dict(session_id='sid-1', running=False, pending=[])
+            with patch.object(gateway, 'connection', return_value=(remote, '/isolated', ['hermes'])), \
+                    patch.object(gateway.sessions, 'initialization_rpc', return_value={
+                        'profile_id': 'fixture', 'capabilities': ['durable-admission-v1', 'acp-session-mcp-v1']}), \
+                    patch.object(gateway, '_binding', return_value=snapshot), \
+                    patch.object(hermes_session_auth, 'grant', return_value={
+                        'project': 'alpha', 'profile': REMOTE, 'kind': 'chat',
+                        'thread_id': thread_id, 'session': 's', 'session_id': 'sid-1',
+                        'signing_generation': 1, 'home': '/isolated',
+                        'command': ['hermes'], 'workdir': '/w', 'model_args': [],
+                        'bot_id': 1}), \
+                    patch.object(hermes_session_auth, 'configure', return_value=snapshot), \
+                    patch.object(hermes_session_auth, 'context', return_value={}), \
+                    patch.object(browser_resources, 'register'), \
+                    patch.object(gateway, '_start_worker'), patch.object(gateway, '_publish'), \
+                    patch.object(wake, 'wake_system_prompt', return_value='fixture'):
+                gateway.spawn(REMOTE, 'chat', 'explicit-signal', thread_id, 'alpha',
+                              bot={'id': 1}, workdir='/w', model_args=[])
+            # 显式信号路径未注入该点名：未关联 submission，收口照常标 expired
+            router.settle_thread(conn, thread_id)
+            row = relay.read_offline_mention(conn, message_id, REMOTE)
+            self.assertEqual(row["state"], "offline_expired",
+                             "确实未提交的点名照常过期（对照）")
+        finally:
+            conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()

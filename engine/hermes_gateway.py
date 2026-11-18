@@ -408,6 +408,14 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
             workdir=workdir, session_id=snapshot['session_id'], profile_id=description['profile_id'], started_at=start,
             parent_id=topic['turn_parent_id'] if topic else None, round_no=topic['round'] if topic else None,
             prompt_hash=prompt_hash)
+        # req#168 manager node1985：实际注入的点名须在网关可收到 prompt.submit
+        # 之前持久关联到 submission——attach 与 prepare 同一事务边界（attach 的
+        # commit 把两者一起落盘，且必然先于 submit RPC），settle_thread 在 submit
+        # 期间收口时行已带 submission_id，不会被误标 expired；之后权威回执
+        # （apply_receipt → settle_by_submission）按同一 submission 结算。
+        from . import relay
+        relay.attach_submission(conn, message_ids=injected_ids, member=profile,
+                                submission_id=row['submission_id'])
         _publish(row)
         browser_resources.register(conn, {}, project=project, profile=profile, session=session,
                                    started_at=start, thread_id=thread_id, task_id=bound_task,
