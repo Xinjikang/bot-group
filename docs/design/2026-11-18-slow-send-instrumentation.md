@@ -19,12 +19,26 @@
 
 ## 3. 埋点设计
 
+### 3.0 修复候选一：messages 索引（先于埋点验证）
+
+bot-36 已定位首个可修缺陷并经隔离对照实验证实（REMEDIATION-11835.md）：`_round_spoken`（router.py:291-297，thread_id+sender+round+parent_id IS NULL）、`_edge_responded`（router.py:301-307，parent_id+sender）、DFS 接话查询（router.py:367-368）在生产库均 SCAN messages（index_list 为空），且在持写锁事务内执行。9841 行合成库对照：prepare 中位 10.774ms → 加 messages(thread_id,sender,round,parent_id) 复合索引 0.788ms → 撤索引回 10.049ms。现场 6.53s 不能全归它，但它是第一项可修的持锁开销。
+
+验证项（隔离库，用新连接复核执行计划后再定采用哪些索引）：
+- 候选复合索引 messages(thread_id,sender,round,parent_id) 服务 _round_spoken；`_edge_responded` 与 DFS 查询以 parent_id 为首列，该复合索引无法服务，父消息查询单独评估对应索引（如 messages(parent_id,sender)）的收益。
+- 旧库升级路径：生产库已有数据，CREATE INDEX 的耗时、事务方式与备份回退步骤。
+- 写入成本与分发一致性：加索引后消息插入/更新成本变化；覆盖有无现成发言位、话题与点对点发送四类。
+- 顺序：索引验证与埋点验证并行，各自独立交付。
+
 ### 3.1 发送分步计时（engine/api.py + engine/router.py）
 
 计时点按代码实际顺序（router.py route_message，BEGIN IMMEDIATE 位于 637 行）：
 
 | 组 | 位置 | 内容 |
 | --- | --- | --- |
+| C1 | db.get_connection 内 | 配置读取（.env） |
+| C2 | db.get_connection 内 | 目录访问 |
+| C3 | db.get_connection 内 | sqlite3.connect 打开 |
+| C4 | db.get_connection 内 | 两条 PRAGMA |
 | S1 | api.py 取得连接后 | threads 项目查询（api.py:322） |
 | S2 | route_message 前 | is_builtin_user + commands.dispatch 判断（api.py:328-329） |
 | S3 | BEGIN IMMEDIATE | 写锁获取（与现有 lock_ms 同源） |
@@ -52,9 +66,14 @@
 3. 开销实测：1000 次正常发送，开关前后 p50/p99 对比，日志体积统计。
 4. 回归：scripts/TEST_INDEX.md 既有引擎用例全绿。
 
-## 5. 部署
+## 5. 部署与验收
 
-生产引擎代码修改 + 重启。**重启时间由主人定**；重启后 `XDG_SLOW_SEND_DIAG=1` 常开至下一次现场捕获，捕获后由主人决定关停。
+生产引擎代码修改 + 重启。**重启时间由主人定**；重启后 `XDG_SLOW_SEND_DIAG=1` 常开至下一次现场捕获，捕获后由主人决定关停。索引上线前明列迁移、备份、回退步骤与预计中断时间，由主人确定上线时点。
+
+验收交付（按 bot-36 2026-11-18 口径）：
+1. 性能补丁（索引）——隔离库对照数据 + 旧库升级路径验证。
+2. 受控复现——双连接稳定复现锁等待；连接段与锁后操作分别注入可辨认延迟，核对诊断指向实际步骤；诊断交付只验收观测能力，自然复现的慢路径用相同输入验证针对性修复。
+3. 上线后实际发送数据——沿用原阈值（连接 5s/路由 3s/总计 5s），建议连续七个实际使用日观察窗口，覆盖隔夜首发与白天发送；报告首发样本数、总发送数、耗时分布与异常；同类卡顿沿慢步骤继续修，样本不足标记待验。
 
 ## 6. 边界
 
