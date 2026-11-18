@@ -326,7 +326,8 @@ def post_msg(
             if thr is not None:
                 project = thr["project"]
             if diag_on:  # S1：threads 项目查询
-                slow_send_diag.step("S1", *slow_send_diag.diff_ms(s1, slow_send_diag.now_pair()))
+                slow_send_diag.step("S1", *slow_send_diag.diff_ms(s1, slow_send_diag.now_pair()),
+                                    conn_id=id(conn), thread_id=thread_id)
 
         # req#83 task#146：斜杠命令分发（落到引擎 API 层，只对 sender=user，bot 的 /xxx 走普通消息）。
         # 命令处理有独立事务（commands 留痕），先分发再走普通路由。命令分支返回即结束，不落普通消息。
@@ -334,7 +335,8 @@ def post_msg(
             s2 = slow_send_diag.now_pair() if diag_on else None
             cmd_result = commands.dispatch(conn, project, sender, "user", text, thread_id)
             if diag_on:  # S2：is_builtin_user + commands.dispatch 判断
-                slow_send_diag.step("S2", *slow_send_diag.diff_ms(s2, slow_send_diag.now_pair()))
+                slow_send_diag.step("S2", *slow_send_diag.diff_ms(s2, slow_send_diag.now_pair()),
+                                    conn_id=id(conn), thread_id=thread_id)
             if cmd_result is not None:
                 routed = time.perf_counter()
                 events.bus.publish("command.executed", {
@@ -364,8 +366,10 @@ def post_msg(
         raise HTTPException(status_code=e.status, detail=str(e)) from e
     finally:
         if conn is not None:
-            if diag_on and conn.in_transaction:  # 异常路径：连接关闭=隐式回滚
-                slow_send_diag.txn_end(conn, "rollback")
+            if diag_on:
+                if conn.in_transaction:  # 异常路径：连接关闭=隐式回滚（锁外记 rollback 行）
+                    slow_send_diag.txn_end(conn, "rollback")
+                slow_send_diag.defer_flush()  # 事务结束：缓冲锁外落盘（幂等，正常路径已 flush）
             conn.close()
         if kind != 'bot':
             finished = time.perf_counter()

@@ -635,12 +635,22 @@ def route_message(
     started = time.perf_counter()
     from . import slow_send_diag
     diag_on = slow_send_diag.enabled()  # 开关只读一次；未启用零埋点开销
+    if diag_on:
+        slow_send_diag.defer_on()  # 事务内事件进内存缓冲，锁外统一落盘
     d0 = slow_send_diag.now_pair() if diag_on else None  # S3 起点（wall+thread_cpu 成对）
-    d4 = d5 = d6 = None  # S4/S5、S5/S6、S6/S7 分界（话题路径逐步取样）
+    d4 = d5 = d6 = None  # S4/S5、S5/S6、S6/S7 分界（逐步取样，每条合法路径有定义）
     if not conn.in_transaction:
-        if diag_on:  # 写事务开始行（识别锁持有者）
+        if diag_on:  # 锁申请（尚未取得；取得后另记 is_begin）
+            slow_send_diag.txn_request(conn)
+        try:
+            conn.execute("BEGIN IMMEDIATE")  # S3：写锁申请→取得
+        except Exception:
+            if diag_on:  # 申请失败未取得：只记 failed，绝不记持有（is_begin）
+                slow_send_diag.txn_end(conn, "failed")
+                slow_send_diag.defer_flush()  # 事务未开启：缓冲立即可落盘
+            raise
+        if diag_on:  # 实际取得锁（持有区间起点，排除申请等待）
             slow_send_diag.txn_begin(conn)
-        conn.execute("BEGIN IMMEDIATE")  # S3：写锁获取
     locked = time.perf_counter()
     d3 = slow_send_diag.now_pair() if diag_on else None
     silent = text is None
@@ -723,6 +733,7 @@ def route_message(
             depth = 0
 
     if silent:
+        d4 = slow_send_diag.now_pair() if diag_on else None  # silent 路径同样有 S4/S5 分界
         skipped = _skipped(conn, thread_id)
         skipped.add(f"r:{round_no}:{sender}")
         conn.execute("UPDATE threads SET turn_skipped=? WHERE id=?",
@@ -817,18 +828,19 @@ def route_message(
         slow_send_diag.txn_end(conn, "commit")
         d7 = slow_send_diag.now_pair()
         slow_send_diag.step("S3", *slow_send_diag.diff_ms(d0, d3),
-                            message_id=message_id, thread_id=thread_id)
+                            conn_id=id(conn), message_id=message_id, thread_id=thread_id)
         # S4=事务内前半（话题行/成员名单/提及校验/发言位/父消息查询）
         slow_send_diag.step("S4", *slow_send_diag.diff_ms(d3, d4),
-                            message_id=message_id, thread_id=thread_id)
+                            conn_id=id(conn), message_id=message_id, thread_id=thread_id)
         # S5=事务内中段（消息插入/执行记录/收件箱分发/活跃时间更新）
         slow_send_diag.step("S5", *slow_send_diag.diff_ms(d4, d5),
-                            message_id=message_id, thread_id=thread_id)
+                            conn_id=id(conn), message_id=message_id, thread_id=thread_id)
         # S6=事务内后段（下一发言者树计算/发言位更新/唤醒入队）
         slow_send_diag.step("S6", *slow_send_diag.diff_ms(d5, d6),
-                            message_id=message_id, thread_id=thread_id)
+                            conn_id=id(conn), message_id=message_id, thread_id=thread_id)
         slow_send_diag.step("S7", *slow_send_diag.diff_ms(d6, d7),
-                            message_id=message_id, thread_id=thread_id)
+                            conn_id=id(conn), message_id=message_id, thread_id=thread_id)
+        slow_send_diag.defer_flush()  # 事务已提交：锁外落盘缓冲
     if sender_type == 'user' or finished - started >= .1:
         logger.info('message.persist message_id=%s thread_id=%s lock_ms=%.1f prepare_ms=%.1f '
                     'enqueue_ms=%.1f commit_ms=%.1f total_ms=%.1f',

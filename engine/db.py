@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -54,10 +55,14 @@ def get_connection() -> sqlite3.Connection:
         raise
     if diag_on:
         t5 = slow_send_diag.now_pair()
-        slow_send_diag.step("C1", *slow_send_diag.diff_ms(t1, t2))
-        slow_send_diag.step("C2", *slow_send_diag.diff_ms(t2, t3))
-        slow_send_diag.step("C3", *slow_send_diag.diff_ms(t3, t4))
-        slow_send_diag.step("C4", *slow_send_diag.diff_ms(t4, t5))
+        slow_send_diag.step("C1", *slow_send_diag.diff_ms(t1, t2),
+                            thread_id=threading.get_ident())
+        slow_send_diag.step("C2", *slow_send_diag.diff_ms(t2, t3),
+                            thread_id=threading.get_ident())
+        slow_send_diag.step("C3", *slow_send_diag.diff_ms(t3, t4),
+                            thread_id=threading.get_ident())
+        slow_send_diag.step("C4", *slow_send_diag.diff_ms(t4, t5),
+                            thread_id=threading.get_ident())
     return conn
 
 

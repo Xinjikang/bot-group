@@ -167,63 +167,151 @@ class DiagStepTests(DiagHarness):
         self.assertEqual(ends[0]["end_kind"], "commit")
 
     def test_lock_contention_replay(self):
-        # 双连接重放：持锁方（另一线程 BEGIN IMMEDIATE + 2.17s 暂停），
-        # 等待方 route_message 的 S3 墙钟≈2170ms、线程 CPU≈0。
+        # 双连接重放：持锁方=真实业务写入方（route_message 事务内 S5 注入
+        # 2.17s 暂停），等待方 route_message 的 S3 墙钟≈持锁时长、线程 CPU≈0；
+        # 持有区间由持有方真实埋点 begin→end 成对行得出（不手工代写）。
         self.enable_diag()
-        # 话题先行提交（等待方 BEGIN IMMEDIATE 之前可读），持锁方另行持写锁
+        self.conn.execute("INSERT INTO threads (project, title, creator, members, "
+                          "status, turn_profile, created_at, last_active_at) "
+                          "VALUES ('alpha', 't', 'user', '[\"user\",\"default\"]', "
+                          "'open', 'default', '2026-11-18T10:00:00', '2026-11-18T10:00:00')")
+        self.conn.commit()
+        thread_id = self.conn.execute("SELECT id FROM threads").fetchone()["id"]
+        release = threading.Event()
+        errors = []
+
+        def hold():
+            # 持锁方：真实 route_message（S5 段注入暂停模拟长事务持有）
+            holder = sqlite3.connect(db.db_path(), timeout=30, check_same_thread=False)
+            holder.row_factory = sqlite3.Row
+            holder.execute("PRAGMA busy_timeout=30000")
+            try:
+                real_insert = router._insert_inbox_rows
+
+                def slow_insert(conn, *args, **kwargs):
+                    time.sleep(2.17)  # 持锁方事务内暂停（现场 11835 锁等待时长）
+                    return real_insert(conn, *args, **kwargs)
+                with patch.object(router, "_insert_inbox_rows", side_effect=slow_insert):
+                    router.route_message(holder, "default", "held", "bot", thread_id, "alpha")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+            finally:
+                release.set()
+                holder.close()
+
+        thread = threading.Thread(target=hold)
+        thread.start()
+        time.sleep(0.3)  # 确保持锁方已进入事务（主线程等待时间相应缩短）
+        waited = db.get_connection()
+        self.addCleanup(waited.close)
+        result = router.route_message(waited, "user", "hi", "user", thread_id, "alpha")
+        thread.join(timeout=10)
+        self.assertTrue(release.is_set(), "持锁方未释放")
+        self.assertEqual(errors, [], f"持锁方异常：{errors}")
+        rows = _read_diag(self.diag_path)
+        s3_waited = next(r for r in rows if r["kind"] == "step" and r["name"] == "S3"
+                         and r["conn_id"] == id(waited))
+        # 主线程 0.3s 后才进入等待：S3 墙钟 = 剩余持锁时长（≈2.17-0.3）
+        self.assertGreaterEqual(s3_waited["wall_ms"], 1800.0, f"S3 墙钟应≈持锁时长：{s3_waited}")
+        self.assertLess(s3_waited["wall_ms"], 3500.0, f"S3 墙钟异常：{s3_waited}")
+        self.assertLess(s3_waited["thread_cpu_ms"], s3_waited["wall_ms"] * 0.1,
+                        f"S3 应为等待型（CPU≈0）：{s3_waited}")
+        # 持锁方持有区间：真实埋点 begin→end 成对行差值（排除等待与日志 I/O）
+        txns = [r for r in rows if r["kind"] == "txn"]
+        holder_conns = {r["conn_id"] for r in txns if r["conn_id"] != id(waited)}
+        self.assertEqual(len(holder_conns), 1, f"持锁方应只有一个连接：{holder_conns}")
+        holder_conn = next(iter(holder_conns))
+        holder_begin = next(r for r in txns
+                            if r.get("is_begin") and r["conn_id"] == holder_conn)
+        holder_end = next(r for r in txns
+                          if r.get("is_end") and r["conn_id"] == holder_conn
+                          and r.get("end_kind") == "commit")
+        self.assertGreaterEqual(holder_end["wall_ts"] - holder_begin["wall_ts"], 2.0,
+                                "持锁时长由持有方成对行 wall_ts 差值得出")
+        # 等待方取得锁应在持有方释放之后
+        waited_begin = next(r for r in txns
+                            if r.get("is_begin") and r["conn_id"] == id(waited))
+        self.assertGreaterEqual(waited_begin["wall_ts"], holder_end["wall_ts"] - 0.05,
+                                "等待方取得锁应在持有方释放之后")
+        # 话题发送落库成功（holder 已唤醒 default 时等待方 enqueue 被去重属正常）
+        self.assertIsNotNone(result["message_id"])
+
+    def test_lock_timeout_never_records_held(self):
+        # 反例②：锁超时（busy_timeout 耗尽）不得出现持有记录（is_begin），
+        # 只记 request + failed；消息未提交（独立连接不可见）。
+        self.enable_diag()
         self.conn.execute("INSERT INTO threads (project, title, creator, members, "
                           "status, created_at, last_active_at) "
                           "VALUES ('alpha', 't', 'user', '[\"user\",\"default\"]', "
                           "'open', '2026-11-18T10:00:00', '2026-11-18T10:00:00')")
         self.conn.commit()
         thread_id = self.conn.execute("SELECT id FROM threads").fetchone()["id"]
-        holder = None
-        release = threading.Event()
+        before = self.counts(self.observer)
+        holder = db.get_connection()
+        self.addCleanup(holder.close)
+        holder.execute("BEGIN IMMEDIATE")  # 持锁方：另一连接真实持有写锁
 
-        def hold():
-            # 持锁方完整事务在子线程；check_same_thread=False 允许主线程收尾关闭
-            nonlocal holder
-            holder = sqlite3.connect(db.db_path(), timeout=30, check_same_thread=False)
-            holder.row_factory = sqlite3.Row
-            holder.execute("PRAGMA busy_timeout=30000")
-            try:
-                holder.execute("BEGIN IMMEDIATE")
-                slow_send_diag.txn_begin(holder)  # 持锁方 begin 行（模拟其 route 事务）
-                time.sleep(2.17)  # 持锁方暂停（现场 11835 锁等待时长）
-                holder.commit()
-                slow_send_diag.txn_end(holder, "commit")
-            finally:
-                release.set()
-
-        thread = threading.Thread(target=hold)
-        thread.start()
-        time.sleep(0.3)  # 确保持锁方已取得写锁（主线程等待时间相应缩短）
-        waited = db.get_connection()
+        waited = sqlite3.connect(db.db_path(), timeout=30)
+        waited.row_factory = sqlite3.Row
+        waited.execute("PRAGMA busy_timeout=50")  # 50ms 后超时（现场反例同口径）
         self.addCleanup(waited.close)
-        self.addCleanup(lambda: holder.close() if holder is not None else None)
-        result = router.route_message(waited, "user", "hi", "user", thread_id, "alpha")
-        thread.join(timeout=10)
-        self.assertTrue(release.is_set(), "持锁方未释放")
+        with self.assertRaises(sqlite3.OperationalError) as ctx:
+            router.route_message(waited, "user", "hi", "user", thread_id, "alpha")
+        self.assertIn("locked", str(ctx.exception))
+        self.assertFalse(waited.in_transaction)
+        self.assertEqual(self.counts(self.observer), before, "超时路径不得提交消息")
         rows = _read_diag(self.diag_path)
-        s3 = next(r for r in rows if r["kind"] == "step" and r["name"] == "S3")
-        # 主线程 0.3s 后才进入等待：S3 墙钟 = 剩余持锁时长（≈2.17-0.3）
-        self.assertGreaterEqual(s3["wall_ms"], 1800.0, f"S3 墙钟应≈持锁时长：{s3}")
-        self.assertLess(s3["wall_ms"], 3500.0, f"S3 墙钟异常：{s3}")
-        self.assertLess(s3["thread_cpu_ms"], s3["wall_ms"] * 0.1,
-                        f"S3 应为等待型（CPU≈0）：{s3}")
-        # begin/end 行正确识别持有者：持锁时长由 holder 成对行差值直接得出
-        txns = [r for r in rows if r["kind"] == "txn"]
-        holder_begin = next(r for r in txns
-                            if r.get("is_begin") and r["conn_id"] == id(holder))
-        holder_end = next(r for r in txns
-                          if r.get("is_end") and r["conn_id"] == id(holder))
-        waited_begin = next(r for r in txns
-                            if r.get("is_begin") and r["conn_id"] == id(waited))
-        self.assertLess(holder_begin["wall_ts"], waited_begin["wall_ts"])
-        self.assertGreaterEqual(holder_end["wall_ts"] - holder_begin["wall_ts"], 2.0,
-                                "持锁时长由持有方成对行 wall_ts 差值得出")
-        # 话题发送落库成功（member default 收 inbox、唤醒入队）
+        txns = [r for r in rows if r["kind"] == "txn" and r["conn_id"] == id(waited)]
+        self.assertTrue(any(r.get("is_request") for r in txns), "应有锁申请行")
+        self.assertFalse(any(r.get("is_begin") for r in txns), "超时不得出现持有记录")
+        self.assertTrue(any(r.get("end_kind") == "failed" for r in txns), "应有失败行")
+
+    def test_diag_write_failure_does_not_change_business(self):
+        # 反例③：诊断输出失败（提交后写盘 OSError）不得改变业务——消息已提交、
+        # 返回正常、独立连接可见；异常回滚路径同样不受诊断失败影响。
+        self.enable_diag()
+        real_write = slow_send_diag._write_row
+
+        def broken(*args, **kwargs):
+            raise OSError("simulated disk failure")
+        # 注：打桩 _ensure_stream（_write_row 内部 try 组件）验证失败被吞；
+        # 直接打桩 _write_row 会绕过其内部异常隔离。
+        before = self.counts(self.observer)
+        with patch.object(slow_send_diag, "_ensure_stream", side_effect=broken):
+            result = self.send(self.conn)  # 正常提交路径
+        self.assertIsNotNone(result["message_id"])
+        self.assertEqual(self.counts(self.observer),
+                         tuple(a + b for a, b in zip(before, (1, 1, 1))),
+                         "提交路径不受诊断写失败影响")
+        # 异常回滚路径：RouteError 冒泡，诊断写失败不改变回滚与消息不可见
+        before = self.counts(self.observer)
+        with patch.object(slow_send_diag, "_ensure_stream", side_effect=broken):
+            with self.assertRaises(router.RouteError):
+                router.route_message(self.conn, "user", None, "user", None, "alpha")
+        self.conn.rollback()  # 等价 api finally 的连接关闭隐式回滚
+        self.assertEqual(self.counts(self.observer), before,
+                         "回滚路径不受诊断写失败影响")
+
+    def test_silent_topic_message_path(self):
+        # 反例①：合法 bot null 独立发言位（silent 分支）不得崩溃，
+        # 提交/唤醒一次、d4 有定义（S4/S5 行正常落盘）。
+        self.enable_diag()
+        self.conn.execute("INSERT INTO threads (project, title, creator, members, "
+                          "status, round, turn_profile, created_at, last_active_at) "
+                          "VALUES ('alpha', 't', 'user', '[\"user\",\"default\"]', "
+                          "'open', 0, 'default', '2026-11-18T10:00:00', '2026-11-18T10:00:00')")
+        self.conn.commit()
+        thread_id = self.conn.execute("SELECT id FROM threads").fetchone()["id"]
+        result = router.route_message(self.conn, "default", None, "bot", thread_id, "alpha")
+        self.assertIsNone(result["message_id"])
         self.assertEqual(len(result["wake"]), 1)
+        skipped = self.observer.execute(
+            "SELECT turn_skipped FROM threads WHERE id=?", (thread_id,)).fetchone()[0]
+        self.assertIn("r:0:default", skipped)
+        rows = _read_diag(self.diag_path)
+        names = [r["name"] for r in rows if r["kind"] == "step"]
+        self.assertIn("S4", names)
+        self.assertIn("S5", names)
 
     def test_prepare_slow_injection_locates_step(self):
         # 人为慢注入 S5 段（消息插入路径）与 S6 段（树计算），落点精确到组
@@ -323,10 +411,12 @@ class DiagStepTests(DiagHarness):
                          f"单点取样开销超标：中位 {median(pairs):.3f}ms")
 
     def test_1000_sends_overhead_comparison(self):
-        # 1000 次发送：开关前后 p50/p99 对比（诊断不显著延长发送路径）
+        # 1000 次发送 × 开关前后：p50/p99 对比 + 日志量与完整启用埋点开销
+        n = 1000
+
         def run_batch():
             latencies = []
-            for _ in range(200):
+            for _ in range(n):
                 t0 = time.perf_counter()
                 self.send(self.conn)
                 latencies.append((time.perf_counter() - t0) * 1000)
@@ -337,11 +427,68 @@ class DiagStepTests(DiagHarness):
         p50_off, p99_off = median(off), sorted(off)[int(len(off) * 0.99) - 1]
         p50_on, p99_on = median(on), sorted(on)[int(len(on) * 0.99) - 1]
         # 开关引入的绝对开销有界（p50 增量 <2ms、p99 增量 <8ms，避免环境噪声误判）
-        self.assertLess(p50_on - p50_off, 2.0, f"p50 增量超限：{p50_off:.2f}→{p50_on:.2f}")
-        self.assertLess(p99_on - p99_off, 8.0, f"p99 增量超限：{p99_off:.2f}→{p99_on:.2f}")
+        self.assertLess(p50_on - p50_off, 2.0,
+                        f"p50 增量超限：n={n} {p50_off:.2f}→{p50_on:.2f}")
+        self.assertLess(p99_on - p99_off, 8.0,
+                        f"p99 增量超限：n={n} {p99_off:.2f}→{p99_on:.2f}")
         rows = _read_diag(self.diag_path)
         steps = [r for r in rows if r["kind"] == "step" and r["name"] == "S3"]
-        self.assertEqual(len(steps), 200, "开关开启的每笔发送都应有 S3 行")
+        self.assertEqual(len(steps), n, f"开关开启的每笔发送都应有 S3 行（n={n}）")
+        # 日志量：每笔发送 5 个 step 行（S3-S7）+ 2 个 txn 行（request/begin/end=3 行）
+        txn_rows = [r for r in rows if r["kind"] == "txn"]
+        self.assertEqual(len(txn_rows), n * 3, "每笔发送应有 request/begin/end 三行")
+        diag_bytes = self.diag_path.stat().st_size
+        # 完整启用埋点开销：单笔日志量 = 总字节 / n（公开到报告）
+        print(f"\n#314 开销实测：n={n} 开关关 p50={p50_off:.3f}ms p99={p99_off:.3f}ms；"
+              f"开关开 p50={p50_on:.3f}ms p99={p99_on:.3f}ms；"
+              f"诊断日志 {diag_bytes} 字节 / 每笔 {diag_bytes / n:.1f} 字节")
+
+
+class MigrationCostTests(DiagHarness):
+    """验收 2：实际迁移持锁耗时、索引回退与数据一致性。"""
+
+    def test_index_migration_cost_and_rollback_consistency(self):
+        # 5 万行消息规模下：建两索引耗时（迁移开销）+ DROP 回退后数据一致
+        rows = 50000
+        base = self.observer.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        self.conn.executemany(
+            "INSERT INTO messages (project, ts, sender, sender_type, content, "
+            "thread_id, parent_id, round, depth) "
+            "VALUES ('alpha', '2026-11-18T09:00:00', 'user', 'user', 'bulk', 1, NULL, 0, 0)",
+            [()] * rows,
+        )
+        self.conn.commit()
+        self.conn.execute("DROP INDEX IF EXISTS idx_messages_round")
+        self.conn.execute("DROP INDEX IF EXISTS idx_messages_reply")
+        t0 = time.perf_counter()
+        self.conn.execute("CREATE INDEX idx_messages_round "
+                          "ON messages(thread_id, sender, round, parent_id)")
+        self.conn.execute("CREATE INDEX idx_messages_reply ON messages(parent_id, sender)")
+        migration_ms = (time.perf_counter() - t0) * 1000
+        print(f"\n#314 迁移开销实测：{rows} 行建双索引 {migration_ms:.1f}ms")
+        self.assertLess(migration_ms, 5000, f"5 万行建索引耗时异常：{migration_ms:.1f}ms")
+        # 建索引后数据完整
+        self.assertEqual(self.observer.execute("SELECT COUNT(*) FROM messages").fetchone()[0],
+                         base + rows)
+        # 回退：DROP 后数据一致、查询正确（无索引仍能正确执行）
+        self.conn.execute("DROP INDEX IF EXISTS idx_messages_round")
+        self.conn.execute("DROP INDEX IF EXISTS idx_messages_reply")
+        count = self.conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE thread_id=? AND sender=? AND round=? "
+            "AND parent_id IS NULL", (1, "user", 0)).fetchone()[0]
+        self.assertEqual(count, rows, "回退后查询结果与索引存在时一致")
+        self.assertEqual(self.observer.execute("SELECT COUNT(*) FROM messages").fetchone()[0],
+                         base + rows, "回退后数据完整")
+
+    def test_rollback_index_recreation_idempotent(self):
+        # DROP 后再次 init_schema 幂等重建（升级路径可反复执行）
+        self.conn.execute("DROP INDEX IF EXISTS idx_messages_round")
+        self.conn.execute("DROP INDEX IF EXISTS idx_messages_reply")
+        self.conn.commit()
+        db.init_schema(self.conn)
+        names = {r["name"] for r in self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='messages'")}
+        self.assertTrue({"idx_messages_round", "idx_messages_reply"} <= names)
 
 
 if __name__ == "__main__":
