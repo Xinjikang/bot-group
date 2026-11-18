@@ -79,10 +79,11 @@ class RelayBase(unittest.TestCase):
         return connect(self.ws_url, close_timeout=1, open_timeout=5)
 
     def _hello(self, ws, *, credential=CREDENTIAL, member=REMOTE,
-               code_version="v1", mcp_fingerprint=""):
+               code_version="v1", mcp_fingerprint="", protocol_version=1):
         ws.send(json.dumps({"relay": {"kind": "hello"}, "member": member,
                             "credential": credential, "code_version": code_version,
-                            "mcp_fingerprint": mcp_fingerprint}))
+                            "mcp_fingerprint": mcp_fingerprint,
+                            "protocol_version": protocol_version}))
         return json.loads(ws.recv())
 
     def _closed_code(self, ws) -> int | None:
@@ -176,7 +177,8 @@ class RelayHandshakeTests(RelayBase):
         try:
             ws.send(json.dumps({"relay": {"kind": "hello"}, "member": REMOTE,
                                 "credential": CREDENTIAL,
-                                "mcp_fingerprint": "other-pkg-sha"}))
+                                "mcp_fingerprint": "other-pkg-sha",
+                                "protocol_version": 1}))
             self.assertEqual(self._closed_code(ws), relay_server.CLOSE_MCP_INCOMPATIBLE)
         finally:
             ws.close()
@@ -205,6 +207,82 @@ class RelayHandshakeTests(RelayBase):
             self.assertGreater(second, first, "重连连接代必须 +1")
         finally:
             ws.close()
+
+    def test_protocol_version_mismatch_rejected(self):
+        ws = self._connect()
+        try:
+            ws.send(json.dumps({"relay": {"kind": "hello"}, "member": REMOTE,
+                                "credential": CREDENTIAL, "protocol_version": 99}))
+            self.assertEqual(self._closed_code(ws), relay_server.CLOSE_BAD_PROTOCOL)
+        finally:
+            ws.close()
+
+    def test_overlapping_takeover_replaces_old_link(self):
+        # manager node1977 ①：旧 WS 未关闭时新连接接替——不得死锁、新连接成为
+        # 当前代（generation+1）、旧代清理不覆盖新连接的 online 状态、旧代流关闭。
+        old_ws = self._connect()
+        first_gen = self._hello(old_ws)["relay"]["generation"]
+        old_transport = relay_server.open_transport(REMOTE)
+        self.assertIsNotNone(old_transport)
+        # 重叠接替：旧连接仍开，直接建新连接
+        new_ws = self._connect()
+        try:
+            reply = self._hello(new_ws)
+            self.assertGreater(reply["relay"]["generation"], first_gen,
+                               "接替连接代必须 +1")
+            new_gen = reply["relay"]["generation"]
+            conn = self.conn()
+            try:
+                self.assertTrue(relay.is_online(conn, REMOTE),
+                                "旧代清理不得覆盖新连接的 online 状态")
+                self.assertEqual(relay.read_node(conn, REMOTE)["generation"], new_gen)
+            finally:
+                conn.close()
+            # 旧代流必须随接替关闭（哨兵）——旧连接的流不再可用
+            deadline = time.monotonic() + 5
+            sentinel = False
+            while time.monotonic() < deadline:
+                item = old_transport._inbound.get_nowait() if not old_transport._inbound.empty() else None
+                if item is relay_server._CLOSED_SENTINEL:
+                    sentinel = True
+                    break
+                time.sleep(0.05)
+            self.assertTrue(sentinel, "旧代流必须随接替关闭（哨兵）")
+            # 新代流可用：open_transport 拿到当前连接的新流
+            new_transport = relay_server.open_transport(REMOTE)
+            self.assertIsNotNone(new_transport)
+        finally:
+            new_ws.close()
+            try:
+                old_ws.close()
+            except Exception:  # noqa: BLE001 接替时引擎已主动关闭旧连接
+                pass
+
+    def test_frame_without_generation_dropped(self):
+        # manager node1977 ①：普通帧缺 generation 一律拒收（不再放行）
+        link = relay_server.NodeLink(REMOTE, None, generation=3)
+        transport = link.open_transport()
+        routed = relay_server._route_inbound(link, {
+            "relay": {"kind": "frame", "stream": transport.stream},
+            "frame": {"method": "x"}})
+        self.assertTrue(routed)
+        self.assertTrue(transport._inbound.empty(), "缺代帧不得进入流队列")
+
+    def test_stale_generation_heartbeat_dropped(self):
+        # 旧代心跳不得把节点标 online（只判存活，且以当前代为准）
+        conn = self.conn()
+        try:
+            relay.mark_offline(conn, REMOTE)
+        finally:
+            conn.close()
+        link = relay_server.NodeLink(REMOTE, None, generation=3)
+        relay_server._route_inbound(link, {"relay": {"kind": "heartbeat",
+                                                    "generation": 2}})
+        conn = self.conn()
+        try:
+            self.assertFalse(relay.is_online(conn, REMOTE), "旧代心跳不得标 online")
+        finally:
+            conn.close()
 
 
 class RelayFrameTests(RelayBase):
@@ -282,14 +360,15 @@ class RelayFrameTests(RelayBase):
         self.assertTrue(transport._inbound.empty(), "旧代帧不得进入流队列")
 
     def test_heartbeat_updates_liveness_only(self):
-        ws, _ = self._link()
+        ws, generation = self._link()
         try:
             conn = self.conn()
             try:
                 relay.mark_offline(conn, REMOTE)
             finally:
                 conn.close()
-            ws.send(json.dumps({"relay": {"kind": "heartbeat"}}))
+            ws.send(json.dumps({"relay": {"kind": "heartbeat",
+                                          "generation": generation}}))
             deadline = time.monotonic() + 3
             conn = self.conn()
             try:
@@ -493,6 +572,62 @@ class RelayGateTests(RelayBase):
         finally:
             conn.close()
 
+    def test_settlement_uses_injected_ids_and_receipt(self):
+        # manager node1977 ②：按「实际注入的目标点名」+「同一 submission 的确认
+        # 回执」结算——deliver 返回的 injected/admitted/submission_id 为准；
+        # 非 admitted（pending reconciliation）保留 waiting 核对依据。
+        from unittest.mock import patch
+        from engine import queue
+        conn = self.conn()
+        try:
+            thread_id, message_id = self._thread_with_mention(conn)
+            job_id = self._chat_job(conn, thread_id)
+            relay.upsert_offline_mention(conn, message_id=message_id, member=REMOTE,
+                                         project="alpha", thread_id=thread_id)
+            with patch.object(queue, "_relay_node_gate", return_value=("go", [])), \
+                    patch.object(queue.wake, "session_busy", return_value=False), \
+                    patch.object(queue.wake, "topic_busy", return_value=False):
+                # 确认回执已受理：实际注入 ids + submission_id → submitted
+                with patch.object(queue.wake, "deliver", return_value={
+                        "ok": True, "admitted": True, "submission_id": "sub-9",
+                        "injected_message_ids": [message_id]}):
+                    queue.process_one(conn)
+                row = relay.read_offline_mention(conn, message_id, REMOTE)
+                self.assertEqual(row["state"], "submitted")
+                self.assertEqual(row["submission_id"], "sub-9")
+            # pending reconciliation（不确定）：不标 submitted，保留 waiting
+            relay.upsert_offline_mention(conn, message_id=message_id, member=REMOTE,
+                                         project="alpha", thread_id=thread_id)
+            conn.execute("UPDATE relay_offline_mentions SET state='offline_waiting',"
+                         "submission_id=NULL WHERE message_id=? AND member=?",
+                         (message_id, REMOTE))
+            conn.commit()
+            job2 = self._chat_job(conn, thread_id)
+            with patch.object(queue, "_relay_node_gate", return_value=("go", [])), \
+                    patch.object(queue.wake, "session_busy", return_value=False), \
+                    patch.object(queue.wake, "topic_busy", return_value=False), \
+                    patch.object(queue.wake, "deliver", return_value={
+                        "ok": True, "admitted": False, "submission_id": "sub-10",
+                        "injected_message_ids": [message_id]}):
+                queue.process_one(conn)
+            row = relay.read_offline_mention(conn, message_id, REMOTE)
+            self.assertEqual(row["state"], "offline_waiting",
+                             "不确定回执不得标 submitted（保留核对依据）")
+            # 无 submission_id 也不标（不得回退空串）
+            job3 = self._chat_job(conn, thread_id)
+            with patch.object(queue, "_relay_node_gate", return_value=("go", [])), \
+                    patch.object(queue.wake, "session_busy", return_value=False), \
+                    patch.object(queue.wake, "topic_busy", return_value=False), \
+                    patch.object(queue.wake, "deliver", return_value={
+                        "ok": True, "admitted": True, "submission_id": None,
+                        "injected_message_ids": [message_id]}):
+                queue.process_one(conn)
+            row = relay.read_offline_mention(conn, message_id, REMOTE)
+            self.assertEqual(row["state"], "offline_waiting",
+                             "无 submission_id 不得标 submitted")
+        finally:
+            conn.close()
+
 
 class RelayMcpTests(RelayBase):
     def test_render_mcp_config_substitution(self):
@@ -512,6 +647,74 @@ class RelayMcpTests(RelayBase):
             self.assertNotIn("_package_sha", rendered)
             # 引擎期望指纹=管理员配置的随包 MCP 入口内容摘要
             self.assertEqual(relay.read_node(conn, REMOTE)["expected_mcp_sha"], "pkg-1")
+        finally:
+            conn.close()
+
+    def test_mcp_report_updates_live_fingerprint(self):
+        # manager node1977 ③：连接存续中换包 → mcp_report 更新远端实际摘要 →
+        # configure 前复核用最新值（旧握手缓存不作数）。
+        from engine.hermes_gateway_client import GatewayRefusal
+        conn = self.conn()
+        try:
+            relay.register_node(conn, REMOTE, CREDENTIAL, mcp_config={
+                "command": ["python"], "env": {}, "_package_sha": "pkg-v2"})
+            relay.mark_online(conn, REMOTE, code_version="v", mcp_fingerprint="pkg-v1",
+                              generation=1)
+            # 握手缓存 v1：期望 v2 不符 → configure 拒绝
+            with self.assertRaises(GatewayRefusal) as ctx:
+                relay.merge_mcp_spec(conn, REMOTE, {"command": ["x"], "args": [], "env": {}},
+                                     engine_url="http://e:1")
+            self.assertEqual(ctx.exception.reason, "mcp_package_mismatch")
+            # 插件换包上报新摘要 v2 → 复核通过
+            relay.mcp_report(conn, REMOTE, "pkg-v2")
+            merged = relay.merge_mcp_spec(conn, REMOTE, {"command": ["local"], "args": [],
+                                                         "env": {"GROUP_ENGINE_TOKEN": "t"}},
+                                          engine_url="http://e:1")
+            self.assertEqual(merged["command"], ["python"], "远端渲染命令覆盖本机")
+            self.assertIn("GROUP_ENGINE_TOKEN", merged["env"], "身份令牌继续由引擎注入")
+        finally:
+            conn.close()
+
+    def test_merge_mcp_spec_missing_command_refused(self):
+        # 远端渲染缺 command：拒绝（绝不回落本机配置，manager node1977 ③）
+        from engine.hermes_gateway_client import GatewayRefusal
+        conn = self.conn()
+        try:
+            relay.register_node(conn, REMOTE, CREDENTIAL, mcp_config={"env": {}})
+            relay.mark_online(conn, REMOTE, code_version="v", mcp_fingerprint="",
+                              generation=1)
+            with self.assertRaises(GatewayRefusal) as ctx:
+                relay.merge_mcp_spec(conn, REMOTE, {"command": ["local"], "args": [],
+                                                    "env": {}}, engine_url="http://e:1")
+            self.assertEqual(ctx.exception.reason, "mcp_config_missing")
+        finally:
+            conn.close()
+
+    def test_merge_mcp_spec_engine_url_remote_wins(self):
+        # GROUP_ENGINE_URL 以远端渲染值为准，本机会话 env 不得覆盖（manager node1977 ③）
+        conn = self.conn()
+        try:
+            relay.register_node(conn, REMOTE, CREDENTIAL, mcp_config={
+                "command": ["python"], "env": {"GROUP_ENGINE_URL": "{engine_url}"}})
+            relay.mark_online(conn, REMOTE, code_version="v", mcp_fingerprint="",
+                              generation=1)
+            merged = relay.merge_mcp_spec(conn, REMOTE, {
+                "command": ["local"], "args": [],
+                "env": {"GROUP_ENGINE_URL": "http://local-wrong:1", "TOKEN": "t"}},
+                engine_url="http://engine:8180")
+            self.assertEqual(merged["env"]["GROUP_ENGINE_URL"], "http://engine:8180",
+                             "可达 URL 以远端渲染为准")
+            self.assertEqual(merged["env"]["TOKEN"], "t", "其余会话 env 由引擎注入")
+        finally:
+            conn.close()
+
+    def test_merge_mcp_spec_local_member_untouched(self):
+        # 本机成员（无 relay 节点）：spec 原样返回（本机路径不动）
+        conn = self.conn()
+        try:
+            spec = {"command": ["local"], "args": [], "env": {}}
+            self.assertEqual(relay.merge_mcp_spec(conn, "user", spec, engine_url="x"),
+                             spec)
         finally:
             conn.close()
 

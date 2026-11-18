@@ -24,10 +24,13 @@ from . import db, relay
 
 logger = logging.getLogger(__name__)
 
-# 握手拒绝码（插件侧安装指引按码提示）。
+# relay 帧协议版本：hello 必须上报且与引擎一致，不一致按版本拒绝（验收 6）。
+RELAY_PROTOCOL_VERSION = 1
+
+# 握手/帧拒绝码（插件侧安装指引按码提示）。
 CLOSE_BAD_CREDENTIAL = 4001
 CLOSE_MCP_INCOMPATIBLE = 4002
-CLOSE_STALE_GENERATION = 4003
+CLOSE_BAD_PROTOCOL = 4003
 
 
 class RelayTransport:
@@ -119,21 +122,30 @@ _LINKS_LOCK = threading.Lock()
 
 
 def _shutdown_link(link: NodeLink, reason: str) -> None:
-    """断开一条成员连接：关 WS、所有流转发哨兵、节点标离线。"""
+    """断开一条成员连接：关 WS、所有流转发哨兵。
+
+    只有「当前注册的连接」断开才把节点标 offline——旧代连接被新连接接替时
+    的清理不覆盖新连接已写入的 online 状态（manager node1977 ①）。
+    注意：本函数自取 _LINKS_LOCK，调用方不得持锁调用。
+    """
     if link.closed:
         return
     link.closed = True
+    current = None
     with _LINKS_LOCK:
         if _LINKS.get(link.member) is link:
             _LINKS.pop(link.member, None)
+            current = link
     for transport in list(link.transports.values()):
         transport.close()
-    conn = db.get_connection()
-    try:
-        relay.mark_offline(conn, link.member)
-    finally:
-        conn.close()
-    logger.warning("relay link down member=%s reason=%s", link.member, reason)
+    if current is not None:
+        conn = db.get_connection()
+        try:
+            relay.mark_offline(conn, link.member)
+        finally:
+            conn.close()
+    logger.warning("relay link down member=%s generation=%d reason=%s",
+                   link.member, link.generation, reason)
     try:
         asyncio.run_coroutine_threadsafe(link.ws.close(code=1000), link.loop)
     except Exception:  # noqa: BLE001
@@ -164,10 +176,17 @@ def close_all() -> None:
 
 
 def _route_inbound(link: NodeLink, envelope: dict) -> bool:
-    """插件→引擎帧按 stream 路由到对应 transport；返回是否已路由。"""
+    """插件→引擎帧：一律先按当前连接代校验（缺代/旧代拒收），再按 kind 路由。"""
     meta = envelope.get("relay") or {}
     kind = meta.get("kind")
+    frame_gen = meta.get("generation")
+    if kind != "hello" and frame_gen != link.generation:
+        # 缺 generation 或旧代：拒收（旧连接迟到帧不得影响当前代状态或流）
+        logger.warning("relay generation-mismatch frame dropped member=%s kind=%s gen=%s",
+                       link.member, kind, frame_gen)
+        return True
     if kind == "heartbeat":
+        # 心跳只判存活（写 online 以当前代为准——上方代次校验已保证）
         link.last_heartbeat = time.time()
         conn = db.get_connection()
         try:
@@ -175,12 +194,19 @@ def _route_inbound(link: NodeLink, envelope: dict) -> bool:
         finally:
             conn.close()
         return True
+    if kind == "mcp_report":
+        # 连接存续中插件换包后上报新摘要（manager node1977 ③：configure 前
+        # 必须能取到本次配置的远端实际摘要，不能只靠握手缓存）
+        fingerprint = envelope.get("mcp_fingerprint") or ""
+        conn = db.get_connection()
+        try:
+            relay.mcp_report(conn, link.member, fingerprint)
+        finally:
+            conn.close()
+        logger.info("relay mcp_report member=%s fingerprint=%s", link.member,
+                    fingerprint[:16] if fingerprint else "")
+        return True
     stream = meta.get("stream")
-    frame_gen = meta.get("generation")
-    if frame_gen is not None and frame_gen != link.generation:
-        logger.warning("relay stale-generation frame dropped member=%s stream=%s gen=%s",
-                       link.member, stream, frame_gen)
-        return True  # 旧代帧拒收（丢弃即拒）
     transport = link.transports.get(stream) if isinstance(stream, str) else None
     frame = envelope.get("frame")
     if transport is None or frame is None:
@@ -202,10 +228,16 @@ async def relay_ws(websocket: WebSocket) -> None:
         credential = hello.get("credential") or ""
         code_version = hello.get("code_version") or ""
         mcp_fingerprint = hello.get("mcp_fingerprint") or ""
+        protocol_version = hello.get("protocol_version")
         conn = db.get_connection()
         try:
             if not member or not relay.verify_credential(conn, member, credential):
                 await websocket.close(code=CLOSE_BAD_CREDENTIAL)
+                return
+            if protocol_version != RELAY_PROTOCOL_VERSION:
+                logger.warning("relay protocol version mismatch member=%s got=%s",
+                               member, protocol_version)
+                await websocket.close(code=CLOSE_BAD_PROTOCOL)
                 return
             row = relay.read_node(conn, member)
             expected = row["expected_mcp_sha"] if row else ""
@@ -226,11 +258,14 @@ async def relay_ws(websocket: WebSocket) -> None:
         return
 
     link = NodeLink(member, websocket, generation)
+    # 接替：先注册新连接（新连接成为当前代），旧连接的清理在锁外进行——
+    # _shutdown_link 自取 _LINKS_LOCK，持锁调用会死锁；旧代清理因「非当前
+    # 注册连接」不写 offline，不覆盖新连接状态（manager node1977 ①）。
     with _LINKS_LOCK:
         previous = _LINKS.get(member)
-        if previous is not None and not previous.closed:
-            previous.close()  # 重连：旧连接立即失效（重连后只让当前连接接新消息）
         _LINKS[member] = link
+    if previous is not None and not previous.closed:
+        previous.close()
     try:
         await websocket.send_text(json.dumps(
             {"relay": {"kind": "hello_ok", "generation": generation},

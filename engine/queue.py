@@ -98,19 +98,10 @@ def _relay_node_gate(conn, candidate) -> tuple[str, list[int]]:
     return "hold", mention_ids
 
 
-def _submission_for_job(conn, job_id):
-    """投递成功后取该 job 的 submission_id（hermes_executions 链）。"""
-    row = conn.execute(
-        "SELECT submission_id FROM hermes_executions WHERE job_id=? "
-        "ORDER BY started_at DESC LIMIT 1", (job_id,)).fetchone()
-    return row["submission_id"] if row else None
-
-
 def process_one(conn) -> bool:
     """取一个 queued job 并 deliver。返回是否处理了 job。"""
     from . import project_readiness
     job = None
-    gate_mention_ids: list[int] = []
     for candidate in conn.execute("SELECT * FROM wake_jobs WHERE status='queued' ORDER BY id").fetchall():
         # 停用者不投递（规格 27.3 第 6 点 + req#27 按项目维度）：存量 job 也不许
         # 把已停用的 bot 叫醒。丢弃不投递、留审计（不改任何业务数据）。
@@ -121,7 +112,7 @@ def process_one(conn) -> bool:
             continue
         # req#168 节点闸门：远程 relay 成员离线/达并发上限 → hold 保留 queued
         #（绝不 _discard_queued）；离线且发言位仍有效记 offline_waiting。
-        gate, gate_mention_ids = _relay_node_gate(conn, candidate)
+        gate, _ = _relay_node_gate(conn, candidate)
         if gate == "hold":
             continue
         if candidate["kind"] == "chat" and candidate["thread_id"] is not None:
@@ -222,14 +213,17 @@ def process_one(conn) -> bool:
                     "UPDATE wake_jobs SET chat_context_until=? WHERE id=?",
                     (until, job["id"]),
                 )
-            # req#168：投递成功——本次注入快照内所有离线点名一起标 submitted
-            #（不能只标触发那条，否则同话题排队其他 @ 停在等待态被误判未投递）。
-            if gate_mention_ids:
+            # req#168：离线点名按「实际注入的目标点名」与「同一 submission 的确认
+            # 回执」结算（manager node1977 ②）——只有 admitted（receipt 已受理）且
+            # 有 submission_id 才标 submitted；pending reconciliation（不确定）保留
+            # waiting 核对依据，收口不误判已投/未投。
+            injected_ids = result.get("injected_message_ids") or []
+            submission_id = result.get("submission_id")
+            if injected_ids and result.get("admitted") is True and submission_id:
                 from . import relay
-                submission_id = _submission_for_job(conn, job["id"])
-                relay.mark_submitted(conn, message_ids=gate_mention_ids,
+                relay.mark_submitted(conn, message_ids=injected_ids,
                                      member=job["profile"],
-                                     submission_id=submission_id or "")
+                                     submission_id=submission_id)
             # req#58：心跳归属不再写 last_wake_kind/last_wake_thread_id——判活事实源
             # 已改为心跳槽的 thread_id（MCP beat 时按会话报，heartbeat.active_entries
             # 按槽粒度输出），DB last_wake 关联是 profile 级单一归属、同 profile 双话题

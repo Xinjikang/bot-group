@@ -200,47 +200,51 @@ class MessageInjectionTests(unittest.TestCase):
     def test_finalize_injects_when_pending_within_budget(self):
         """有 pending 且预算内 → 注入正文（含正文+id+发送者+need_reply）。"""
         mid = self._msg(content="干活啦")
-        signal = wake._finalize_injection_signal(
+        signal, ids = wake._finalize_injection_signal(
             "dev-1", "work", None, "p", None, None,
             ["hermes", "-p", "dev-1", "chat", "--in", ".", "-c", "s", "-Q"],
         )
         self.assertIn(f"id={mid}", signal)
         self.assertIn("干活啦", signal)
         self.assertNotIn("调 group_read_inbox() 看未读", signal)
+        self.assertEqual(ids, [mid], "正文注入的消息 ids 与实际点名一致")
 
     def test_finalize_degenerates_when_no_pending(self):
         """无 pending → 退化纯信号（无 upper_id，因快照为空）。"""
-        signal = wake._finalize_injection_signal(
+        signal, ids = wake._finalize_injection_signal(
             "dev-1", "work", None, "p", None, None,
             ["hermes", "-p", "dev-1", "chat", "--in", ".", "-c", "s", "-Q"],
         )
         self.assertEqual(signal, wake._WORK_SIGNAL)
+        self.assertEqual(ids, [], "退化纯信号不含任何注入点名")
 
     def test_finalize_degenerates_when_over_budget(self):
         """超预算 → 整段退化纯信号 + upper_id 分页游标（req#82 #139），禁止静默截断。"""
         # 造一条超长正文
         huge = "x" * 40000
         mid = self._msg(content=huge)
-        signal = wake._finalize_injection_signal(
+        signal, ids = wake._finalize_injection_signal(
             "dev-1", "work", None, "p", None, None,
             ["hermes", "-p", "dev-1", "chat", "--in", ".", "-c", "s", "-Q"],
         )
         self.assertTrue(signal.startswith(wake._WORK_SIGNAL))
         self.assertIn(f"upper_id={mid}", signal)
         self.assertNotIn(huge[:100], signal)  # 没有任何正文片段注入
+        self.assertEqual(ids, [], "退化路径不标注入点名")
 
     def test_finalize_never_partial_inject(self):
         """禁止「部分注入+补拉剩余」：预算不够时绝不塞部分正文，整段退化带 upper_id。"""
         # 两条消息，第一条预算内、两条合计超预算 → 也必须整段退化（不能只塞第一条）
         self._msg(content="A" * 1000)
         mid2 = self._msg(content="B" * 40000)
-        signal = wake._finalize_injection_signal(
+        signal, ids = wake._finalize_injection_signal(
             "dev-1", "work", None, "p", None, None,
             ["hermes", "-p", "dev-1", "chat", "--in", ".", "-c", "s", "-Q"],
         )
         self.assertTrue(signal.startswith(wake._WORK_SIGNAL))
         self.assertIn(f"upper_id={mid2}", signal)
         self.assertNotIn("正文：", signal)
+        self.assertEqual(ids, [], "退化路径不标注入点名")
 
 
 if __name__ == "__main__":

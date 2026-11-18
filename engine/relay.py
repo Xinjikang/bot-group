@@ -302,5 +302,44 @@ def _substitute(value, variables: dict):
     return value
 
 
+def mcp_report(conn, member: str, fingerprint: str, *, now=None) -> None:
+    """连接存续中插件换包后上报的新摘要（manager node1977 ③）：
+    更新为 configure 前复核用的远端实际摘要。"""
+    conn.execute("UPDATE relay_nodes SET mcp_fingerprint=?,updated_at=? WHERE member=?",
+                 (fingerprint, _now() if now is None else now, member))
+    conn.commit()
+
+
+def merge_mcp_spec(conn, member: str, spec: dict, *, engine_url: str = "") -> dict:
+    """远程节点的随包 MCP 配置合并（manager node1977 ③）：
+
+    - 用「当前远端实际摘要」复核（握手或 mcp_report 上报的最新值），不兼容拒绝；
+    - 渲染后缺 command 时拒绝（绝不回落本机配置——本机 MCP 命令对远端无效）；
+    - 可达 URL（GROUP_ENGINE_URL）以远端渲染值为准（本机会话 env 不覆盖）；
+    - 身份令牌与上下文仍由引擎注入（会话级 env 其余项覆盖合并）。
+
+    返回合并后 spec。节点不存在（本机成员）时原样返回 spec（本机路径不动）。
+    """
+    from .hermes_gateway_client import GatewayRefusal
+    row = read_node(conn, member)
+    if row is None:
+        return spec
+    remote = render_mcp_config(conn, member, engine_url=engine_url)
+    node = read_node(conn, member)
+    if node["expected_mcp_sha"] and node["mcp_fingerprint"] != node["expected_mcp_sha"]:
+        raise GatewayRefusal("mcp_package_mismatch")
+    if not remote.get("command"):
+        raise GatewayRefusal("mcp_config_missing")
+    merged = {**spec, **{key: value for key, value in remote.items()
+                        if key in ("command", "args")}}
+    merged_env = dict(remote.get("env") or {})
+    for key, value in (spec.get("env") or {}).items():
+        if key == "GROUP_ENGINE_URL":
+            continue  # 可达 URL 以远端渲染为准（manager node1977 ③）
+        merged_env[key] = value
+    merged["env"] = merged_env
+    return merged
+
+
 def new_credential() -> str:
     return secrets.token_urlsafe(32)

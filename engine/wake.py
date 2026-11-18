@@ -595,7 +595,8 @@ def _finalize_injection_signal(profile, kind, thread_id, project, trigger_msg_id
     注入 = 未读全量一次性塞进 -q（正文+id+发送者+need_reply+seq）。禁止静默截断、
     禁止「部分注入+补拉剩余」：正文总长超命令行预算时整段退化成纯信号，
     bot 自己 read_inbox 分页拉全量（I2）。退化信号带 upper_id（本次快照水位），
-    bot 按 after_id 游标分页读固定上界内仍有效的 pending。返回最终信号文本。
+    bot 按 after_id 游标分页读固定上界内仍有效的 pending。返回 (信号文本, 注入消息 ids)——
+    退化纯信号时 ids 为空（正文不含任何点名，manager node1977 ②）。
     """
     conn = db.get_connection()
     try:
@@ -606,13 +607,14 @@ def _finalize_injection_signal(profile, kind, thread_id, project, trigger_msg_id
     # upper_id = 本次快照水位（快照范围内的 max message_id，I1）。快照之后到达的
     # 消息 id > upper_id，不纳入本次补读范围，进入后续 wake/运行中投递（I1）。
     upper_id = max((m["message_id"] for m in snapshot), default=0)
+    injected_ids = [m["message_id"] for m in snapshot]
     if snapshot:
         body = _compose_injection(snapshot, kind, trigger_msg_id=trigger_msg_id)
         if bound_task is not None:
             body += _TASK_SUFFIX.format(task_id=bound_task)
         body += requirement_signal
         if _fits_command_budget(cmd_without_q + ["-q", body]):
-            return body
+            return body, injected_ids
     # 退化：纯信号 + upper_id 分页游标（I2/R1）。chat 单 thread 全量现场无需 upper_id。
     if kind == "work" and not snapshot and (bound_task is not None or requirement_signal):
         signal = "[系统唤醒信号] 本次为任务或需求调度，当前点对点收件箱为空。"
@@ -624,7 +626,7 @@ def _finalize_injection_signal(profile, kind, thread_id, project, trigger_msg_id
     if bound_task is not None:
         signal += _TASK_SUFFIX.format(task_id=bound_task)
     signal += requirement_signal
-    return signal
+    return signal, []
 
 
 def _native_hermes_entry(entry: str) -> str:
@@ -1142,9 +1144,10 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         if not use_binding:
             cmd_without_q.insert(cmd_without_q.index("-Q"), "--create-if-missing")
         sid_for_run = sid
+    injected_ids: list[int] = []
     if signal is None:
-        signal = _finalize_injection_signal(profile, kind, thread_id, project,
-                                            trigger_msg_id, bound_task, cmd_without_q)
+        signal, injected_ids = _finalize_injection_signal(profile, kind, thread_id, project,
+                                                          trigger_msg_id, bound_task, cmd_without_q)
     elif bound_task is not None:
         signal += _TASK_SUFFIX.format(task_id=bound_task)
     # codex 的 prompt 是末位裸参数（无 -q 包装）；hermes 仍是 -q；dsh 提示词经 stdin。
@@ -1567,7 +1570,8 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
             _running_wakes[session] = run
         events.bus.publish("wake.spawned", run)
         _th.Thread(target=_watch_session, daemon=True, name=f"session-{profile}").start()
-        return {"ok": True, "channel": "subprocess", "detail": f"pid {proc.pid}"}
+        return {"ok": True, "channel": "subprocess", "detail": f"pid {proc.pid}",
+                "injected_message_ids": injected_ids}
     except Exception as exc:  # noqa: BLE001
         if 'proc' in locals() and proc.poll() is None:
             from .stop import _kill_process_tree

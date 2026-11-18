@@ -330,14 +330,15 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
     conn = db.get_connection()
     session_lock = hermes_session_auth.lock_for(session)
     session_lock.acquire()
+    injected_ids: list[int] = []
     try:
         if ledger.active(conn, session):
             from . import hermes_delegations
             direct = hermes_delegations.direct_wait(conn, profile, project, trigger_msg_id) if kind == 'work' else None
             if direct:
                 prior, message_id = direct
-                text = wake._finalize_injection_signal(profile, kind, thread_id, project,
-                                                       message_id, prior['task_id'], [])
+                text, _ = wake._finalize_injection_signal(profile, kind, thread_id, project,
+                                                          message_id, prior['task_id'], [])
                 if not hermes_delegations.enqueue_direct(conn, prior, message_id, text):
                     return {'ok': False, 'busy': True, 'detail': 'delegation wait changed during delivery'}
                 _start_worker(prior['execution_id'])
@@ -376,8 +377,8 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
             _native_busy_feedback(conn, snapshot['session_id'])
             return {'ok': False, 'busy': True, 'detail': 'native session became busy during initialization'}
         if signal is None:
-            signal = wake._finalize_injection_signal(profile, kind, thread_id, project,
-                                                     trigger_msg_id, bound_task, [])
+            signal, injected_ids = wake._finalize_injection_signal(profile, kind, thread_id, project,
+                                                                   trigger_msg_id, bound_task, [])
         elif bound_task is not None:
             signal += wake._TASK_SUFFIX.format(task_id=bound_task)
         current_prompt = wake.wake_system_prompt(kind, project, workdir)
@@ -403,9 +404,15 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
         attempted = True
         with startup.phase(profile, project, session, 'submit'):
             receipt = client.rpc('prompt.submit', session_id=row['session_id'], submission_id=row['submission_id'], text=signal)
-        ledger.apply_receipt(conn, row['execution_id'], receipt)
+        row = ledger.apply_receipt(conn, row['execution_id'], receipt)
+        # 同一 submission 的确认回执：receipt 已被网关受理（queued/started/终态）才算
+        # admitted；unknown 等未确认状态不算（manager node1977 ②——不确定期间不得
+        # 把离线点名标 submitted，保留核对依据）。
+        admitted = row['state'] in ('running', 'submitting', 'terminal')
         _start_worker(row['execution_id'])
-        return {'ok': True, 'channel': 'hermes-gateway', 'detail': 'admission ' + receipt['admission_id']}
+        return {'ok': True, 'channel': 'hermes-gateway', 'detail': 'admission ' + receipt['admission_id'],
+                'submission_id': row['submission_id'], 'admitted': admitted,
+                'injected_message_ids': injected_ids}
     except Exception as exc:
         if row is None:
             raise
@@ -414,7 +421,9 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
         else:
             ledger.not_submitted(conn, row['execution_id'], str(exc))
         _start_worker(row['execution_id'])
-        return {'ok': True, 'channel': 'hermes-gateway', 'detail': 'execution pending reconciliation'}
+        return {'ok': True, 'channel': 'hermes-gateway', 'detail': 'execution pending reconciliation',
+                'submission_id': row['submission_id'], 'admitted': False,
+                'injected_message_ids': injected_ids}
     finally:
         conn.close()
         if client:
