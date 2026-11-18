@@ -21,13 +21,15 @@
 
 ### 3.0 修复候选一：messages 索引（先于埋点验证）
 
-bot-36 已定位首个可修缺陷并经隔离对照实验证实（REMEDIATION-11835.md），reviewer-02 独立核验确认全表扫描共**四处**、均持写锁执行：`_round_spoken`（router.py:294，thread_id+sender+round+parent_id IS NULL）、当轮用户消息（router.py:421，thread_id+sender='user'+round）、`_edge_responded`（router.py:304，parent_id+sender）、DFS 接话查询（router.py:368，parent_id+sender）。生产库 messages 无任何索引（index_list 为空）。9841 行合成库对照：prepare 中位 10.774ms → 加 messages(thread_id,sender,round,parent_id) 复合索引 0.788ms → 撤索引回 10.049ms。现场 6.53s 不能全归它，但它是第一项可修的持锁开销。消息表只增不改，写成本可忽略（reviewer-02 核验）。
+bot-36 已定位首个可修缺陷并经隔离对照实验证实（REMEDIATION-11835.md），reviewer-02 独立核验：发送路径共**六处**查询全表扫描 messages（生产库 index_list 为空）、均持写锁执行。索引划分已实测收敛：
 
-验证项（隔离库，用新连接复核执行计划后再定采用哪些索引）：
-- 复合索引 messages(thread_id,sender,round,parent_id) 服务 router.py:294 与 :421 两处；`:304` 与 `:368` 以 parent_id 为首列，该复合索引无法服务，父消息查询单独评估对应索引（如 messages(parent_id,sender)）的收益。
-- 旧库升级路径：生产库已有数据，CREATE INDEX 的耗时、事务方式与备份回退步骤。
-- 写入成本与分发一致性：消息表只增不改，写成本预期可忽略（仍按对照实测确认）；覆盖有无现成发言位、话题与点对点发送四类。
-- 顺序：索引验证与埋点验证并行，各自独立交付。
+- **轮次索引** messages(thread_id,sender,round,parent_id) 服务 4 处：`_round_spoken`（router.py:294）、当轮用户消息（:421）、独立发言查找（:319、:437）。
+- **回复索引** messages(parent_id,sender) 服务 2 处：`_edge_responded`（:304）、DFS 接话查找（:368）。
+- **范围外（注明）**：点对点互@回溯 2 处（:83、:93，thread_id IS NULL+sender_type/mentions LIKE）仍全扫，两索引均不覆盖；频率低暂不入补丁。
+
+实测数据（E 盘隔离库，每配置 150 样本）：按父消息查回复数中位 6.617ms（无索引）→ 0.298ms（仅轮次索引）→ 0.032ms（双索引）；双索引下单条插入并提交中位 1.175ms vs 无索引 1.262ms——写成本无回归；**并发尾延迟待单独测**。现场 6.53s 不能全归它，但它是第一项可修的持锁开销。消息表只增不改。
+
+**补丁建议**：同时含两个索引；验证新旧库升级、并发、分发一致性；连接与锁后分步计时保留，继续追秒级卡顿（bot-36 2026-11-18 口径）。
 
 ### 3.1 发送分步计时（engine/api.py + engine/router.py）
 
