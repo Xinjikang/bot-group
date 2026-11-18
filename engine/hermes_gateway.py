@@ -14,7 +14,8 @@ from . import db, hermes_runtime
 from . import hermes_gateway_ledger as ledger, hermes_gateway_sessions as sessions
 from . import hermes_prompt_state as prompt_state
 from . import hermes_startup as startup
-from .hermes_gateway_client import GatewayClient, GatewayRefusal, GatewayTransportError, discover, ensure
+from .hermes_gateway_client import (GatewayClient, GatewayRefusal, GatewayTransportError,
+                                    GatewayUnavailable, discover, ensure)
 
 logger = logging.getLogger(__name__)
 _workers = set()
@@ -26,10 +27,62 @@ def enabled():
     return hermes_runtime.gateway_source(hermes_runtime.source_directory(_hermes_home()))
 
 
+def _relay_lease(profile, *, on_event=None):
+    """远程 relay 成员：从活跃插件连接开一条流，包装成 Lease 兼容接口。"""
+    from . import relay_server
+    from . import relay
+    conn = db.get_connection()
+    try:
+        online = relay.is_online(conn, profile)
+    finally:
+        conn.close()
+    if not online:
+        raise GatewayUnavailable('remote member relay offline: ' + profile)
+    transport = relay_server.open_transport(profile)
+    if transport is None:
+        raise GatewayUnavailable('remote member relay link absent: ' + profile)
+    endpoint = {'profile_id': profile, 'instance_id': 'relay-' + profile,
+                'runtime_protocol': 1, 'api_origin': '', 'control_home': '',
+                'code_sha': '', 'authority_epoch': 1}
+    return RelayLease(GatewayClient(endpoint, on_event=on_event, transport=transport))
+
+
+class RelayLease:
+    """远程 transport 的 Lease 兼容包装（rpc/endpoint/close）。"""
+    def __init__(self, client: GatewayClient):
+        self.client = client
+        self.closed = False
+
+    @property
+    def endpoint(self):
+        return self.client.endpoint
+
+    def rpc(self, method, **params):
+        if self.closed:
+            raise GatewayTransportError('relay lease closed')
+        return self.client.rpc(method, **params)
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        self.client.close()
+
+
 def connection(profile, *, home=None, command=None, read_only=False, on_event=None, history=False):
     from . import bot_identity
     from . import hermes_connections
+    from . import relay
     from .session_adapter import _hermes_home
+    # 远程 relay 成员（req#168）：本机直连链路整体绕过，插件已在本机完成取票与
+    # gateway 连接；引擎只按成员开流转发 JSON-RPC 帧。
+    conn = db.get_connection()
+    try:
+        remote = relay.read_node(conn, profile) is not None
+    finally:
+        conn.close()
+    if remote:
+        return _relay_lease(profile, on_event=on_event), str(Path(profile)), []
     home = Path(home) if home else bot_identity.hermes_home(profile, _hermes_home())
     if history:
         # Transcript reads own their socket and cannot interrupt admission RPCs.

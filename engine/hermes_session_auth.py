@@ -172,15 +172,29 @@ def server(row, generation):
 
 
 def configure(conn, row, client, snapshot, *, force_mcp=False):
-    from . import hermes_gateway_sessions as sessions, signing_keys
+    from . import hermes_gateway_sessions as sessions, signing_keys, relay, wake
     current = _signing_generation()
     if snapshot['running'] or snapshot['pending']:
         raise HTTPException(409, 'Session credential handoff requires idle session')
     if current != row['signing_generation']:
         conn.execute('UPDATE hermes_session_grants SET pending_generation=? WHERE ' + WHERE, (current, *key(row)))
         conn.commit()
+    spec = server(row, current)
+    # req#168 随包 MCP 配置：远程节点按节点配置渲染 MCP 启动命令与 env（经 relay
+    # 帧下发、插件原样转发到本机 gateway）；configure 前对随包 MCP 入口内容摘要
+    # 复核一次（插件握手上报的指纹必须与引擎期望一致，不兼容节点拒绝）。
+    remote = relay.render_mcp_config(conn, row['profile'], engine_url=wake._engine_url())
+    if remote and remote.get('command'):
+        node = relay.read_node(conn, row['profile'])
+        if node and node['expected_mcp_sha'] and node['mcp_fingerprint'] != node['expected_mcp_sha']:
+            raise GatewayRefusal('mcp_package_mismatch')
+        spec = {**spec, **{key: value for key, value in remote.items()
+                           if key in ('command', 'args')}}
+        merged_env = dict(remote.get('env') or {})
+        merged_env.update(spec['env'])  # 会话级 env（token/上下文）不可被节点配置覆盖
+        spec['env'] = merged_env
     result = sessions.configure_tracked(conn, row['project'], client, snapshot, workdir=row['workdir'],
-        model_args=json.loads(row['model_args']), server=server(row, current), force_mcp=force_mcp)
+        model_args=json.loads(row['model_args']), server=spec, force_mcp=force_mcp)
     validate(conn, {**context(row), 'signing_generation': current})
     conn.execute('UPDATE hermes_session_grants SET signing_generation=?,pending_generation=NULL WHERE ' + WHERE,
                  (current, *key(row)))

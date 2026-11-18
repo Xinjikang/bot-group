@@ -115,6 +115,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(schema_path.read_text(encoding="utf-8"))
     from . import hermes_gateway_ledger
     hermes_gateway_ledger.initialize(conn)
+    from . import relay
+    relay.initialize(conn)
     from . import hermes_approvals
     conn.executescript(hermes_approvals.SCHEMA)
     _migrate_add_column(conn, 'hermes_executions', 'signing_generation', 'INTEGER')

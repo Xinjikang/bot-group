@@ -50,10 +50,67 @@ def _discard_queued(conn, job_id: int, detail: str) -> None:
     conn.commit()
 
 
+def _relay_node_gate(conn, candidate) -> tuple[str, list[int]]:
+    """req#168 节点闸门：远程 relay 成员的派发前置判定。
+
+    返回 (status, mention_ids)：
+    - 'go'：非远程节点，或在线且未达并发上限——原判定链继续。
+    - 'hold'：节点离线或达并发上限——continue 保留 queued（绝不 _discard_queued，
+      活不能丢）。离线且发言位仍有效时对快照内点名 upsert offline_waiting。
+    - 'expire'：离线且发言位已失效——从未提交的点名标 offline_expired，
+      原判定链继续（superseded topic turn 丢弃是正确的，活已由点名记录承担）。
+
+    容量按 hermes_executions.state != 'terminal' 计数、receipt 终态释放（首版成员级）。
+    """
+    from . import relay
+    from . import wake as wake_module
+    if relay.read_node(conn, candidate["profile"]) is None:
+        return "go", []
+    mention_ids = [m["message_id"] for m in
+                   wake_module._snapshot_pending(conn, candidate["profile"], candidate["kind"],
+                                                 candidate["thread_id"], candidate["project"])]
+    online = relay.is_online(conn, candidate["profile"])
+    if online and not relay.at_capacity(conn, candidate["profile"]):
+        return "go", mention_ids
+    if not online:
+        if candidate["kind"] == "chat" and candidate["thread_id"] is not None:
+            thread = conn.execute(
+                "SELECT status,turn_profile,project,members FROM threads WHERE id=?",
+                (candidate["thread_id"],)).fetchone()
+            valid_turn = (thread is not None and thread["status"] == "open"
+                          and thread["turn_profile"] == candidate["profile"]
+                          and thread["project"] == candidate["project"]
+                          and candidate["profile"] in json.loads(thread["members"] or "[]"))
+            if valid_turn:
+                # 发言位仍有效：窄口径记「等待成员上线」，唯一键幂等只显示一条
+                for message_id in mention_ids:
+                    relay.upsert_offline_mention(conn, message_id=message_id,
+                                                 member=candidate["profile"],
+                                                 project=candidate["project"],
+                                                 thread_id=candidate["thread_id"])
+                return "hold", mention_ids
+            # 发言位已失效：从未提交的点名标 expired，活交给原判定链丢弃
+            relay.expire_mentions(conn, member=candidate["profile"], message_ids=mention_ids)
+            return "expire", mention_ids
+        # 离线点对点派活：保留 queued，等成员上线（不做 adapter outbox）
+        return "hold", mention_ids
+    # 在线但达并发上限：保留 queued（首版成员级可判忙闲）
+    return "hold", mention_ids
+
+
+def _submission_for_job(conn, job_id):
+    """投递成功后取该 job 的 submission_id（hermes_executions 链）。"""
+    row = conn.execute(
+        "SELECT submission_id FROM hermes_executions WHERE job_id=? "
+        "ORDER BY started_at DESC LIMIT 1", (job_id,)).fetchone()
+    return row["submission_id"] if row else None
+
+
 def process_one(conn) -> bool:
     """取一个 queued job 并 deliver。返回是否处理了 job。"""
     from . import project_readiness
     job = None
+    gate_mention_ids: list[int] = []
     for candidate in conn.execute("SELECT * FROM wake_jobs WHERE status='queued' ORDER BY id").fetchall():
         # 停用者不投递（规格 27.3 第 6 点 + req#27 按项目维度）：存量 job 也不许
         # 把已停用的 bot 叫醒。丢弃不投递、留审计（不改任何业务数据）。
@@ -61,6 +118,11 @@ def process_one(conn) -> bool:
             _discard_queued(conn, candidate["id"], "profile disabled")
             continue
         if not project_readiness.is_ready(conn, candidate['project']):
+            continue
+        # req#168 节点闸门：远程 relay 成员离线/达并发上限 → hold 保留 queued
+        #（绝不 _discard_queued）；离线且发言位仍有效记 offline_waiting。
+        gate, gate_mention_ids = _relay_node_gate(conn, candidate)
+        if gate == "hold":
             continue
         if candidate["kind"] == "chat" and candidate["thread_id"] is not None:
             thread = conn.execute("SELECT status,turn_profile,project,members,round,turn_parent_id FROM threads WHERE id=?", (candidate["thread_id"],)).fetchone()
@@ -160,6 +222,14 @@ def process_one(conn) -> bool:
                     "UPDATE wake_jobs SET chat_context_until=? WHERE id=?",
                     (until, job["id"]),
                 )
+            # req#168：投递成功——本次注入快照内所有离线点名一起标 submitted
+            #（不能只标触发那条，否则同话题排队其他 @ 停在等待态被误判未投递）。
+            if gate_mention_ids:
+                from . import relay
+                submission_id = _submission_for_job(conn, job["id"])
+                relay.mark_submitted(conn, message_ids=gate_mention_ids,
+                                     member=job["profile"],
+                                     submission_id=submission_id or "")
             # req#58：心跳归属不再写 last_wake_kind/last_wake_thread_id——判活事实源
             # 已改为心跳槽的 thread_id（MCP beat 时按会话报，heartbeat.active_entries
             # 按槽粒度输出），DB last_wake 关联是 profile 级单一归属、同 profile 双话题

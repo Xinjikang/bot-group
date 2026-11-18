@@ -106,6 +106,90 @@ def get_hermes_gateway_status(identity=Depends(_resolve_identity)):
     return JSONResponse(status(), headers={'Cache-Control': 'no-store'})
 
 
+# --------------------------------------------------------------------------
+# 远程 relay 节点管理（req#168）：注册/吊销凭据/状态/离线点名记录
+# --------------------------------------------------------------------------
+
+@router_api.get('/relay/nodes')
+def relay_nodes_list(identity=Depends(_resolve_identity)):
+    _admin_only(identity, 'relay 节点列表仅限管理员')
+    from . import relay
+    conn = db.get_connection()
+    try:
+        rows = relay.list_nodes(conn)
+        return JSONResponse([{
+            'member': r['member'], 'display_name': r['display_name'],
+            'credential_revoked': bool(r['credential_revoked']),
+            'generation': r['generation'], 'state': r['state'],
+            'code_version': r['code_version'], 'last_heartbeat': r['last_heartbeat'],
+            'mcp_fingerprint': (r['mcp_fingerprint'] or '')[:16],
+            'expected_mcp_sha': (r['expected_mcp_sha'] or '')[:16],
+            'capacity_used': relay.capacity_used(conn, r['member']),
+        } for r in rows], headers={'Cache-Control': 'no-store'})
+    finally:
+        conn.close()
+
+
+class _RelayRegisterBody(BaseModel):
+    member: str
+    display_name: str = ''
+    credential: str = ''   # 空=引擎生成并一次性返回（凭据值只此一次可读）
+    mcp_config: dict = {}
+
+
+@router_api.post('/relay/nodes')
+def relay_node_register(body: _RelayRegisterBody, identity=Depends(_resolve_identity)):
+    _admin_only(identity, 'relay 节点注册仅限管理员')
+    from . import relay
+    if not body.member or not body.member.strip():
+        raise HTTPException(400, 'member 必填')
+    credential = body.credential or relay.new_credential()
+    conn = db.get_connection()
+    try:
+        relay.register_node(conn, body.member.strip(), credential,
+                            display_name=body.display_name,
+                            mcp_config=body.mcp_config)
+    finally:
+        conn.close()
+    return {'member': body.member.strip(),
+            'credential': credential if not body.credential else None}
+
+
+@router_api.post('/relay/nodes/{member}/revoke')
+def relay_node_revoke(member: str, identity=Depends(_resolve_identity)):
+    _admin_only(identity, 'relay 凭据吊销仅限管理员')
+    from . import relay, relay_server
+    conn = db.get_connection()
+    try:
+        if relay.read_node(conn, member) is None:
+            raise HTTPException(404, '节点不存在')
+        relay.revoke_credential(conn, member)
+    finally:
+        conn.close()
+    link = relay_server.active_link(member)
+    if link is not None:
+        link.close()  # 现连立即失效
+    return {'member': member, 'revoked': True}
+
+
+@router_api.get('/relay/mentions')
+def relay_mentions_list(identity=Depends(_resolve_identity)):
+    """离线点名记录（三态）：管理员核对「等待上线/已投递/离线未投递」。"""
+    _admin_only(identity, 'relay 点名记录仅限管理员')
+    from . import relay
+    conn = db.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM relay_offline_mentions ORDER BY message_id DESC LIMIT 200").fetchall()
+        return JSONResponse([{
+            'message_id': r['message_id'], 'member': r['member'], 'state': r['state'],
+            'submission_id': (r['submission_id'] or '')[:16],
+            'project': r['project'], 'thread_id': r['thread_id'],
+        } for r in rows], headers={'Cache-Control': 'no-store'})
+    finally:
+        conn.close()
+
+
 @router_api.get("/system/updates")
 def get_app_updates(identity=Depends(_resolve_identity)):
     _admin_only(identity, '更新检查仅限管理员使用')

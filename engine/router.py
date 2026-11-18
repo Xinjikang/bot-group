@@ -393,6 +393,13 @@ def settle_thread(conn, thread_id, *, through_id=None):
     conn.execute("UPDATE inbox SET status='expired' WHERE status='pending' AND message_id IN "
                  "(SELECT id FROM messages WHERE thread_id=? AND id<=?)",
                  (thread_id, MAX_MESSAGE_ID if through_id is None else through_id))
+    # req#168：话题收口时，从未提交的离线点名标 offline_expired——
+    # 显示「成员离线，未投递」，收口保持收口（用户重新点名=新 @ 边）。
+    from . import relay
+    settle_ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM messages WHERE thread_id=? AND id<=?",
+        (thread_id, MAX_MESSAGE_ID if through_id is None else through_id)).fetchall()]
+    relay.expire_mentions(conn, message_ids=settle_ids)
     conn.execute("UPDATE wake_jobs SET status='done',ended_at=?,detail='topic settled' "
                  "WHERE thread_id=? AND kind='chat' AND status='queued'", (db.now_iso(), thread_id))
 

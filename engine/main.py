@@ -19,7 +19,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket
 
 from . import db
 from . import config
@@ -105,6 +105,8 @@ async def _engine_lifespan(app: FastAPI):
     finally:
         wake._shutting_down.set()
         await asyncio.to_thread(hermes_gateway.close_connections, 5)
+        from . import relay_server
+        await asyncio.to_thread(relay_server.close_all)
         stop_event.set()
         topic_dispatch.changed.set()
         await asyncio.to_thread(t_topics.join)
@@ -135,6 +137,13 @@ app = FastAPI(title="group-engine", version="0.1.0", lifespan=lifespan)
 app.include_router(router_api)
 from .ui_presence import router as ui_presence_router
 app.include_router(ui_presence_router)
+
+
+# 远程 relay WS 服务端入口（req#168）：ECS 插件主动出站 WSS 连本端点。
+@app.websocket("/relay/ws")
+async def relay_ws_endpoint(websocket: WebSocket):
+    from . import relay_server
+    await relay_server.relay_ws(websocket)
 
 # 静态前端挂在 /app（访问 http://127.0.0.1:8180/app/）
 if _FRONTEND_DIR.exists():
