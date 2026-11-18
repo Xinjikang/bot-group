@@ -196,13 +196,20 @@ class ShutdownTests(unittest.TestCase):
             result = MagicMock()
             result.__enter__.return_value = io.StringIO(json.dumps(payload))
             return result
-        opener = Mock()
-        opener.open.side_effect = [response(health), response(health), RemoteDisconnected()]
-        with patch('engine.maintenance.stop_engine.urllib.request.build_opener', return_value=opener), \
-             patch('engine.maintenance.stop_engine.auth._password', return_value=''), \
-             patch('engine.maintenance.stop_engine._pid_alive', return_value=False), \
-             patch('engine.maintenance.stop_engine.socket.create_connection', side_effect=ConnectionRefusedError):
-            self.assertIn('优雅退出', stop('http://127.0.0.1:1', timeout=1))
+        for disconnect in (RemoteDisconnected, ConnectionAbortedError):
+            with self.subTest(disconnect=disconnect.__name__):
+                opener = Mock()
+                opener.open.side_effect = [response(health), response(health),
+                                           disconnect(), disconnect(), disconnect()]
+                with patch('engine.maintenance.stop_engine.urllib.request.build_opener', return_value=opener), \
+                     patch('engine.maintenance.stop_engine.auth._password', return_value=''), \
+                     patch('engine.maintenance.stop_engine._pid_alive', side_effect=[True, False, False]) as alive, \
+                     patch('engine.maintenance.stop_engine.socket.create_connection',
+                           side_effect=[ConnectionAbortedError(), ConnectionRefusedError()]) as probe, \
+                     patch('engine.maintenance.stop_engine.time.sleep'):
+                    self.assertIn('优雅退出', stop('http://127.0.0.1:1', timeout=1))
+                self.assertEqual(alive.call_count, 3)
+                self.assertEqual(probe.call_count, 2)
 
     def test_stop_client_preserves_old_server_without_shutdown_support(self):
         posts = []

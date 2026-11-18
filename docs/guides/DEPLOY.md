@@ -30,3 +30,5 @@ Codex 使用启动参数注入 MCP。Hermes 需要支持 `HERMES_MANAGED_DIR` �
 引擎代码更新由用户手动重启，随后刷新页面；MCP 由承载宿主重新加载，Hermes 网关持有的 MCP 需重启网关。页面重启入口和脚本共用引擎退出流程：120 秒自然结束等待，超时终止 Bot 进程树，再清理专属浏览器资源。细节及失败恢复见 [服务重启](../engineering/SERVICE-RESTART-2026-10-17.md)。
 
 启动检查数据目录的 `logs/engine-startup.log` 和 `logs/engine.log`；页面重启还记录 `logs/service-restart.json`、`logs/service-restart.log`。升级恢复证据位于对应备份目录。验收应分别确认新实例身份、页面刷新、调用结果与资源释放。
+
+Windows 关闭旧实例时，停机状态轮询可能收到连接中止（10053）。管理脚本在原截止时间内继续检查已核实的旧 PID 和监听端口，确认 PID 退出且端口拒绝连接后启动新实例。

@@ -65,15 +65,15 @@ def stop(url=None, timeout=180):
             result = request('/admin/shutdown')
         except urllib.error.HTTPError:
             raise RuntimeError('退出状态查询被拒绝，请检查引擎日志') from None
-        except (urllib.error.URLError, RemoteDisconnected, ConnectionResetError):
+        except (urllib.error.URLError, RemoteDisconnected, ConnectionResetError, ConnectionAbortedError):
             if not _pid_alive(pid):
                 try:
                     with socket.create_connection((parsed.hostname, parsed.port or 80), timeout=3):
                         pass
                 except ConnectionRefusedError:
                     return '引擎已优雅退出，进程和监听端口已释放'
-                except TimeoutError:
-                    pass  # Windows may briefly time out while the listener closes.
+                except (TimeoutError, ConnectionAbortedError, ConnectionResetError):
+                    pass  # Only a refused connection confirms that the listener is gone.
             time.sleep(0.2)
             continue
         if result.get('instance_id') != instance:
