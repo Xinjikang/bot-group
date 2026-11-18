@@ -45,7 +45,7 @@ ECS 上 Hermes gateway 常驻（systemd 托管），bot-group 插件随 gateway 
 
 - **断线语义**：节点离线 = 暂停向它派新执行，在途执行保留「待核对」（ledger 已有 `unknown`/`terminal` 分离，终态只由 `apply_receipt` 产生）；重连后先 `session.resume`/对回执，再决定是否重投；90s TTL 只用于存活判断，绝不能据此判任务结束重跑。别用「伪造进程退出」实现断线——gateway 执行不走 `_handle_task_exit`，伪造退出会把 task_retry 和话题弃权带进来，正好造成误重跑。
 - **派发闸门**：`process_one` 加节点维度——节点离线或达并发上限时 `continue` 保留 queued（busy 同款），**绝不走 `_discard_queued`**（那个分支会把 status 直接置 done，活就丢了）。容量按 `hermes_executions.state != 'terminal'` 计数、receipt 终态释放。
-- **离线期间的 @**：节点离线 → 心跳到不了引擎 → 发言位超时弃权推进 → queued chat job 派发时 turn_profile 已变 → `_discard_queued('superseded topic turn')` → `settle_thread` 把该话题 pending 全置 expired = 离线期间的 @ 静默消失。防御：节点离线对发言位超时逻辑可见 + 重连后按原话题状态补投/对账；发言位照常超时推进、不挂起 turn（挂起=整个话题卡住等离线节点）。
+- **离线期间的 @（offline-non-delivery）**：节点离线 → 心跳到不了引擎 → 发言位超时弃权推进 → queued chat job 派发时 turn_profile 已变 → `_discard_queued('superseded topic turn')` → `settle_thread` 把该话题 pending 全置 expired = 离线期间的 @ 静默消失。防御=**窄口径 offline-non-delivery 记录，在闸门跳过那一刻写**（member/thread/message_id/reason=offline/时间，落 wake job 上或独立小表，表结构由实现定）：不做重投、不等重连推断（收口后 pending 已 expired、成员已在线，当时状态不可复原）；原点名下显示「成员离线，未投递」；话题收口保持收口，用户重新点名=新 @ 边。发言位照常超时推进、不挂起 turn（挂起=整个话题卡住等离线节点）。此记录不是 adapter outbox，与断线语义（submission_id 核对 in-flight 执行）是两个场景。
 - **凭据**：连接凭据常驻 ECS、绑定成员、可单独吊销；执行凭据沿用引擎现有 per-execution 收窄（execution token 绑定 project/member/chat-work）。ECS 长期不预置成员 token。
 - **fencing**：连接 generation 随派发下发，插件拒旧代帧；重连后只让当前连接接新消息。
 - **时序**：configure 回执先于 prompt.submit（引擎现有串行链路天然保证）。
@@ -56,7 +56,7 @@ ECS 上 Hermes gateway 常驻（systemd 托管），bot-group 插件随 gateway 
 - 只支持 hermes runtime；一名成员固定一台机器（一条连接）；不跨节点迁移。
 - 依赖引擎主机直接读写文件的本地管理功能首版明确提示不支持。
 - 旧本机 spawn/网关链路保留不动；退役评估留到 relay 覆盖本机+远程、能力对等后。
-- 首版不做：outbox 重试权、迟到结果归属、messages.kind、skip 原因标记、进度状态通道（relay 有 submission_id 回执链，这些机制不需要；进度沿用思考条/心跳）。
+- 首版不做：outbox 重试权、迟到结果归属、messages.kind、进度状态通道（relay 有 submission_id 回执链，这些机制不需要；进度沿用思考条/心跳）。skip 原因标记只保留 offline-non-delivery 窄口径记录（见第 4 章），其余 skip 原因首版不做。
 
 ## 6. 验证清单
 
@@ -67,6 +67,7 @@ ECS 上 Hermes gateway 常驻（systemd 托管），bot-group 插件随 gateway 
 5. **多成员同机隔离**：同一 ECS 两个 profile 各收一次点名，回复与事件各自回到各自话题。
 6. **升级重核摘要**：连接不断、原地替换 MCP 文件，系统重核摘要再配会话。
 7. **/stop**：停只停指定执行，不误伤同 profile 并行会话（复用现有叫停链路，验证远程 transport 下有效）。
+8. **离线 @ 场景**（bot-36 2026-11-18 定四步）：成员先离线 → 群里 @ 它 → 话题超时收口 → 成员重连。预期：原点名可查「成员离线，未投递」，收口话题保持收口，由用户决定是否重新点名。
 
 ## 7. 源码依据（已核）
 
