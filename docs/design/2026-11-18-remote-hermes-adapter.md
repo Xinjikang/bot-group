@@ -22,6 +22,13 @@ ECS 上 Hermes gateway 常驻（systemd 托管），bot-group 插件随 gateway 
 
 插件在 gateway 进程内，职责收窄为「传令」：不解析会话语义、不复制引擎逻辑（越笨越稳）。
 
+### 2.1 目录布局（bot-36 2026-11-18 拟定）
+
+- 插件源码：bot-group 仓库 `plugins/hermes/bot-group-relay/`，随 bot-group 版本发布。
+- MCP：沿用仓库现有 `mcp/` 为唯一源码，打包时随插件带上，只维护一份。
+- ECS 安装位置：运行 gateway 的 Hermes 用户插件目录 `$HERMES_HOME/plugins/bot-group-relay/`（默认 home 即 `~/.hermes/plugins/bot-group-relay/`），由 Hermes gateway 加载。
+- 引擎侧接收连接与派发的代码在 bot-group `engine/`。
+
 ## 3. 全程 relay 架构
 
 引擎沿用现有 gateway 会话执行全链路，把 GatewayClient 的本地 socket 抽成 transport：本机 bot 走本机直连，远程 bot 走「引擎↔插件 WSS + 插件↔本机 gateway」帧转发。传输内容仍是现有 JSON-RPC 帧（session.create / session.configure / prompt.submit / stop 等），ledger、调度、UI 不动。
