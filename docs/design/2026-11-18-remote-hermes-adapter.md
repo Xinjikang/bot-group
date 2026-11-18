@@ -39,6 +39,7 @@ ECS 上 Hermes gateway 常驻（systemd 托管），bot-group 插件随 gateway 
 
 - session key 由 `build_session_key` 从 source（chat_id + profile）纯函数派生。adapter 把引擎下发的会话标识稳定编码进 chat_id，即可每次命中同一会话。
 - `handle_message` 支持 `metadata.gateway_session_key` 显式路由，派生不一致直接丢弃——**命中不到就丢弃，绝不回退自动建会话**（防止野会话、破坏「引擎建会话」约定）。
+- gateway_session_key 双路径已源码坐实（2026-11-18）：平台 adapter 路径（`gateway/platforms/base.py` handle_message）里它是**校验值、不绕过派生**——事件必须仍从 source 派生出目标 key，不一致即 drop，所以 chat_id 稳定编码会话是必须的；另一条 automation 路径（`gateway/session_automation.py:384`）里 `metadata['gateway_session_key']` 优先于 source 派生（存在绕过实例）。首版走平台 adapter 标准路径（chat_id 编码+metadata 校验），实测时一并确认两条路径差异后再决定是否可用 automation 路径。
 - 投递失败回执：adapter 投递前做本地会话存在性检查（`session.list` 公开 RPC 面）+ start 回调超时兜底；失败用 `sender_type='engine'` 消息发进原话题（不吃发言位），用户直接看到「未送达」。
 - 引擎 thread_id → chat_id 的稳定映射是 adapter 核心契约，与 `session_bindings` 对账，设计实现时定死编码规则。
 
@@ -102,9 +103,9 @@ ECS 上 Hermes gateway 常驻（systemd 托管），bot-group 插件随 gateway 
 
 ## 6. 验证清单
 
-1. **A→B 会话切换**（决定性）：同话题绑会话 A，引擎切到 B，下一次 @ 进 B；B 不可用时引擎收到失败回执；无野会话（切会话换 chat_id 不留孤立映射）。固定 chat_id 只证明路由稳定，切换命中 B 才证明引擎控制会话。测试标记放 metadata，验证端从 B 的记录读回。
+1. **A→B 会话切换**（决定性）：同话题绑会话 A，引擎切到 B，下一次 @ 进 B；B 不可用时引擎收到失败回执；无野会话。通过标准（bot-36/bot-43 2026-11-18 定）：从会话记录取证——投递后 B 的历史里有这条消息、A 的历史没有、会话总数不变。bot-36 本机模拟会话表路由分支已验：绑 A 时指定 B→拒收、已绑 B→选 B、无绑定→拒收，三次均无野会话。测试标记放 metadata，验证端从 B 的记录读回。
 2. **handle_message 路由语义**（已源码坐实 2026-11-18）：无返回值、丢弃分支 return None；`_gateway_accepted` 仅诊断。投递前预检 + start 回调兜底。
-3. **on_processing_start 入参关联**（已源码坐实 2026-11-18）：回调签名为 `on_processing_start(self, event)`，入参是完整 MessageEvent——adapter 构造 event 并自持 event→dispatch 映射即可关联派发编号；目标会话由 `event.source.chat_id` 稳定编码派生，回调时 adapter 可自行重派生核对。成立，无需另补机制。
+3. **on_processing_start 入参关联**（已源码坐实 2026-11-18）：回调签名为 `on_processing_start(self, event)`，入参是完整 MessageEvent——adapter 构造 event 并自持 event→dispatch 映射即可关联派发编号。**注意（bot-36 实测发现）**：start 回调在真正消息处理函数之前触发，收到「开始」不能证明目标会话实际处理过——路由判定必须从会话记录取证（见第 1 条通过标准），start 回调只用于「已开工」信号与超时兜底。
 4. **断线重连**：回执前断线 → 重连按编号核对 → 同一派发最多执行一次；补送保留编号；两次同文本派发各自归回原点名、最多展示一次、歧义标待核对。
 5. **插件独立线程连本机 /api/ws**：取票+阻塞 RPC 不卡 gateway 事件循环；identify 身份与 ticket 请求一致。
 6. **MCP 注入**：控制面 editor_mcp（`session.mutate(editor_mcp)` 路径已确认存在）；数据面按会话 MCP env；验证从零手工配置启动 gateway → @ → 会话自动获得正确成员/话题权限并回复原话题。
