@@ -592,7 +592,8 @@ class RelayFrameTests(RelayBase):
         try:
             relay.register_node(conn, REMOTE, CREDENTIAL, mcp_config={
                 "command": ["python"], "env": {}, "_package_sha": "pkg-v2"})
-            # 新代连接已握手并写入新摘要 pkg-v2
+            # 新代连接握手：generation_advance 推进到 2 后 mark_online 写入新摘要
+            relay.generation_advance(conn, REMOTE)
             relay.mark_online(conn, REMOTE, code_version=RELEASE_VERSION,
                               mcp_fingerprint="pkg-v2", generation=2)
             # 旧代（gen=1）迟到的问询响应：写库 WHERE generation=1 不匹配

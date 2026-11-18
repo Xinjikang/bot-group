@@ -201,9 +201,14 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
             # req#168：权威回执受理——把该 submission 关联的 offline_waiting
             # 点名标 submitted（恢复回执补记入口，manager node1981 ①）。同一
             # submission 的点名行在投递未决时已持久关联 submission_id。
+            # relay 为可选扩展：仅建 ledger schema 的隔离夹具无 relay 表，
+            # 表缺失时跳过（本机/无 relay 环境无点名可结算）。
             from . import relay
-            relay.settle_by_submission(conn, member=row['profile'],
-                                       submission_id=row['submission_id'])
+            if conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='relay_offline_mentions'").fetchone():
+                relay.settle_by_submission(conn, member=row['profile'],
+                                           submission_id=row['submission_id'])
         conn.commit()
         if read(conn, execution_id)['state'] == 'terminal':
             from . import signing_keys
