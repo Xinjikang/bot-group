@@ -18,6 +18,8 @@ spawn 子进程的 _build_safe_env 过滤，跨进程透传）。未设置=零�
   - is_begin=1：BEGIN IMMEDIATE 成功后（实际取得，持有区间起点）；
   - is_end=1 + end_kind：commit=提交释放 / rollback=回滚释放 /
     failed=申请失败未取得（busy 超时等，绝不出现持有记录）。
+  rollback 行在异常路径显式回滚（写锁已实际释放）之后记录，标记时间
+  不早于实际释放时刻。
   持锁时长 = 同 conn_id 的 is_begin→is_end 的 wall_ts 差值，区间排除
   锁申请等待与诊断日志 I/O。
 

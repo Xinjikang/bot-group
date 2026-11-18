@@ -461,7 +461,7 @@ class DiagStepTests(DiagHarness):
             real_write(row)
             if row.get("kind") == "txn" and row.get("end_kind") == "rollback":
                 # 回滚行写出时刻：独立连接 timeout=0 申请 BEGIN IMMEDIATE，
-                # 锁必须已释放（连接已关闭）——否则 database is locked。
+                # 锁必须已释放（事务已回滚）——否则 database is locked。
                 try:
                     probe = sqlite3.connect(db.db_path(), timeout=0)
                     probe.execute("BEGIN IMMEDIATE")
