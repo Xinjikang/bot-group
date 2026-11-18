@@ -456,6 +456,23 @@ def _finish(conn, row, client):
     return True
 
 
+def _record_uncertain(conn, execution_id, detail):
+    """Retry the local state transition without replaying the gateway operation."""
+    from . import wake
+    delay = 0.25
+    while not wake._shutting_down.is_set():
+        try:
+            ledger.uncertain(conn, execution_id, detail)
+            return True
+        except sqlite3.OperationalError as exc:
+            if not db.is_lock_error(exc):
+                raise
+            conn.rollback()
+            time.sleep(delay)
+            delay = min(delay * 2, 3)
+    return False
+
+
 def _watch(execution_id, *, retry_manual=False):
     from . import wake
     client = None
@@ -471,7 +488,9 @@ def _watch(execution_id, *, retry_manual=False):
             row = ledger.read(conn, execution_id)
             if (row['state'] != 'terminal' and row['cancel_reason']
                     and time.time() >= row['reconcile_deadline']):
-                ledger.uncertain(conn, execution_id, row['detail'] or 'Cancellation confirmation deadline exceeded')
+                detail = row['detail'] or 'Cancellation confirmation deadline exceeded'
+                if not _record_uncertain(conn, execution_id, detail):
+                    continue
                 row = ledger.read(conn, execution_id)
             _sync_run_state(row)
             if row['state'] == 'manual' and not retry_manual:
@@ -560,7 +579,8 @@ def _watch(execution_id, *, retry_manual=False):
                         client.close()
                         client = None
                     continue
-                ledger.uncertain(conn, execution_id, detail)
+                if not _record_uncertain(conn, execution_id, detail):
+                    continue
                 row = ledger.read(conn, execution_id)
                 _sync_run_state(row)
                 if row['state'] == 'manual':

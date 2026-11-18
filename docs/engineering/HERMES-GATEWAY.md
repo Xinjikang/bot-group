@@ -24,6 +24,8 @@ MCP 初始化失败恢复使用现有终态结果与 `session.mutate editor_mcp`
 
 ## 接口与版本
 
+网关断连时，回执核对线程向本地账本记录执行结果待确认。SQLite 返回 `BUSY` 或 `LOCKED` 时，线程回滚本次事务，退避后重试这次写入。锁释放后按原执行身份和原截止时间继续核对。网关回报 `unknown` 时保留执行占用，匹配的终态回执触发收尾。引擎重启后从持久化账本接管未结束的执行。
+
 `engine/hermes_gateway*.py` 使用公开 CLI `hermes gateway ensure --json`、本地 control 协议的 `session-ticket` 和 `/api/ws` 的 `hermes-gateway-v1`。执行与控制使用线协议，委派恢复另使用上节的只读账本发现；Hermes 源码保持独立。运行时核验 profile、协议、安装提交身份，以及 `durable-admission-v1`、`acp-session-mcp-v1` 能力。v0.22.5 验证基线为 `bf0203a794a07aac3ff764972ab9087baa4e4f4e`。
 
 网关版采用独立执行路径；旧版 Hermes 和 Codex 保留现有运行时。安装来源由 `HERMES_BIN`、`HERMES_HOME` 和已有安装定位规则确定。

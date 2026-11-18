@@ -130,6 +130,46 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(ledger.read(self.conn, self.eid)['state'], 'manual')
         remote.rpc.assert_not_called()
 
+    def test_gateway_restart_and_sqlite_writer_lock_recover_original_receipt(self):
+        receipt = dict(admission_id='a', ref={'session_id': 'sid', 'profile_id': 'home'},
+                       authority_epoch=1, execution_generation=1, status='started')
+        ledger.apply_receipt(self.conn, self.eid, receipt)
+        self.conn.execute('BEGIN IMMEDIATE')
+        self.addCleanup(self.conn.rollback)
+        open_connection = db.get_connection
+
+        def short_timeout():
+            conn = open_connection()
+            conn.execute('PRAGMA busy_timeout=0')
+            return conn
+
+        def release_writer(seconds):
+            self.assertGreater(seconds, 0)
+            self.conn.rollback()
+
+        remote = Mock()
+        states = []
+        def get_receipt(method, **params):
+            self.assertEqual(method, 'prompt.receipt')
+            self.assertEqual((params['session_id'], params['admission_id']), ('sid', 'a'))
+            row = ledger.read(self.conn, self.eid)
+            states.append((row['state'], row['ended_at']))
+            if len(states) == 1:
+                return dict(receipt, status='unknown')
+            return dict(receipt, status='terminal', outcome='completed')
+
+        remote.rpc.side_effect = get_receipt
+        with patch.object(db, 'get_connection', side_effect=short_timeout), \
+             patch.object(gateway, 'connection', side_effect=[TimeoutError(), (remote, '/isolated', [])]), \
+             patch.object(gateway.sessions, 'attach'), patch.object(gateway.time, 'sleep', side_effect=release_writer), \
+             patch('engine.hermes_approvals.sync'), patch('engine.hermes_gateway_steer.observe_session'), \
+             patch.object(wake, '_handle_task_exit'):
+            gateway._watch(self.eid)
+        self.assertEqual(states, [('unknown', None), ('unknown', None)])
+        row = ledger.read(self.conn, self.eid)
+        self.assertEqual((row['outcome'], row['cleanup_pending']), ('completed', 0))
+        self.assertIsNotNone(row['ended_at'])
+
     def test_cancel_timeout_during_connection_failure_updates_thinking_and_exits(self):
         clock = [time.time()]
         ledger.cancel(self.conn, self.eid, now=clock[0])

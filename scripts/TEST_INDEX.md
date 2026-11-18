@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+Hermes 断连与数据库写锁恢复使用 `python -X utf8 -B -m scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_engine_shutdown`。依赖项目 Python 环境。临时 SQLite 数据库以第二条连接持有写锁，模拟网关断连和原 admission 的未知、完成回执，检查解锁后恢复轮询、只查询原执行、完成收尾以及停机和人工重试边界。
+
 DSH 0.2.2 兼容回归使用 `python -X utf8 -B -m scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_dsh_v022`，覆盖 POSIX 权限调用、独占创建冲突、新旧版本参数和 Node.js 实际适配器时序。配套 `test_dsh_auth`、`test_dsh_auto`、`test_dsh_runtime`、`test_dsh_issue_regressions`、`test_dsh_hud_adapter`、`test_dsh_member_settings` 各模块使用独立进程运行，避免既有环境变量夹具互相影响。POSIX 上额外断言真实 mode，Windows 上验证权限系统调用参数。
 
 v0.2.14 发布验收见 [发布说明](../docs/releases/v0.2.14.md)。发布专项使用本文“正式 Release 验收”的专用 unittest 组合；功能回归复用模型继承、后台进程等待、HUD 暂不处理和 authorize 锁竞争条目。公开发布后使用 `verify_public_install.py --shell powershell --port <分配后端端口> --evidence <新的主目录报告目录>` 验证匿名安装、重复安装、BAT 启停与默认升级检查。
