@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+[v0.2.16 发布验收](../docs/releases/v0.2.16.md) 复用本文的 Hermes 断连与数据库写锁、Windows 重启断连、晨间探针及正式 Release 验收条目。发布后在隔离目录验证匿名安装和默认升级检查。
+
 Windows 重启断连回归使用 `python -X utf8 -B -m scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_engine_shutdown scripts.test_service`。停机轮询覆盖 Windows 连接中止、旧 PID 存活和端口暂时中止探测。真实页面重启单独运行 `python -X utf8 -B -m unittest scripts.test_service_restart`，使用模块自行创建的隔离程序副本、临时数据库及动态分配的本地端口。
 
 Hermes 断连与数据库写锁恢复使用 `python -X utf8 -B -m scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_hermes_gateway scripts.test_hermes_gateway_ledger scripts.test_engine_shutdown`。依赖项目 Python 环境。临时 SQLite 数据库以第二条连接持有写锁，模拟网关断连和原 admission 的未知、完成回执，检查解锁后恢复轮询、只查询原执行、完成收尾以及停机和人工重试边界。
@@ -261,7 +263,7 @@ Hermes 兼容：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_he
 
 Hermes 兼容性配套回归：设置 `HERMES_TEST_SOURCE` 为本机 Hermes 源码根，运行 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_maintenance_namespace scripts.test_slash_injection_review scripts.test_service -q`，验证实际会话 API 与维护模块双向导入、会话控制和安装/启动入口共存。
 
-当前发布验收说明：[v0.1.6](../docs/releases/v0.1.6.md)。本版组合执行需求恢复、正式 Release 验收，以及设置菜单和服务重启浏览器回归；报告保存到主目录 `reports/tests/v0.1.6/2026-10-27-release/`。
+v0.1.6 发布验收说明见 [v0.1.6](../docs/releases/v0.1.6.md)。本版组合执行需求恢复、正式 Release 验收，以及设置菜单和服务重启浏览器回归；报告保存到主目录 `reports/tests/v0.1.6/2026-10-27-release/`。
 
 需求恢复与空唤醒：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_requirement_recovery scripts.test_scan_requirements scripts.test_decompose_state_machine scripts.test_decompose_finalize scripts.test_requirement_lifecycle scripts.test_requirement_gate scripts.test_requirement_gate_reason scripts.test_message_injection scripts.test_task_retry scripts.test_queue_claim_race -q`。使用独立 SQLite 和模型投递记录器，覆盖 blocked 子任务连续扫描及显式恢复、部分拆解续作上下文、有效租约与拆解完成、来源撤回、授权/成员/项目门禁、负责人配置协调、存量队列取消、消息/任务合并保留及领取期间状态变化。生产数据及真实模型调用保持隔离；报告记录被测提交与实际命令。契约见 [需求恢复](../docs/engineering/REQUIREMENT-RECOVERY.md)。
 
@@ -295,7 +297,7 @@ DSH 成员字段移除与强制 Auto：`.venv/Scripts/python.exe -X utf8 -B -m u
 
 Profile 模型凭证与执行异常：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_profile_credentials scripts.test_profile_create scripts.test_execution_errors scripts.test_profile_config scripts.test_task_retry scripts.test_wake_pid_watch scripts.test_hermes_transport scripts.test_stop_scope -q`。覆盖静态 provider 扫描且源码未执行、默认/指定来源、自定义 key_env、多个 key 与地址、渠道排除、不兼容回滚；真实子进程 stderr、分类、脱敏、持久化去重、话题父消息、主动停止及重试。补充回归运行 `scripts.test_codex_driver_regressions scripts.test_wmic_free_wake scripts.test_engine_shutdown`，覆盖 Codex 过期凭证、实际唤醒链路及停机。浏览器运行 `scripts/test_profile_create_browser.py --evidence <主目录报告目录>/browser`，验证默认来源创建、无认证勾选框、桌面异常消息刷新恢复，以及创建对话框 390px 深浅主题。使用隔离目录、数据库和合成凭证；Hermes 安装版本升级后先检查静态适配器兼容性。
 
-正式 Release 验收：从干净提交构建六项发布资产，核对 Git 跟踪文件、包内外清单、VERSION 与摘要；运行 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_public_installer scripts.test_release_upgrade scripts.test_legacy_release_upgrade scripts.test_windows_bat.BatBytesTests -q`。公开发布后运行 `.venv\Scripts\python.exe -X utf8 -B scripts/verify_public_install.py --shell powershell --port <隔离空闲端口> --evidence <主目录报告目录>/public-install`，验证匿名下载、真实依赖安装、重复安装、BAT 启停、HTTP 页面及默认升级检查。此验收关闭真实桌面快捷方式生成，浏览器调用由记录器接收。报告记录发布提交、tag、六项资产摘要、退出码与实例清理结果；最新发布说明见 [v0.1.5](../docs/releases/v0.1.5.md)。
+正式 Release 验收：从干净提交构建六项发布资产，核对 Git 跟踪文件、包内外清单、VERSION 与摘要；运行 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_public_installer scripts.test_release_upgrade scripts.test_legacy_release_upgrade scripts.test_windows_bat.BatBytesTests -q`。公开发布后运行 `.venv\Scripts\python.exe -X utf8 -B scripts/verify_public_install.py --shell powershell --port <隔离空闲端口> --evidence <主目录报告目录>/public-install`，验证匿名下载、真实依赖安装、重复安装、BAT 启停、HTTP 页面及默认升级检查。此验收关闭真实桌面快捷方式生成，浏览器调用由记录器接收。报告记录发布提交、tag、六项资产摘要、退出码与实例清理结果；最新发布说明见 [v0.2.16](../docs/releases/v0.2.16.md)。
 
 维护模块与 Hermes 共存：设置 `HERMES_TEST_SOURCE` 为已安装 Hermes 源码根，运行 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_maintenance_namespace scripts.test_app_updates scripts.test_app_upgrade scripts.test_slash_injection_review -q`。覆盖同一进程内两种导入顺序、真实 SessionDB 创建/恢复/新建、更新检查和重启模块共存，以及基础 Python CLI、发布清单和独立 bootstrap 资产。`test_app_upgrade_integration` 另从提交 `1ac85a2d4fccc751343c940c3312f660314bd67d` 构造旧 tools 包安装，验证旧 API/助手迁移至 engine.maintenance、就绪失败回滚及成功后重启；配套运行 `test_service_restart`、`test_engine_shutdown`、`test_legacy_release_upgrade`。安装/发布回归沿用 `test_install`、`test_bootstrap`、`test_mcp_lock`、`test_release_upgrade`、`test_upgrade`、`test_public_installer`、`test_windows_bat`、`test_service`、`test_identity_repair`。入口位于 `tools/`，实现由 `engine.maintenance` 导入。
 
