@@ -37,11 +37,11 @@ ECS 上 Hermes gateway 常驻（systemd 托管），bot-group 插件随 gateway 
 
 引擎把「会话 key + 消息」交给插件，插件构造为平台入站消息（MessageEvent）投进指定会话；回复沿原连接回原话题。复用 Hermes 平台 adapter 契约（Mattermost/飞书先例：插件常驻、WS 收消息、交网关起会话）。
 
-- session key 由 `build_session_key` 从 source（chat_id + profile）纯函数派生。adapter 把引擎下发的会话标识稳定编码进 chat_id，即可每次命中同一会话。
+- session key 派生：`build_session_key` 布局 `<ns>:<platform>:<chat_type>...`（session.py:728）——**平台名编进路由键**。引擎经 session.create 建的会话登记为 `Platform.LOCAL`（session_local.py:370-375），平台 adapter 入站事件按插件平台名派生——即使 chat_id 完全相同，两条路由也不同。**「chat_id 编码即可命中」不成立（2026-11-18 bot-36 源码指正后修订）**。前提验证：公开接口能否把「平台会话（platform+chat_id）」绑定到引擎建的 B——没有该接口则投递腿只能走 `prompt.submit`（按 session_id 精确命中），组合方案退全程 relay。
 - `handle_message` 支持 `metadata.gateway_session_key` 显式路由，派生不一致直接丢弃——**命中不到就丢弃，绝不回退自动建会话**（防止野会话、破坏「引擎建会话」约定）。
-- gateway_session_key 双路径已源码坐实（2026-11-18）：平台 adapter 路径（`gateway/platforms/base.py` handle_message）里它是**校验值、不绕过派生**——事件必须仍从 source 派生出目标 key，不一致即 drop，所以 chat_id 稳定编码会话是必须的；另一条 automation 路径（`gateway/session_automation.py:384`）里 `metadata['gateway_session_key']` 优先于 source 派生（存在绕过实例）。首版走平台 adapter 标准路径（chat_id 编码+metadata 校验），实测时一并确认两条路径差异后再决定是否可用 automation 路径。
+- gateway_session_key 双路径已源码坐实（2026-11-18）：平台 adapter 路径（`gateway/platforms/base.py` handle_message）里它是**校验值、不绕过派生**——事件必须仍从 source 派生出目标 key，不一致即 drop；另一条 automation 路径（`gateway/session_automation.py:384`）里 `metadata['gateway_session_key']` 优先于 source 派生（存在绕过实例）。它不建立绑定、不保证严格投递（2026-11-18 bot-36 指正）——能否用它作为「平台会话→引擎建会话」的绑定机制，属前提验证的一部分。
 - 投递失败回执：adapter 投递前做本地会话存在性检查（`session.list` 公开 RPC 面）+ start 回调超时兜底；失败用 `sender_type='engine'` 消息发进原话题（不吃发言位），用户直接看到「未送达」。
-- 引擎 thread_id → chat_id 的稳定映射是 adapter 核心契约，与 `session_bindings` 对账，设计实现时定死编码规则。
+- 引擎 thread_id → 平台会话路由的映射机制是 adapter 核心契约，**在「绑定接口存在性」验证通过前不作任何编码方案承诺**。
 
 ### 3.3 状态面：dispatch 表 + outbox
 
@@ -103,14 +103,15 @@ ECS 上 Hermes gateway 常驻（systemd 托管），bot-group 插件随 gateway 
 
 ## 6. 验证清单
 
-1. **A→B 会话切换**（决定性）：同话题绑会话 A，引擎切到 B，下一次 @ 进 B；B 不可用时引擎收到失败回执；无野会话。通过标准（bot-36/bot-43 2026-11-18 定）：从会话记录取证——投递后 B 的历史里有这条消息、A 的历史没有、会话总数不变。bot-36 本机模拟会话表路由分支已验：绑 A 时指定 B→拒收、已绑 B→选 B、无绑定→拒收，三次均无野会话。测试标记放 metadata，验证端从 B 的记录读回。
-2. **handle_message 路由语义**（已源码坐实 2026-11-18）：无返回值、丢弃分支 return None；`_gateway_accepted` 仅诊断。投递前预检 + start 回调兜底。
-3. **on_processing_start 入参关联**（已源码坐实 2026-11-18）：回调签名为 `on_processing_start(self, event)`，入参是完整 MessageEvent——adapter 构造 event 并自持 event→dispatch 映射即可关联派发编号。**注意（bot-36 实测发现）**：start 回调在真正消息处理函数之前触发，收到「开始」不能证明目标会话实际处理过——路由判定必须从会话记录取证（见第 1 条通过标准），start 回调只用于「已开工」信号与超时兜底。
-4. **断线重连**：回执前断线 → 重连按编号核对 → 同一派发最多执行一次；补送保留编号；两次同文本派发各自归回原点名、最多展示一次、歧义标待核对。
-5. **插件独立线程连本机 /api/ws**：取票+阻塞 RPC 不卡 gateway 事件循环；identify 身份与 ticket 请求一致。
-6. **MCP 注入**：控制面 editor_mcp（`session.mutate(editor_mcp)` 路径已确认存在）；数据面按会话 MCP env；验证从零手工配置启动 gateway → @ → 会话自动获得正确成员/话题权限并回复原话题。
-7. **进度不进话题流**：A 发进度、B 接位时，话题流不出现 A 的进度消息。
-8. **插件升级重核摘要**：连接不断、原地替换 MCP 文件，系统重核摘要再配会话。
+1. **平台会话绑定接口存在性**（组合方案前提，2026-11-18 bot-36/bot-43 拆两步）：①确认公开接口能否把「平台会话（platform+chat_id）」绑定到引擎 session.create 建的 B——`gateway_session_key` 只核对派生值、不建立绑定，不算数；要找能设置绑定关系的接口。②没有该接口 → adapter 只能收不能精确投，投递腿回 `prompt.submit`（按 session_id 精确命中），回复腿也不必单走 adapter，**组合方案退全程 relay**（省掉 outbox 与归属机制）。测试必须从 `session.create` 真建 B 开始，不得预置映射（拿结论证明前提）。
+2. **A→B 会话切换**（决定性，通过标准 2026-11-18 定）：从会话记录取证——投递后 B 的历史里有这条消息、A 的历史没有、会话总数不变（无野会话）。bot-36 本机模拟会话表严格路由分支已验：绑 A 时指定 B→拒收、已绑 B→选 B、无绑定→拒收，三次均无野会话；但模拟源与引擎真实建会话（Platform.LOCAL）的路由派生不同，不能替代真实 A→B。测试标记放 metadata，验证端从 B 的记录读回。
+3. **handle_message 路由语义**（已源码坐实 2026-11-18）：无返回值、丢弃分支 return None；`_gateway_accepted` 仅诊断。投递前预检 + start 回调兜底。
+4. **on_processing_start 入参关联**（已源码坐实 2026-11-18）：回调签名为 `on_processing_start(self, event)`，入参是完整 MessageEvent——adapter 构造 event 并自持 event→dispatch 映射即可关联派发编号。**注意（bot-36 实测发现）**：start 回调在真正消息处理函数之前触发，收到「开始」不能证明目标会话实际处理过——路由判定必须从会话记录取证（见第 2 条通过标准），start 回调只用于「已开工」信号与超时兜底。
+5. **断线重连**：回执前断线 → 重连按编号核对 → 同一派发最多执行一次；补送保留编号；两次同文本派发各自归回原点名、最多展示一次、歧义标待核对。
+6. **插件独立线程连本机 /api/ws**：取票+阻塞 RPC 不卡 gateway 事件循环；identify 身份与 ticket 请求一致。
+7. **MCP 注入**：控制面 editor_mcp（`session.mutate(editor_mcp)` 路径已确认存在）；数据面按会话 MCP env；验证从零手工配置启动 gateway → @ → 会话自动获得正确成员/话题权限并回复原话题。
+8. **进度不进话题流**：A 发进度、B 接位时，话题流不出现 A 的进度消息。
+9. **插件升级重核摘要**：连接不断、原地替换 MCP 文件，系统重核摘要再配会话。
 
 ## 7. 源码依据（已核）
 
