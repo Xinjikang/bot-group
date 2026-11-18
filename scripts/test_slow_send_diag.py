@@ -494,6 +494,74 @@ class DiagStepTests(DiagHarness):
                     and r.get("end_kind") == "rollback"]
         self.assertTrue(rollback, "回滚行应落盘")
 
+    def test_http_rollback_failure_fallback_releases_before_write(self):
+        # manager node1966 兜底组：显式 conn.rollback() 失败（authorizer 拒
+        # SQLITE_ROLLBACK）时，close 兜底释放后才输出——request/begin/rollback
+        # 三行写出时刻独立连接 timeout=0 均可立即取锁；原错误保留、增量为 0。
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from engine import api as api_module, auth, db, events, wake
+        self.enable_diag()
+        app = FastAPI()
+        app.include_router(api_module.router_api)
+        before = self.counts(self.observer)
+        probe_results = []
+
+        def deny_rollback(action, arg1, arg2, dbname, source):
+            # 仅拒 ROLLBACK 事务控制（action=SQLITE_TRANSACTION 且 arg1='ROLLBACK'，
+            # 与 manager node1966 authorizer 复现口径一致）：
+            # BEGIN IMMEDIATE/COMMIT 正常，conn.rollback() 抛 DatabaseError。
+            return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_TRANSACTION \
+                and arg1 == "ROLLBACK" else sqlite3.SQLITE_OK
+        real_get_connection = db.get_connection
+
+        def get_connection_with_deny():
+            conn = real_get_connection()
+            conn.set_authorizer(deny_rollback)
+            return conn
+        real_write = slow_send_diag._write_row
+
+        def observing_write(row):
+            real_write(row)
+            if row.get("kind") == "txn" and (row.get("is_request") == 1
+                                             or row.get("is_begin") == 1
+                                             or row.get("end_kind") == "rollback"):
+                # 每行 txn 写出时刻：独立连接 timeout=0 申请 BEGIN IMMEDIATE，
+                # 锁必须已释放——否则 database is locked。
+                probe = None
+                try:
+                    probe = sqlite3.connect(db.db_path(), timeout=0)
+                    probe.execute("BEGIN IMMEDIATE")
+                    probe.commit()
+                    probe_results.append(True)
+                except sqlite3.OperationalError:
+                    probe_results.append(False)
+                finally:
+                    if probe is not None:
+                        probe.close()
+        real_enqueue = wake.enqueue
+
+        def fail_enqueue(conn, *args, **kwargs):
+            real_enqueue(conn, *args, **kwargs)
+            raise sqlite3.OperationalError("isolated enqueue failure")
+        with TestClient(app, client=("127.0.0.1", 0)) as client, \
+                patch.object(db, "get_connection", side_effect=get_connection_with_deny), \
+                patch.object(auth, "configured", return_value=False), \
+                patch.object(wake, "enqueue", side_effect=fail_enqueue), \
+                patch.object(events.bus, "publish"), \
+                patch.object(slow_send_diag, "_write_row", side_effect=observing_write):
+            with self.assertRaises(sqlite3.OperationalError):
+                client.post("/msg", json={"project": "alpha", "sender": "user",
+                                          "text": "@default update"})
+        self.assertEqual(self.counts(self.observer), before,
+                         "回滚失败兜底路径必须整笔回滚（消息/收件箱/唤醒增量 0）")
+        self.assertTrue(probe_results and all(probe_results),
+                        "回滚失败兜底：三行 txn 写出时锁必须已释放（timeout=0 可立即取锁）")
+        rows = _read_diag(self.diag_path)
+        rollback = [r for r in rows if r["kind"] == "txn"
+                    and r.get("end_kind") == "rollback"]
+        self.assertTrue(rollback, "兜底路径回滚行应落盘")
+
 
 class MigrationCostTests(DiagHarness):
     """验收 2：实际迁移持锁耗时、索引回退与数据一致性。"""

@@ -366,21 +366,31 @@ def post_msg(
         raise HTTPException(status_code=e.status, detail=str(e)) from e
     finally:
         if conn is not None:
-            if diag_on and conn.in_transaction:
-                # 异常路径：先显式回滚实际释放写锁，再记 rollback 行并锁外落盘。
-                # 标记时间不早于实际释放（timeout=0 的独立连接此刻可立即取锁），
-                # 诊断写出不延长持锁区间；回滚异常只告警，不覆盖原业务错误，
-                # 连接仍由下方 close 兜底清理。
+            # 统一异常出口：先释放写锁（显式回滚 → close 兜底），释放确认后
+            # 再记 rollback 行与落盘缓冲；回滚失败告警同样在释放后输出。
+            # 释放未确认（close 失败）时不记行不刷盘——不得锁内写盘或假宣告释放。
+            was_txn = diag_on and conn.in_transaction
+            rollback_error = None
+            close_error = None
+            if was_txn:
                 try:
-                    conn.rollback()
-                except Exception:  # noqa: BLE001 回滚失败不吞原业务异常
-                    logger.warning("message.send 异常路径回滚失败，连接交由 close 清理",
-                                   exc_info=True)
-                else:
+                    conn.rollback()  # 正常路径显式回滚实际释放写锁
+                except Exception as exc:  # noqa: BLE001 仅暂存，由 close 兜底释放
+                    rollback_error = exc
+            try:
+                conn.close()  # 关闭兜底：回滚失败时隐式回滚释放写锁
+            except Exception as exc:  # noqa: BLE001 关闭失败=释放未确认
+                close_error = exc
+            if close_error is None and diag_on:
+                # 释放已确认（close 成功）：锁外统一记 rollback 行与落盘（成功/兜底同序）
+                if was_txn:
                     slow_send_diag.txn_end(conn, "rollback")
-            if diag_on:
-                slow_send_diag.defer_flush()  # 事务结束：缓冲锁外落盘（幂等，正常路径已 flush）
-            conn.close()
+                slow_send_diag.defer_flush()  # 幂等，正常路径已 flush
+            if rollback_error is not None:
+                logger.warning("message.send 异常路径显式回滚失败，已由 close 兜底释放: %s",
+                               rollback_error)
+            if close_error is not None:
+                logger.warning("message.send 连接关闭失败: %s", close_error)
         if kind != 'bot':
             finished = time.perf_counter()
             logger.info('message.send message_id=%s thread_id=%s outcome=%s connect_ms=%.1f '
