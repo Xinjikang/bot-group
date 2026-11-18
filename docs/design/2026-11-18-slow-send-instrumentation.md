@@ -21,12 +21,12 @@
 
 ### 3.0 修复候选一：messages 索引（先于埋点验证）
 
-bot-36 已定位首个可修缺陷并经隔离对照实验证实（REMEDIATION-11835.md）：`_round_spoken`（router.py:291-297，thread_id+sender+round+parent_id IS NULL）、`_edge_responded`（router.py:301-307，parent_id+sender）、DFS 接话查询（router.py:367-368）在生产库均 SCAN messages（index_list 为空），且在持写锁事务内执行。9841 行合成库对照：prepare 中位 10.774ms → 加 messages(thread_id,sender,round,parent_id) 复合索引 0.788ms → 撤索引回 10.049ms。现场 6.53s 不能全归它，但它是第一项可修的持锁开销。
+bot-36 已定位首个可修缺陷并经隔离对照实验证实（REMEDIATION-11835.md），reviewer-02 独立核验确认全表扫描共**四处**、均持写锁执行：`_round_spoken`（router.py:294，thread_id+sender+round+parent_id IS NULL）、当轮用户消息（router.py:421，thread_id+sender='user'+round）、`_edge_responded`（router.py:304，parent_id+sender）、DFS 接话查询（router.py:368，parent_id+sender）。生产库 messages 无任何索引（index_list 为空）。9841 行合成库对照：prepare 中位 10.774ms → 加 messages(thread_id,sender,round,parent_id) 复合索引 0.788ms → 撤索引回 10.049ms。现场 6.53s 不能全归它，但它是第一项可修的持锁开销。消息表只增不改，写成本可忽略（reviewer-02 核验）。
 
 验证项（隔离库，用新连接复核执行计划后再定采用哪些索引）：
-- 候选复合索引 messages(thread_id,sender,round,parent_id) 服务 _round_spoken；`_edge_responded` 与 DFS 查询以 parent_id 为首列，该复合索引无法服务，父消息查询单独评估对应索引（如 messages(parent_id,sender)）的收益。
+- 复合索引 messages(thread_id,sender,round,parent_id) 服务 router.py:294 与 :421 两处；`:304` 与 `:368` 以 parent_id 为首列，该复合索引无法服务，父消息查询单独评估对应索引（如 messages(parent_id,sender)）的收益。
 - 旧库升级路径：生产库已有数据，CREATE INDEX 的耗时、事务方式与备份回退步骤。
-- 写入成本与分发一致性：加索引后消息插入/更新成本变化；覆盖有无现成发言位、话题与点对点发送四类。
+- 写入成本与分发一致性：消息表只增不改，写成本预期可忽略（仍按对照实测确认）；覆盖有无现成发言位、话题与点对点发送四类。
 - 顺序：索引验证与埋点验证并行，各自独立交付。
 
 ### 3.1 发送分步计时（engine/api.py + engine/router.py）
