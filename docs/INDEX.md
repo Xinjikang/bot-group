@@ -2,7 +2,7 @@
 
 DSH 0.2.2 启动和凭据权限修复见 [兼容设计](design/2026-11-14-dsh-v022-compatibility.md)，版本变更见 [v0.2.15](releases/v0.2.15.md)。
 
-清晨首条消息卡顿的现场证据、取连接四段分解三档方案与清晨窗口探针设计见 [清晨卡顿探针设计](design/2026-11-12-morning-probe-design.md)；11-17 下午复现后的检测口径最小增补（三阈值、触发原因、结论三态、两例回归）见 [探针检测口径增补](design/2026-11-17-probe-detection-patch.md)；三次现场后收敛的引擎内分步计时与写事务起止埋点方案（定位 prepare 落点与锁持有者）见 [慢发送引擎内分步计时方案](design/2026-11-18-slow-send-instrumentation.md)。
+清晨首条消息卡顿的现场证据、取连接四段分解三档方案与清晨窗口探针设计见 [清晨卡顿探针设计](design/2026-11-12-morning-probe-design.md)；11-17 下午复现后的检测口径最小增补（三阈值、触发原因、结论三态、两例回归）见 [探针检测口径增补](design/2026-11-17-probe-detection-patch.md)；三次现场后收敛的引擎内分步计时与写事务起止埋点方案（定位 prepare 落点与锁持有者）见 [慢发送引擎内分步计时方案](design/2026-11-18-slow-send-instrumentation.md)；发送回执与选人/唤醒拆分的评估（短写事务硬约束、每话题顺序、崩溃幂等、验证场景）见 [发送路径异步拆分评估](design/2026-11-18-async-send-split.md)。
 
 全站事件循环阻塞的根因、认证数据库段线程隔离、心跳写入迁移与 WAL 实例初始化见 [authorize 阻塞修复](design/2026-11-10-authorize-lock-isolation.md)，已实现的线程边界、事务与响应契约见 [认证数据库隔离](engineering/AUTHORIZE-LOCK-ISOLATION.md)。
 
