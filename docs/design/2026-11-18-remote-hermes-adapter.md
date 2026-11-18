@@ -25,6 +25,8 @@ ECS 上 Hermes gateway 常驻（systemd 托管），bot-group 插件随 gateway 
 ### 2.1 目录布局（bot-36 2026-11-18 拟定）
 
 - 插件源码：bot-group 仓库 `plugins/hermes/bot-group-relay/`，随 bot-group 版本发布。
+- **发布资产（2026-11-18 bot-43 定，回应主人「ECS 装插件不必下整仓」）**：发布工具（`engine/maintenance/make_release.py`）产第二个资产 `bot-group-relay-<version>.tar.gz`，只含 `plugins/hermes/bot-group-relay/` + `mcp/` + `requirements.lock` + 安装脚本，自带 manifest 与 SHA256，与主包同一 tag 构建。ECS 下载解到 `$HERMES_HOME/plugins/bot-group-relay/`，安装脚本建 venv 按锁文件装依赖——不 clone 仓库、不手动 pip。
+- **协议版本配套（2026-11-18 bot-43 定）**：插件握手带插件包版本与中继协议版本，引擎不匹配即拒——插件必须与引擎同 tag 配套；MCP 入口形态不变（不改 wheel，`mcp/server.py` 原样随包）。
 - MCP：沿用仓库现有 `mcp/` 为唯一源码，打包时随插件带上，只维护一份。
 - **MCP 运行解释器（2026-11-18 定）**：插件自带独立 venv——安装时创建并安装依赖（依赖清单随插件包分发，含 mcp>=1.4/httpx/psutil/fastapi/uvicorn/websockets/pyyaml/ruamel.yaml/tomlkit/Pillow/python-dotenv 等，见 mcp/requirements.txt）。不用 Hermes 自带 venv（已核：本机 Hermes venv 无 mcp 包）；安装时配一次、零手动 pip。握手时上报解析后的解释器绝对路径、MCP 入口绝对路径、版本与内容摘要，引擎据此渲染 session.configure。
 - ECS 安装位置：运行 gateway 的 Hermes 用户插件目录 `$HERMES_HOME/plugins/bot-group-relay/`（默认 home 即 `~/.hermes/plugins/bot-group-relay/`），由 Hermes gateway 加载。
