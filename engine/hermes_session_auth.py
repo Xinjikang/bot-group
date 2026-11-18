@@ -181,11 +181,14 @@ def configure(conn, row, client, snapshot, *, force_mcp=False):
         conn.commit()
     spec = server(row, current)
     # req#168 随包 MCP 配置：远程节点按节点配置渲染 MCP 启动命令与 env（经 relay
-    # 帧下发、插件原样转发到本机 gateway）；configure 前对「当前远端实际摘要」
-    # 复核（握手或 mcp_report 上报的最新指纹必须与引擎期望一致，不兼容节点拒绝）；
+    # 帧下发、插件原样转发到本机 gateway）；configure 前同步问询当前连接取得
+    # 「本次配置的远端实际摘要」复核（同连接原地换包、配置早于异步上报也能
+    # 取到本次值，manager node1981 ③）——无问询能力（本机连接）走库内摘要；
     # 远端渲染缺 command 拒绝（绝不回落本机配置）；GROUP_ENGINE_URL 以远端渲染
     # 值为准。身份令牌与上下文继续由引擎注入（manager node1977 ③）。
-    spec = relay.merge_mcp_spec(conn, row["profile"], spec, engine_url=wake._engine_url())
+    fetch = getattr(client, 'request_mcp_snapshot', None)
+    spec = relay.merge_mcp_spec(conn, row["profile"], spec, engine_url=wake._engine_url(),
+                                fetch_report=fetch)
     result = sessions.configure_tracked(conn, row['project'], client, snapshot, workdir=row['workdir'],
         model_args=json.loads(row['model_args']), server=spec, force_mcp=force_mcp)
     validate(conn, {**context(row), 'signing_generation': current})

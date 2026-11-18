@@ -198,6 +198,12 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
                 hermes_prompt_state.withdraw(conn, execution_id, 'cancelled')
             else:
                 hermes_prompt_state.accepted(conn, execution_id)
+            # req#168：权威回执受理——把该 submission 关联的 offline_waiting
+            # 点名标 submitted（恢复回执补记入口，manager node1981 ①）。同一
+            # submission 的点名行在投递未决时已持久关联 submission_id。
+            from . import relay
+            relay.settle_by_submission(conn, member=row['profile'],
+                                       submission_id=row['submission_id'])
         conn.commit()
         if read(conn, execution_id)['state'] == 'terminal':
             from . import signing_keys

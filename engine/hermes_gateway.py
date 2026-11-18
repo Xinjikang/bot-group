@@ -44,13 +44,15 @@ def _relay_lease(profile, *, on_event=None):
     endpoint = {'profile_id': profile, 'instance_id': 'relay-' + profile,
                 'runtime_protocol': 1, 'api_origin': '', 'control_home': '',
                 'code_sha': '', 'authority_epoch': 1}
-    return RelayLease(GatewayClient(endpoint, on_event=on_event, transport=transport))
+    return RelayLease(GatewayClient(endpoint, on_event=on_event, transport=transport),
+                      transport=transport)
 
 
 class RelayLease:
     """远程 transport 的 Lease 兼容包装（rpc/endpoint/close）。"""
-    def __init__(self, client: GatewayClient):
+    def __init__(self, client: GatewayClient, transport=None):
         self.client = client
+        self.transport = transport
         self.closed = False
 
     @property
@@ -61,6 +63,16 @@ class RelayLease:
         if self.closed:
             raise GatewayTransportError('relay lease closed')
         return self.client.rpc(method, **params)
+
+    def request_mcp_snapshot(self, timeout=10.0):
+        """configure 前同步问询远端 MCP 实际摘要（manager node1981 ③）。
+        无 transport 能力（异常构造）返回 None。"""
+        if self.closed:
+            return None
+        requester = getattr(self.transport, 'request_mcp_snapshot', None)
+        if requester is None:
+            return None
+        return requester(timeout)
 
     def close(self):
         if self.closed:

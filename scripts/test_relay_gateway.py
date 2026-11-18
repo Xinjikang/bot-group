@@ -28,6 +28,9 @@ CREDENTIAL = "test-relay-credential"
 
 from fastapi import WebSocket
 
+RELEASE_VERSION = "v0.2.16"  # 测试固定引擎发布版本（hello 配套校验口径）
+
+
 def _relay_app():
     app = FastAPI()
 
@@ -39,6 +42,7 @@ def _relay_app():
 
 class RelayBase(unittest.TestCase):
     def setUp(self):
+        from unittest.mock import patch
         self._ctx = isolated_database()
         self._db_path = self._ctx.__enter__()
         conn = db.get_connection()
@@ -49,6 +53,10 @@ class RelayBase(unittest.TestCase):
                                 display_name="remote node", mcp_config={})
         finally:
             conn.close()
+        # 引擎发布版本固定：hello 必须带配套 code_version（manager node1981 ③）
+        self._version_patch = patch.object(relay_server, "_engine_release_version",
+                                           return_value=RELEASE_VERSION)
+        self._version_patch.start()
         self.app = _relay_app()
         self._sock = socket.socket()
         self._sock.bind(("127.0.0.1", 0))
@@ -71,6 +79,7 @@ class RelayBase(unittest.TestCase):
         if self._thread.is_alive():
             raise RuntimeError("relay 测试服务未停止")
         self._ctx.__exit__(None, None, None)
+        self._version_patch.stop()
 
     def conn(self):
         return db.get_connection()
@@ -79,7 +88,7 @@ class RelayBase(unittest.TestCase):
         return connect(self.ws_url, close_timeout=1, open_timeout=5)
 
     def _hello(self, ws, *, credential=CREDENTIAL, member=REMOTE,
-               code_version="v1", mcp_fingerprint="", protocol_version=1):
+               code_version=RELEASE_VERSION, mcp_fingerprint="", protocol_version=1):
         ws.send(json.dumps({"relay": {"kind": "hello"}, "member": member,
                             "credential": credential, "code_version": code_version,
                             "mcp_fingerprint": mcp_fingerprint,
@@ -127,7 +136,24 @@ class RelayHandshakeTests(RelayBase):
             conn = self.conn()
             try:
                 self.assertTrue(relay.is_online(conn, REMOTE))
-                self.assertEqual(relay.read_node(conn, REMOTE)["code_version"], "v1")
+                self.assertEqual(relay.read_node(conn, REMOTE)["code_version"],
+                                 RELEASE_VERSION)
+            finally:
+                conn.close()
+        finally:
+            ws.close()
+
+    def test_plugin_version_mismatch_rejected(self):
+        # manager node1981 ③：插件包版本必须与引擎同 tag 配套，不符按版本拒绝
+        ws = self._connect()
+        try:
+            ws.send(json.dumps({"relay": {"kind": "hello"}, "member": REMOTE,
+                                "credential": CREDENTIAL, "code_version": "v9.9.9",
+                                "protocol_version": 1}))
+            self.assertEqual(self._closed_code(ws), relay_server.CLOSE_BAD_PROTOCOL)
+            conn = self.conn()
+            try:
+                self.assertFalse(relay.is_online(conn, REMOTE))
             finally:
                 conn.close()
         finally:
@@ -177,6 +203,7 @@ class RelayHandshakeTests(RelayBase):
         try:
             ws.send(json.dumps({"relay": {"kind": "hello"}, "member": REMOTE,
                                 "credential": CREDENTIAL,
+                                "code_version": RELEASE_VERSION,
                                 "mcp_fingerprint": "other-pkg-sha",
                                 "protocol_version": 1}))
             self.assertEqual(self._closed_code(ws), relay_server.CLOSE_MCP_INCOMPATIBLE)
@@ -407,6 +434,183 @@ class RelayFrameTests(RelayBase):
             time.sleep(0.02)
         self.assertTrue(gc.closed, "流哨兵应使远端 client 关闭")
 
+    def test_stale_link_heartbeat_sql_generation_condition(self):
+        # manager node1981 ②：旧链接带自身合法代次的迟到心跳——内存层与
+        # link.generation 比较通过，但写库 SQL 以当前连接代为条件，不覆盖新代。
+        conn = self.conn()
+        try:
+            # 当前连接代=5（新连接已注册），旧 link 代=4
+            conn.execute("UPDATE relay_nodes SET generation=5,state='offline',"
+                         "last_heartbeat=?,mcp_fingerprint='' WHERE member=?",
+                         (time.time(), REMOTE))
+            conn.commit()
+            old_link = relay_server.NodeLink(REMOTE, None, generation=4)
+            relay_server._route_inbound(old_link, {"relay": {"kind": "heartbeat",
+                                                             "generation": 4}})
+            row = relay.read_node(conn, REMOTE)
+            self.assertEqual(row["state"], "offline",
+                             "旧代心跳不得把当前代节点标 online（SQL 代条件）")
+            self.assertEqual(row["generation"], 5)
+        finally:
+            conn.close()
+
+    def test_stale_link_mcp_report_sql_generation_condition(self):
+        # 旧链接带自身合法代次的迟到摘要上报：SQL 代条件不覆盖新代摘要
+        conn = self.conn()
+        try:
+            conn.execute("UPDATE relay_nodes SET generation=5,state='online',"
+                         "mcp_fingerprint='new',last_heartbeat=? WHERE member=?",
+                         (time.time(), REMOTE))
+            conn.commit()
+            old_link = relay_server.NodeLink(REMOTE, None, generation=4)
+            relay_server._route_inbound(old_link, {"relay": {"kind": "mcp_report",
+                                                             "generation": 4},
+                                                   "mcp_fingerprint": "stale"})
+            self.assertEqual(relay.read_node(conn, REMOTE)["mcp_fingerprint"], "new",
+                             "旧代摘要不得覆盖当前代")
+        finally:
+            conn.close()
+
+    def test_shutdown_stale_link_keeps_current_generation(self):
+        # 旧代清理锁外写库带代条件：不覆盖新连接状态（manager node1981 ②）
+        conn = self.conn()
+        try:
+            conn.execute("UPDATE relay_nodes SET generation=5,state='online',"
+                         "last_heartbeat=? WHERE member=?", (time.time(), REMOTE))
+            conn.commit()
+            stale = relay_server.NodeLink(REMOTE, None, generation=4)
+            stale.ws = None
+            stale.loop = None
+            relay_server._shutdown_link(stale, "stale cleanup")
+            self.assertTrue(relay.is_online(conn, REMOTE),
+                            "旧代清理不得把当前代标 offline")
+        finally:
+            conn.close()
+
+    def test_mcp_snapshot_request_gets_fresh_report(self):
+        # manager node1981 ③：configure 前同步问询——同连接原地换包、配置早于
+        # 异步上报，问询取到本次实际摘要。
+        ws = self._connect()
+        try:
+            reply = self._hello(ws)
+            link = relay_server.active_link(REMOTE)
+            self.assertIsNotNone(link)
+            result = {}
+
+            def ask():
+                result["report"] = link.request_mcp_snapshot(timeout=5)
+
+            thread = threading.Thread(target=ask, daemon=True)
+            thread.start()
+            # 模拟插件：收到 mcp_snapshot_request → 回复当前实际摘要
+            request = json.loads(ws.recv())
+            self.assertEqual(request["relay"]["kind"], "mcp_snapshot_request")
+            request_id = request["relay"]["request_id"]
+            ws.send(json.dumps({"relay": {"kind": "mcp_report",
+                                          "generation": reply["relay"]["generation"],
+                                          "request_id": request_id},
+                                "mcp_fingerprint": "fresh-sha",
+                                "code_version": RELEASE_VERSION}))
+            thread.join(timeout=6)
+            # 响应附本连接代：configure 写库按代条件（reviewer 返修①）
+            self.assertEqual(result.get("report"), {
+                "mcp_fingerprint": "fresh-sha", "code_version": RELEASE_VERSION,
+                "generation": reply["relay"]["generation"]})
+        finally:
+            ws.close()
+
+    def test_mcp_snapshot_timeout_returns_none(self):
+        # 插件不回响应：超时返回 None（configure 走缓存复核，不误通过）
+        ws = self._connect()
+        try:
+            self._hello(ws)
+            link = relay_server.active_link(REMOTE)
+            report = link.request_mcp_snapshot(timeout=0.3)
+            self.assertIsNone(report)
+        finally:
+            ws.close()
+
+    def test_merge_mcp_spec_fetch_report_uses_fresh_digest(self):
+        # 旧摘要曾匹配→同连接原地换包→配置早于异步上报：fetch_report 同步
+        # 问询取到本次实际摘要（旧缓存不匹配即拒绝，绝不误通过）。
+        from engine.hermes_gateway_client import GatewayRefusal
+        conn = self.conn()
+        try:
+            relay.register_node(conn, REMOTE, CREDENTIAL, mcp_config={
+                "command": ["python"], "env": {}, "_package_sha": "pkg-v2"})
+            relay.mark_online(conn, REMOTE, code_version=RELEASE_VERSION,
+                              mcp_fingerprint="pkg-v1", generation=1)
+            # 旧缓存 pkg-v1：不带 fetch 时与期望 pkg-v2 不符 → 拒绝
+            with self.assertRaises(GatewayRefusal):
+                relay.merge_mcp_spec(conn, REMOTE, {"command": ["x"], "args": [],
+                                                    "env": {}}, engine_url="http://e")
+            # 带 fetch：同步问询返回本次实际摘要 pkg-v2 → 复核通过
+            merged = relay.merge_mcp_spec(
+                conn, REMOTE, {"command": ["local"], "args": [], "env": {"T": "1"}},
+                engine_url="http://e",
+                fetch_report=lambda: {"mcp_fingerprint": "pkg-v2",
+                                      "code_version": RELEASE_VERSION})
+            self.assertEqual(merged["command"], ["python"])
+            self.assertIn("T", merged["env"])
+            # fetch 返回旧摘要（换包未完成/回滚）：拒绝
+            with self.assertRaises(GatewayRefusal):
+                relay.merge_mcp_spec(conn, REMOTE, {"command": ["x"], "args": [],
+                                                    "env": {}}, engine_url="http://e",
+                                     fetch_report=lambda: {"mcp_fingerprint": "pkg-v1"})
+        finally:
+            conn.close()
+
+    def test_merge_mcp_spec_fetch_failure_refused(self):
+        # reviewer 返修②：问询超时/无响应（fetch_report 返回 None）必须拒绝，
+        # 不得清空库内摘要后按旧缓存放行。
+        from engine.hermes_gateway_client import GatewayRefusal
+        conn = self.conn()
+        try:
+            relay.register_node(conn, REMOTE, CREDENTIAL, mcp_config={
+                "command": ["python"], "env": {}, "_package_sha": "pkg-v2"})
+            relay.mark_online(conn, REMOTE, code_version=RELEASE_VERSION,
+                              mcp_fingerprint="pkg-v2", generation=1)
+            with self.assertRaises(GatewayRefusal) as ctx:
+                relay.merge_mcp_spec(conn, REMOTE, {"command": ["x"], "args": [],
+                                                    "env": {}}, engine_url="http://e",
+                                     fetch_report=lambda: None)
+            self.assertEqual(ctx.exception.reason, "mcp_snapshot_unavailable")
+            # 库内摘要保持原值，未被清空
+            self.assertEqual(relay.read_node(conn, REMOTE)["mcp_fingerprint"], "pkg-v2")
+            # 空报告同样拒绝（无有效摘要）
+            with self.assertRaises(GatewayRefusal):
+                relay.merge_mcp_spec(conn, REMOTE, {"command": ["x"], "args": [],
+                                                    "env": {}}, engine_url="http://e",
+                                     fetch_report=lambda: {})
+        finally:
+            conn.close()
+
+    def test_merge_mcp_spec_stale_generation_report_not_written(self):
+        # reviewer 返修①：问询响应带旧代（接替后迟到的旧连接响应）——
+        # 写库按代条件不匹配，不得覆盖新代摘要。
+        conn = self.conn()
+        try:
+            relay.register_node(conn, REMOTE, CREDENTIAL, mcp_config={
+                "command": ["python"], "env": {}, "_package_sha": "pkg-v2"})
+            # 新代连接已握手并写入新摘要 pkg-v2
+            relay.mark_online(conn, REMOTE, code_version=RELEASE_VERSION,
+                              mcp_fingerprint="pkg-v2", generation=2)
+            # 旧代（gen=1）迟到的问询响应：写库 WHERE generation=1 不匹配
+            merged = relay.merge_mcp_spec(
+                conn, REMOTE, {"command": ["local"], "args": [], "env": {"T": "1"}},
+                engine_url="http://e",
+                fetch_report=lambda: {"mcp_fingerprint": "pkg-v1",
+                                      "code_version": RELEASE_VERSION,
+                                      "generation": 1})
+            # 新代摘要未被覆盖，复核仍用 pkg-v2 通过
+            node = relay.read_node(conn, REMOTE)
+            self.assertEqual(node["mcp_fingerprint"], "pkg-v2",
+                             "旧代问询响应不得覆盖新代摘要")
+            self.assertEqual(node["generation"], 2)
+            self.assertEqual(merged["command"], ["python"])
+        finally:
+            conn.close()
+
 
 class RelayGateTests(RelayBase):
     """派发闸门与 offline 点名三态状态机（验收 3/5）。"""
@@ -613,6 +817,9 @@ class RelayGateTests(RelayBase):
             row = relay.read_offline_mention(conn, message_id, REMOTE)
             self.assertEqual(row["state"], "offline_waiting",
                              "不确定回执不得标 submitted（保留核对依据）")
+            self.assertEqual(row["submission_id"], "sub-10",
+                             "未决期间持久关联 submission 供权威回执结算 "
+                             "(manager node1981 ①)")
             # 无 submission_id 也不标（不得回退空串）
             job3 = self._chat_job(conn, thread_id)
             with patch.object(queue, "_relay_node_gate", return_value=("go", [])), \
@@ -625,6 +832,75 @@ class RelayGateTests(RelayBase):
             row = relay.read_offline_mention(conn, message_id, REMOTE)
             self.assertEqual(row["state"], "offline_waiting",
                              "无 submission_id 不得标 submitted")
+        finally:
+            conn.close()
+
+    def test_settle_skips_attempted_unsettled_and_receipt_settles(self):
+        # manager node1981 ①：已尝试未决（waiting+submission_id）收口不标
+        # expired；后续权威回执（apply_receipt）结算为 submitted。两种顺序。
+        from engine import router
+        conn = self.conn()
+        try:
+            thread_id, message_id = self._thread_with_mention(conn)
+            relay.upsert_offline_mention(conn, message_id=message_id, member=REMOTE,
+                                         project="alpha", thread_id=thread_id)
+            # 顺序 A：先收口后对账——未决保留，权威回执补记 submitted
+            relay.attach_submission(conn, message_ids=[message_id], member=REMOTE,
+                                    submission_id="sub-a")
+            router.settle_thread(conn, thread_id)
+            row = relay.read_offline_mention(conn, message_id, REMOTE)
+            self.assertEqual(row["state"], "offline_waiting",
+                             "收口跳过已尝试但未决者（manager node1981 ①）")
+            relay.settle_by_submission(conn, member=REMOTE, submission_id="sub-a")
+            row = relay.read_offline_mention(conn, message_id, REMOTE)
+            self.assertEqual(row["state"], "submitted",
+                             "权威回执补记已尝试点名")
+            # 顺序 B：先对账后收口——已 submitted 收口不动
+            thread_id2, message_id2 = self._thread_with_mention(conn)
+            relay.upsert_offline_mention(conn, message_id=message_id2, member=REMOTE,
+                                         project="alpha", thread_id=thread_id2)
+            relay.attach_submission(conn, message_ids=[message_id2], member=REMOTE,
+                                    submission_id="sub-b")
+            relay.settle_by_submission(conn, member=REMOTE, submission_id="sub-b")
+            router.settle_thread(conn, thread_id2)
+            row = relay.read_offline_mention(conn, message_id2, REMOTE)
+            self.assertEqual(row["state"], "submitted", "先对账后收口：submitted 保持")
+        finally:
+            conn.close()
+
+    def test_authoritative_receipt_settles_through_apply_receipt(self):
+        # manager node1981 ①：恢复回执有入口补记——apply_receipt 受理回执后
+        # 该 submission 关联的 waiting 点名标 submitted（真实链路接线）。
+        from engine import hermes_gateway_ledger as ledger
+        conn = self.conn()
+        try:
+            thread_id, message_id = self._thread_with_mention(conn)
+            relay.upsert_offline_mention(conn, message_id=message_id, member=REMOTE,
+                                         project="alpha", thread_id=thread_id)
+            row = ledger.prepare(conn, session="sess-1", project="alpha", profile=REMOTE,
+                                 kind="chat", thread_id=thread_id, task_id=None, job_id=None,
+                                 event_floor=0, source="", python="py", home="home",
+                                 workdir="wd", session_id="sid-1", profile_id=REMOTE)
+            eid, submission_id = row["execution_id"], row["submission_id"]
+            relay.attach_submission(conn, message_ids=[message_id], member=REMOTE,
+                                    submission_id=submission_id)
+            receipt = {"ref": {"session_id": "sid-1", "profile_id": REMOTE},
+                       "admission_id": "adm-1", "status": "started",
+                       "execution_generation": None, "authority_epoch": 1}
+            ledger.apply_receipt(conn, eid, receipt)
+            row = relay.read_offline_mention(conn, message_id, REMOTE)
+            self.assertEqual(row["state"], "submitted",
+                             "权威回执（apply_receipt）结算 waiting 点名")
+            self.assertEqual(row["submission_id"], submission_id)
+            # 幂等：重复回执不重复改
+            ledger.apply_receipt(conn, eid, {"ref": {"session_id": "sid-1",
+                                                     "profile_id": REMOTE},
+                                             "admission_id": "adm-1",
+                                             "status": "started",
+                                             "execution_generation": None,
+                                             "authority_epoch": 1})
+            row = relay.read_offline_mention(conn, message_id, REMOTE)
+            self.assertEqual(row["state"], "submitted")
         finally:
             conn.close()
 

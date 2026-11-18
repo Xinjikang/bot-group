@@ -213,10 +213,12 @@ def process_one(conn) -> bool:
                     "UPDATE wake_jobs SET chat_context_until=? WHERE id=?",
                     (until, job["id"]),
                 )
-            # req#168：离线点名按「实际注入的目标点名」与「同一 submission 的确认
-            # 回执」结算（manager node1977 ②）——只有 admitted（receipt 已受理）且
-            # 有 submission_id 才标 submitted；pending reconciliation（不确定）保留
-            # waiting 核对依据，收口不误判已投/未投。
+            # req#168：离线点名按「实际注入的目标点名」与「同一 submission 的
+            # 回执」结算（manager node1977 ② + node1981 ①）——admitted（receipt
+            # 已受理）且有 submission_id 才标 submitted；未决（pending
+            # reconciliation）保留 waiting 并持久关联 submission_id 供后续
+            # 权威回执结算（apply_receipt → settle_by_submission），收口跳过
+            # 已尝试但未决者。
             injected_ids = result.get("injected_message_ids") or []
             submission_id = result.get("submission_id")
             if injected_ids and result.get("admitted") is True and submission_id:
@@ -224,6 +226,11 @@ def process_one(conn) -> bool:
                 relay.mark_submitted(conn, message_ids=injected_ids,
                                      member=job["profile"],
                                      submission_id=submission_id)
+            elif injected_ids and submission_id:
+                from . import relay
+                relay.attach_submission(conn, message_ids=injected_ids,
+                                        member=job["profile"],
+                                        submission_id=submission_id)
             # req#58：心跳归属不再写 last_wake_kind/last_wake_thread_id——判活事实源
             # 已改为心跳槽的 thread_id（MCP beat 时按会话报，heartbeat.active_entries
             # 按槽粒度输出），DB last_wake 关联是 profile 级单一归属、同 profile 双话题

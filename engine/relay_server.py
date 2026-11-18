@@ -66,6 +66,10 @@ class RelayTransport:
         if not self._closed:
             self._inbound.put(raw)
 
+    def request_mcp_snapshot(self, timeout: float = 10.0) -> dict | None:
+        """configure 前同步问询远端 MCP 实际摘要（manager node1981 ③）。"""
+        return self._link.request_mcp_snapshot(timeout)
+
     def close(self) -> None:
         if self._closed:
             return
@@ -74,6 +78,20 @@ class RelayTransport:
 
 
 _CLOSED_SENTINEL = object()
+
+
+_RELEASE_SENTINEL = object()
+_RELEASE_VERSION: str | None | object = _RELEASE_SENTINEL
+
+
+def _engine_release_version() -> str | None:
+    """引擎发布版本（插件必须与引擎同 tag 配套，设计 2.1）。惰性缓存：
+    version_info 在 git 树上要跑 git（握手路径不重复开销）。"""
+    global _RELEASE_VERSION
+    if _RELEASE_VERSION is _RELEASE_SENTINEL:
+        from . import version
+        _RELEASE_VERSION = version.version_info().get("current_version")
+    return _RELEASE_VERSION
 
 
 class NodeLink:
@@ -90,6 +108,10 @@ class NodeLink:
         self._send_lock = threading.Lock()
         self._stream_seq = 0
         self.transports: dict[str, RelayTransport] = {}
+        # mcp_snapshot 同步问询（configure 前取本次实际摘要，manager node1981 ③）
+        self._snapshot_seq = 0
+        self._snapshot_waiters: dict[str, queue.Queue] = {}
+        self._snapshot_waiters_lock = threading.Lock()
         self.last_heartbeat = time.time()
         self.closed = False
 
@@ -101,6 +123,41 @@ class NodeLink:
         transport = RelayTransport(self, self.next_stream())
         self.transports[transport.stream] = transport
         return transport
+
+    def request_mcp_snapshot(self, timeout: float) -> dict | None:
+        """向插件同步问询当前 MCP 实际摘要（换包未异步上报时也能取到本次值）。
+        连接已关闭或超时返回 None（configure 走缓存复核或拒绝，绝不误通过）。"""
+        if self.closed:
+            return None
+        with self._snapshot_waiters_lock:
+            self._snapshot_seq += 1
+            request_id = f"snap-{self._snapshot_seq}"
+            waiter: queue.Queue = queue.Queue(maxsize=1)
+            self._snapshot_waiters[request_id] = waiter
+        try:
+            self.send_text(json.dumps({
+                "relay": {"kind": "mcp_snapshot_request", "request_id": request_id,
+                          "generation": self.generation},
+            }, ensure_ascii=False))
+        except ConnectionError:
+            with self._snapshot_waiters_lock:
+                self._snapshot_waiters.pop(request_id, None)
+            return None
+        try:
+            return waiter.get(timeout=timeout)
+        except queue.Empty:
+            with self._snapshot_waiters_lock:
+                self._snapshot_waiters.pop(request_id, None)
+            return None
+
+    def _on_snapshot_response(self, request_id: str, report: dict) -> None:
+        # 附本连接代：configure 写库按代条件，旧代迟到的问询响应不得
+        # 覆盖新代摘要（reviewer 返修①）。
+        report["generation"] = self.generation
+        with self._snapshot_waiters_lock:
+            waiter = self._snapshot_waiters.pop(request_id, None)
+        if waiter is not None:
+            waiter.put(report)
 
     def send_text(self, text: str) -> None:
         if self.closed:
@@ -141,7 +198,9 @@ def _shutdown_link(link: NodeLink, reason: str) -> None:
     if current is not None:
         conn = db.get_connection()
         try:
-            relay.mark_offline(conn, link.member)
+            # 带代条件写 offline：本函数锁外执行，清理期间可能已被新连接接替，
+            # 旧代清理不得覆盖新代状态（manager node1981 ②跨代窗口）。
+            relay.mark_offline(conn, link.member, generation=link.generation)
         finally:
             conn.close()
     logger.warning("relay link down member=%s generation=%d reason=%s",
@@ -186,11 +245,12 @@ def _route_inbound(link: NodeLink, envelope: dict) -> bool:
                        link.member, kind, frame_gen)
         return True
     if kind == "heartbeat":
-        # 心跳只判存活（写 online 以当前代为准——上方代次校验已保证）
+        # 心跳只判存活（写 online 以当前代为准——上方代次校验已保证，SQL 再带
+        # 代条件防处理瞬间被接替的跨代窗口，manager node1981 ②）
         link.last_heartbeat = time.time()
         conn = db.get_connection()
         try:
-            relay.heartbeat(conn, link.member)
+            relay.heartbeat(conn, link.member, generation=link.generation)
         finally:
             conn.close()
         return True
@@ -198,9 +258,18 @@ def _route_inbound(link: NodeLink, envelope: dict) -> bool:
         # 连接存续中插件换包后上报新摘要（manager node1977 ③：configure 前
         # 必须能取到本次配置的远端实际摘要，不能只靠握手缓存）
         fingerprint = envelope.get("mcp_fingerprint") or ""
+        request_id = meta.get("request_id")
+        if request_id:
+            # mcp_snapshot 问询的同步响应（manager node1981 ③）
+            link._on_snapshot_response(request_id, {
+                "mcp_fingerprint": fingerprint,
+                "code_version": envelope.get("code_version") or "",
+            })
+            return True
         conn = db.get_connection()
         try:
-            relay.mcp_report(conn, link.member, fingerprint)
+            relay.mcp_report(conn, link.member, fingerprint,
+                             generation=link.generation)
         finally:
             conn.close()
         logger.info("relay mcp_report member=%s fingerprint=%s", link.member,
@@ -227,6 +296,7 @@ async def relay_ws(websocket: WebSocket) -> None:
         member = (hello.get("member") or "").strip()
         credential = hello.get("credential") or ""
         code_version = hello.get("code_version") or ""
+        plugin_version = hello.get("plugin_version") or code_version
         mcp_fingerprint = hello.get("mcp_fingerprint") or ""
         protocol_version = hello.get("protocol_version")
         conn = db.get_connection()
@@ -237,6 +307,14 @@ async def relay_ws(websocket: WebSocket) -> None:
             if protocol_version != RELAY_PROTOCOL_VERSION:
                 logger.warning("relay protocol version mismatch member=%s got=%s",
                                member, protocol_version)
+                await websocket.close(code=CLOSE_BAD_PROTOCOL)
+                return
+            # 插件包版本与引擎同 tag 配套（设计 2.1，manager node1981 ③）：
+            # 插件包版本必须等于引擎发布版本，否则按版本拒绝。
+            engine_version = _engine_release_version()
+            if engine_version and plugin_version != engine_version:
+                logger.warning("relay plugin version mismatch member=%s engine=%s got=%s",
+                               member, engine_version, plugin_version)
                 await websocket.close(code=CLOSE_BAD_PROTOCOL)
                 return
             row = relay.read_node(conn, member)

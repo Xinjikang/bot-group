@@ -136,25 +136,35 @@ def generation_advance(conn, member: str, *, now=None) -> int:
 
 def mark_online(conn, member: str, *, code_version: str, mcp_fingerprint: str,
                 generation: int, now=None) -> None:
-    conn = conn
+    """新连接握手成功：写库带连接代条件——接替瞬间旧代写入不覆盖新代状态
+    （manager node1981 ②：状态 SQL 以当前连接代为条件）。"""
     conn.execute(
         "UPDATE relay_nodes SET state='online',code_version=?,mcp_fingerprint=?,"
-        "generation=?,last_heartbeat=?,updated_at=? WHERE member=?",
+        "generation=?,last_heartbeat=?,updated_at=? WHERE member=? AND generation=?",
         (code_version, mcp_fingerprint, generation, _now() if now is None else now,
-         _now() if now is None else now, member))
+         _now() if now is None else now, member, generation))
     conn.commit()
 
 
-def heartbeat(conn, member: str, *, now=None) -> None:
-    """心跳只更新存活槽；绝不据此判任务结束（设计 4 章）。"""
-    conn.execute("UPDATE relay_nodes SET last_heartbeat=?,state='online' WHERE member=?",
-                 (_now() if now is None else now, member))
+def heartbeat(conn, member: str, *, generation: int, now=None) -> None:
+    """心跳只更新存活槽；绝不据此判任务结束（设计 4 章）。带当前代条件：
+    旧连接迟到心跳（代不匹配）不覆盖新代状态（manager node1981 ②）。"""
+    conn.execute("UPDATE relay_nodes SET last_heartbeat=?,state='online' "
+                 "WHERE member=? AND generation=?",
+                 (_now() if now is None else now, member, generation))
     conn.commit()
 
 
-def mark_offline(conn, member: str, *, now=None) -> None:
-    conn.execute("UPDATE relay_nodes SET state='offline',updated_at=? WHERE member=?",
-                 (_now() if now is None else now, member))
+def mark_offline(conn, member: str, *, generation=None, now=None) -> None:
+    """断链标离线。generation 给定时按代条件写（旧代清理不覆盖新代 online）；
+    不给定时按当前行代写（TTL 过期场景，与读到的行同代）。"""
+    row = read_node(conn, member)
+    if row is None:
+        return
+    target_gen = row["generation"] if generation is None else generation
+    conn.execute("UPDATE relay_nodes SET state='offline',updated_at=? "
+                 "WHERE member=? AND generation=?",
+                 (_now() if now is None else now, member, target_gen))
     conn.commit()
 
 
@@ -164,7 +174,7 @@ def is_online(conn, member: str) -> bool:
         return False
     # 心跳 TTL：90s 内无心跳即离线（只判存活）。
     if row["last_heartbeat"] is not None and time.time() - row["last_heartbeat"] > HEARTBEAT_TTL_SECONDS:
-        mark_offline(conn, member)
+        mark_offline(conn, member, generation=row["generation"])
         return False
     return row["state"] == "online"
 
@@ -302,18 +312,62 @@ def _substitute(value, variables: dict):
     return value
 
 
-def mcp_report(conn, member: str, fingerprint: str, *, now=None) -> None:
+def mcp_report(conn, member: str, fingerprint: str, *, generation: int | None = None,
+               now=None) -> None:
     """连接存续中插件换包后上报的新摘要（manager node1977 ③）：
-    更新为 configure 前复核用的远端实际摘要。"""
-    conn.execute("UPDATE relay_nodes SET mcp_fingerprint=?,updated_at=? WHERE member=?",
-                 (fingerprint, _now() if now is None else now, member))
+    更新为 configure 前复核用的远端实际摘要。带代条件防旧代迟到上报
+    覆盖新代（manager node1981 ②）。"""
+    if generation is None:
+        conn.execute("UPDATE relay_nodes SET mcp_fingerprint=?,updated_at=? "
+                     "WHERE member=?", (fingerprint, _now() if now is None else now, member))
+    else:
+        conn.execute("UPDATE relay_nodes SET mcp_fingerprint=?,updated_at=? "
+                     "WHERE member=? AND generation=?",
+                     (fingerprint, _now() if now is None else now, member, generation))
     conn.commit()
 
 
-def merge_mcp_spec(conn, member: str, spec: dict, *, engine_url: str = "") -> dict:
-    """远程节点的随包 MCP 配置合并（manager node1977 ③）：
+def attach_submission(conn, *, message_ids: list[int], member: str,
+                      submission_id: str, now=None) -> int:
+    """投递未决（admitted=False）时持久关联实际注入的目标点名与 submission：
+    保持 offline_waiting，submission_id 供后续权威回执结算；收口（expire_mentions
+    只标 submission_id IS NULL）跳过已尝试但未决者（manager node1981 ①）。
+    幂等：重复调用不改已绑定/已提交行。"""
+    now = _now() if now is None else now
+    if not message_ids or not submission_id:
+        return 0
+    placeholders = ",".join("?" * len(message_ids))
+    cur = conn.execute(
+        "UPDATE relay_offline_mentions SET submission_id=?,updated_at=? "
+        "WHERE member=? AND state='offline_waiting' AND submission_id IS NULL "
+        f"AND message_id IN ({placeholders})",
+        (submission_id, now, member, *message_ids))
+    conn.commit()
+    return cur.rowcount
 
-    - 用「当前远端实际摘要」复核（握手或 mcp_report 上报的最新值），不兼容拒绝；
+
+def settle_by_submission(conn, *, member: str, submission_id: str, now=None) -> int:
+    """权威回执（apply_receipt 确认受理）结算：把该 submission 关联的
+    offline_waiting 点名标 submitted（manager node1981 ①：恢复回执有入口补记）。"""
+    now = _now() if now is None else now
+    if not submission_id:
+        return 0
+    cur = conn.execute(
+        "UPDATE relay_offline_mentions SET state=?,updated_at=? "
+        "WHERE member=? AND submission_id=? AND state='offline_waiting'",
+        (MENTION_SUBMITTED, now, member, submission_id))
+    conn.commit()
+    return cur.rowcount
+
+
+def merge_mcp_spec(conn, member: str, spec: dict, *, engine_url: str = "",
+                   fetch_report=None) -> dict:
+    """远程节点的随包 MCP 配置合并（manager node1977 ③ + node1981 ③）：
+
+    - configure 前取得「本次配置的远端实际摘要」复核：fetch_report 给定时
+      向当前连接同步问询（mcp_snapshot 请求帧）并以回复为准，不只用握手/
+      异步 mcp_report 缓存——覆盖「同连接原地换包、配置早于异步上报」时序；
+      无 fetch 能力（本机连接/测试）时用库内最新摘要；
     - 渲染后缺 command 时拒绝（绝不回落本机配置——本机 MCP 命令对远端无效）；
     - 可达 URL（GROUP_ENGINE_URL）以远端渲染值为准（本机会话 env 不覆盖）；
     - 身份令牌与上下文仍由引擎注入（会话级 env 其余项覆盖合并）。
@@ -324,6 +378,23 @@ def merge_mcp_spec(conn, member: str, spec: dict, *, engine_url: str = "") -> di
     row = read_node(conn, member)
     if row is None:
         return spec
+    if fetch_report is not None:
+        report = fetch_report()
+        if not report or not report.get("mcp_fingerprint"):
+            # 问询失败/无响应：取不到本次实际摘要即拒绝，绝不回落握手缓存、
+            # 绝不把库内摘要清空后放行（reviewer 返修②）。
+            raise GatewayRefusal("mcp_snapshot_unavailable")
+        # 写库带代条件：旧代迟到的问询响应不得覆盖新代摘要（reviewer 返修①）。
+        # 报告无代字段（防御/模拟调用）时按库内当前代写。
+        _row = read_node(conn, member)
+        row_gen = _row["generation"] if _row is not None else None
+        write_gen = report.get("generation") if report.get("generation") is not None else row_gen
+        mcp_report(conn, member, report["mcp_fingerprint"], generation=write_gen)
+        if report.get("code_version"):
+            conn.execute("UPDATE relay_nodes SET code_version=? "
+                         "WHERE member=? AND generation=?",
+                         (report["code_version"], member, write_gen))
+            conn.commit()
     remote = render_mcp_config(conn, member, engine_url=engine_url)
     node = read_node(conn, member)
     if node["expected_mcp_sha"] and node["mcp_fingerprint"] != node["expected_mcp_sha"]:
