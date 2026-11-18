@@ -444,6 +444,57 @@ class DiagStepTests(DiagHarness):
               f"诊断日志 {diag_bytes} 字节 / 每笔 {diag_bytes / n:.1f} 字节")
 
 
+    def test_http_rollback_releases_lock_before_diag_write(self):
+        # /msg 入队失败的异常回滚路径：必须先实际释放写锁，再写回滚行与落盘缓冲。
+        # 独立连接（timeout=0）在回滚行写出时能立即取写锁；原错误保留、
+        # 消息/收件箱/唤醒增量为 0（整笔回滚）。
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from engine import api as api_module, auth, events, wake
+        self.enable_diag()
+        app = FastAPI()
+        app.include_router(api_module.router_api)
+        before = self.counts(self.observer)
+        probe_results = []
+
+        def observing_write(row):
+            real_write(row)
+            if row.get("kind") == "txn" and row.get("end_kind") == "rollback":
+                # 回滚行写出时刻：独立连接 timeout=0 申请 BEGIN IMMEDIATE，
+                # 锁必须已释放（连接已关闭）——否则 database is locked。
+                try:
+                    probe = sqlite3.connect(db.db_path(), timeout=0)
+                    probe.execute("BEGIN IMMEDIATE")
+                    probe.commit()
+                    probe_results.append(True)
+                except sqlite3.OperationalError:
+                    probe_results.append(False)
+                finally:
+                    probe.close()
+        real_write = slow_send_diag._write_row
+        real_enqueue = wake.enqueue
+
+        def fail_enqueue(conn, *args, **kwargs):
+            real_enqueue(conn, *args, **kwargs)
+            raise sqlite3.OperationalError("isolated enqueue failure")
+        with TestClient(app, client=("127.0.0.1", 0)) as client, \
+                patch.object(auth, "configured", return_value=False), \
+                patch.object(wake, "enqueue", side_effect=fail_enqueue), \
+                patch.object(events.bus, "publish"), \
+                patch.object(slow_send_diag, "_write_row", side_effect=observing_write):
+            with self.assertRaises(sqlite3.OperationalError):
+                client.post("/msg", json={"project": "alpha", "sender": "user",
+                                          "text": "@default update"})
+        self.assertEqual(self.counts(self.observer), before,
+                         "入队失败必须整笔回滚（消息/收件箱/唤醒增量 0）")
+        self.assertTrue(probe_results and all(probe_results),
+                        "回滚行写出时锁必须已释放（timeout=0 可立即取锁）")
+        rows = _read_diag(self.diag_path)
+        rollback = [r for r in rows if r["kind"] == "txn"
+                    and r.get("end_kind") == "rollback"]
+        self.assertTrue(rollback, "回滚行应落盘")
+
+
 class MigrationCostTests(DiagHarness):
     """验收 2：实际迁移持锁耗时、索引回退与数据一致性。"""
 

@@ -366,9 +366,19 @@ def post_msg(
         raise HTTPException(status_code=e.status, detail=str(e)) from e
     finally:
         if conn is not None:
-            if diag_on:
-                if conn.in_transaction:  # 异常路径：连接关闭=隐式回滚（锁外记 rollback 行）
+            if diag_on and conn.in_transaction:
+                # 异常路径：先显式回滚实际释放写锁，再记 rollback 行并锁外落盘。
+                # 标记时间不早于实际释放（timeout=0 的独立连接此刻可立即取锁），
+                # 诊断写出不延长持锁区间；回滚异常只告警，不覆盖原业务错误，
+                # 连接仍由下方 close 兜底清理。
+                try:
+                    conn.rollback()
+                except Exception:  # noqa: BLE001 回滚失败不吞原业务异常
+                    logger.warning("message.send 异常路径回滚失败，连接交由 close 清理",
+                                   exc_info=True)
+                else:
                     slow_send_diag.txn_end(conn, "rollback")
+            if diag_on:
                 slow_send_diag.defer_flush()  # 事务结束：缓冲锁外落盘（幂等，正常路径已 flush）
             conn.close()
         if kind != 'bot':
