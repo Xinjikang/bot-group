@@ -1,0 +1,27 @@
+name: bot-group-relay
+label: bot-group relay
+kind: platform
+version: 1.0.0
+description: >
+  bot-group 远程成员接入插件：一条主动出站 WSS 连 bot-group 引擎 relay
+  入口，凭据握手 + generation fencing，把引擎的 JSON-RPC 帧转发到本机
+  gateway /api/ws（独立线程取票），并把本机 gateway 事件帧回传引擎。
+  插件职责收窄为「传令」——不解析会话语义、不复制引擎逻辑。
+author: bot-group
+optional_env:
+  - name: BOT_GROUP_ENGINE_URL
+    description: "bot-group 引擎地址（http(s)://host:port，不带路径）"
+    prompt: "bot-group engine URL"
+    password: false
+  - name: BOT_GROUP_RELAY_MEMBER
+    description: "本机成员名（与引擎节点注册的 member 一致，通常为 profile 名）"
+    prompt: "Member name"
+    password: false
+  - name: BOT_GROUP_RELAY_CREDENTIAL
+    description: "引擎节点连接凭据（引擎 /relay/nodes 注册时下发）"
+    prompt: "Relay credential"
+    password: true
+  - name: BOT_GROUP_MCP_PYTHON
+    description: "随包 MCP 的解释器绝对路径（安装脚本创建 venv 后填写，可留空自动探测）"
+    prompt: "MCP python path (optional)"
+    password: false

@@ -1,0 +1,84 @@
+# ECS 安装 bot-group relay 插件（req#168）
+
+ECS 上的 Hermes gateway 通过 bot-group relay 插件接入 bot-group 引擎：插件随 gateway
+加载，持一条主动出站 WSS 连引擎 relay 入口，把引擎的 JSON-RPC 帧转发到本机
+gateway `/api/ws`，并把本机事件帧回传引擎。插件职责收窄为「传令」——不解析会话语义、
+不复制引擎逻辑。
+
+## 1. 前置
+
+- ECS 上 Hermes gateway 已安装且常驻运行（systemd 托管），`$HERMES_HOME` 已确定；
+- 引擎侧已完成该成员的节点注册（`POST /relay/nodes`），拿到**成员名**与**连接凭据**；
+- 分发包 `bot-group-relay-<version>.tar.gz` 与主包同 tag 构建（`engine/maintenance/make_release.py`
+  产出，SHA256 见同目录 `SHA256SUMS`）。
+
+## 2. 安装
+
+```bash
+mkdir -p "$HERMES_HOME/plugins"
+cd "$HERMES_HOME/plugins"
+curl -O <资产URL>/bot-group-relay-<version>.tar.gz
+tar -xzf bot-group-relay-<version>.tar.gz -C bot-group-relay   # 解到插件目录
+cd bot-group-relay
+./install.sh    # 建独立 venv（python3 -m venv venv）并按 requirements.lock 装依赖
+```
+
+安装脚本只建 venv + 按锁文件安装随包 MCP 依赖——不 clone 仓库、不手动 pip。
+插件本体（转发代码）跑在 gateway 进程内，只用标准库与 gateway 已带的 `websockets`，
+无额外安装。不用 Hermes 自带 venv（Hermes venv 无 mcp 包）。
+
+## 3. 配置
+
+在 gateway 的 profile 配置（`.env`）里填四项：
+
+| 配置项 | 说明 |
+| --- | --- |
+| `BOT_GROUP_ENGINE_URL` | 引擎地址（`http(s)://host:port`，不带路径） |
+| `BOT_GROUP_RELAY_MEMBER` | 引擎节点注册的成员名（通常即 profile 名） |
+| `BOT_GROUP_RELAY_CREDENTIAL` | 节点连接凭据（引擎注册时下发，只存本机） |
+| `BOT_GROUP_MCP_PYTHON` | 可选：随包 MCP 解释器绝对路径（默认自动探测 `插件目录/venv/bin/python`） |
+
+配置后重启 gateway 生效。插件目录为 `$HERMES_HOME/plugins/bot-group-relay/`，
+解包后目录结构（gateway 插件发现要求直接子目录含 `__init__.py`）：
+
+```
+bot-group-relay/
+├── plugin.yaml  __init__.py  adapter.py  config.py  relay.py
+├── streams.py  tickets.py  mcp_digest.py
+├── mcp/                 # 随包 MCP（server.py + requirements.txt）
+├── engine/              # mcp 运行时最小子集（mcp_http / process_query）
+├── requirements.lock    # 随包 MCP 依赖锁
+└── install.sh
+```
+
+## 4. MCP 随包自动注入
+
+- 引擎按节点配置渲染 MCP 启动命令与 env，经 relay 帧下发、插件原样转发到本机
+  gateway；用户装一次插件、填一次配置，**不单独配 MCP、不复制成员 token**。
+- 插件握手时上报随包 MCP 的**解释器绝对路径、入口绝对路径、版本与内容摘要**
+  （摘要 = `mcp/server.py` + `mcp/requirements.txt` + `requirements.lock` 的 sha256
+  组合，只覆盖 MCP 包与依赖清单，不含 env 或令牌）；引擎按版本不匹配即拒
+  （插件与引擎同 tag 配套）。
+- 升级：正常升级=重启 gateway/插件（WS 断开重来）；「连接不断、磁盘 MCP 包原地
+  替换」场景，引擎在 configure 前经 `mcp_snapshot_request` 同步问询，插件实时
+  重算摘要回复——系统重核摘要再配会话，缓存不失效。
+
+## 5. 权限与共存
+
+- **chat/work 权限**：由引擎会话执行范围收窄（execution token 绑定 project/member/
+  chat-work），插件不参与鉴权，只传令。
+- **本地直连共存**：同一台机器上的本机 spawn/网关直连路径与 relay 互不影响；
+  引擎按成员是否注册 relay 节点分流（注册走 relay、未注册走本机直连）。
+- **多成员同机隔离**：同一 ECS 两个 profile 各配一条出站 WSS（各填自己的
+  member/credential），引擎按 member 派发、插件按 home 维护本机连接，
+  回复与事件各回各话题。
+
+## 6. 排障
+
+| 现象 | 处置 |
+| --- | --- |
+| 握手被拒 4001 | 凭据错或已吊销：引擎 `POST /relay/nodes/{member}` 重新注册/下发 |
+| 握手被拒 4002 | 随包 MCP 摘要与引擎节点配置 `_package_sha` 不符：升级插件包或更新节点配置 |
+| 握手被拒 4003 | 插件包版本与引擎不配套：使用与引擎同 tag 的分发包 |
+| 连接建立但无派发 | 引擎节点 offline（心跳 90s TTL）：查 gateway 日志与出站网络 |
+| 首装 MCP 拉起失败 | 检查 `install.sh` 输出与 `venv/bin/python` 是否存在，MCP 日志在 gateway 会话日志 |
