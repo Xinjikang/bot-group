@@ -26,6 +26,7 @@ ECS 上 Hermes gateway 常驻（systemd 托管），bot-group 插件随 gateway 
 
 - 插件源码：bot-group 仓库 `plugins/hermes/bot-group-relay/`，随 bot-group 版本发布。
 - MCP：沿用仓库现有 `mcp/` 为唯一源码，打包时随插件带上，只维护一份。
+- **MCP 运行解释器（2026-11-18 定）**：插件自带独立 venv——安装时创建并安装依赖（依赖清单随插件包分发，含 mcp>=1.4/httpx/psutil/fastapi/uvicorn/websockets/pyyaml/ruamel.yaml/tomlkit/Pillow/python-dotenv 等，见 mcp/requirements.txt）。不用 Hermes 自带 venv（已核：本机 Hermes venv 无 mcp 包）；安装时配一次、零手动 pip。握手时上报解析后的解释器绝对路径、MCP 入口绝对路径、版本与内容摘要，引擎据此渲染 session.configure。
 - ECS 安装位置：运行 gateway 的 Hermes 用户插件目录 `$HERMES_HOME/plugins/bot-group-relay/`（默认 home 即 `~/.hermes/plugins/bot-group-relay/`），由 Hermes gateway 加载。
 - 引擎侧接收连接与派发的代码在 bot-group `engine/`。
 
@@ -79,6 +80,7 @@ ECS 上 Hermes gateway 常驻（systemd 托管），bot-group 插件随 gateway 
 6. **升级重核摘要**：连接不断、原地替换 MCP 文件，系统重核摘要再配会话。
 7. **/stop**：停只停指定执行，不误伤同 profile 并行会话（复用现有叫停链路，验证远程 transport 下有效）。
 8. **离线 @ 场景**（bot-36/bot-43 2026-11-18 定，两种结局都要验）：①成员先离线 → 群里 @ 它 → 话题超时收口 → 成员重连：原点名可查「成员离线，未投递」（offline_expired），收口话题保持收口，由用户决定是否重新点名；②成员离线时被 @、发言位仍有效时回来：显示「等待成员上线」（offline_waiting）→ 正常投递一次 → 状态转 submitted、原点名更新，同话题快照内其他排队点名一并转 submitted。
+9. **首装拉起 MCP**（bot-43 2026-11-18 提）：全新 ECS 只装插件包，不改 Hermes 配置、不手动 pip，首个会话能成功拉起 MCP（插件自带 venv，解释器/MCP 入口/版本摘要握手时上报，引擎按上报渲染 configure）。
 
 ## 7. 源码依据（已核）
 
