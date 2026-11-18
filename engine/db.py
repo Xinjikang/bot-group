@@ -34,18 +34,30 @@ def get_connection() -> sqlite3.Connection:
     transaction = current.get()
     if transaction is not None:
         return transaction.lease()
-    path = db_path()
+    from . import slow_send_diag
+    diag_on = slow_send_diag.enabled()  # 开关只读一次；未启用零埋点开销
+    t1 = slow_send_diag.now_pair() if diag_on else None
+    path = db_path()  # C1 配置读取（.env/环境/命令行）
+    t2 = slow_send_diag.now_pair() if diag_on else None
     parent = os.path.dirname(path)
     if parent:
-        os.makedirs(parent, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30)
+        os.makedirs(parent, exist_ok=True)  # C2 目录访问
+    t3 = slow_send_diag.now_pair() if diag_on else None
+    conn = sqlite3.connect(path, timeout=30)  # C3 connect 打开
+    t4 = slow_send_diag.now_pair() if diag_on else None
     try:
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA busy_timeout=30000")  # C4 两条 PRAGMA
         conn.execute("PRAGMA foreign_keys=ON")
     except Exception:
         conn.close()
         raise
+    if diag_on:
+        t5 = slow_send_diag.now_pair()
+        slow_send_diag.step("C1", *slow_send_diag.diff_ms(t1, t2))
+        slow_send_diag.step("C2", *slow_send_diag.diff_ms(t2, t3))
+        slow_send_diag.step("C3", *slow_send_diag.diff_ms(t3, t4))
+        slow_send_diag.step("C4", *slow_send_diag.diff_ms(t4, t5))
     return conn
 
 

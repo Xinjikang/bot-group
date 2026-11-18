@@ -633,9 +633,16 @@ def route_message(
     被 @ 者可静默标已读、窄闸门豁免。
     """
     started = time.perf_counter()
+    from . import slow_send_diag
+    diag_on = slow_send_diag.enabled()  # 开关只读一次；未启用零埋点开销
+    d0 = slow_send_diag.now_pair() if diag_on else None  # S3 起点（wall+thread_cpu 成对）
+    d4 = d5 = d6 = None  # S4/S5、S5/S6、S6/S7 分界（话题路径逐步取样）
     if not conn.in_transaction:
-        conn.execute("BEGIN IMMEDIATE")
+        if diag_on:  # 写事务开始行（识别锁持有者）
+            slow_send_diag.txn_begin(conn)
+        conn.execute("BEGIN IMMEDIATE")  # S3：写锁获取
     locked = time.perf_counter()
+    d3 = slow_send_diag.now_pair() if diag_on else None
     silent = text is None
     skip = silent or (not attachment_ids and _is_ack_message(text))
     if silent and (sender_type != "bot" or thread_id is None):
@@ -688,6 +695,8 @@ def route_message(
         # 🔴 归零点必须先 commit 再报错：报错会跳过末尾 commit 触发事务回滚，
         # 若不显式提交，marker 不落库 → 归零失效 → 这对 bot 永久锁死。
         conn.commit()
+        if diag_on:
+            slow_send_diag.txn_end(conn, "commit")
         logger.info("互@回环断链：%s 与 %s 已互@满 %d 轮，拒绝第 7 条消息（不投递不通知用户，已归零）",
                     sender, other, PINGPONG_MAX_ROUNDS)
         raise RouteError(PINGPONG_ERR_MSG, 400)
@@ -720,6 +729,7 @@ def route_message(
                      (json.dumps(sorted(skipped)), thread_id))
         message_id = None
     else:
+        d4 = slow_send_diag.now_pair() if diag_on else None  # S4/S5 分界（消息插入前）
         cur = conn.execute(
             "INSERT INTO messages (project, ts, sender, sender_type, content, mentions, thread_id, parent_id, round, depth, need_reply) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -781,6 +791,8 @@ def route_message(
         )
 
         # 树模型：计算下一个发言者（DFS），唤醒一个
+        if diag_on:  # S5/S6 分界（下一发言者树计算前）
+            d5 = slow_send_diag.now_pair()
         nxt = _next_speaker(conn, thread_id)
         if nxt is not None:
             _set_turn(conn, thread_id, nxt["profile"], nxt["parent_id"], nxt["round"])
@@ -790,14 +802,33 @@ def route_message(
             settle_thread(conn, thread_id)
 
     prepared = time.perf_counter()
+    if diag_on and d5 is None:  # 点对点路径无树计算：S6 只含唤醒入队
+        d5 = slow_send_diag.now_pair()
     # Persist the message and its wake jobs atomically with one durable commit.
     enqueued = []
     for p, kind, trigger in wake_list:
         if wake.enqueue(conn, p, kind, trigger, message_id, thread_id=thread_id, project=project, commit=False):
             enqueued.append((p, kind, trigger))
     queued = time.perf_counter()
-    conn.commit()
+    d6 = slow_send_diag.now_pair() if diag_on else None  # S6/S7 分界（COMMIT 前）
+    conn.commit()  # S7：COMMIT
     finished = time.perf_counter()
+    if diag_on:
+        slow_send_diag.txn_end(conn, "commit")
+        d7 = slow_send_diag.now_pair()
+        slow_send_diag.step("S3", *slow_send_diag.diff_ms(d0, d3),
+                            message_id=message_id, thread_id=thread_id)
+        # S4=事务内前半（话题行/成员名单/提及校验/发言位/父消息查询）
+        slow_send_diag.step("S4", *slow_send_diag.diff_ms(d3, d4),
+                            message_id=message_id, thread_id=thread_id)
+        # S5=事务内中段（消息插入/执行记录/收件箱分发/活跃时间更新）
+        slow_send_diag.step("S5", *slow_send_diag.diff_ms(d4, d5),
+                            message_id=message_id, thread_id=thread_id)
+        # S6=事务内后段（下一发言者树计算/发言位更新/唤醒入队）
+        slow_send_diag.step("S6", *slow_send_diag.diff_ms(d5, d6),
+                            message_id=message_id, thread_id=thread_id)
+        slow_send_diag.step("S7", *slow_send_diag.diff_ms(d6, d7),
+                            message_id=message_id, thread_id=thread_id)
     if sender_type == 'user' or finished - started >= .1:
         logger.info('message.persist message_id=%s thread_id=%s lock_ms=%.1f prepare_ms=%.1f '
                     'enqueue_ms=%.1f commit_ms=%.1f total_ms=%.1f',

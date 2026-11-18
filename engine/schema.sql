@@ -197,6 +197,13 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 -- append-only 红线：本表只 INSERT；撤回只写 retract_by/retract_at 标记列，绝不 UPDATE content
 
+-- req#167 慢发送补丁：发送路径六处话题查询的按键索引。
+-- 轮次索引服务 _round_spoken/当轮用户消息/独立发言查找（router.py 4 处）；
+-- 回复索引服务 _edge_responded/DFS 接话查找（router.py 2 处）。
+-- 点对点互@回溯 2 处（thread_id IS NULL + sender_type/mentions LIKE）仍全扫，范围外。
+CREATE INDEX IF NOT EXISTS idx_messages_round ON messages(thread_id, sender, round, parent_id);
+CREATE INDEX IF NOT EXISTS idx_messages_reply ON messages(parent_id, sender);
+
 -- ============ inbox ============
 CREATE TABLE IF NOT EXISTS inbox (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

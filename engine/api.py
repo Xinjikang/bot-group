@@ -302,6 +302,8 @@ def post_msg(
     started = time.perf_counter()
     connected = routed = published = None
     outcome, message_id, conn = 'error', None, None
+    from . import slow_send_diag
+    diag_on = slow_send_diag.enabled()  # 开关只读一次；未启用零埋点开销
     try:
         conn = _conn()
         connected = time.perf_counter()
@@ -319,14 +321,20 @@ def post_msg(
 
         # 话题消息：project 从 thread 取（权威），忽略 body 传的
         if thread_id is not None:
+            s1 = slow_send_diag.now_pair() if diag_on else None
             thr = conn.execute("SELECT project FROM threads WHERE id=?", (thread_id,)).fetchone()
             if thr is not None:
                 project = thr["project"]
+            if diag_on:  # S1：threads 项目查询
+                slow_send_diag.step("S1", *slow_send_diag.diff_ms(s1, slow_send_diag.now_pair()))
 
         # req#83 task#146：斜杠命令分发（落到引擎 API 层，只对 sender=user，bot 的 /xxx 走普通消息）。
         # 命令处理有独立事务（commands 留痕），先分发再走普通路由。命令分支返回即结束，不落普通消息。
         if kind in ("user", "dev") and db.is_builtin_user(sender):
+            s2 = slow_send_diag.now_pair() if diag_on else None
             cmd_result = commands.dispatch(conn, project, sender, "user", text, thread_id)
+            if diag_on:  # S2：is_builtin_user + commands.dispatch 判断
+                slow_send_diag.step("S2", *slow_send_diag.diff_ms(s2, slow_send_diag.now_pair()))
             if cmd_result is not None:
                 routed = time.perf_counter()
                 events.bus.publish("command.executed", {
@@ -356,6 +364,8 @@ def post_msg(
         raise HTTPException(status_code=e.status, detail=str(e)) from e
     finally:
         if conn is not None:
+            if diag_on and conn.in_transaction:  # 异常路径：连接关闭=隐式回滚
+                slow_send_diag.txn_end(conn, "rollback")
             conn.close()
         if kind != 'bot':
             finished = time.perf_counter()
