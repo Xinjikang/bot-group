@@ -243,31 +243,99 @@ def scan_thread_idle(conn) -> int:
 
 
 def _scan_thread_idle(conn) -> int:
-    """来源3：讨论静默超时后暂停自动发言，等待用户恢复。"""
-    if not conn.in_transaction:
-        conn.execute("BEGIN IMMEDIATE")
+    """来源3：讨论静默超时后暂停自动发言，等待用户恢复。
+
+    req#169 缺陷①：选人/等待移锁外——topic_busy 含进程查询 I/O，绝不能在
+    写锁内执行；锁外先选（只读快照），锁内复核快照未变才写收口（新消息会
+    更新 last_active_at 并登记新待办——收口绝不覆盖新消息）。
+    """
+    from . import router
+    from . import project_readiness
     rows = conn.execute(
-        """
-        SELECT t.id, t.creator, t.last_active_at, t.project
-        FROM threads t
-        WHERE t.status='open'
-          AND NOT EXISTS (SELECT 1 FROM topic_dispatch d WHERE d.thread_id=t.id)
-        """
+        "SELECT t.id, t.last_active_at, t.project, t.status, t.turn_profile, "
+        "t.turn_parent_id, t.round, "
+        "(SELECT COALESCE(MAX(id),0) FROM messages m WHERE m.thread_id=t.id) AS max_msg "
+        "FROM threads t "
+        "WHERE t.status='open' "
+        "  AND NOT EXISTS (SELECT 1 FROM topic_dispatch d WHERE d.thread_id=t.id)"
     ).fetchall()
     now = time.time()
-    enqueued = 0
+    candidates = []
     for r in rows:
-        from . import project_readiness
         if not project_readiness.is_ready(conn, r['project']):
             continue
         t = _parse_ts(r["last_active_at"])
-        if t and now - t > THREAD_IDLE_SECONDS:
-            from . import router
+        if not (t and now - t > THREAD_IDLE_SECONDS):
+            continue
+        if wake.topic_busy(conn, r['id'], r['project']):
+            continue
+        candidates.append(r)
+    if not candidates:
+        return 0
+    return _settle_after_recheck(conn, candidates, router)
+
+
+def _scan_thread_all_responded(conn) -> int:
+    """来源4：open 话题某轮全员 pass/弃权 → 暂停自动讨论。
+
+    树模型（2026-09-11）：收口判定 = `_next_speaker` 返回 None（某轮全员
+    pass/弃权），不是旧的「全员发过言」。旧语义「发过言=表态」会在 Round 1
+    全员实质发言后误判收口，打断第二轮讨论。
+
+    req#169 缺陷①：收口选人（_next_speaker + topic_busy 进程 I/O）在写锁外，
+    锁内只复核+写（状态变化则重判，收口绝不覆盖锁外选人期间到达的新消息）。
+    """
+    from . import router
+    from . import project_readiness
+
+    rows = conn.execute(
+        "SELECT t.id, t.project, t.status, t.turn_profile, t.turn_parent_id, t.round, "
+        "t.turn_skipped, "
+        "(SELECT COALESCE(MAX(id),0) FROM messages m WHERE m.thread_id=t.id) AS max_msg "
+        "FROM threads t "
+        "WHERE t.status='open' "
+        "  AND NOT EXISTS (SELECT 1 FROM topic_dispatch d WHERE d.thread_id=t.id)"
+    ).fetchall()
+    candidates = []
+    for r in rows:
+        if not project_readiness.is_ready(conn, r['project']):
+            continue
+        if router._next_speaker(conn, r["id"]) is None:
             if wake.topic_busy(conn, r['id'], r['project']):
                 continue
+            candidates.append(r)
+    if not candidates:
+        return 0
+    return _settle_after_recheck(conn, candidates, router)
+
+
+def _settle_after_recheck(conn, candidates, router) -> int:
+    """锁外选好的收口候选：写锁内复核快照未变才 settle_thread。
+
+    req#169 缺陷①：写锁只在持久写入时持有（复核是几次点查），选人/等待/
+    进程 I/O 全部在锁外。快照键：threads 调度状态 + 消息水位——锁外选人期间
+    任何新消息/发言/状态变化都会让复核失败并跳过，下个扫描周期重判。
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    locked = time.perf_counter()
+    try:
+        enqueued = 0
+        for r in candidates:
+            cur = conn.execute(
+                "SELECT status, turn_profile, turn_parent_id, round, "
+                "(SELECT COALESCE(MAX(id),0) FROM messages m WHERE m.thread_id=t.id) AS max_msg "
+                "FROM threads t WHERE t.id=?", (r["id"],),
+            ).fetchone()
+            if cur is None or tuple(cur) != (r["status"], r["turn_profile"],
+                                             r["turn_parent_id"], r["round"], r["max_msg"]):
+                continue  # 状态变化：重判留到下个周期
             router.settle_thread(conn, r["id"])
             enqueued += 1
-    conn.commit()
+    finally:
+        held = (time.perf_counter() - locked) * 1000
+        conn.commit()
+    if held >= 10:
+        logger.warning("scanner settle write lock held %.1fms for %d topics", held, len(candidates))
     if enqueued:
         events.bus.publish("thread.updated", {})
     return enqueued
@@ -278,42 +346,6 @@ def scan_thread_all_responded(conn) -> int:
     conn.commit()
     with _SWITCH_LOCK:
         return _scan_thread_all_responded(conn)
-
-
-def _scan_thread_all_responded(conn) -> int:
-    """来源4：open 话题某轮全员 pass/弃权 → 暂停自动讨论。
-
-    树模型（2026-09-11）：收口判定 = `_next_speaker` 返回 None（某轮全员
-    pass/弃权），不是旧的「全员发过言」。旧语义「发过言=表态」会在 Round 1
-    全员实质发言后误判收口，打断第二轮讨论。
-    """
-    from . import router
-
-    if not conn.in_transaction:
-        conn.execute("BEGIN IMMEDIATE")
-
-    rows = conn.execute(
-        """
-        SELECT t.id, t.creator, t.project
-        FROM threads t
-        WHERE t.status='open'
-          AND NOT EXISTS (SELECT 1 FROM topic_dispatch d WHERE d.thread_id=t.id)
-        """
-    ).fetchall()
-    enqueued = 0
-    for r in rows:
-        from . import project_readiness
-        if not project_readiness.is_ready(conn, r['project']):
-            continue
-        if router._next_speaker(conn, r["id"]) is None:
-            if wake.topic_busy(conn, r['id'], r['project']):
-                continue
-            router.settle_thread(conn, r["id"])
-            enqueued += 1
-    conn.commit()
-    if enqueued:
-        events.bus.publish("thread.updated", {})
-    return enqueued
 
 
 def scan_requirements(conn) -> int:

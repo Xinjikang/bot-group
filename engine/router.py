@@ -340,11 +340,14 @@ def _dfs_subtree(
     depth: int,
     skipped: set[str],
     through_id: int,
+    active_members: set[str] | None = None,
 ) -> dict | None:
     """从 msg 的 @ 边 DFS 找第一个未回应的接话位。
 
     depth = 当前消息的深度（独立发言=0，接话=1..4）。depth >= MAX_DEPTH 剪枝。
     返回 {profile, parent_id, round, depth} 或 None。
+    active_members：本轮可唤醒成员（req#169 缺陷②：已停用成员不产生发言位——
+    @ 已停用成员等同无 @ 边，自动跳过不等超时；历史发言保留可追溯）。
     """
     if depth >= MAX_DEPTH:
         return None  # 深度到顶，剪枝
@@ -355,10 +358,11 @@ def _dfs_subtree(
         mentions = [str(m) for m in json.loads(msg["mentions"] or "[]")]
     except (TypeError, ValueError):
         mentions = []
-    members = set(_thread_members(conn, thread_id))
+    if active_members is None:
+        active_members = set(_round_members(conn, thread_id))
     for x in mentions:
-        if db.is_builtin_user(x) or x not in members:
-            continue  # 引擎不唤醒 user
+        if db.is_builtin_user(x) or x not in active_members:
+            continue  # 引擎不唤醒 user；停用/非成员不产生发言位
         slot = f"e:{msg_id}:{x}"
         if slot in skipped:
             continue
@@ -375,7 +379,8 @@ def _dfs_subtree(
             (msg_id, x, through_id),
         ).fetchone()
         if x_msg:
-            sub = _dfs_subtree(conn, thread_id, x_msg["id"], round_no, depth + 1, skipped, through_id)
+            sub = _dfs_subtree(conn, thread_id, x_msg["id"], round_no, depth + 1, skipped,
+                               through_id, active_members)
             if sub:
                 return sub
     return None
@@ -431,13 +436,15 @@ def _next_speaker(conn: sqlite3.Connection, thread_id: int, through_id: int = MA
             return {"profile": p, "parent_id": parent, "round": cur_round, "depth": depth}
 
     round_no = max(1, cur_round)
+    active_members = set(members)  # req#169 缺陷②：DFS @ 边只认可唤醒成员
     while round_no <= cur_round + 200:  # 防死循环上限
         # User interjections are handled after the active turn, before resuming members.
         for message in conn.execute(
             "SELECT id,depth FROM messages WHERE thread_id=? AND sender='user' AND round=? AND id<=? ORDER BY id",
             (thread_id, round_no, through_id),
         ).fetchall():
-            reply = _dfs_subtree(conn, thread_id, message["id"], round_no, message["depth"], skipped, through_id)
+            reply = _dfs_subtree(conn, thread_id, message["id"], round_no, message["depth"], skipped,
+                                 through_id, active_members)
             if reply:
                 return reply
         for p in members:
@@ -455,7 +462,8 @@ def _next_speaker(conn: sqlite3.Connection, thread_id: int, through_id: int = MA
                 (thread_id, p, round_no, through_id),
             ).fetchone()
             if p_msg:
-                sub = _dfs_subtree(conn, thread_id, p_msg["id"], round_no, 0, skipped, through_id)
+                sub = _dfs_subtree(conn, thread_id, p_msg["id"], round_no, 0, skipped,
+                                   through_id, active_members)
                 if sub:
                     return sub
         # 本轮所有成员独立发言完（或 user 跳过）
