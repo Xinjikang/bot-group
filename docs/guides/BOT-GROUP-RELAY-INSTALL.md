@@ -45,13 +45,23 @@ cd bot-group-relay
 bot-group-relay/
 ├── plugin.yaml  __init__.py  adapter.py  config.py  relay.py
 ├── streams.py  tickets.py  mcp_digest.py
+├── VERSION              # 发布版本标识（打包时注入，插件版本单一事实源）
 ├── mcp/                 # 随包 MCP（server.py + requirements.txt）
 ├── engine/              # mcp 运行时最小子集（mcp_http / process_query）
 ├── requirements.lock    # 随包 MCP 依赖锁
 └── install.sh
 ```
 
-## 4. MCP 随包自动注入
+## 4. 版本配套
+
+- 归档内 `VERSION` 文件由发布工具打包时注入**实际发布版本**（与主包同 tag），
+  插件握手上报的 `plugin_version`/`code_version` 读它（`config.plugin_version()`：
+  VERSION 文件 > `BOT_GROUP_RELAY_VERSION` 环境变量 > 源码常量兜底）。
+- 引擎按此值与自身发布版本同 tag 配套校验，不符 4003。**只允许同 tag 的
+  引擎发布包与插件分发包配套**；源码开发模式（无 VERSION 文件）只报源码常量，
+  仅用于本地调试，不与正式发布引擎互连。
+
+## 5. MCP 随包自动注入
 
 - 引擎按节点配置渲染 MCP 启动命令与 env，经 relay 帧下发、插件原样转发到本机
   gateway；用户装一次插件、填一次配置，**不单独配 MCP、不复制成员 token**。
@@ -63,7 +73,7 @@ bot-group-relay/
   替换」场景，引擎在 configure 前经 `mcp_snapshot_request` 同步问询，插件实时
   重算摘要回复——系统重核摘要再配会话，缓存不失效。
 
-## 5. 权限与共存
+## 6. 权限与共存
 
 - **chat/work 权限**：由引擎会话执行范围收窄（execution token 绑定 project/member/
   chat-work），插件不参与鉴权，只传令。
@@ -73,7 +83,7 @@ bot-group-relay/
   member/credential），引擎按 member 派发、插件按 home 维护本机连接，
   回复与事件各回各话题。
 
-## 6. 排障
+## 7. 排障
 
 | 现象 | 处置 |
 | --- | --- |

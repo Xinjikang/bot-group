@@ -13,8 +13,25 @@ from urllib.parse import urlsplit
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parent
-PACKAGE_VERSION = "1.0.0"
+PACKAGE_VERSION = "1.0.0"  # 源码开发模式兜底；发布包以 VERSION 文件为准（单一事实源）
 RELAY_PROTOCOL_VERSION = 1  # 与引擎 engine/relay_server.py RELAY_PROTOCOL_VERSION 一致
+
+
+def plugin_version() -> str:
+    """插件包版本（单一事实源）：随包 VERSION 文件（打包时注入实际发布版本）
+    > BOT_GROUP_RELAY_VERSION 环境变量 > 源码常量（开发模式兜底）。
+    引擎按此值与自身发布版本同 tag 配套校验，不符 4003。"""
+    version_file = PLUGIN_ROOT / "VERSION"
+    try:
+        content = version_file.read_text(encoding="utf-8").strip()
+        if content:
+            return content
+    except OSError:
+        pass
+    env = _env("BOT_GROUP_RELAY_VERSION")
+    if env:
+        return env
+    return PACKAGE_VERSION
 
 
 @dataclass(frozen=True)

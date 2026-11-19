@@ -124,7 +124,12 @@ def _relay_asset_files(root: Path) -> dict[str, Path]:
 
 
 def _make_relay_asset(root: Path, out_dir: Path, version: str) -> tuple[str, str]:
-    """产 bot-group-relay-<version>.tar.gz + 随包 manifest（含文件级 SHA256）。"""
+    """产 bot-group-relay-<version>.tar.gz + 随包 manifest（含文件级 SHA256）。
+
+    req#168 返修（manager 12223）：打包时把实际发布版本注入归档内 VERSION 文件
+    ——插件运行时优先读 VERSION（config.plugin_version 单一事实源），hello 上报
+    的 plugin_version/code_version 因此等于同批引擎发布版本，同 tag 配套校验通过；
+    不沿用 config.py 的源码常量（1.0.0）导致首连 4003。"""
     import tarfile
     files = _relay_asset_files(root)
     if not files:
@@ -132,6 +137,7 @@ def _make_relay_asset(root: Path, out_dir: Path, version: str) -> tuple[str, str
     out_dir.mkdir(parents=True, exist_ok=True)
     archive = out_dir / f"bot-group-relay-{version}.tar.gz"
     manifest = {"version": version, "plugin": "bot-group-relay", "files": {}}
+    version_bytes = (version + "\n").encode("utf-8")
     with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as tar:
         for rel, path in sorted(files.items()):
             data = path.read_bytes()
@@ -141,6 +147,14 @@ def _make_relay_asset(root: Path, out_dir: Path, version: str) -> tuple[str, str
             info.size = len(data)
             info.mode = 0o755 if rel.endswith(".sh") else 0o644
             tar.addfile(info, __import__("io").BytesIO(data))
+        # 版本注入：归档内 VERSION（不落工作树，只进归档），与 manifest 同源
+        version_sha = hashlib.sha256(version_bytes).hexdigest()
+        manifest["files"]["VERSION"] = {"sha256": version_sha,
+                                        "size": len(version_bytes)}
+        version_info = tarfile.TarInfo("VERSION")
+        version_info.size = len(version_bytes)
+        version_info.mode = 0o644
+        tar.addfile(version_info, __import__("io").BytesIO(version_bytes))
         manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
         info = tarfile.TarInfo("manifest.json")
         info.size = len(manifest_bytes)

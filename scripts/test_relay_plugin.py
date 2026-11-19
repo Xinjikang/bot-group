@@ -14,7 +14,9 @@ import asyncio
 import hashlib
 import importlib.util
 import json
+import os
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -28,27 +30,33 @@ _PLUGIN_DIR = Path(__file__).resolve().parents[1] / "plugins" / "hermes" / "bot-
 _PLUGIN_MODULE = "hermes_plugins.bot_group_relay"
 
 
-def _load_plugin():
-    """按 Hermes plugin_loader 的合成包方式加载插件（相对导入可用）。"""
-    parent = types.ModuleType("hermes_plugins")
-    parent.__path__ = [str(_PLUGIN_DIR.parent)]
-    sys.modules["hermes_plugins"] = parent
+def _load_plugin(plugin_dir: Path | None = None,
+                 module_name: str | None = None):
+    """按 Hermes plugin_loader 的合成包方式加载插件（相对导入可用）。
+
+    plugin_dir：插件目录（默认工作树）；解包目录加载时传入并给独立模块名，
+    避免与工作树模块混用。"""
+    plugin_dir = plugin_dir or _PLUGIN_DIR
+    module_name = module_name or _PLUGIN_MODULE
+    parent = types.ModuleType(module_name.split(".")[0])
+    parent.__path__ = [str(plugin_dir.parent)]
+    sys.modules[parent.__name__] = parent
     spec = importlib.util.spec_from_file_location(
-        f"{_PLUGIN_MODULE}.__init__", _PLUGIN_DIR / "__init__.py",
-        submodule_search_locations=[str(_PLUGIN_DIR)])
+        f"{module_name}.__init__", plugin_dir / "__init__.py",
+        submodule_search_locations=[str(plugin_dir)])
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[_PLUGIN_MODULE] = mod
+    sys.modules[module_name] = mod
     spec.loader.exec_module(mod)
     # 与 Hermes plugin_loader 一致：先注册全部子模块壳，再逐个 exec
     #（相对导入按需命中已注册对象，与执行顺序无关）。
     sub_specs = []
-    for sub_file in sorted(_PLUGIN_DIR.glob("*.py")):
+    for sub_file in sorted(plugin_dir.glob("*.py")):
         if sub_file.name == "__init__.py":
             continue
         sub_spec = importlib.util.spec_from_file_location(
-            f"{_PLUGIN_MODULE}.{sub_file.stem}", sub_file)
+            f"{module_name}.{sub_file.stem}", sub_file)
         sub_mod = importlib.util.module_from_spec(sub_spec)
-        sys.modules[f"{_PLUGIN_MODULE}.{sub_file.stem}"] = sub_mod
+        sys.modules[f"{module_name}.{sub_file.stem}"] = sub_mod
         setattr(mod, sub_file.stem, sub_mod)
         sub_specs.append((sub_file.stem, sub_spec, sub_mod))
     for _stem, sub_spec, sub_mod in sub_specs:
@@ -289,9 +297,9 @@ class TicketTests(unittest.TestCase):
 class DigestTests(unittest.TestCase):
     def test_fingerprint_deterministic_and_tracks_package(self):
         first = mcp_digest.mcp_fingerprint()
-        self.assertEqual(first, mcp_digest.mcp_fingerprint(), "摘要确定性")
-        # 摘要只覆盖 MCP 包与依赖清单：不含 env/令牌（结构键只有文件 hash）
         self.assertTrue(first)
+        second = mcp_digest.mcp_fingerprint()
+        self.assertEqual(first, second, "摘要口径确定性")
 
     def test_snapshot_has_interpreter_entry_version(self):
         snapshot = mcp_digest.snapshot("", code_version=PACKAGE_VERSION)
@@ -299,6 +307,74 @@ class DigestTests(unittest.TestCase):
         self.assertIn("mcp_fingerprint", snapshot)
         self.assertIn("mcp_python", snapshot)
         self.assertIn("mcp_entry", snapshot)
+
+
+class VersionTests(unittest.TestCase):
+    """req#168 返修（manager 12223）：插件包版本单一事实源=随包 VERSION 文件。
+
+    打包注入实际发布版本 → 解包后 hello 上报的 code_version/plugin_version 与
+    同批引擎发布版本一致（引擎按此同 tag 配套校验，不复用源码常量 1.0.0）。"""
+
+    def test_plugin_version_sources_priority(self):
+        config_mod = _plugin.config
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            with mock.patch.object(config_mod, "PLUGIN_ROOT", tmp):
+                # 无 VERSION 无 env → 源码常量兜底（开发模式）
+                self.assertEqual(config_mod.plugin_version(), "1.0.0")
+                # VERSION 文件优先（打包注入）
+                (tmp / "VERSION").write_text("v0.2.16\n", encoding="utf-8")
+                self.assertEqual(config_mod.plugin_version(), "v0.2.16")
+            # 环境变量次之
+            with mock.patch.dict(os.environ,
+                                 {"BOT_GROUP_RELAY_VERSION": "v0.9.9"}, clear=False):
+                self.assertEqual(config_mod.plugin_version(), "v0.9.9")
+
+    def test_release_archive_hello_version_matches_engine_version(self):
+        # 真实打包（engine/maintenance/make_release.py _make_relay_asset）→ 解包
+        # → 插件跑 hello：上报版本 == 打包版本 == 归档 VERSION（同批引擎同 tag）。
+        from engine.maintenance import make_release as make_release_mod
+        project_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as td:
+            out_dir = Path(td) / "out"
+            archive, _sha = make_release_mod._make_relay_asset(
+                project_root, out_dir, RELEASE_VERSION)
+            unpack_dir = Path(td) / "unpacked"
+            unpack_dir.mkdir()
+            import tarfile as _tarfile
+            with _tarfile.open(archive, "r:gz") as tar:
+                tar.extractall(unpack_dir)
+            # 归档内 VERSION 与 manifest 同源
+            self.assertEqual((unpack_dir / "VERSION").read_text(encoding="utf-8"),
+                             RELEASE_VERSION + "\n")
+            with _tarfile.open(archive, "r:gz") as tar:
+                manifest = json.loads(tar.extractfile("manifest.json").read())
+            self.assertEqual(manifest["version"], RELEASE_VERSION)
+            self.assertEqual(manifest["files"]["VERSION"]["sha256"],
+                             hashlib.sha256((RELEASE_VERSION + "\n").encode("utf-8")).hexdigest())
+            # 解包目录加载插件（独立模块名，不混用工作树模块）
+            unpacked = _load_plugin(unpack_dir, "unpacked_plugins.bot_group_relay")
+            self.assertEqual(unpacked.config.plugin_version(), RELEASE_VERSION,
+                             "解包插件版本=归档 VERSION（不回落源码常量）")
+            # 解包插件跑真实握手：FakeEngine 收到 hello 版本与打包版本一致
+            engine = FakeEngine().start()
+            self.addCleanup(engine.stop)
+            cfg = unpacked.config.RelayConfig(
+                engine_url=engine.url.replace("ws://", "http://"),
+                member=MEMBER, credential=CREDENTIAL, mcp_python="", home="/home/bot/.hermes")
+            client = unpacked.relay.RelayClient(cfg)
+            client.start()
+            try:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and client.generation != 7:
+                    time.sleep(0.02)
+                hello = engine.received[0]
+                self.assertEqual(hello["code_version"], RELEASE_VERSION)
+                self.assertEqual(hello["plugin_version"], RELEASE_VERSION)
+                self.assertNotEqual(hello["plugin_version"], "1.0.0",
+                                    "发布包绝不报源码常量版本")
+            finally:
+                client.stop()
 
 
 class RelayClientTests(unittest.TestCase):

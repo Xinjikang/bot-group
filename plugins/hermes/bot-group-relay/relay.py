@@ -91,7 +91,7 @@ class RelayClient:
 
     def _handshake(self, ws) -> bool:
         snapshot = mcp_digest.snapshot(self.cfg.mcp_python,
-                                       code_version=relay_config.PACKAGE_VERSION)
+                                       code_version=relay_config.plugin_version())
         hello = {"relay": {"kind": "hello"},
                  "member": self.cfg.member,
                  "credential": self.cfg.credential,
@@ -158,7 +158,7 @@ class RelayClient:
         if kind == "mcp_snapshot_request":
             # 同步问询：实时重算本次实际摘要（换包未异步上报也能取到本次值）
             snapshot = mcp_digest.snapshot(self.cfg.mcp_python,
-                                           code_version=relay_config.PACKAGE_VERSION)
+                                           code_version=relay_config.plugin_version())
             ws.send(json.dumps({
                 "relay": {"kind": "mcp_report", "request_id": meta.get("request_id"),
                           "generation": self._generation},
