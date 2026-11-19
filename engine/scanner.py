@@ -313,8 +313,9 @@ def _settle_after_recheck(conn, candidates, router) -> int:
     """锁外选好的收口候选：写锁内复核快照未变才 settle_thread。
 
     req#169 缺陷①：写锁只在持久写入时持有（复核是几次点查），选人/等待/
-    进程 I/O 全部在锁外。快照键：threads 调度状态 + 消息水位——锁外选人期间
-    任何新消息/发言/状态变化都会让复核失败并跳过，下个扫描周期重判。
+    进程 I/O 全部在锁外。快照键：threads 调度状态 + 消息水位 + 待办仍为空——
+    锁外选人期间任何新消息/发言/状态变化/新待办都会让复核失败并跳过，
+    下个扫描周期重判（收口绝不覆盖新消息、绝不吞掉新登记的待办）。
     """
     conn.execute("BEGIN IMMEDIATE")
     locked = time.perf_counter()
@@ -329,11 +330,19 @@ def _settle_after_recheck(conn, candidates, router) -> int:
             if cur is None or tuple(cur) != (r["status"], r["turn_profile"],
                                              r["turn_parent_id"], r["round"], r["max_msg"]):
                 continue  # 状态变化：重判留到下个周期
+            # 锁外选人期间可能登记了新待办（无新消息的 schedule，如静默 pass
+            # 触发的选人请求）——settle_thread 会删该话题待办，必须确认仍为空。
+            if conn.execute("SELECT 1 FROM topic_dispatch WHERE thread_id=? LIMIT 1",
+                            (r["id"],)).fetchone():
+                continue  # 新待办出现：跳过收口，保持 open 和原待办
             router.settle_thread(conn, r["id"])
             enqueued += 1
     finally:
-        held = (time.perf_counter() - locked) * 1000
         conn.commit()
+        # 采样含提交释放（manager 返修：写锁持有时间必须覆盖提交释放，不能
+        # 只算到复核/写结束）。
+        held = (time.perf_counter() - locked) * 1000
+    logger.debug("scanner settle write lock held %.1fms for %d topics", held, len(candidates))
     if held >= 10:
         logger.warning("scanner settle write lock held %.1fms for %d topics", held, len(candidates))
     if enqueued:

@@ -111,17 +111,22 @@ class TopicDispatchTests(unittest.TestCase):
 
         def disable_after_read(*args):
             result = select(*args)
-            if not calls:  # 只在锁外选人这一次停用；锁内重算不重复写（会撞写锁）
+            if not calls:
                 calls.append(1)
                 self.conn.execute("UPDATE project_members SET active=0 WHERE project='alpha' AND profile='default'")
                 self.conn.commit()
             return result
 
-        # req#169 缺陷②：选人快照后成员停用 → 提交前复核候选可唤醒，当轮
-        # 重判推进到活跃成员（不再等下一轮）。
+        # req#169 缺陷②：选人快照后成员停用 → 候选失效：释放写锁、保留 job
+        # （第一轮不写 turn），下轮锁外重选到活跃成员接棒。
         with closing(db.get_connection()) as worker, patch.object(router, "_next_speaker", disable_after_read):
             self.assertTrue(topic_dispatch.process_one(worker))
-        self.assertEqual(self.turn(), ("architect", None))
+        self.assertEqual(self.turn(), ("", None), "候选失效：job 保留、turn 未动")
+        self.assertTrue(topic_dispatch.process_one(self.conn))
+        self.assertEqual(self.turn(), ("architect", None), "活跃成员接棒")
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM wake_jobs WHERE profile='architect'").fetchone()[0], 1,
+            "接棒一次，不重复投递")
 
     def test_last_pass_with_already_saved_interjection(self):
         self.conn.execute("""UPDATE threads SET members='["default","user"]',turn_profile='default' WHERE id=?""",
@@ -242,6 +247,41 @@ class Req169RegressionTests(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT status FROM threads WHERE id=?",
                                           (tid,)).fetchone()[0], "settled")
 
+    def test_scanner_settle_skips_when_new_job_scheduled(self):
+        # manager 返修①：锁外选人期间登记了新待办（schedule 无新消息，消息
+        # 水位与五元组都不变）——锁内复核必须确认待办仍为空才收口，否则
+        # settle_thread 的 DELETE topic_dispatch 会把新任务吞掉。
+        tid = self._all_pass_open_topic()
+        real_busy = wake.topic_busy
+        slow = threading.Event()
+
+        def slow_busy(conn, thread_id, project):
+            slow.set()
+            time.sleep(2)
+            return real_busy(conn, thread_id, project)
+
+        def run_scanner():
+            # SQLite 连接必须在使用它的线程内创建
+            with closing(db.get_connection()) as scanner_conn:
+                scanner.scan_thread_all_responded(scanner_conn)
+
+        with patch.object(wake, "topic_busy", side_effect=slow_busy):
+            worker = threading.Thread(target=run_scanner, daemon=True)
+            worker.start()
+            self.assertTrue(slow.wait(timeout=5))
+            # 慢选人期间：从第二连接 schedule(tid, None) 并提交——新待办、
+            # 无新消息（消息水位与调度五元组均不变）
+            with closing(db.get_connection()) as c2:
+                topic_dispatch.schedule(c2, tid, None)
+                c2.commit()
+            worker.join(timeout=10)
+        # 收口被跳过：话题保持 open，新待办原 ID 保留（不被 settle 吞掉）
+        self.assertEqual(self.conn.execute("SELECT status FROM threads WHERE id=?",
+                                          (tid,)).fetchone()[0], "open")
+        pending = [r["id"] for r in self.conn.execute(
+            "SELECT id FROM topic_dispatch WHERE thread_id=?", (tid,)).fetchall()]
+        self.assertEqual(len(pending), 1, "无新消息的新待办不被收口删除、原 ID 保留")
+
     # ---- 反例二：停用成员不占发言位 ----
 
     def test_disabled_member_mention_skipped_in_selection(self):
@@ -267,7 +307,7 @@ class Req169RegressionTests(unittest.TestCase):
 
         def disable_after_read(*args):
             result = select(*args)  # 锁外选人返回 default
-            if not calls:  # 只在锁外选人这一次停用；锁内重算不重复写（会撞写锁）
+            if not calls:
                 calls.append(1)
                 self.conn.execute(
                     "UPDATE project_members SET active=0 WHERE project='alpha' AND profile='default'")
@@ -277,8 +317,23 @@ class Req169RegressionTests(unittest.TestCase):
         with closing(db.get_connection()) as worker, patch.object(
                 router, "_next_speaker", side_effect=disable_after_read):
             self.assertTrue(topic_dispatch.process_one(worker))
-        # 提交前复核候选可唤醒：default 已停用 → 当轮重判到 architect（活跃成员接棒）
+        # 候选失效：写锁已释放、job 保留、锁内无重算（_next_speaker 只被锁外
+        # 选人调用一次——旧实现锁内重算会带来第二次调用并占住写锁）
+        self.assertEqual(len(calls), 1, "候选失效不在写锁内重算")
+        self.assertEqual(self.turn_of(tid), ("", None), "第一轮不写 turn")
+        # 独立连接可立即取写锁（busy_timeout 短：重算若在锁内会 database is locked）
+        with closing(db.get_connection()) as probe:
+            probe.execute("PRAGMA busy_timeout=200")
+            started = time.monotonic()
+            probe.execute("BEGIN IMMEDIATE")
+            self.assertLess(time.monotonic() - started, 0.15, "候选失效后写锁立即可用")
+            probe.rollback()
+        # 下轮锁外重选：活跃成员 architect 接棒一次，不重复投递
+        self.assertTrue(topic_dispatch.process_one(self.conn))
         self.assertEqual(self.turn_of(tid), ("architect", None))
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM wake_jobs WHERE profile='architect'").fetchone()[0], 1,
+            "活跃成员接棒一次，不重复投递")
 
     # ---- 反例三：跨话题退避重试 ----
 

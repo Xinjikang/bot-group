@@ -128,11 +128,13 @@ def process_one(conn):
                 return True
             if _state(conn, tid) != state:
                 return True
-            # req#169 缺陷②：锁内复核候选可唤醒——选人快照后成员停用时重判，
-            # 推进到有效发言位（活跃成员接棒），绝不把 turn 落在停用成员身上。
+            # req#169 缺陷②：提交前复核候选可唤醒——选人快照后成员停用时，
+            # 候选已失效：释放写锁、保留原 job，下轮 process_one 锁外重新
+            # 选人（活跃成员接棒）。绝不锁内重算 _next_speaker：重算可能含
+            # 等待，会把写锁持有时间拉长，阻塞其他连接的发送。
             if nxt and topic and topic["status"] == "open" and not _candidate_wakeable(
                     conn, nxt, tid, topic["project"]):
-                nxt = router._next_speaker(conn, tid, job["through_id"])
+                return True
             # Consuming the durable head and writing the turn and wake are atomic.
             conn.execute("DELETE FROM topic_dispatch WHERE id=?", (job["id"],))
             if not topic or topic["status"] != "open" or _turn_consumed(conn, job):
