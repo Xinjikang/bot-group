@@ -270,6 +270,9 @@ def main(argv=None) -> None:
         # （非 *），伪造 X-Forwarded-For 不能改写 client 地址。
         proxy_headers=False, forwarded_allow_ips='127.0.0.1'))
     app.state.server = server
+    # req#172：重启恢复上次远程监听配置（失败不影响回环服务）。
+    from . import listen_control
+    listen_control.restore_on_startup()
     server.run()
 
 

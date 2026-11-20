@@ -185,6 +185,44 @@ def source_binding_remove(member: str, ip: str, identity=Depends(_resolve_identi
 
 
 # --------------------------------------------------------------------------
+# 远程监听动态配置（req#172，主人 12499-12509）：保存指定本机单播地址后实际
+# 开启受限监听（禁通配/禁失败回退通配）；监听状态从运行结果取得；与来源绑定
+# 联动（非回环监听生效前来源绑定先就绪）。停用回退回环。
+# --------------------------------------------------------------------------
+
+class _ListenBody(BaseModel):
+    address: str = ''   # ''=停用远程监听（回退回环）；否则为本机单播地址
+
+
+@router_api.get('/admin/listen/interfaces')
+def listen_interfaces(identity=Depends(_resolve_identity)):
+    """本机网卡具体单播地址枚举（IPv4/IPv6，不含通配/回环/链路本地/组播）。"""
+    _admin_only(identity, '监听配置仅限管理员')
+    from . import listen_control
+    return {'interfaces': listen_control.enumerate_interfaces()}
+
+
+@router_api.get('/admin/listen/status')
+def listen_status(identity=Depends(_resolve_identity)):
+    """实际监听状态（远程启用与否/实际地址端口从运行结果取得）。"""
+    _admin_only(identity, '监听配置仅限管理员')
+    from . import listen_control
+    return listen_control.status()
+
+
+@router_api.post('/admin/listen')
+def listen_apply(body: _ListenBody, identity=Depends(_resolve_identity)):
+    """保存监听地址并真实生效；失败保持本机可用并如实报错。"""
+    _admin_only(identity, '监听配置仅限管理员')
+    from . import listen_control
+    address = (body.address or '').strip() or None
+    try:
+        return listen_control.ensure(address)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
+# --------------------------------------------------------------------------
 # 远程 relay 节点管理（req#168）：注册/吊销凭据/状态/离线点名记录
 # --------------------------------------------------------------------------
 
