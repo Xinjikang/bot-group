@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -85,9 +86,13 @@ class PairingTests(unittest.TestCase):
     def setUp(self):
         plg = _plugin()
         self.pairing = plg["pairing"]
+        # 隔离：临时目录放配对状态（TMPDIR 未设时不得落项目根，
+        # 测试产物会污染工作树）
+        self._tmpdir = tempfile.TemporaryDirectory(prefix="pairing-test-")
+        self.addCleanup(self._tmpdir.cleanup)
         self._state_patch = patch.object(
             self.pairing, "_state_path",
-            return_value=Path(os.environ.get("TMPDIR", ".")) /
+            return_value=Path(self._tmpdir.name) /
             f"pairing-test-{threading.get_ident()}.json")
         self._state_patch.start()
         self.addCleanup(self._state_patch.stop)
@@ -181,10 +186,13 @@ class DirectionBDialTests(unittest.TestCase):
         finally:
             conn.close()
         self.plg = _plugin()
-        # 隔离：插件配对状态不落真实插件目录（防污染）
+        # 隔离：插件配对状态落临时目录（TMPDIR 未设时不得落项目根，
+        # 测试产物会污染工作树）
+        self._tmpdir = tempfile.TemporaryDirectory(prefix="pairing-dial-")
+        self.addCleanup(self._tmpdir.cleanup)
         self._state_patch = patch.object(
             self.plg["pairing"], "_state_path",
-            return_value=Path(os.environ.get("TMPDIR", ".")) /
+            return_value=Path(self._tmpdir.name) /
             f"pairing-dial-{threading.get_ident()}.json")
         self._state_patch.start()
         self.addCleanup(self._state_patch.stop)
