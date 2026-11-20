@@ -443,17 +443,28 @@ def reconcile_switch_resume(conn, member: str, *, now=None, client=None) -> dict
             # 已知回执：立即应用（点名标 submitted，不再保留待核对）
             applied += settle_by_submission(conn, member=member,
                                             submission_id=submission_id, now=now)
-        elif execution is not None and _try_reconcile(execution):
+        elif execution is not None and client is not None and _try_reconcile(execution):
             applied += settle_by_submission(conn, member=member,
                                             submission_id=submission_id, now=now)
         else:
             # 未知：持久保留 offline_waiting，禁止原提交重派
             kept += 1
     # 2) 该成员未终态执行记录做首次核对（manager node2064 附录口径：
-    #    execution unknown 经切换恢复也要核对，无未决点名同样生效）
-    in_flight = conn.execute(
-        "SELECT execution_id, state FROM hermes_executions "
-        "WHERE profile=? AND state NOT IN ('terminal')", (member,)).fetchall()
+    #    execution unknown 经切换恢复也要核对，无未决点名同样生效）。
+    #    client 给定时对全部未终态行做 session.resume 网络问询；client
+    #    为 None 时只对未受理（admission_id 空）行做 DB 级核对
+    #    （ledger.reconcile 短路标 uncertain，无网络、无 client 触碰；
+    #    已受理行的真实 client 问询由 restore_switch_after_handshake
+    #    从新链 lease 承担，避免 None.rpc 抛错与重复问询）。
+    if client is not None:
+        in_flight = conn.execute(
+            "SELECT execution_id, state FROM hermes_executions "
+            "WHERE profile=? AND state NOT IN ('terminal')", (member,)).fetchall()
+    else:
+        in_flight = conn.execute(
+            "SELECT execution_id, state FROM hermes_executions "
+            "WHERE profile=? AND state NOT IN ('terminal') "
+            "AND admission_id IS NULL", (member,)).fetchall()
     for execution in in_flight:
         _try_reconcile(execution)
     return {"applied": applied, "kept": kept, "reconciled": reconciled}
@@ -561,6 +572,66 @@ def complete_switch(conn, member: str, *, now=None, client=None) -> None:
         "direction=?,updated_at=? WHERE member=?",
         (target, _now() if now is None else now, member))
     conn.commit()
+
+
+def restore_switch_after_handshake(member: str, *, target: str,
+                                   generation: int) -> None:
+    """新链注册并能收发帧后的异步恢复（manager node2073）：独立工作线程
+    + 自有数据库连接，从新链取得 relay lease 对已受理执行做首次问询
+    （prompt.receipt 走真实 client——握手线程无 client，同步核对会
+    None.rpc 抛错），首次问询完成后按仍有效的本地代与目标清切换态、
+    恢复派发。未知结果持久保留、禁止原提交重派。
+
+    时序：握手先注册 link 再启动本线程；问询期间 switch_state 仍为
+    switching → 闸门 hold；完成后 complete_switch → 恢复普通派发。"""
+    import threading
+
+    def _worker() -> None:
+        conn = db.get_connection()
+        lease = None
+        try:
+            row = read_node(conn, member)
+            if row is None or row["switch_state"] != "switching" \
+                    or row["switch_target"] != target:
+                return  # 新切换意图已接管或状态已清：本链恢复放弃
+            from . import relay_server
+            link = relay_server.active_link(member)
+            if link is None or relay_server._db_generation(link) != generation:
+                return  # 本地代已失效：活动链已换新代
+            from . import hermes_gateway as gateway
+            lease = gateway._relay_lease(member)
+            from . import hermes_gateway_ledger as ledger
+            # 首次问询：该成员已受理（admission_id 非空）的未终态执行
+            # 逐个 session.resume 口径核对；问询失败/未知均保留待核对。
+            pending = conn.execute(
+                "SELECT execution_id FROM hermes_executions "
+                "WHERE profile=? AND state NOT IN ('terminal') "
+                "AND admission_id IS NOT NULL", (member,)).fetchall()
+            for execution in pending:
+                try:
+                    ledger.reconcile(lease, conn, execution["execution_id"])
+                except Exception:  # noqa: BLE001 问询失败保留待核对
+                    logger.warning("relay restore receipt query failed "
+                                   "member=%s execution=%s",
+                                   member, execution["execution_id"])
+            # 首次问询完成：仍有效的本地代与目标才恢复派发
+            link = relay_server.active_link(member)
+            row = read_node(conn, member)
+            if link is not None \
+                    and relay_server._db_generation(link) == generation \
+                    and row is not None and row["switch_state"] == "switching" \
+                    and row["switch_target"] == target:
+                complete_switch(conn, member)
+        except Exception:  # noqa: BLE001 恢复失败保持切换态待下轮
+            logger.exception("relay switch restore worker failed member=%s",
+                             member)
+        finally:
+            if lease is not None:
+                lease.close()
+            conn.close()
+
+    threading.Thread(target=_worker, daemon=True,
+                     name=f"relay-switch-restore-{member}").start()
 
 
 def set_direction(conn, member: str, direction: str, *, now=None) -> None:

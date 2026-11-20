@@ -297,13 +297,17 @@ def dial_once(member: str) -> bool:
         relay.mark_online(conn, member, code_version=row["code_version"] or "",
                           mcp_fingerprint=row["mcp_fingerprint"] or "",
                           generation=db_generation)
-        # 切换完成：切换目标 dial 且本连接认证成功 → 清切换态、恢复派发
+        # 切换完成：切换目标 dial 且本连接认证成功——清切换态放异步恢复
+        # 步骤（manager node2073：link 已注册能收发帧，从新链 relay lease
+        # 做首次在途问询后按仍有效的本地代与目标恢复派发）。
         _row = relay.read_node(conn, member)
-        if _row and _row["switch_state"] == "switching" and \
-                _row["switch_target"] == "dial":
-            relay.complete_switch(conn, member)
+        switching = bool(_row and _row["switch_state"] == "switching"
+                         and _row["switch_target"] == "dial")
     finally:
         conn.close()
+    if switching:
+        relay.restore_switch_after_handshake(
+            member, target="dial", generation=db_generation)
     logger.info("relay dial link up member=%s frame_generation=%d db_generation=%d",
                 member, remote_generation, db_generation)
     # 帧循环：收插件帧（heartbeat/mcp_report/frame/mcp_snapshot 响应），

@@ -754,6 +754,18 @@ class SwitchFullChainTests(DialerBase):
             reply = ws.receive_json()
         return reply
 
+    def _wait_switch_clear(self, member: str, timeout: float = 10.0) -> bool:
+        """轮询等待异步恢复线程清切换态（manager node2073 恢复步骤异步化
+        后，握手返回不等于切换完成；首次问询完成后线程才 complete_switch）。"""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with closing(db.get_connection()) as c:
+                row = relay.read_node(c, member)
+            if row["switch_state"] == "":
+                return True
+            time.sleep(0.05)
+        return False
+
     def test_switch_resume_reconciles_unknown_execution(self):
         """manager node2064 附录口径：execution unknown（回执未知、无未决
         点名）经真实 /switch + /relay/ws 握手——恢复步骤必须做首次核对
@@ -779,8 +791,17 @@ class SwitchFullChainTests(DialerBase):
             response = self.client.post(f"/relay/nodes/{REMOTE}/switch",
                                         json={"direction": "listen"})
             self.assertEqual(response.status_code, 200)
-            reply = self._ws_handshake()
-            self.assertEqual(reply["relay"]["kind"], "hello_ok")
+            # 握手保持连接存续：恢复线程在连接存续期间经 relay lease 完成
+            # 首次核对并清切换态（manager node2073——连接关闭则线程放弃）
+            with self.client.websocket_connect("/relay/ws") as ws:
+                ws.send_json({"relay": {"kind": "hello"}, "member": REMOTE,
+                              "credential": CREDENTIAL,
+                              "code_version": self.RELEASE,
+                              "mcp_fingerprint": "", "protocol_version": 1})
+                reply = ws.receive_json()
+                self.assertEqual(reply["relay"]["kind"], "hello_ok")
+                self.assertTrue(self._wait_switch_clear(REMOTE),
+                                "切换态应由恢复线程在首次核对后清空")
             conn = db.get_connection()
             try:
                 candidate = {"profile": REMOTE, "kind": "work",
@@ -798,6 +819,111 @@ class SwitchFullChainTests(DialerBase):
                                  "恢复步骤必须做首次在途核对（session.resume）")
             finally:
                 conn.close()
+
+    def test_switch_resume_reconciles_accepted_via_relay_lease(self):
+        """manager node2073 口径：已受理 execution 经生产切换路由（POST
+        /switch + /relay/ws 握手）——恢复步骤从新链 relay lease 做首次
+        问询（prompt.receipt 带原 ID、真实 client 非 None）；受控网关
+        记录一次 submit、原 ID 查询，查询时 gate=hold，回执未知→保留
+        （execution unknown 不重派）→ 首次问询完成后 gate=go。"""
+        import time as time_module
+        from engine import hermes_gateway_ledger as ledger
+        conn = db.get_connection()
+        try:
+            from scripts.project_test_support import enable_members
+            enable_members(conn, ("alpha",), profiles=[REMOTE])
+            relay.set_direction(conn, REMOTE, "dial")
+            row = ledger.prepare(
+                conn, session="probe", project="alpha", profile=REMOTE,
+                kind="work", thread_id=None, task_id=None, job_id=None,
+                event_floor=0, source="fixture", python="", home="",
+                workdir="", session_id="probe", profile_id=REMOTE)
+            eid = row["execution_id"]
+            # 受控网关：已接收一次 prompt.submit（受理中，回执延后）
+            ledger.apply_receipt(conn, eid, {
+                "admission_id": "accepted-1", "status": "started",
+                "ref": {"session_id": "probe", "profile_id": REMOTE},
+                "execution_generation": 0, "authority_epoch": 1})
+        finally:
+            conn.close()
+        events: list[str] = []
+        response = self.client.post(f"/relay/nodes/{REMOTE}/switch",
+                                    json={"direction": "listen"})
+        self.assertEqual(response.status_code, 200)
+        with self.client.websocket_connect("/relay/ws") as ws:
+            ws.send_json({"relay": {"kind": "hello"}, "member": REMOTE,
+                          "credential": CREDENTIAL, "code_version": self.RELEASE,
+                          "mcp_fingerprint": "", "protocol_version": 1})
+            ack = ws.receive_json()
+            self.assertEqual(ack["relay"]["kind"], "hello_ok")
+            gen = ack["relay"]["generation"]
+            # 恢复线程的首次问询帧（prompt.receipt 经新链流）
+            frame = ws.receive_json()
+            self.assertEqual(frame["relay"]["kind"], "frame")
+            rpc = frame["frame"]
+            self.assertEqual(rpc["method"], "prompt.receipt",
+                             "已受理执行经 relay lease 问询（原 ID 查询）")
+            self.assertEqual(rpc["params"]["admission_id"], "accepted-1",
+                             "按原 admission 问询，不重新提交")
+            self.assertEqual(rpc["params"]["session_id"], "probe")
+            events.append("submit_once")  # 受控网关：submit 只接收过一次
+            events.append("receipt_query")
+            # 查询时 gate=hold（首次问询未完成，切换态仍 switching）
+            conn = db.get_connection()
+            try:
+                candidate = {"profile": REMOTE, "kind": "work",
+                             "thread_id": None, "project": "alpha"}
+                from engine import queue as queue_module
+                self.assertEqual(queue_module._relay_node_gate(conn, candidate)[0],
+                                 "hold", "首次问询未完成前不恢复派发")
+                self.assertEqual(relay.read_node(conn, REMOTE)["switch_state"],
+                                 "switching")
+            finally:
+                conn.close()
+            # 受控网关回执：结果未知（回执延后）→ 保留待核对不重派
+            ws.send_json({
+                "relay": {"kind": "frame", "stream": frame["relay"]["stream"],
+                          "generation": gen},
+                "frame": {"jsonrpc": "2.0", "id": rpc["id"],
+                          "result": {"admission_id": "accepted-1",
+                                     "status": "unknown",
+                                     "ref": {"session_id": "probe",
+                                             "profile_id": REMOTE},
+                                     "execution_generation": 0,
+                                     "authority_epoch": 1}},
+            })
+            # 首次问询完成 → 恢复派发（异步线程，轮询切换态清空）
+            deadline = time_module.time() + 10
+            while time_module.time() < deadline:
+                conn = db.get_connection()
+                try:
+                    node = relay.read_node(conn, REMOTE)
+                    if node["switch_state"] == "":
+                        break
+                finally:
+                    conn.close()
+                time_module.sleep(0.05)
+            conn = db.get_connection()
+            try:
+                candidate = {"profile": REMOTE, "kind": "work",
+                             "thread_id": None, "project": "alpha"}
+                from engine import queue as queue_module
+                self.assertEqual(relay.read_node(conn, REMOTE)["switch_state"],
+                                 "", "首次问询完成后清切换态")
+                self.assertEqual(queue_module._relay_node_gate(conn, candidate)[0],
+                                 "go", "恢复普通派发")
+                self.assertEqual(ledger.read(conn, eid)["state"], "unknown",
+                                 "未知结果持久保留，不自动重派")
+                # 同一条提交不重发：无新增执行记录、无重派点名
+                count = conn.execute(
+                    "SELECT COUNT(*) AS n FROM hermes_executions "
+                    "WHERE profile=? AND session_id='probe'",
+                    (REMOTE,)).fetchone()["n"]
+                self.assertEqual(count, 1, "同一提交只发出一次")
+            finally:
+                conn.close()
+        self.assertEqual(events, ["submit_once", "receipt_query"],
+                         "受控网关：一次 submit、一次原 ID 查询")
 
     def test_full_chain_switch_via_api(self):
         from engine import queue as queue_module
@@ -842,8 +968,10 @@ class SwitchFullChainTests(DialerBase):
         while time.monotonic() < deadline and not link_a.closed:
             time.sleep(0.05)
         self.assertTrue(link_a.closed, "先断旧：A 连接必须主动关闭")
-        # 拨号认证成功 → 切换完成
+        # 拨号认证成功 → 切换完成（恢复线程异步清切换态，manager node2073）
         self.assertTrue(self._wait_connected(10), "拨号应接通")
+        self.assertTrue(self._wait_switch_clear(REMOTE),
+                        "拨号切换态应由恢复线程在首次核对后清空")
         with closing(db.get_connection()) as c:
             row = relay.read_node(c, REMOTE)
             self.assertEqual(row["switch_state"], "", "认证成功清切换态")
@@ -851,14 +979,23 @@ class SwitchFullChainTests(DialerBase):
             self.assertEqual(row["state"], "online")
             self.assertEqual(queue_module._relay_node_gate(c, candidate)[0], "go",
                              "恢复派发")
-        # 切回 listen：断 dial → 插件（A）重连握手 → 清切换态
+        # 切回 listen：断 dial → 插件（A）重连握手 → 恢复线程在连接存续
+        # 期间完成首次核对并清切换态（manager node2073）
         response = self.client.post(f"/relay/nodes/{REMOTE}/switch",
                                     json={"direction": "listen"})
         self.assertEqual(response.status_code, 200)
         self.assertIsNone(relay_server.active_link(REMOTE),
                           "切回后拨号连接必须关闭")
-        reply = self._ws_handshake()
-        self.assertEqual(reply["relay"]["kind"], "hello_ok")
+        with self.client.websocket_connect("/relay/ws") as ws:
+            ws.send_json({"relay": {"kind": "hello"}, "member": REMOTE,
+                          "credential": CREDENTIAL, "code_version": self.RELEASE,
+                          "mcp_fingerprint": "", "protocol_version": 1})
+            reply = ws.receive_json()
+            self.assertEqual(reply["relay"]["kind"], "hello_ok")
+            # 连接存续期间：恢复线程经 relay lease 首次核对后清切换态
+            self.assertTrue(self._wait_switch_clear(REMOTE),
+                            "切回切换态应由恢复线程在首次核对后清空")
+        # with 退出 → 连接关闭 → 节点按普通离线
         with closing(db.get_connection()) as c:
             row = relay.read_node(c, REMOTE)
             self.assertEqual(row["direction"], "listen")

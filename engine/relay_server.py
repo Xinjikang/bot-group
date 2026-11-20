@@ -389,10 +389,11 @@ async def relay_ws(websocket: WebSocket) -> None:
             generation = relay.generation_advance(conn, member)
             relay.mark_online(conn, member, code_version=code_version,
                               mcp_fingerprint=mcp_fingerprint, generation=generation)
-            # req#173：切换目标为 listen 时，本连接（方向 A）认证成功即切换
-            # 完成——清切换态、恢复派发（direction 已是 listen 则不变）。
-            if relay.read_node(conn, member)["switch_state"] == "switching":
-                relay.complete_switch(conn, member)
+            # req#173：切换目标为 listen 时，本连接（方向 A）认证成功即
+            # 切换完成——但清切换态放在 link 注册（能收发帧）之后的异步
+            # 恢复步骤（manager node2073：新链先注册，再经 relay lease
+            # 做首次在途问询，完成后按仍有效的本地代与目标恢复派发）。
+            switching = relay.read_node(conn, member)["switch_state"] == "switching"
         finally:
             conn.close()
     except (ValueError, KeyError, TypeError):
@@ -418,6 +419,12 @@ async def relay_ws(websocket: WebSocket) -> None:
              "engine_url": _engine_url()},
             ensure_ascii=False))
         logger.info("relay link up member=%s generation=%d", member, generation)
+        if switching:
+            # manager node2073：link 已注册且 hello_ok 已发（能收发帧），
+            # 异步从新链取得 relay lease 做首次在途问询后再恢复派发；
+            # 问询期间 switch_state 仍 switching → 闸门 hold。
+            relay.restore_switch_after_handshake(
+                member, target="listen", generation=generation)
         while True:
             try:
                 raw = await websocket.receive_text()
