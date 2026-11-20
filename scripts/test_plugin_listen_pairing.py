@@ -699,6 +699,13 @@ class DirectionBDialTests(unittest.TestCase):
         self.assertFalse(any("/heartbeat".startswith(p)
                              for p in rs_mod._HTTP_TUNNEL_PREFIXES),
                          "心跳不属发送依赖，保持拒绝")
+        # manager 12781：写端点精确匹配 method+path，startswith 不得扩大
+        self.assertTrue(rs_mod._tunnel_allowed("POST", "/msg"))
+        self.assertFalse(rs_mod._tunnel_allowed("GET", "/msg"),
+                         "GET /msg 不得放行")
+        self.assertFalse(rs_mod._tunnel_allowed("POST", "/msgx"),
+                         "POST /msgx 不得放行（前缀扩大误放）")
+        self.assertTrue(rs_mod._tunnel_allowed("GET", "/mcp-operations/abc"))
 
     def test_engine_dials_plugin_listen_and_frames(self):
         plg_listen = self.plg["listen"]

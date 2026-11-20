@@ -467,15 +467,24 @@ def _engine_url() -> str:
         return f"http://{config.host()}:{config.port()}"
 
 
-# req#173 方向 B：插件 MCP loopback 隧道转来的 HTTP 请求可转发的路径前缀
+# req#173 方向 B：插件 MCP loopback 隧道转来的 HTTP 请求可转发的路径
 # 白名单（引擎自身 API 的只读/业务端点；/admin/* 管理端点绝不隧道转发）。
-# manager 12774（话题 10150）：/msg 是随包 group_send 的业务端点（POST，按
-# 成员会话凭据+执行范围鉴权，不属管理接口）；/mcp-operations/ 是 recorded
-# 写入链的回执查询（mcp_http 对 POST /msg 挂 X-Group-Operation-Id，结果
-# 不明时靠它按成员/凭据作用域只读核对——消息落库一次的幂等依赖）。心跳
+# manager 12774/12781：写端点必须**精确匹配 method+path**（startswith
+# 会扩大匹配范围）——POST /msg 是随包 group_send 的业务端点（按成员会话
+# 凭据+执行范围鉴权，不属管理接口）；/mcp-operations/ 是 recorded 写入链
+# 的回执查询（mcp_http 对 POST /msg 挂 X-Group-Operation-Id，结果不明时
+# 靠它按成员/凭据作用域只读核对——消息落库一次的幂等依赖）。心跳
 # /heartbeat 不属发送依赖，保持拒绝。
+_HTTP_TUNNEL_EXACT = (("POST", "/msg"),)
 _HTTP_TUNNEL_PREFIXES = ("/health", "/projects/", "/tasks/", "/group/",
-                         "/members", "/auth/status", "/msg", "/mcp-operations/")
+                         "/members", "/auth/status", "/mcp-operations/")
+
+
+def _tunnel_allowed(method: str, path: str) -> bool:
+    """白名单判定：写端点精确匹配 method+path，只读/业务端点前缀匹配。"""
+    return ((method, path) in _HTTP_TUNNEL_EXACT
+            or any(path.startswith(prefix)
+                   for prefix in _HTTP_TUNNEL_PREFIXES))
 
 
 def _serve_relay_http_request(link: NodeLink, envelope: dict) -> None:
@@ -525,7 +534,7 @@ def _serve_relay_http_request(link: NodeLink, envelope: dict) -> None:
                        "credential_missing_or_mismatched", link.member, method, path)
     elif method not in ("GET", "POST"):
         status, resp_headers, resp_body = 405, {}, '{"error": "method not allowed"}'
-    elif not any(path.startswith(prefix) for prefix in _HTTP_TUNNEL_PREFIXES):
+    elif not _tunnel_allowed(method, path):
         logger.warning("relay http_request blocked member=%s path=%s", link.member, path)
         status, resp_headers, resp_body = 403, {}, '{"error": "path not allowed"}'
     else:
