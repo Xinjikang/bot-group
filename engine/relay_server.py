@@ -467,21 +467,25 @@ def _engine_url() -> str:
         return f"http://{config.host()}:{config.port()}"
 
 
-# req#173 方向 B：插件 MCP loopback 隧道转来的 HTTP 请求可转发的路径
-# 白名单（引擎自身 API 的只读/业务端点；/admin/* 管理端点绝不隧道转发）。
-# manager 12774/12781：写端点必须**精确匹配 method+path**（startswith
-# 会扩大匹配范围）——POST /msg 是随包 group_send 的业务端点（按成员会话
-# 凭据+执行范围鉴权，不属管理接口）；/mcp-operations/ 是 recorded 写入链
-# 的回执查询（mcp_http 对 POST /msg 挂 X-Group-Operation-Id，结果不明时
-# 靠它按成员/凭据作用域只读核对——消息落库一次的幂等依赖）。心跳
-# /heartbeat 不属发送依赖，保持拒绝。
+# manager 12774/12781/12796：写端点必须**精确匹配 method+path**
+# （startswith 会扩大匹配范围）——POST /msg 是随包 group_send 的业务端点
+# （按成员会话凭据+执行范围鉴权，不属管理接口）。回执查询 /mcp-operations/
+# 是 recorded 写入链的只读核对（mcp_http 对 POST /msg 挂
+# X-Group-Operation-Id，结果不明时靠它按成员/凭据作用域核对——消息落库
+# 一次的幂等依赖）：仅 GET + 单个非空操作号（空路径/多段/其他方法拒）。
+# 心跳 /heartbeat 不属发送依赖，保持拒绝。
 _HTTP_TUNNEL_EXACT = (("POST", "/msg"),)
 _HTTP_TUNNEL_PREFIXES = ("/health", "/projects/", "/tasks/", "/group/",
-                         "/members", "/auth/status", "/mcp-operations/")
+                         "/members", "/auth/status")
+_RECEIPT_PREFIX = "/mcp-operations/"
 
 
 def _tunnel_allowed(method: str, path: str) -> bool:
-    """白名单判定：写端点精确匹配 method+path，只读/业务端点前缀匹配。"""
+    """白名单判定：写端点精确匹配 method+path；回执查询仅 GET 且单个
+    非空操作号；其余只读/业务端点前缀匹配（manager 12796）。"""
+    if method == "GET" and path.startswith(_RECEIPT_PREFIX):
+        operation_id = path[len(_RECEIPT_PREFIX):].strip()
+        return bool(operation_id) and "/" not in operation_id
     return ((method, path) in _HTTP_TUNNEL_EXACT
             or any(path.startswith(prefix)
                    for prefix in _HTTP_TUNNEL_PREFIXES))

@@ -705,7 +705,14 @@ class DirectionBDialTests(unittest.TestCase):
                          "GET /msg 不得放行")
         self.assertFalse(rs_mod._tunnel_allowed("POST", "/msgx"),
                          "POST /msgx 不得放行（前缀扩大误放）")
+        # manager 12796：回执查询仅 GET + 单个非空操作号
         self.assertTrue(rs_mod._tunnel_allowed("GET", "/mcp-operations/abc"))
+        self.assertFalse(rs_mod._tunnel_allowed("GET", "/mcp-operations/"),
+                         "空操作号拒绝")
+        self.assertFalse(rs_mod._tunnel_allowed("GET", "/mcp-operations/a/b"),
+                         "多段路径拒绝")
+        self.assertFalse(rs_mod._tunnel_allowed("POST", "/mcp-operations/abc"),
+                         "回执查询只读，POST 拒绝")
 
     def test_engine_dials_plugin_listen_and_frames(self):
         plg_listen = self.plg["listen"]
