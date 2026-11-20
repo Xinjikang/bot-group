@@ -32,13 +32,15 @@ ECS 上 Hermes gateway 常驻（systemd 托管），bot-group 插件随 gateway 
 - ECS 安装位置：运行 gateway 的 Hermes 用户插件目录 `$HERMES_HOME/plugins/bot-group-relay/`（默认 home 即 `~/.hermes/plugins/bot-group-relay/`），由 Hermes gateway 加载。
 - 引擎侧接收连接与派发的代码在 bot-group `engine/`。
 
-### 2.2 引擎远程入口（2026-11-20 bot-36/bot-43 收口，后续需求范围）
+### 2.2 引擎远程入口（2026-11-20 主人定调：来源 IP 白名单，不绑定 Tailscale）
 
-- 现状：引擎只监听 127.0.0.1:8180（本机实测坐实），ECS 经 Tailscale 连不上；Tailscale Serve 未配置。入口未就绪时联调挂起，报告口径「节点管理页可用，ECS 入口尚未就绪」。
-- 主人已定「全程界面操作」：改 .env、配防火墙一律不作为交给用户的联调步骤；主机监听/防火墙变更要么由非用户角色执行并写清责任人，要么等设置页远程访问能力（单独需求、单独范围）。
-- 实现选项（倾向双栈）：引擎保留 127.0.0.1 本地监听，另起一个只绑 Tailscale 地址的监听（或内置 tailnet 反代）——本地 MCP `engine_url()` 派生不受影响，本地成员与远程成员各走各的入口。
-- 双栈实现约束（2026-11-20 bot-43，已坐实）：①第二个 Server 不得复用同一 FastAPI app 的 lifespan——engine/main.py:136 的 app 挂 `lifespan → _engine_lifespan`（queue worker/scanner/topic-dispatch/hud 全在生命周期里），双起会跑两份=双唤醒/双扫描；第二 Server 必须 `lifespan="off"` 由回环实例独占生命周期，或拆不含 lifespan 的 app 复用同一套路由。②Tailscale 监听必须失败重试（引擎启动早于 tailscaled 时 bind 失败不能导致起不来）+ 地址变更可重绑。③MCP 的 HTTP 也走 tailnet 入口——第二监听服务完整 API，不能只挂 `/relay/ws`。
-- 安全约束：不裸绑 0.0.0.0（必须绑 0.0.0.0 则限源 Tailscale 100.64.0.0/10）；不用 Funnel（公网）；用 Tailscale Serve 保持回环时先配管理员密码（否则 client.host=127.0.0.1 被 access.py 给 dev 免密身份）。
+- **访问控制=来源 IP 白名单（设置菜单管理）**：只放行本机回环 + 名单内来源 IP；即使两台机器在同一局域网或 VPN，未填的源也要被拒。成员凭据继续负责身份核验——两层独立：白名单管「谁可以访问」，凭据管「你是谁」。
+- 连接方式不限：Tailscale 只是可选方式之一；主人自搭服务容器、局域网、VPN 均可。引擎按部署形态监听可达地址，白名单与监听方式解耦。
+- 验收口径（bot-36 2026-11-20）：普通局域网两台测试机，一台加入白名单、一台不加入，HTTP 与 WebSocket 均验证放行/拒绝，再验证移除即时生效。
+- 现状：引擎监听 127.0.0.1:8180（本机实测坐实），远程入口未就绪时联调挂起，报告口径「节点管理页可用，ECS 入口尚未就绪」。
+- 主人已定「全程界面操作」：改 .env、配防火墙一律不作为交给用户的联调步骤；监听与白名单变更由设置菜单完成（#171 引擎+界面任务）。
+- 实现约束（沿用已坐实结论）：双栈监听时第二 Server 禁用 lifespan（engine/main.py:136 app 挂 `lifespan → _engine_lifespan`，双起=queue worker/scanner/topic-dispatch/hud 跑两份）；监听失败重试 + 地址变更可重绑；第二监听服务完整 API（MCP HTTP 同走远程入口）。
+- 安全约束：默认拒绝（白名单外全拒）；监听绑 0.0.0.0 时白名单是唯一防线，必须先于监听生效。
 
 ## 3. 全程 relay 架构
 
