@@ -32,6 +32,13 @@ ECS 上 Hermes gateway 常驻（systemd 托管），bot-group 插件随 gateway 
 - ECS 安装位置：运行 gateway 的 Hermes 用户插件目录 `$HERMES_HOME/plugins/bot-group-relay/`（默认 home 即 `~/.hermes/plugins/bot-group-relay/`），由 Hermes gateway 加载。
 - 引擎侧接收连接与派发的代码在 bot-group `engine/`。
 
+### 2.2 引擎远程入口（2026-11-20 bot-36/bot-43 收口，后续需求范围）
+
+- 现状：引擎只监听 127.0.0.1:8180（本机实测坐实），ECS 经 Tailscale 连不上；Tailscale Serve 未配置。入口未就绪时联调挂起，报告口径「节点管理页可用，ECS 入口尚未就绪」。
+- 主人已定「全程界面操作」：改 .env、配防火墙一律不作为交给用户的联调步骤；主机监听/防火墙变更要么由非用户角色执行并写清责任人，要么等设置页远程访问能力（单独需求、单独范围）。
+- 实现选项（倾向双栈）：引擎保留 127.0.0.1 本地监听，另起一个只绑 Tailscale 地址的监听（或内置 tailnet 反代）——本地 MCP `engine_url()` 派生不受影响，本地成员与远程成员各走各的入口。
+- 安全约束：不裸绑 0.0.0.0（必须绑 0.0.0.0 则限源 Tailscale 100.64.0.0/10）；不用 Funnel（公网）；用 Tailscale Serve 保持回环时先配管理员密码（否则 client.host=127.0.0.1 被 access.py 给 dev 免密身份）。
+
 ## 3. 全程 relay 架构
 
 引擎沿用现有 gateway 会话执行全链路，把 GatewayClient 的本地 socket 抽成 transport：本机 bot 走本机直连，远程 bot 走「引擎↔插件 WSS + 插件↔本机 gateway」帧转发。传输内容仍是现有 JSON-RPC 帧（session.create / session.configure / prompt.submit / stop 等），ledger、调度、UI 不动。
