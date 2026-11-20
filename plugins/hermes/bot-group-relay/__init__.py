@@ -53,7 +53,7 @@ def is_connected(config) -> bool:
 
 
 def register(ctx) -> None:
-    """插件入口：注册 bot-group-relay 平台适配器。"""
+    """插件入口：注册 bot-group-relay 平台适配器 + CLI 子命令 + 私聊工具。"""
     try:
         from .adapter import RelayAdapter
         ctx.register_platform(
@@ -72,3 +72,17 @@ def register(ctx) -> None:
     except Exception:
         logger.warning("bot-group relay: failed to register platform adapter",
                        exc_info=True)
+    # req#173：listen/register 双工具（CLI + 私聊，身份核验各自入口把关）
+    try:
+        from . import cli as cli_mod
+        ctx.register_cli_command(
+            name="bot-group-relay",
+            help="bot-group relay 插件控制（listen/register/status）",
+            setup_fn=cli_mod.register_cli, handler_fn=cli_mod.dispatch)
+    except Exception:
+        logger.warning("bot-group relay: failed to register CLI command", exc_info=True)
+    try:
+        from . import tools as tools_mod
+        tools_mod.register_tools(ctx)
+    except Exception:
+        logger.warning("bot-group relay: failed to register tools", exc_info=True)

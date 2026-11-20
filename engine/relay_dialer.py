@@ -147,14 +147,16 @@ def stop_dial(member: str) -> None:
 
 
 def _hello_payload(conn, member: str) -> dict | None:
-    """构造拨号 hello：成员凭据+引擎代码版本+协议版本（与方向 A 同口径）。"""
+    """构造拨号 hello：成员凭据（一次性配对凭据，随 dial_endpoint 保存，
+    拨号 hello 出示、插件侧兑换）+ 引擎代码版本 + 协议版本 + 方向。"""
     row = relay.read_node(conn, member)
-    if row is None or row["credential_revoked"] or not row["credential_hash"]:
+    if row is None or row["credential_revoked"]:
         return None
+    endpoint = relay.read_dial_endpoint(conn, member) or {}
     return {
         "relay": {"kind": "hello"},
         "member": member,
-        "credential": "",  # 凭据值不落库，拨号侧无法读出——由插件侧校验公钥
+        "credential": str(endpoint.get("pairing_token") or ""),
         "code_version": relay_server._engine_release_version() or "",
         "protocol_version": relay_server.RELAY_PROTOCOL_VERSION,
         "direction": "dial",

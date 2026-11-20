@@ -317,6 +317,7 @@ class _DialEndpointBody(BaseModel):
     port: int
     tls: bool = True
     fingerprint: str = ''   # 证书指纹（自签/专有 CA 必填），空=走系统 CA 校验
+    pairing_token: str = ''  # 插件 listen 签发的一次性配对凭据（拨号 hello 出示）
 
 
 @router_api.post('/relay/nodes/{member}/dial-endpoint')

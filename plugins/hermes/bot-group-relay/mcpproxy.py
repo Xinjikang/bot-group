@@ -1,0 +1,121 @@
+"""MCP loopback 代理（req#173 验收 3）：方向 B 的 MCP 隧道。
+
+ECS 本机 MCP 进程把 GROUP_ENGINE_URL 指向本代理（127.0.0.1:<port>）：
+收到的 HTTP 请求 → 打包 http_request 帧沿已认证 listen 通道发给引擎 →
+引擎转发到自身 API（回环）按成员权限执行 → http_response 帧回传 →
+本代理应答 MCP 客户端。来源在引擎侧是配对连接（非回环），权限核对
+走成员级来源绑定同一套逻辑。
+"""
+from __future__ import annotations
+
+import json
+import logging
+import queue
+import threading
+import urllib.parse
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+logger = logging.getLogger(__name__)
+
+# request_id → 响应队列（等待引擎 http_response 帧）
+_PENDING: dict[str, queue.Queue] = {}
+_PENDING_LOCK = threading.Lock()
+_ACTIVE_SERVER: "MCPProxyServer | None" = None
+
+# 透传的请求头白名单（去 hop-by-hop 与宿主无关头）
+_FORWARD_HEADERS = ("content-type", "accept", "user-agent", "authorization",
+                    "x-group-key", "x-group-profile")
+
+
+class _Handler(BaseHTTPRequestHandler):
+    server: "MCPProxyServer"
+
+    def log_message(self, fmt, *args):  # 日志脱敏：不记 URL 查询（可能含凭据）
+        logger.info("mcpproxy %s %s", self.command, self.path.split("?")[0])
+
+    def _do(self) -> None:
+        parsed = urllib.parse.urlsplit(self.path)
+        path = parsed.path
+        if parsed.query:
+            path += "?" + parsed.query
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length).decode("utf-8", errors="replace") if length else ""
+        headers = {key.lower(): value for key, value in self.headers.items()
+                   if key.lower() in _FORWARD_HEADERS}
+        request_id = uuid.uuid4().hex
+        try:
+            self.server.listener.forward_http_request(
+                request_id, self.command, path, headers, body)
+        except ConnectionError as exc:
+            self.send_response(502)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(
+                {"error": f"relay channel not authenticated: {exc}"}).encode())
+            return
+        waiter: queue.Queue = queue.Queue(maxsize=1)
+        with _PENDING_LOCK:
+            _PENDING[request_id] = waiter
+        try:
+            status, resp_headers, resp_body = waiter.get(timeout=300)
+        except queue.Empty:
+            with _PENDING_LOCK:
+                _PENDING.pop(request_id, None)
+            self.send_response(504)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"error": "engine response timeout"}')
+            return
+        self.send_response(int(status or 502))
+        for key, value in resp_headers.items():
+            self.send_header(key, value)
+        self.end_headers()
+        payload = (resp_body or "").encode("utf-8", errors="replace")
+        self.wfile.write(payload)
+
+    do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = _do
+
+
+class MCPProxyServer:
+    """loopback HTTP 代理：只绑 127.0.0.1（ECS 本地进程访问）。"""
+
+    def __init__(self, listener, port: int):
+        self.listener = listener
+        self._httpd = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
+        self.port = self._httpd.server_address[1]
+        self._thread = threading.Thread(target=self._httpd.serve_forever,
+                                        name="bot-group-mcpproxy", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+        logger.info("mcpproxy listening on 127.0.0.1:%s", self.port)
+
+    def stop(self) -> None:
+        self._httpd.shutdown()
+        self._httpd.server_close()
+
+
+def deliver_http_response(request_id: str, status, headers: dict, body: str) -> None:
+    """listen 通道收到 http_response 帧：交还对应代理请求的等待线程。"""
+    with _PENDING_LOCK:
+        waiter = _PENDING.pop(request_id, None)
+    if waiter is not None:
+        waiter.put((status, headers or {}, body or ""))
+
+
+def start_proxy(listener, port: int = 0) -> MCPProxyServer:
+    """启动 loopback 代理；port=0 自动分配。"""
+    global _ACTIVE_SERVER
+    if _ACTIVE_SERVER is not None:
+        _ACTIVE_SERVER.stop()
+    _ACTIVE_SERVER = MCPProxyServer(listener, port)
+    _ACTIVE_SERVER.start()
+    return _ACTIVE_SERVER
+
+
+def stop_proxy() -> None:
+    global _ACTIVE_SERVER
+    if _ACTIVE_SERVER is not None:
+        _ACTIVE_SERVER.stop()
+        _ACTIVE_SERVER = None

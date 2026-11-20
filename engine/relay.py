@@ -521,6 +521,8 @@ def set_dial_endpoint(conn, member: str, endpoint: dict, *, now=None) -> None:
         "port": port,
         "tls": bool(endpoint.get("tls", True)),
         "fingerprint": str(endpoint.get("fingerprint") or "").strip(),
+        # 一次性配对凭据（插件 listen 签发）：拨号 hello 出示，插件侧兑换
+        "pairing_token": str(endpoint.get("pairing_token") or "").strip(),
     }
     conn.execute(
         "UPDATE relay_nodes SET dial_endpoint=?,updated_at=? WHERE member=?",

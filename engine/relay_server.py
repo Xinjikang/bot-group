@@ -297,6 +297,12 @@ def _route_inbound(link: NodeLink, envelope: dict) -> bool:
         logger.info("relay mcp_report member=%s fingerprint=%s", link.member,
                     fingerprint[:16] if fingerprint else "")
         return True
+    if kind == "http_request":
+        # req#173 方向 B 的 MCP loopback 隧道：插件代理转来的 HTTP 请求沿
+        # 已认证通道回引擎——引擎转发到自身回环 API（按成员头凭据执行），
+        # 响应以 http_response 帧回传。成员身份=配对连接成员（握手已认证）。
+        _serve_relay_http_request(link, envelope)
+        return True
     stream = meta.get("stream")
     transport = link.transports.get(stream) if isinstance(stream, str) else None
     frame = envelope.get("frame")
@@ -428,3 +434,59 @@ def _engine_url() -> str:
     except Exception:  # noqa: BLE001
         from . import config
         return f"http://{config.host()}:{config.port()}"
+
+
+# req#173 方向 B：插件 MCP loopback 隧道转来的 HTTP 请求可转发的路径前缀
+# 白名单（引擎自身 API 的只读/业务端点；/admin/* 管理端点绝不隧道转发）。
+_HTTP_TUNNEL_PREFIXES = ("/health", "/projects/", "/tasks/", "/group/", "/auth/status")
+
+
+def _serve_relay_http_request(link: NodeLink, envelope: dict) -> None:
+    """已认证成员通道上的 HTTP 请求 → 转发到引擎自身回环 API →
+    http_response 帧回传。路径白名单外一律 403；响应脱敏记录。"""
+    import urllib.error
+    import urllib.request
+    request_id = (envelope.get("relay") or {}).get("request_id") or ""
+    method = str(envelope.get("method") or "GET").upper()
+    path = str(envelope.get("path") or "/")
+    headers = {str(k).lower(): str(v) for k, v in
+               (envelope.get("headers") or {}).items()}
+    body = envelope.get("body") or ""
+    response = None
+    if method not in ("GET", "POST"):
+        status, resp_headers, resp_body = 405, {}, '{"error": "method not allowed"}'
+    elif not any(path.startswith(prefix) for prefix in _HTTP_TUNNEL_PREFIXES):
+        logger.warning("relay http_request blocked member=%s path=%s", link.member, path)
+        status, resp_headers, resp_body = 403, {}, '{"error": "path not allowed"}'
+    else:
+        from . import config
+        url = f"http://{config.host()}:{config.port()}{path}"
+        request = urllib.request.Request(
+            url, data=body.encode() if body else None, method=method)
+        for key, value in headers.items():
+            request.add_header(key, value)
+        try:
+            response = urllib.request.urlopen(request, timeout=120)
+            resp_body = response.read().decode("utf-8", errors="replace")
+            status = response.status
+            resp_headers = {k: v for k, v in response.headers.items()}
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            resp_headers = {k: v for k, v in exc.headers.items()}
+            resp_body = exc.read().decode("utf-8", errors="replace")
+        except OSError as exc:
+            status, resp_headers, resp_body = 502, {}, \
+                json.dumps({"error": f"engine loopback unreachable: {exc}"})
+        finally:
+            if response is not None:
+                response.close()
+    logger.info("relay http_request member=%s %s %s -> %s",
+                link.member, method, path, status)
+    try:
+        link.send_text(json.dumps({
+            "relay": {"kind": "http_response", "request_id": request_id,
+                      "generation": link.generation},
+            "status": status, "headers": resp_headers, "body": resp_body,
+        }, ensure_ascii=False))
+    except ConnectionError:
+        logger.warning("relay http_response send failed member=%s", link.member)
