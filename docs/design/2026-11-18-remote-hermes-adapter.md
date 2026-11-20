@@ -37,6 +37,7 @@ ECS 上 Hermes gateway 常驻（systemd 托管），bot-group 插件随 gateway 
 - 现状：引擎只监听 127.0.0.1:8180（本机实测坐实），ECS 经 Tailscale 连不上；Tailscale Serve 未配置。入口未就绪时联调挂起，报告口径「节点管理页可用，ECS 入口尚未就绪」。
 - 主人已定「全程界面操作」：改 .env、配防火墙一律不作为交给用户的联调步骤；主机监听/防火墙变更要么由非用户角色执行并写清责任人，要么等设置页远程访问能力（单独需求、单独范围）。
 - 实现选项（倾向双栈）：引擎保留 127.0.0.1 本地监听，另起一个只绑 Tailscale 地址的监听（或内置 tailnet 反代）——本地 MCP `engine_url()` 派生不受影响，本地成员与远程成员各走各的入口。
+- 双栈实现约束（2026-11-20 bot-43，已坐实）：①第二个 Server 不得复用同一 FastAPI app 的 lifespan——engine/main.py:136 的 app 挂 `lifespan → _engine_lifespan`（queue worker/scanner/topic-dispatch/hud 全在生命周期里），双起会跑两份=双唤醒/双扫描；第二 Server 必须 `lifespan="off"` 由回环实例独占生命周期，或拆不含 lifespan 的 app 复用同一套路由。②Tailscale 监听必须失败重试（引擎启动早于 tailscaled 时 bind 失败不能导致起不来）+ 地址变更可重绑。③MCP 的 HTTP 也走 tailnet 入口——第二监听服务完整 API，不能只挂 `/relay/ws`。
 - 安全约束：不裸绑 0.0.0.0（必须绑 0.0.0.0 则限源 Tailscale 100.64.0.0/10）；不用 Funnel（公网）；用 Tailscale Serve 保持回环时先配管理员密码（否则 client.host=127.0.0.1 被 access.py 给 dev 免密身份）。
 
 ## 3. 全程 relay 架构
