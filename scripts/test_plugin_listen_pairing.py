@@ -18,6 +18,7 @@ from unittest.mock import patch
 
 from engine import db, relay, relay_dialer, relay_server
 from scripts.unified_test_support import isolated_database
+from scripts.project_test_support import enable_members
 
 # 插件模块经合成包路径导入（目录名带连字符不能直接 import 包）
 PLUGIN_DIR = Path(__file__).resolve().parents[1] / "plugins" / "hermes" / "bot-group-relay"
@@ -449,6 +450,186 @@ class EntryAuthorizationTests(unittest.TestCase):
                 patch.object(tools, "_caller_identity", return_value="admin"):
             result = json.loads(tools.bot_group_relay_status({}))
             self.assertTrue(result["ok"])
+
+
+class EntryIdentityAndProxyTests(unittest.TestCase):
+    """manager node2060 ①③：受信调用者身份（不可信 session_id 不绕过）、
+    CLI 交互/非交互配对材料语义、listen 必启随包 MCP 代理。"""
+
+    def test_caller_identity_is_trusted_profile_not_session_id(self):
+        """私聊入口身份=受信 HERMES_PROFILE；不可信 kwargs 的 session_id
+        命中白名单也绝不放行（会话句柄不是身份，manager node2060 ①）。"""
+        plg = _plugin()
+        tools = plg["tools"]
+        with patch.object(tools, "_authorized_profiles", return_value={"admin"}), \
+                patch.dict(os.environ, {"HERMES_PROFILE": ""}):
+            # kwargs 带 session_id='admin'（不可信注入）→ 身份解析为空 → 拒绝
+            result = json.loads(tools.bot_group_relay_status(
+                {}, session_id="admin", task_id="t-1"))
+            self.assertFalse(result["ok"], "不可信的 session_id 不得成为授权身份")
+        with patch.object(tools, "_authorized_profiles", return_value={"admin"}), \
+                patch.dict(os.environ, {"HERMES_PROFILE": "admin"}):
+            result = json.loads(tools.bot_group_relay_status({}))
+            self.assertTrue(result["ok"], "受信 HERMES_PROFILE 身份放行")
+
+    def test_cli_interactive_outputs_pairing_material(self):
+        """CLI 交互（TTY）：输出含 pairing_url（用户本人在场可取配对材料）；
+        非交互：链接写 0600 文件、stdout 不含链接（manager node2060 ①）。"""
+        plg = _plugin()
+        cli = plg["cli"]
+        synthetic = {
+            "status": "listening", "address": "127.0.0.1", "port": 18443,
+            "advertise": "203.0.113.10", "scheme": "wss",
+            "fingerprint_short": "aabbccdd", "expires_in_seconds": 600,
+            "proxy_port": 18444, "proxy_url": "http://127.0.0.1:18444",
+            "pairing_url": "wss://203.0.113.10:18443/relay/ws?pairing_token=SECRET",
+            "link_file": "", "_server": None,
+        }
+        args = type("Args", (), {
+            "command": "listen", "address": "127.0.0.1", "port": 18443,
+            "advertise": "203.0.113.10", "member": "remote1",
+            "cert": "", "key": "", "no_tls": False, "no_proxy": False,
+            "proxy_port": 0})()
+        listen_mod = plg["listen"]
+        captured = {}
+
+        def fake_foreground(cleanup):
+            captured["cleanup"] = cleanup
+            return 0
+
+        from io import StringIO
+        # 交互：stdout 含配对链接
+        interactive_out = StringIO()
+        interactive_out.isatty = lambda: True
+        with patch.object(listen_mod, "listen_serve", return_value=synthetic), \
+                patch.object(cli, "_run_foreground", side_effect=fake_foreground), \
+                patch.object(cli.sys, "stdout", new=interactive_out), \
+                patch.object(cli, "_require_authorized", return_value=None):
+            rc = cli.dispatch(args)
+        self.assertEqual(rc, 0)
+        self.assertIn("SECRET", interactive_out.getvalue(),
+                      "交互终端必须输出配对链接")
+        # 非交互：stdout 不含链接（link_to_file=True 走 0600 文件）
+        captured.clear()
+        noninteractive_out = StringIO()
+        noninteractive_out.isatty = lambda: False
+        with patch.object(listen_mod, "listen_serve", return_value=synthetic), \
+                patch.object(cli, "_run_foreground", side_effect=fake_foreground), \
+                patch.object(cli.sys, "stdout", new=noninteractive_out), \
+                patch.object(cli, "_require_authorized", return_value=None):
+            rc = cli.dispatch(args)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("SECRET", noninteractive_out.getvalue(),
+                         "非交互 stdout 不得含链接")
+        self.assertIn("link_file", noninteractive_out.getvalue())
+
+    def test_listen_starts_mcpproxy_by_default(self):
+        """listen_serve 正常路径必启动随包 MCP 代理（manager node2060 ②）：
+        结果带 proxy_port/proxy_url；no_proxy 时跳过。"""
+        plg = _plugin()
+        listen_mod = plg["listen"]
+        mcpproxy = plg["mcpproxy"]
+        import tempfile
+        tmp_dir = Path(tempfile.mkdtemp(prefix="bgrelay-proxy-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp_dir, ignore_errors=True))
+        self.addCleanup(mcpproxy.stop_proxy)
+        with patch.object(listen_mod, "STATE_DIR", tmp_dir), \
+                patch.object(listen_mod, "validate_bind_address",
+                             return_value="127.0.0.1"):
+            result = listen_mod.listen_serve(
+                address="127.0.0.1", port=0, advertise="127.0.0.1",
+                member=REMOTE, home=os.environ.get("TMPDIR", "."),
+                mcp_python="", tls=True)
+        self.assertTrue(result["proxy_port"] > 0, "正常路径必须启动 MCP 代理")
+        self.assertEqual(result["proxy_url"],
+                         f"http://127.0.0.1:{result['proxy_port']}")
+        # 真实代理端口已监听（GROUP_ENGINE_URL 指向后即可用）
+        import socket
+        probe = socket.create_connection(("127.0.0.1", result["proxy_port"]),
+                                         timeout=2)
+        probe.close()
+        # 清理：server+代理停止（资源清理路径）
+        result["_server"].stop()
+        mcpproxy.stop_proxy()
+        # no_proxy 跳过：proxy_port=0
+        with patch.object(listen_mod, "STATE_DIR", tmp_dir), \
+                patch.object(listen_mod, "validate_bind_address",
+                             return_value="127.0.0.1"):
+            result2 = listen_mod.listen_serve(
+                address="127.0.0.1", port=0, advertise="127.0.0.1",
+                member=REMOTE, home=os.environ.get("TMPDIR", "."),
+                mcp_python="", tls=True, no_proxy=True)
+        self.assertEqual(result2["proxy_port"], 0, "no_proxy 明确跳过代理")
+        result2["_server"].stop()
+
+
+class EngineTunnelIdentityTests(unittest.TestCase):
+    """manager node2060 ②：隧道转发绑定实际通道成员身份——外部身份头
+    过滤、注入 X-Group-Profile=link.member、响应脱敏记录。"""
+
+    def setUp(self):
+        ctx = isolated_database()
+        ctx.__enter__()
+        self.addCleanup(ctx.__exit__, None, None, None)
+        conn = db.get_connection()
+        enable_members(conn, ("alpha",), profiles=[REMOTE])
+        relay.register_node(conn, REMOTE, CREDENTIAL, display_name="r")
+        conn.close()
+
+    def test_forward_binds_channel_member_identity(self):
+        fake_ws = _SyncWs()
+        link = relay_dialer.DialLink(REMOTE, fake_ws, 1, peer_ip="203.0.113.9")
+        captured_headers = {}
+        captured_url = {}
+
+        class _Resp:
+            status = 200
+            headers = {"content-type": "application/json"}
+
+            def read(self):
+                return b'{"projects": ["alpha"]}'
+
+            def close(self):
+                pass
+
+        def fake_urlopen(request, timeout=120):  # noqa: ARG001
+            captured_headers.update({k.lower(): v for k, v in request.headers.items()})
+            captured_url["full"] = request.full_url
+            captured_url["method"] = request.get_method()
+            return _Resp()
+
+        envelope = {
+            "relay": {"kind": "http_request", "request_id": "r-1",
+                      "generation": 1},
+            "method": "GET", "path": "/projects/?read=1",
+            "headers": {
+                # 外部身份头：必须全部过滤，绝不透传（不得冒充管理员/他人）
+                "authorization": "Bearer admin-secret",
+                "x-group-key": "external-key",
+                "x-group-profile": "someone-else",
+                "content-type": "application/json",
+                "accept": "application/json",
+            },
+            "body": "",
+        }
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            relay_server._serve_relay_http_request(link, envelope)
+        # 下游请求头：外部身份头全滤，注入实际通道成员
+        self.assertNotIn("authorization", captured_headers,
+                         "外部 authorization 不得透传")
+        self.assertNotIn("x-group-key", captured_headers)
+        self.assertEqual(captured_headers.get("x-group-profile"), REMOTE,
+                         "下游授权上下文必须绑定实际配对通道成员")
+        self.assertEqual(captured_headers.get("content-type"), "application/json",
+                         "内容头正常透传")
+        self.assertIn("/projects/", captured_url["full"])
+        # http_response 帧回传（插件代理收单）
+        frames = fake_ws.sent
+        self.assertTrue(frames, "必须回传 http_response 帧")
+        response = json.loads(frames[-1])
+        self.assertEqual(response["relay"]["kind"], "http_response")
+        self.assertEqual(response["status"], 200)
+        self.assertEqual(response["relay"]["request_id"], "r-1")
 
 
 if __name__ == "__main__":

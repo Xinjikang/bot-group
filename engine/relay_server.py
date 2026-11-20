@@ -452,14 +452,24 @@ _HTTP_TUNNEL_PREFIXES = ("/health", "/projects/", "/tasks/", "/group/", "/auth/s
 
 def _serve_relay_http_request(link: NodeLink, envelope: dict) -> None:
     """已认证成员通道上的 HTTP 请求 → 转发到引擎自身回环 API →
-    http_response 帧回传。路径白名单外一律 403；响应脱敏记录。"""
+    http_response 帧回传。路径白名单外一律 403；响应脱敏记录。
+
+    manager node2060 ②：下游授权上下文绑定实际通道成员——外部身份头
+    （authorization/x-group-key/x-group-profile）一律过滤丢弃，注入
+    X-Group-Profile=<link.member>（配对通道成员身份，绝不以本地管理员
+    或外部身份执行）；只透传内容头（content-type/accept/user-agent）。"""
     import urllib.error
     import urllib.request
     request_id = (envelope.get("relay") or {}).get("request_id") or ""
     method = str(envelope.get("method") or "GET").upper()
     path = str(envelope.get("path") or "/")
-    headers = {str(k).lower(): str(v) for k, v in
-               (envelope.get("headers") or {}).items()}
+    raw_headers = {str(k).lower(): str(v) for k, v in
+                   (envelope.get("headers") or {}).items()}
+    # 过滤外部身份头（manager node2060 ②）：隧道请求的身份由通道成员决定
+    forward_headers = {k: v for k, v in raw_headers.items()
+                       if k in ("content-type", "accept", "user-agent")}
+    # 下游授权上下文：实际配对通道成员（引擎 API 按 X-Group-Profile 解析）
+    forward_headers["x-group-profile"] = link.member
     body = envelope.get("body") or ""
     response = None
     if method not in ("GET", "POST"):
@@ -472,7 +482,7 @@ def _serve_relay_http_request(link: NodeLink, envelope: dict) -> None:
         url = f"http://{config.host()}:{config.port()}{path}"
         request = urllib.request.Request(
             url, data=body.encode() if body else None, method=method)
-        for key, value in headers.items():
+        for key, value in forward_headers.items():
             request.add_header(key, value)
         try:
             response = urllib.request.urlopen(request, timeout=120)

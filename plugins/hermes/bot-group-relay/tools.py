@@ -27,14 +27,20 @@ def _authorized_profiles() -> set[str]:
 
 
 def _caller_identity(kwargs: dict) -> str:
-    """从网关注入的会话上下文提取调用者身份（渠道发送者/profile）。
-    字段按 Hermes 工具 dispatcher 实际注入的 kwargs 为准（session_id 等
-    由插件契约保证；不同版本字段名有差异时按常见名依次尝试）。"""
-    for key in ("session_id", "task_id"):
-        value = kwargs.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return ""
+    """受信任的调用者身份（manager node2060 ①）：私聊工具 handler 由
+    Hermes 宿主 dispatcher 调用，注入的 session_id/task_id 是会话句柄
+    不是身份、不可作授权依据。受信身份取宿主 per-profile 环境
+    HERMES_PROFILE（hosted 进程按 profile 隔离），兜底宿主 API
+    get_active_profile_name；两者都不可用 → 空（拒绝）。
+    session_id/task_id 只进审计日志，绝不参与授权。"""
+    profile = (os.environ.get("HERMES_PROFILE") or "").strip()
+    if profile:
+        return profile
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        return get_active_profile_name() or ""
+    except Exception:  # noqa: BLE001 宿主 API 不可用按未授权处理
+        return ""
 
 
 def _check_authorized(kwargs: dict) -> bool:
@@ -44,7 +50,10 @@ def _check_authorized(kwargs: dict) -> bool:
     caller = _caller_identity(kwargs)
     if not caller:
         return False
-    return caller in allowed
+    granted = caller in allowed
+    logger.info("bot-group relay tool auth profile=%s granted=%s (session=%s)",
+                caller, granted, kwargs.get("session_id") or "")
+    return granted
 
 
 def _tool_result(ok: bool, message: str, **fields) -> str:
@@ -71,15 +80,17 @@ def bot_group_listen(args: dict, **kwargs) -> str:
             advertise=str(args.get("advertise") or ""),
             member=str(args.get("member") or ""),
             tls=not bool(args.get("no_tls")),
+            proxy_port=int(args.get("proxy_port") or 0),
             # 私聊上下文：链接绝不进入对话历史——写 0600 文件
             link_to_file=True)
-    except (ValueError, RuntimeError) as exc:
+    except (ValueError, RuntimeError, OSError) as exc:
         return _tool_result(False, f"listen 失败：{exc}")
     return _tool_result(
-        True, "监听已开启，配对链接已写入本机 0600 文件",
+        True, "监听已开启（网关进程持有存活），配对链接已写入本机 0600 文件",
         address=result["address"], port=result["port"],
         advertise=result["advertise"], scheme=result["scheme"],
         fingerprint_short=result["fingerprint_short"],
+        proxy_port=result.get("proxy_port", 0),
         link_file=result.get("link_file", ""))
 
 
@@ -99,8 +110,16 @@ def bot_group_register(args: dict, **kwargs) -> str:
         mcp_python="", home=os.environ.get("HERMES_HOME") or
         str(Path.home() / ".hermes"))
     client = relay_mod.RelayClient(cfg)
-    client.start()
-    return _tool_result(True, "方向 A 注册连接已启动", member=member)
+    try:
+        client.start()
+    except Exception as exc:  # noqa: BLE001 启动失败清理资源后如实报错
+        try:
+            client.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        return _tool_result(False, f"register 启动失败：{exc}")
+    return _tool_result(True, "方向 A 注册连接已启动（网关进程持有存活）",
+                        member=member)
 
 
 def register_tools(ctx) -> None:

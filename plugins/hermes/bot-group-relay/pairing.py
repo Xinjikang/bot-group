@@ -166,16 +166,28 @@ def pairing_metadata() -> dict:
         }
 
 
-def write_link_file(pairing_url: str, *, path: str | None = None) -> str | None:
+def write_link_file(pairing_url: str, *, path: str | None = None) -> str:
     """非交互终端输出：链接写 0600 文件（POSIX），不落 stdout。
-    path=None 时写到插件 state/pairing-link.txt。返回文件路径。"""
+    manager node2060 ①：从创建时即限权（os.open O_CREAT 0600，非事后
+    chmod——创建瞬间无宽权限窗口）；写失败如实抛 OSError（不吞）；
+    写临时文件后原子 rename。path=None 时写到插件 state/pairing-link.txt。"""
     target = Path(path) if path else _state_dir() / "pairing-link.txt"
     _state_dir().mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(".tmp")
-    tmp.write_text(pairing_url + "\n", encoding="utf-8")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     try:
-        os.chmod(tmp, 0o600)
+        fd = os.open(tmp, flags, 0o600)
     except OSError:
-        pass  # Windows 无 0600 语义：继承目录权限
+        # Windows 无 0600 语义：退化为普通创建（继承目录权限）
+        fd = os.open(tmp, flags)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(pairing_url + "\n")
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     os.replace(tmp, target)
     return str(target)

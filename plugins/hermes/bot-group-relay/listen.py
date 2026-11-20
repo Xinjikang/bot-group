@@ -335,11 +335,18 @@ class ListenServer:
 def listen_serve(*, address: str, port: int, advertise: str = "",
                  member: str = "", home: str = "", mcp_python: str = "",
                  cert_path: str | None = None, key_path: str | None = None,
-                 tls: bool = True, link_to_file: bool = False) -> dict:
-    """listen 工具入口：校验→证书→监听→签发配对链接。返回结果 dict。
+                 tls: bool = True, link_to_file: bool = False,
+                 proxy_port: int = 0, no_proxy: bool = False) -> dict:
+    """listen 工具入口：校验→证书→监听→签发配对链接→启动 MCP loopback
+    代理。返回结果 dict（含 proxy_port——ECS 本地 GROUP_ENGINE_URL 指向
+    http://127.0.0.1:<proxy_port>）。
 
-    失败（地址非法/绑定失败/证书缺失）抛 ValueError/RuntimeError，调用方
-    如实报错；成功前无任何状态残留。"""
+    manager node2060 ②：正常 listen 路径必须启动随包 MCP 代理
+    （no_proxy=True 才跳过）；失败（地址非法/绑定失败/证书缺失）抛
+    ValueError/RuntimeError/OSError，调用方如实报错；成功前无状态残留。
+
+    存活周期（manager node2060 ①）：由调用方进程持有——私聊入口由网关
+    进程持有 daemon 线程；CLI 入口 dispatch 前台运行（Ctrl-C 停止）。"""
     bind = validate_bind_address(address)
     scheme = "wss" if tls else "ws"
     cert, key = "", ""
@@ -354,10 +361,25 @@ def listen_serve(*, address: str, port: int, advertise: str = "",
     server = ListenServer(address=bind, port=port, cert_path=cert, key_path=key,
                           advertise=advertise or bind, member=member, home=home,
                           mcp_python=mcp_python, scheme=scheme)
-    server.start()  # 绑定失败抛 RuntimeError，保持原状
-    issued = pairing.issue_pairing(member=member, advertise=server.advertise,
-                                   port=server.bound_port(),
-                                   fingerprint=fingerprint, scheme=scheme)
+    try:
+        server.start()  # 绑定失败抛 RuntimeError，保持原状
+        issued = pairing.issue_pairing(member=member, advertise=server.advertise,
+                                       port=server.bound_port(),
+                                       fingerprint=fingerprint, scheme=scheme)
+        proxy = None
+        if not no_proxy:
+            # 随包 MCP loopback 代理（manager node2060 ②）：正常路径必启动
+            from . import mcpproxy
+            proxy = mcpproxy.start_proxy(server, proxy_port)
+        if link_to_file:
+            link_file = pairing.write_link_file(issued["pairing_url"])
+    except Exception:
+        # 任何一步失败都清理已建资源（server/代理），保持原状如实报错
+        from . import mcpproxy
+        if not no_proxy:
+            mcpproxy.stop_proxy()
+        server.stop()
+        raise
     result = {
         "status": "listening",
         "address": bind,
@@ -368,7 +390,13 @@ def listen_serve(*, address: str, port: int, advertise: str = "",
         "fingerprint_short": fingerprint[:8],
         "pairing_url": issued["pairing_url"],
         "expires_in_seconds": pairing.PAIRING_TTL_SECONDS,
+        "proxy_port": proxy.port if proxy is not None else 0,
+        # ECS 本地 MCP 进程的 GROUP_ENGINE_URL 指向值（代理未启时为空）
+        "proxy_url": f"http://127.0.0.1:{proxy.port}" if proxy is not None else "",
     }
     if link_to_file:
-        result["link_file"] = pairing.write_link_file(issued["pairing_url"])
+        result["link_file"] = link_file
+    # 存活周期：调用方进程持有。CLI 前台运行由 cli.dispatch 负责等待信号；
+    # 私聊由网关进程持有 daemon 线程。返回 server 引用供 CLI 停止清理。
+    result["_server"] = server
     return result

@@ -55,11 +55,45 @@ def register_cli(subparsers) -> None:
     p_listen.add_argument("--key", default="", help="TLS 私钥 PEM")
     p_listen.add_argument("--no-tls", action="store_true", help="禁用 TLS（仅隔离测试）")
     p_listen.add_argument("--no-proxy", action="store_true", help="不启动 MCP loopback 代理")
+    p_listen.add_argument("--proxy-port", type=int, default=0,
+                          help="MCP loopback 代理端口（缺省自动分配）")
     p_register = sub.add_parser("register", help="方向 A：连引擎 WS 端点注册（复用 #316）")
     p_register.add_argument("--engine-url", default="", help="引擎地址（缺省 BOT_GROUP_ENGINE_URL）")
     p_register.add_argument("--member", default="", help="成员名")
     p_register.add_argument("--credential", default="", help="节点凭据")
     sub.add_parser("status", help="当前监听/配对状态（脱敏）")
+
+
+def _run_foreground(cleanup) -> int:
+    """前台存活（manager node2060 ①：CLI 明示前台运行）——阻塞等待
+    SIGINT/SIGTERM，收到信号执行清理后 rc=0。cleanup 无异常。
+    测试可用合成 cleanup 验证信号语义。"""
+    import signal
+    import threading
+    stopped = threading.Event()
+    previous = {}
+
+    def _handle(signum, _frame):
+        previous.pop(signum, None)
+        cleanup()
+        stopped.set()
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        try:
+            previous[signum] = signal.signal(signum, _handle)
+        except (ValueError, OSError):
+            pass  # 非主线程注册失败：前台语义由主线程承担
+    try:
+        print("bot-group relay: 前台运行中（Ctrl-C 停止）", file=sys.stderr)
+        while not stopped.wait(1.0):
+            pass
+    finally:
+        for signum, handler in previous.items():
+            try:
+                signal.signal(signum, handler)
+            except (ValueError, OSError):
+                pass
+    return 0
 
 
 def dispatch(args) -> int:
@@ -71,21 +105,34 @@ def dispatch(args) -> int:
         return 0
     if args.command == "listen":
         from . import listen as listen_mod
+        interactive = sys.stdout.isatty()
         try:
             result = listen_mod.listen_serve(
                 address=args.address, port=args.port, advertise=args.advertise,
                 member=args.member,
                 cert_path=args.cert or None, key_path=args.key or None,
                 tls=not args.no_tls,
-                link_to_file=not sys.stdout.isatty())
-        except (ValueError, RuntimeError) as exc:
+                proxy_port=int(args.proxy_port or 0),
+                no_proxy=args.no_proxy,
+                # 交互终端用户本人在场：配对材料直接输出（manager node2060 ①
+                # 交互可取得配对材料）；非交互不落 stdout、写 0600 文件
+                link_to_file=not interactive)
+        except (ValueError, RuntimeError, OSError) as exc:
             print(f"bot-group relay listen failed: {exc}", file=sys.stderr)
             return 1
-        # 交互终端：打印脱敏摘要（链接不落 stdout——交互场景用户本人在终端前，
-        # 链接只写 0600 文件，输出仅提示文件路径）
-        summary = {k: v for k, v in result.items() if k not in ("pairing_url",)}
+        summary = {k: v for k, v in result.items()
+                   if k in ("status", "address", "port", "advertise", "scheme",
+                            "fingerprint_short", "expires_in_seconds",
+                            "proxy_port", "proxy_url")}
+        if interactive:
+            # 交互终端：直接给出配对材料（链接 + 提示），前台运行
+            summary["pairing_url"] = result["pairing_url"]
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+            return _run_foreground(lambda: result["_server"].stop())
+        # 非交互：链接已写 0600 文件（不落 stdout），打印摘要含文件路径
+        summary["link_file"] = result.get("link_file", "")
         print(json.dumps(summary, ensure_ascii=False, indent=2))
-        return 0
+        return _run_foreground(lambda: result["_server"].stop())
     if args.command == "register":
         engine_url = args.engine_url or os.environ.get("BOT_GROUP_ENGINE_URL") or ""
         member = args.member or os.environ.get("BOT_GROUP_RELAY_MEMBER") or ""
@@ -101,7 +148,16 @@ def dispatch(args) -> int:
                                        home=os.environ.get("HERMES_HOME") or
                                        str(Path.home() / ".hermes"))
         client = relay_mod.RelayClient(cfg)
-        client.start()  # 复用 #316 出站链路；后台线程维护连接
-        print(json.dumps({"status": "registering", "member": member}, ensure_ascii=False))
-        return 0
+        try:
+            client.start()  # 复用 #316 出站链路；后台线程维护连接
+        except Exception as exc:  # noqa: BLE001 启动失败清理后如实报错
+            try:
+                client.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            print(f"bot-group relay register failed: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps({"status": "registering", "member": member},
+                         ensure_ascii=False))
+        return _run_foreground(client.stop)  # 前台运行：连接存活到 Ctrl-C
     return 2
