@@ -19,6 +19,7 @@ import hashlib
 import json
 import logging
 import queue
+import socket
 import ssl
 import threading
 import time
@@ -27,11 +28,126 @@ from . import db, relay, relay_server
 
 logger = logging.getLogger(__name__)
 
+# 最近一次拨号失败（页面按 DNS/TCP/TLS/认证阶段显示；成功即清）。只保留
+# 阶段与地址，不保存配对凭据。
+_FAILURES: dict[str, dict] = {}
+_FAILURES_LOCK = threading.Lock()
+
 # 重连退避（指数封顶）与尝试上限：耗尽后 abandoned，等管理员动作。
 BACKOFF_SEQUENCE = (1, 2, 4, 8, 16, 30)
 MAX_ATTEMPTS = 10
 HEARTBEAT_INTERVAL = 30.0
 RECV_TIMEOUT = 15.0
+
+
+def _record_failure(member: str, stage: str, address: str, error: str) -> None:
+    with _FAILURES_LOCK:
+        _FAILURES[member] = {
+            'stage': stage, 'address': address, 'error': str(error)[:300],
+            'ts': time.time(),
+        }
+
+
+def dial_failure(member: str) -> dict | None:
+    """页面展示用：最近一次拨号失败阶段/地址/原因（成功或停用后清除）。"""
+    with _FAILURES_LOCK:
+        item = _FAILURES.get(member)
+        return dict(item) if item else None
+
+
+def _clear_failure(member: str) -> None:
+    with _FAILURES_LOCK:
+        _FAILURES.pop(member, None)
+
+
+def _classify_connect_error(exc: Exception) -> str:
+    text = str(exc).lower()
+    if isinstance(exc, socket.gaierror) or any(part in text for part in (
+            'getaddrinfo', 'name or service not known', 'nodename nor servname',
+            'temporary failure in name resolution', 'name does not resolve')):
+        return 'dns'
+    if isinstance(exc, ssl.SSLError) or any(part in text for part in (
+            'certificate', 'ssl', 'tls')):
+        return 'tls'
+    return 'tcp'
+
+
+def _endpoint_address(endpoint: dict) -> str:
+    host = str(endpoint.get('host') or '')
+    return f'{host}:{endpoint.get("port") or ""}' if host else ''
+
+
+def probe_endpoint(host: str, port: int, fingerprint: str,
+                   timeout: float = 5.0) -> dict:
+    """只读预检：解析/连通/证书握手并核对指纹，不兑换配对凭据、不保存。
+
+    用于配对导入时先校验可达性与证书；认证与 MCP 阶段由实际拨号完成。
+    返回 {ok, stage, address, error}；stage 为 dns/tcp/tls/ok。
+    """
+    host = str(host or '').strip()
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        port = 0
+    address = f'{host}:{port}'
+    if not host or not 1 <= port <= 65535:
+        return {'ok': False, 'stage': 'dns', 'address': address,
+                'error': '地址或端口无效'}
+    expected = str(fingerprint or '').strip().lower().replace(':', '')
+    if len(expected) != 64 or any(c not in '0123456789abcdef' for c in expected):
+        return {'ok': False, 'stage': 'tls', 'address': address,
+                'error': '证书指纹必须是 64 位十六进制'}
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        return {'ok': False, 'stage': 'dns', 'address': address,
+                'error': str(exc)[:200]}
+    if not infos:
+        return {'ok': False, 'stage': 'dns', 'address': address,
+                'error': '域名没有可用地址'}
+    sock = None
+    try:
+        last = None
+        for family, socktype, proto, _canon, sockaddr in infos:
+            try:
+                sock = socket.socket(family, socktype, proto)
+                sock.settimeout(timeout)
+                sock.connect(sockaddr)
+                break
+            except OSError as exc:
+                last = exc
+                if sock is not None:
+                    sock.close()
+                sock = None
+        if sock is None:
+            raise last or OSError('连接失败')
+    except OSError as exc:
+        return {'ok': False, 'stage': _classify_connect_error(exc), 'address': address,
+                'error': str(exc)[:200]}
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        tls_sock = context.wrap_socket(sock, server_hostname=host)
+        sock = tls_sock
+        cert = tls_sock.getpeercert(binary_form=True) or b''
+        actual = hashlib.sha256(cert).hexdigest()
+        if actual != expected:
+            return {'ok': False, 'stage': 'tls', 'address': address,
+                    'error': f'证书指纹不匹配（实际 {actual[:16]}…，链接 {expected[:16]}…）'}
+        return {'ok': True, 'stage': 'ok', 'address': address, 'error': ''}
+    except ssl.SSLError as exc:
+        return {'ok': False, 'stage': 'tls', 'address': address,
+                'error': str(exc)[:200]}
+    except OSError as exc:
+        return {'ok': False, 'stage': 'tcp', 'address': address,
+                'error': str(exc)[:200]}
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
 
 
 class DialLink:
@@ -154,6 +270,7 @@ def stop_dial(member: str) -> None:
     if task is not None and task["thread"] is not None and \
             task["thread"] is not threading.current_thread():
         task["thread"].join(timeout=10)
+    _clear_failure(member)
 
 
 def _hello_payload(conn, member: str) -> dict | None:
@@ -192,10 +309,14 @@ def dial_once(member: str) -> bool:
     finally:
         conn.close()
     if endpoint is None or row is None or row["credential_revoked"]:
+        _record_failure(member, "auth", _endpoint_address(endpoint or {}),
+                        "未配置拨号端点或凭据已吊销")
         return False
     # 认证收紧（manager node2052 ①）：缺一次性配对凭据保持未认证，
     # 不发起拨号（插件侧无凭据可兑换，连接必然被拒）。
     if not str(endpoint.get("pairing_token") or ""):
+        _record_failure(member, "auth", _endpoint_address(endpoint),
+                        "缺少配对凭据，请重新导入配对链接")
         logger.warning("relay dial skipped member=%s reason=no pairing token", member)
         return False
     scheme = "wss" if endpoint.get("tls") else "ws"
@@ -213,10 +334,12 @@ def dial_once(member: str) -> bool:
         ws = ws_connect(uri, ssl=context, open_timeout=10, close_timeout=1,
                         proxy=None)
     except Exception as exc:  # noqa: BLE001 DNS/TCP/TLS/认证失败均重试
+        _record_failure(member, _classify_connect_error(exc), uri, str(exc))
         logger.warning("relay dial connect failed member=%s err=%s", member, exc)
         return False
     try:
         if fingerprint and not _verify_fingerprint(ws, fingerprint, member):
+            _record_failure(member, "tls", uri, "证书指纹不匹配")
             logger.warning("relay dial fingerprint mismatch member=%s", member)
             ws.close(code=4005, reason="fingerprint mismatch")
             return False
@@ -226,12 +349,14 @@ def dial_once(member: str) -> bool:
         finally:
             conn.close()
         if payload is None:
+            _record_failure(member, "auth", uri, "成员凭据不可用")
             ws.close(code=4001, reason="no credential")
             return False
         ws.send(json.dumps(payload, ensure_ascii=False))
         raw = ws.recv(timeout=10)
         hello_ok = json.loads(raw)
         if (hello_ok.get("relay") or {}).get("kind") != "hello_ok":
+            _record_failure(member, "auth", uri, "插件未返回 hello_ok")
             logger.warning("relay dial bad hello response member=%s", member)
             ws.close(code=4003, reason="bad hello response")
             return False
@@ -242,6 +367,7 @@ def dial_once(member: str) -> bool:
         # 引擎轮换进 dial_endpoint.pairing_token，重连不再用一次性配对票。
         remote_generation = int((hello_ok.get("relay") or {}).get("generation") or 0)
         if remote_generation <= 0:
+            _record_failure(member, "auth", uri, "插件握手缺少 generation")
             logger.warning("relay dial hello_ok missing generation member=%s", member)
             ws.close(code=4003, reason="bad generation")
             return False
@@ -254,6 +380,10 @@ def dial_once(member: str) -> bool:
                 conn.close()
             logger.info("relay dial persistent identity rotated member=%s", member)
     except Exception as exc:  # noqa: BLE001
+        stage = _classify_connect_error(exc)
+        if stage == "tcp":
+            stage = "auth"
+        _record_failure(member, stage, uri, str(exc))
         logger.warning("relay dial handshake failed member=%s err=%s", member, exc)
         try:
             ws.close()
@@ -289,6 +419,7 @@ def dial_once(member: str) -> bool:
     # 认证成功：注册通道（单活动通道——接替旧连接，旧连接主动关闭不留孤儿）。
     # link.generation=插件帧代（hello_ok 下发），帧路由/心跳出站用；
     # link.db_generation=本地状态代（心跳/mcp_report/离线写库用）。
+    _clear_failure(member)
     link = DialLink(member, ws, remote_generation, peer_ip=endpoint["host"],
                     db_generation=db_generation)
     with relay_server._LINKS_LOCK:
@@ -373,6 +504,7 @@ def dial_loop(member: str, task: dict) -> None:
 
 def start_dial(member: str) -> None:
     """启动/重启该成员的拨号任务（幂等：已有存活任务则只清 abandoned 继续）。"""
+    _clear_failure(member)
     with _TASKS_LOCK:
         task = _TASKS.get(member)
         if task is not None and task["thread"] is not None and task["thread"].is_alive():

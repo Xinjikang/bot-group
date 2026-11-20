@@ -249,6 +249,8 @@ def relay_nodes_list(identity=Depends(_resolve_identity)):
             'switch_error': r['switch_error'],
             'offline_reason': relay.offline_reason(conn, r['member']),
             'dial_state': _dial_state(r['member']),
+            'dial_endpoint': _dial_endpoint_view(conn, r['member']),
+            'dial_failure': _dial_failure(r['member']),
         } for r in rows], headers={'Cache-Control': 'no-store'})
     finally:
         conn.close()
@@ -261,6 +263,31 @@ def _dial_state(member: str) -> str:
         return relay_dialer._task_state(member)
     except Exception:  # noqa: BLE001
         return 'idle'
+
+
+def _dial_failure(member: str) -> dict | None:
+    """最近一次拨号失败阶段（DNS/TCP/TLS/认证），不含配对凭据。"""
+    try:
+        from . import relay_dialer
+        return relay_dialer.dial_failure(member)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _dial_endpoint_view(conn, member: str) -> dict | None:
+    """拨号端点（脱敏）：页面显示对端地址/指纹，不含一次性配对凭据。"""
+    from . import relay
+    endpoint = relay.read_dial_endpoint(conn, member)
+    if endpoint is None:
+        return None
+    fingerprint = str(endpoint.get('fingerprint') or '')
+    return {
+        'host': endpoint.get('host') or '',
+        'port': endpoint.get('port') or 0,
+        'tls': bool(endpoint.get('tls', True)),
+        'fingerprint': fingerprint,
+        'fingerprint_short': fingerprint[:8],
+    }
 
 
 class _RelayRegisterBody(BaseModel):
@@ -336,6 +363,32 @@ def relay_node_dial_endpoint(member: str, body: _DialEndpointBody,
     finally:
         conn.close()
     return {'member': member, 'saved': True}
+
+
+class _DialProbeBody(BaseModel):
+    host: str
+    port: int
+    fingerprint: str
+
+
+@router_api.post('/relay/nodes/{member}/dial-endpoint/probe')
+def relay_node_dial_probe(member: str, body: _DialProbeBody,
+                          identity=Depends(_resolve_identity)):
+    """配对导入预检：只读解析/TCP/TLS+证书指纹，不保存配置、不兑换凭据。
+
+    返回 200 与 {ok, stage, address, error}；stage=dns/tcp/tls/ok。
+    """
+    _admin_only(identity, 'relay 拨号端点预检仅限管理员')
+    from . import relay, relay_dialer
+    conn = db.get_connection()
+    try:
+        if relay.read_node(conn, member) is None:
+            raise HTTPException(404, '节点不存在')
+    finally:
+        conn.close()
+    result = relay_dialer.probe_endpoint(body.host, body.port, body.fingerprint)
+    result['member'] = member
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
 
 class _SwitchBody(BaseModel):

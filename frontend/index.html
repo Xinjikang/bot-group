@@ -755,6 +755,39 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 #relay-listen-status{margin-top:6px}
 #relay-listen button:disabled{opacity:.5;cursor:not-allowed}
 #relay-listen-status[data-error="true"],#relay-listen-summary[data-error="true"],#relay-listen-sources[data-error="true"]{color:var(--danger)}
+.relay-direction{margin:10px 0 12px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--card)}
+.relay-direction-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.relay-direction h4{margin:0;font-size:13px}
+.relay-direction h5{margin:12px 0 4px;font-size:12px}
+.relay-direction>.profile-help{margin:6px 0}
+.relay-direction-choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}
+.relay-direction-choices>button{display:flex;flex-direction:column;align-items:flex-start;gap:3px;min-width:0;padding:9px 10px;border:1px solid var(--border);border-radius:9px;background:var(--bg);color:var(--fg);text-align:left;cursor:pointer}
+.relay-direction-choices>button.active{border-color:var(--accent);background:rgba(201,162,75,.10)}
+.relay-direction-choices>button:disabled{opacity:.55;cursor:not-allowed}
+.relay-direction-title{font-size:12px;font-weight:600}
+.relay-direction-sub{font-size:11px;color:var(--fg-3);overflow-wrap:anywhere}
+.relay-direction-flag{font-size:11px;color:var(--accent-2)}
+.relay-direction-addresses{display:grid;gap:4px;margin-top:9px;font-size:12px;color:var(--fg-2)}
+.relay-direction-addresses>span{display:flex;gap:6px;flex-wrap:wrap;min-width:0;overflow-wrap:anywhere}
+.relay-stages{display:flex;gap:6px;list-style:none;margin:9px 0 0;padding:0;flex-wrap:wrap}
+.relay-stages li{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--fg-3);border:1px solid var(--border-soft);border-radius:999px;padding:3px 8px}
+.relay-stages li em{font-style:normal;font-size:10px}
+.relay-stages li.relay-stage-done{border-color:var(--accent);color:var(--accent-2)}
+.relay-stages li.relay-stage-current{border-color:var(--accent);color:var(--fg)}
+.relay-stages li.relay-stage-pending{opacity:.7}
+#relay-direction-status,#relay-direction-failure{margin:7px 0 0}
+#relay-direction-status[data-error="true"],#relay-direction-failure[data-error="true"],#relay-pairing-status[data-error="true"]{color:var(--danger)}
+.relay-direction-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-top:8px}
+.relay-direction-actions button{font-size:12px;padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--fg);cursor:pointer}
+.relay-direction-actions button:hover:not(:disabled){border-color:var(--accent);color:var(--accent-2)}
+.relay-direction-actions button:disabled{opacity:.5;cursor:not-allowed}
+.relay-pairing{margin-top:10px;padding-top:8px;border-top:1px solid var(--border-soft)}
+.relay-pairing-line{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:6px}
+.relay-pairing-line .relay-field{flex:1 1 280px}
+.relay-pairing-line>button{flex:0 0 auto;padding:8px 12px;border-radius:8px}
+.relay-pairing-preview{margin-top:8px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg)}
+.relay-pairing-preview p{display:flex;gap:6px;flex-wrap:wrap;margin:3px 0;font-size:12px;overflow-wrap:anywhere}
+.relay-pairing-preview .relay-direction-actions{margin-top:6px}
 .relay-empty{padding:12px 0;margin:0}
 .relay-node{border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--card)}
 .relay-node-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
@@ -798,7 +831,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 .relay-copy-row input{flex:1;min-width:0;box-sizing:border-box;font-family:Consolas,"Courier New",monospace;font-size:12px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--fg)}
 .relay-copy-row button{flex:0 0 auto;font-size:12px;padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--fg);cursor:pointer}
 #relay-nodes-status[data-error="true"],#relay-register-gate[data-error="true"],#relay-register-status[data-error="true"]{color:var(--danger)}
-@media (max-width:560px){.relay-node-meta{grid-template-columns:1fr}.relay-toolbar .profile-help{min-width:0;flex-basis:100%}.relay-register-line .relay-field{flex-basis:100%}.relay-register-line>button{width:100%}.relay-ip-add input{flex-basis:100%}.relay-ip-add button{flex:1 1 auto}.relay-listen-controls .relay-field{flex-basis:100%}.relay-listen-controls>button{width:100%}}
+@media (max-width:560px){.relay-node-meta{grid-template-columns:1fr}.relay-toolbar .profile-help{min-width:0;flex-basis:100%}.relay-register-line .relay-field{flex-basis:100%}.relay-register-line>button{width:100%}.relay-ip-add input{flex-basis:100%}.relay-ip-add button{flex:1 1 auto}.relay-listen-controls .relay-field{flex-basis:100%}.relay-listen-controls>button{width:100%}.relay-direction-choices{grid-template-columns:1fr}.relay-direction-actions{justify-content:flex-start}.relay-direction-actions button{flex:1 1 auto}.relay-pairing-line .relay-field{flex-basis:100%}.relay-pairing-line>button{width:100%}.relay-stages{gap:4px}.relay-stages li{padding:3px 6px}}
 @media(max-width:600px){#topbar-right{max-width:100%;flex-wrap:wrap}#topbar-user-name{max-width:90px}#app-update-notice{max-width:110px}}
 #conn{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg-2)}
 [data-theme="light"] #topbar{background:var(--card)}
@@ -5055,7 +5088,7 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/service_restart.js?v=20261026-settings-icons"></script>
 <script src="/app/app_settings.js?v=20261026-auto-refresh"></script>
 <script src="/app/engine_logs.js?v=20261103"></script>
-<script src="/app/relay_nodes.js?v=20261120-listen"></script>
+<script src="/app/relay_nodes.js?v=20261120-direction"></script>
 <script src="/app/edit_policy_settings.js?v=20261030"></script>
 <script src="/app/background_settings.js?v=20261023-settings-anchor"></script>
 <script src="/app/directory_picker.js?v=20261011"></script>

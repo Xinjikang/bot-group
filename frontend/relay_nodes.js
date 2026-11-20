@@ -38,6 +38,68 @@
         <p class="profile-help">只绑定所选网卡的具体单播地址，禁止 0.0.0.0 与 ::；本机回环始终可用。启用前需至少绑定一个来源 IP。</p>
         <p id="relay-listen-status" class="profile-help" role="status" aria-live="polite"></p>
       </section>
+      <section id="relay-direction" class="relay-direction" aria-labelledby="relay-direction-title">
+        <div class="relay-direction-head">
+          <h4 id="relay-direction-title">连接方向</h4>
+          <span id="relay-direction-badge" class="relay-badge offline">未选择节点</span>
+        </div>
+        <p class="profile-help">谁可达谁监听：云端能连到本机时选方向 A，本机能连到云端监听端口时选方向 B。同一节点同一时刻只保留一条活动通道。</p>
+        <label class="relay-field" for="relay-direction-node">节点
+          <select id="relay-direction-node"></select>
+        </label>
+        <div class="relay-direction-choices" role="group" aria-label="连接方向">
+          <button type="button" id="relay-direction-listen" data-direction="listen" aria-pressed="false">
+            <span class="relay-direction-title">让云端连接这台电脑</span>
+            <span class="relay-direction-sub">云端插件 register → 本机监听</span>
+            <span class="relay-direction-flag" data-flag="listen"></span>
+          </button>
+          <button type="button" id="relay-direction-dial" data-direction="dial" aria-pressed="false">
+            <span class="relay-direction-title">让这台电脑连接云端</span>
+            <span class="relay-direction-sub">本机引擎拨入云端插件监听</span>
+            <span class="relay-direction-flag" data-flag="dial"></span>
+          </button>
+        </div>
+        <div id="relay-direction-detail">
+          <div class="relay-direction-addresses">
+            <span><span class="relay-key">本机监听地址</span><span id="relay-direction-local">—</span></span>
+            <span><span class="relay-key">对端拨号地址</span><span id="relay-direction-remote">—</span></span>
+            <span><span class="relay-key">证书指纹</span><span id="relay-direction-fingerprint">—</span></span>
+          </div>
+          <ol class="relay-stages" aria-label="连接阶段">
+            <li id="relay-stage-listen"><span>已监听</span><em>未开始</em></li>
+            <li id="relay-stage-auth"><span>双方已认证</span><em>未开始</em></li>
+            <li id="relay-stage-mcp"><span>MCP 已连通</span><em>未开始</em></li>
+          </ol>
+          <p id="relay-direction-status" class="profile-help" role="status" aria-live="polite"></p>
+          <p id="relay-direction-failure" class="profile-help" role="alert"></p>
+          <div class="relay-direction-actions">
+            <button type="button" id="relay-direction-test">测试连接</button>
+            <button type="button" id="relay-direction-retry">重试当前方向</button>
+            <button type="button" id="relay-direction-back">切回另一方向</button>
+          </div>
+        </div>
+        <section id="relay-pairing" class="relay-pairing" aria-labelledby="relay-pairing-title" hidden>
+          <h5 id="relay-pairing-title">导入配对链接（方向 B）</h5>
+          <p class="profile-help">粘贴云端插件 listen 输出的配对链接。先核对设备与短指纹，再由本机引擎预检可达性和证书；预检失败不会保存。</p>
+          <div class="relay-pairing-line">
+            <label class="relay-field" for="relay-pairing-url">配对链接
+              <input id="relay-pairing-url" autocomplete="off" spellcheck="false"
+                     placeholder="wss://example.com:18443?pairing_token=…&amp;fingerprint=…">
+            </label>
+            <button type="button" id="relay-pairing-parse">解析</button>
+          </div>
+          <div id="relay-pairing-preview" class="relay-pairing-preview" hidden>
+            <p><span class="relay-key">设备</span><span id="relay-pairing-identity"></span></p>
+            <p><span class="relay-key">入口</span><span id="relay-pairing-address"></span></p>
+            <p><span class="relay-key">短指纹</span><span id="relay-pairing-fingerprint"></span></p>
+            <div class="relay-direction-actions">
+              <button type="button" id="relay-pairing-confirm" class="primary">确认并导入</button>
+              <button type="button" id="relay-pairing-cancel">取消</button>
+            </div>
+          </div>
+          <p id="relay-pairing-status" class="profile-help" role="status" aria-live="polite"></p>
+        </section>
+      </section>
       <div id="relay-node-list" aria-live="polite"></div>
       <section id="relay-register" class="relay-register">
         <h4>登记新节点</h4>
@@ -88,6 +150,33 @@
   const listenSources = $('#relay-listen-sources');
   const listenStatus = $('#relay-listen-status');
   const listenCopy = $('#relay-listen-copy');
+  const listenSection = $('#relay-listen');
+  const directionBadge = $('#relay-direction-badge');
+  const directionNode = $('#relay-direction-node');
+  const directionListen = $('#relay-direction-listen');
+  const directionDial = $('#relay-direction-dial');
+  const directionDetail = $('#relay-direction-detail');
+  const directionLocal = $('#relay-direction-local');
+  const directionRemote = $('#relay-direction-remote');
+  const directionFingerprint = $('#relay-direction-fingerprint');
+  const directionStatus = $('#relay-direction-status');
+  const directionFailure = $('#relay-direction-failure');
+  const directionTest = $('#relay-direction-test');
+  const directionRetry = $('#relay-direction-retry');
+  const directionBack = $('#relay-direction-back');
+  const stageListen = $('#relay-stage-listen');
+  const stageAuth = $('#relay-stage-auth');
+  const stageMcp = $('#relay-stage-mcp');
+  const pairingSection = $('#relay-pairing');
+  const pairingUrl = $('#relay-pairing-url');
+  const pairingParse = $('#relay-pairing-parse');
+  const pairingPreview = $('#relay-pairing-preview');
+  const pairingIdentity = $('#relay-pairing-identity');
+  const pairingAddress = $('#relay-pairing-address');
+  const pairingFingerprint = $('#relay-pairing-fingerprint');
+  const pairingConfirm = $('#relay-pairing-confirm');
+  const pairingCancel = $('#relay-pairing-cancel');
+  const pairingStatus = $('#relay-pairing-status');
   const memberSelect = $('#relay-member');
   const registerIp = $('#relay-register-ip');
   const register = $('#relay-register-submit');
@@ -105,6 +194,8 @@
   let loading = false, writeUncertain = false;
   let interfaces = [], listenState = null, interfacesReady = false, statusReady = false;
   let listenLoading = false, listenUncertain = false, listenError = '';
+  let directionBusy = false, directionWatch = 0, pendingPairing = null, pairingBusy = false;
+  let directionView = '';
 
   function report(target, message, error = false) {
     target.textContent = message;
@@ -176,6 +267,218 @@
       for (const ip of ips) seen.add(ip);
     }
     return [...seen].sort();
+  }
+  function directionLabel(direction) {
+    return direction === 'dial' ? '让这台电脑连接云端' : '让云端连接这台电脑';
+  }
+  function selectedDirectionNode() {
+    return nodes.find(node => node.member === directionNode.value) || null;
+  }
+  function nodeDirection(node) {
+    return node?.direction === 'dial' ? 'dial' : 'listen';
+  }
+  function testedMap() {
+    try {
+      const raw = JSON.parse(localStorage.getItem('relay-direction-tested') || '{}');
+      return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    } catch {
+      return {};
+    }
+  }
+  function testedDirection(member, direction) {
+    return !!testedMap()?.[member]?.[direction];
+  }
+  function markTested(member, direction) {
+    try {
+      const map = testedMap();
+      map[member] = {...(map[member] || {}), [direction]: true};
+      localStorage.setItem('relay-direction-tested', JSON.stringify(map));
+    } catch { /* 本地推荐标记不可用不影响连接 */ }
+  }
+  function stageState(item, state, text) {
+    item.className = `relay-stage-${state}`;
+    item.querySelector('em').textContent = text;
+  }
+  function stageLabel(stage) {
+    return {dns: 'DNS 解析', tcp: 'TCP 连接', tls: 'TLS/证书', auth: '认证'}[stage] || '连接';
+  }
+  function endpointText(endpoint) {
+    if (!endpoint?.host || !endpoint?.port) return '';
+    const host = String(endpoint.host).includes(':') ? `[${endpoint.host}]` : endpoint.host;
+    return `${endpoint.tls === false ? 'ws' : 'wss'}://${host}:${endpoint.port}`;
+  }
+  function renderDirection() {
+    const node = selectedDirectionNode();
+    const previous = directionNode.value;
+    directionNode.replaceChildren();
+    if (!nodes.length) {
+      directionNode.append(new Option('暂无可选节点', ''));
+      directionNode.disabled = true;
+      directionBadge.className = 'relay-badge offline';
+      directionBadge.textContent = '未登记节点';
+      directionDetail.hidden = true;
+      pairingSection.hidden = true;
+      stageListen.hidden = true;
+      listenSection.hidden = false;
+      directionListen.classList.remove('active');
+      directionDial.classList.remove('active');
+      directionListen.setAttribute('aria-pressed', 'false');
+      directionDial.setAttribute('aria-pressed', 'false');
+      const listenFlag = directionListen.querySelector('[data-flag="listen"]');
+      const dialFlag = directionDial.querySelector('[data-flag="dial"]');
+      listenFlag.hidden = true;
+      dialFlag.hidden = true;
+      report(directionStatus, '先登记远程节点，再选择连接方向。');
+      report(directionFailure, '');
+      return;
+    }
+    for (const item of nodes) {
+      const label = `${item.display_name || item.member}（${item.member}）`;
+      directionNode.append(new Option(label, item.member));
+    }
+    const keep = nodes.some(item => item.member === previous) ? previous
+      : nodes.some(item => item.member === node?.member) ? node.member : nodes[0].member;
+    directionNode.value = keep;
+    directionNode.disabled = busy || loading || directionBusy || !nodes.length;
+    const selected = selectedDirectionNode();
+    if (!selected) return;
+    const direction = directionView || nodeDirection(selected);
+    const serverDirection = nodeDirection(selected);
+    const revoked = !!selected.credential_revoked;
+    const online = selected.state === 'online' && !revoked;
+    const onlineForView = online && serverDirection === direction;
+    const switching = selected.switch_state === 'switching';
+    const endpoint = selected.dial_endpoint || null;
+    const local = listenState?.remote_enabled
+      ? hostPort(listenState.remote_address, listenState.remote_port) : '';
+    const remote = endpointText(endpoint);
+
+    directionListen.classList.toggle('active', direction === 'listen');
+    directionDial.classList.toggle('active', direction === 'dial');
+    directionListen.setAttribute('aria-pressed', String(direction === 'listen'));
+    directionDial.setAttribute('aria-pressed', String(direction === 'dial'));
+    const listenFlag = directionListen.querySelector('[data-flag="listen"]');
+    const dialFlag = directionDial.querySelector('[data-flag="dial"]');
+    listenFlag.textContent = serverDirection === 'listen' && online ? '已测通 · 推荐'
+      : testedDirection(selected.member, 'listen') ? '已测通'
+        : serverDirection === 'listen' ? '当前方向' : '';
+    dialFlag.textContent = serverDirection === 'dial' && online ? '已测通 · 推荐'
+      : testedDirection(selected.member, 'dial') ? '已测通'
+        : serverDirection === 'dial' ? '当前方向' : '';
+    listenFlag.hidden = !listenFlag.textContent;
+    dialFlag.hidden = !dialFlag.textContent;
+
+    if (revoked) {
+      directionBadge.className = 'relay-badge revoked';
+      directionBadge.textContent = '凭据已吊销';
+    } else if (online) {
+      directionBadge.className = 'relay-badge online';
+      directionBadge.textContent = `已连接 · ${serverDirection === 'dial' ? 'B' : 'A'}`;
+    } else if (selected.switch_error) {
+      directionBadge.className = 'relay-badge revoked';
+      directionBadge.textContent = '切换失败';
+    } else if (switching) {
+      directionBadge.className = 'relay-badge offline';
+      directionBadge.textContent = '切换中';
+    } else if (selected.dial_state === 'connecting' || selected.dial_state === 'backoff') {
+      directionBadge.className = 'relay-badge offline';
+      directionBadge.textContent = selected.dial_state === 'backoff' ? '拨号重试中' : '拨号中';
+    } else if (selected.dial_state === 'abandoned') {
+      directionBadge.className = 'relay-badge revoked';
+      directionBadge.textContent = '拨号已停止';
+    } else if (selected.offline_reason === 'unexpected') {
+      directionBadge.className = 'relay-badge offline';
+      directionBadge.textContent = '异常掉线';
+    } else {
+      directionBadge.className = 'relay-badge offline';
+      directionBadge.textContent = '离线';
+    }
+
+    directionLocal.textContent = local || '仅本机回环（未开启远程监听）';
+    directionRemote.textContent = remote || '未导入配对链接';
+    const fingerprint = endpoint?.fingerprint_short || endpoint?.fingerprint?.slice(0, 8) || '';
+    directionFingerprint.textContent = fingerprint ? `${fingerprint}…` : '—';
+
+    const listening = direction === 'listen'
+      ? !!listenState?.remote_enabled
+      : !!endpoint && (onlineForView || selected.dial_state === 'connected');
+    const authenticated = onlineForView;
+    const mcp = authenticated && !!selected.mcp_fingerprint;
+    if (direction === 'dial' && !listening && endpoint) {
+      stageState(stageListen, 'current', '已配置，待拨通');
+    } else {
+      stageState(stageListen, listening ? 'done' : 'pending', listening ? '已完成' : '待开始');
+    }
+    stageState(stageAuth, authenticated ? 'done' : listening ? 'current' : 'pending',
+      authenticated ? '已完成' : listening ? '进行中' : '待开始');
+    stageState(stageMcp, mcp ? 'done' : authenticated ? 'current' : 'pending',
+      mcp ? '已完成' : authenticated ? '进行中' : '待开始');
+
+    directionDetail.hidden = false;
+    stageListen.hidden = false;
+    listenSection.hidden = direction === 'dial';
+    pairingSection.hidden = direction !== 'dial';
+    directionTest.hidden = false;
+    directionTest.textContent = direction === 'dial' ? '测试连接（引擎拨入）' : '测试连接（由云端 register 执行）';
+
+    let status = '', statusError = false, failure = '', failureError = false;
+    if (revoked) {
+      status = '凭据已吊销；重新签发后才能建立任一方向的连接。';
+      statusError = true;
+    } else if (onlineForView) {
+      status = `已连通：${directionLabel(direction)}${mcp ? '；MCP 已上报指纹。' : '；MCP 指纹未上报。'}`;
+    } else if (online) {
+      status = `当前已连接：${directionLabel(serverDirection)}；目标${directionLabel(direction)}尚未切换。`;
+    } else if (selected.switch_error) {
+      status = `切换失败：${selected.switch_error}`;
+      statusError = true;
+    } else if (switching) {
+      status = `切换中：目标为${directionLabel(selected.switch_target || direction)}。正在先断旧通道，再建立新通道；期间暂停派发。`;
+    } else if (selected.offline_reason === 'switch') {
+      status = `切换中断线：${directionLabel(direction)}尚未认证，等待新方向连接；不会按故障掉线告警。`;
+    } else if (selected.offline_reason === 'unexpected') {
+      status = '连接异常掉线：不是方向切换，按普通重连恢复。';
+      statusError = true;
+    } else if (selected.dial_state === 'backoff' || selected.dial_state === 'connecting') {
+      status = `引擎正在向${remote || '云端监听地址'}拨号，失败会按退避重试。`;
+    } else if (selected.dial_state === 'abandoned') {
+      status = '拨号已停止：重试次数耗尽，请重试或切回另一方向。';
+      statusError = true;
+    } else {
+      status = `当前方向：${directionLabel(direction)}；等待连接。`;
+    }
+    report(directionStatus, status, statusError);
+    if (!online && selected.dial_failure?.stage) {
+      failure = `引擎拨号 ${selected.dial_failure.address || remote} 卡在${stageLabel(selected.dial_failure.stage)}：${selected.dial_failure.error || '未知错误'}`;
+      failureError = true;
+    } else if (!online && selected.switch_error) {
+      failure = `失败原因：${selected.switch_error}`;
+      failureError = true;
+    } else if (!online && direction === 'listen' && !listenState?.remote_enabled) {
+      failure = '本机监听未开启：先在上方选择网卡并开启监听，云端插件才能 register。';
+      failureError = true;
+    }
+    report(directionFailure, failure, failureError);
+
+    directionRetry.hidden = !(selected.switch_error || selected.dial_failure || selected.dial_state === 'abandoned'
+      || selected.offline_reason === 'unexpected');
+    directionBack.hidden = false;
+    directionBack.textContent = direction === 'dial' ? '切回让云端连接这台电脑' : '切回让这台电脑连接云端';
+    directionTest.disabled = busy || loading || directionBusy || revoked || direction !== 'dial'
+      || !endpoint || switching;
+    directionRetry.disabled = busy || loading || directionBusy || revoked || !nodesReady;
+    directionBack.disabled = busy || loading || directionBusy || revoked || !nodesReady;
+    directionListen.disabled = busy || loading || directionBusy || !nodesReady;
+    directionDial.disabled = busy || loading || directionBusy || !nodesReady;
+    pairingSection.hidden = direction !== 'dial';
+    pairingParse.disabled = busy || loading || directionBusy || pairingBusy || !nodesReady;
+    pairingConfirm.disabled = busy || loading || directionBusy || pairingBusy || !pendingPairing;
+    pairingPreview.hidden = !pendingPairing;
+    if (pendingPairing) {
+      pairingIdentity.textContent = `${selected.display_name || selected.member}（${selected.member}）`;
+      pairingAddress.textContent = `wss://${pendingPairing.displayHost}:${pendingPairing.port}`;
+      pairingFingerprint.textContent = `${pendingPairing.fingerprint.slice(0, 8)}…`;
+    }
   }
   function renderListenOptions() {
     const previous = listenAddress.value || listenState?.remote_address || '';
@@ -283,6 +586,18 @@
     listenSave.disabled = busy || loading || !lready || !listenAddress.value;
     listenDisable.disabled = busy || loading || !lready || !listenState?.remote_enabled;
     listenCopy.disabled = busy || !listenUrl.value;
+    const dirNode = selectedDirectionNode();
+    const dirLocked = busy || loading || directionBusy || !dirNode;
+    directionNode.disabled = busy || loading || directionBusy || !nodes.length;
+    directionListen.disabled = dirLocked;
+    directionDial.disabled = dirLocked;
+    directionTest.disabled = dirLocked || !!dirNode?.credential_revoked
+      || !dirNode?.dial_endpoint || dirNode?.switch_state === 'switching'
+      || nodeDirection(dirNode) !== 'dial';
+    directionRetry.disabled = dirLocked;
+    directionBack.disabled = dirLocked;
+    pairingParse.disabled = dirLocked || pairingBusy;
+    pairingConfirm.disabled = dirLocked || pairingBusy || !pendingPairing;
     updateGate();
   }
   function clearIssued() {
@@ -455,6 +770,7 @@
       card.append(head, meta, sourceSection(node), actions);
       list.append(card);
     }
+    renderDirection();
     refreshControls();
   }
   function renderReadonly() {
@@ -476,9 +792,20 @@
     listenLoading = false;
     listenUncertain = false;
     listenError = '';
+    directionBusy = false;
+    directionView = '';
+    directionWatch++;
+    pendingPairing = null;
+    pairingBusy = false;
+    pairingUrl.value = '';
+    pairingPreview.hidden = true;
     list.replaceChildren();
     renderListen();
+    renderDirection();
     report(listenStatus, '');
+    report(directionStatus, '');
+    report(directionFailure, '');
+    report(pairingStatus, '');
     report(nodesStatus, '');
     report(registerStatus, '');
     report(registerGate, '');
@@ -590,6 +917,7 @@
       if (generation === epoch) {
         listenLoading = false;
         if (interfacesReady && statusReady) listenUncertain = false;
+        renderDirection();
         refreshControls();
       }
     }
@@ -620,6 +948,7 @@
     renderNodes();
     renderMembers();
     renderListen();
+    renderDirection();
     refreshControls();
   }
   async function open() {
@@ -642,6 +971,16 @@
     listenLoading = true;
     listenUncertain = false;
     listenError = '';
+    directionBusy = false;
+    directionView = '';
+    directionWatch++;
+    pendingPairing = null;
+    pairingBusy = false;
+    pairingUrl.value = '';
+    pairingPreview.hidden = true;
+    report(directionStatus, '');
+    report(directionFailure, '');
+    report(pairingStatus, '');
     report(nodesStatus, '');
     report(registerStatus, '');
     report(listenStatus, '');
@@ -899,6 +1238,201 @@
     if (busy || !allowed() || !listenReady() || !listenState?.remote_enabled) return;
     applyListen('');
   }
+  function parsePairingLink(text) {
+    const raw = String(text || '').trim();
+    if (!raw) throw new Error('请粘贴配对链接。');
+    let url;
+    try {
+      url = new URL(raw);
+    } catch {
+      throw new Error('配对链接格式不正确。');
+    }
+    if (url.protocol !== 'wss:') throw new Error('配对链接必须使用 wss://。');
+    if (url.username || url.password) throw new Error('配对链接不能包含用户名或密码。');
+    let host = url.hostname || '';
+    if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
+    if (!host) throw new Error('配对链接缺少云端地址。');
+    if (host === '0.0.0.0' || host === '::') throw new Error('配对链接不能使用通配地址。');
+    const port = Number(url.port || 443);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('配对链接端口无效。');
+    const params = url.searchParams;
+    const token = params.get('pairing_token') || '';
+    if (!token) throw new Error('配对链接缺少一次性配对凭据。');
+    const fingerprint = (params.get('fingerprint') || '').toLowerCase().replace(/:/g, '');
+    if (!/^[0-9a-f]{64}$/.test(fingerprint)) throw new Error('配对链接的证书指纹格式不正确。');
+    const member = params.get('member') || '';
+    const selected = selectedDirectionNode();
+    if (member && selected && member !== selected.member) {
+      throw new Error(`链接属于成员 ${member}，与当前节点 ${selected.member} 不一致。`);
+    }
+    const displayHost = host.includes(':') ? `[${host}]` : host;
+    return {host, displayHost, port, fingerprint, token, member};
+  }
+  function clearPairing() {
+    pendingPairing = null;
+    pairingPreview.hidden = true;
+    pairingStatus.textContent = '';
+    pairingStatus.dataset.error = 'false';
+  }
+  function parsePairing() {
+    if (busy || loading || directionBusy || pairingBusy || !nodesReady) return;
+    try {
+      pendingPairing = parsePairingLink(pairingUrl.value);
+      const selected = selectedDirectionNode();
+      if (!selected) throw new Error('请先选择节点。');
+      pairingPreview.hidden = false;
+      pairingIdentity.textContent = `${selected.display_name || selected.member}（${selected.member}）`;
+      pairingAddress.textContent = `wss://${pendingPairing.displayHost}:${pendingPairing.port}`;
+      pairingFingerprint.textContent = `${pendingPairing.fingerprint.slice(0, 8)}…`;
+      report(pairingStatus, '链接有效。请核对设备身份与短指纹，确认后先做可达性和证书预检。');
+      refreshControls();
+    } catch (error) {
+      pendingPairing = null;
+      pairingPreview.hidden = true;
+      report(pairingStatus, `配对链接无效：${error.message}`, true);
+      refreshControls();
+    }
+  }
+  async function confirmPairing() {
+    if (busy || loading || directionBusy || pairingBusy || !pendingPairing) return;
+    const selected = selectedDirectionNode();
+    if (!selected) {
+      report(pairingStatus, '请先选择节点。', true);
+      return;
+    }
+    pairingBusy = true;
+    refreshControls();
+    report(pairingStatus, '正在预检云端监听地址、TCP 和证书指纹…');
+    const member = selected.member;
+    try {
+      const probe = await api(`/relay/nodes/${encodeURIComponent(member)}/dial-endpoint/probe`, {
+        method: 'POST',
+        body: JSON.stringify({host: pendingPairing.host, port: pendingPairing.port,
+                              fingerprint: pendingPairing.fingerprint}),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!probe || probe.ok !== true) {
+        report(pairingStatus, `预检失败（${stageLabel(probe?.stage)}）：${probe?.error || '无法连接云端监听地址'}；未保存。`, true);
+        return;
+      }
+      const saved = await api(`/relay/nodes/${encodeURIComponent(member)}/dial-endpoint`, {
+        method: 'POST',
+        body: JSON.stringify({host: pendingPairing.host, port: pendingPairing.port, tls: true,
+                              fingerprint: pendingPairing.fingerprint,
+                              pairing_token: pendingPairing.token}),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!saved?.saved) throw new Error('拨号端点保存响应异常');
+      report(pairingStatus, '预检通过，配对已保存；正在拨号并完成认证。');
+      pendingPairing = null;
+      pairingPreview.hidden = true;
+      pairingUrl.value = '';
+      await reload(true);
+      if (dialog.open && allowed()) switchDirection('dial');
+    } catch (error) {
+      report(pairingStatus, `导入失败：${message(error)}。${pendingPairing ? '可核对后重试。' : ''}`, true);
+    } finally {
+      pairingBusy = false;
+      if (dialog.open) refreshControls();
+    }
+  }
+  function watchSwitch(member, target, token, generation) {
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    (async () => {
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        await sleep(1000);
+        if (token !== directionWatch || generation !== epoch || !dialog.open || !allowed()) return;
+        const ok = await loadNodes(generation, true);
+        if (!ok || token !== directionWatch) return;
+        const node = nodes.find(item => item.member === member);
+        if (!node) return;
+        renderDirection();
+        if (node.switch_state !== 'switching') {
+          if (node.state === 'online' && nodeDirection(node) === target) {
+            markTested(member, target);
+            report(directionStatus, `切换完成：${directionLabel(target)}；双方已认证。`);
+            if (target === 'dial') {
+              report(pairingStatus, '配对导入完成：引擎已认证并连通云端监听。');
+            }
+          } else {
+            report(directionStatus, `切换未完成：${node.switch_error || '新方向尚未认证'}`, true);
+            if (target === 'dial') {
+              report(pairingStatus, `配对已保存，但拨号未连通：${node.switch_error || '新方向尚未认证'}`, true);
+            }
+          }
+          renderDirection();
+          return;
+        }
+      }
+      if (token === directionWatch && generation === epoch) {
+        report(directionStatus, '后台仍在切换中；请点击刷新核对，页面不会用计时器判定失败。');
+        renderDirection();
+      }
+    })();
+  }
+  async function switchDirection(target) {
+    if (busy || loading || directionBusy || !allowed()) return;
+    const node = selectedDirectionNode();
+    if (!node) {
+      report(directionStatus, '请先选择节点。', true);
+      return;
+    }
+    if (node.credential_revoked) {
+      report(directionStatus, '凭据已吊销，请先重新签发。', true);
+      return;
+    }
+    directionView = target;
+    renderDirection();
+    refreshControls();
+    const current = nodeDirection(node);
+    if (target === current && node.switch_state !== 'switching') {
+      report(directionStatus, `当前已经是${directionLabel(target)}。`);
+      return;
+    }
+    if (target === 'listen' && !listenState?.remote_enabled) {
+      report(directionStatus, '方向 A 需要本机远程监听已开启；请先在上方选择网卡并开启监听。', true);
+      return;
+    }
+    if (target === 'dial' && !node.dial_endpoint) {
+      report(directionStatus, '方向 B 需要先导入云端配对链接。', true);
+      pairingUrl.focus();
+      return;
+    }
+    directionBusy = true;
+    directionWatch += 1;
+    const token = directionWatch;
+    refreshControls();
+    report(directionStatus, `正在切换到${directionLabel(target)}：先断开旧连接，再建立新方向；期间暂停派发。`);
+    report(directionFailure, '');
+    try {
+      const result = await api(`/relay/nodes/${encodeURIComponent(node.member)}/switch`, {
+        method: 'POST',
+        body: JSON.stringify({direction: target}),
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!result || result.direction !== target) throw new Error('切换响应格式异常');
+      await reload(true);
+      if (!dialog.open || !allowed()) return;
+      watchSwitch(node.member, target, token, epoch);
+    } catch (error) {
+      report(directionStatus, `切换失败：${message(error)}。`, true);
+      renderDirection();
+    } finally {
+      directionBusy = false;
+      if (dialog.open) refreshControls();
+    }
+  }
+  function retryDirection() {
+    const node = selectedDirectionNode();
+    if (!node) return;
+    switchDirection(node.switch_target || nodeDirection(node));
+  }
+  function backDirection() {
+    const node = selectedDirectionNode();
+    if (!node) return;
+    const view = directionView || nodeDirection(node);
+    switchDirection(view === 'dial' ? 'listen' : 'dial');
+  }
   async function copy(value, label, target = registerStatus) {
     try {
       await navigator.clipboard.writeText(value);
@@ -930,6 +1464,40 @@
     if (listenUrl.value) copy(listenUrl.value, 'ECS 插件引擎地址', listenStatus);
   });
   listenAddress.addEventListener('change', refreshControls);
+  directionNode.addEventListener('change', () => {
+    clearPairing();
+    directionView = '';
+    renderDirection();
+    refreshControls();
+  });
+  directionListen.addEventListener('click', () => switchDirection('listen'));
+  directionDial.addEventListener('click', () => switchDirection('dial'));
+  directionTest.addEventListener('click', () => {
+    const node = selectedDirectionNode();
+    if (!node) return;
+    if (node.state === 'online') {
+      report(directionStatus, '当前节点已在线；测试连接由已建立的活动通道完成。');
+      return;
+    }
+    switchDirection('dial');
+  });
+  directionRetry.addEventListener('click', retryDirection);
+  directionBack.addEventListener('click', backDirection);
+  pairingParse.addEventListener('click', parsePairing);
+  pairingConfirm.addEventListener('click', confirmPairing);
+  pairingCancel.addEventListener('click', () => {
+    if (pairingBusy) return;
+    clearPairing();
+    pairingUrl.value = '';
+    refreshControls();
+  });
+  pairingUrl.addEventListener('input', () => {
+    if (pendingPairing) {
+      pendingPairing = null;
+      pairingPreview.hidden = true;
+      report(pairingStatus, '');
+    }
+  });
   refresh.addEventListener('click', () => {
     if (busy || loading || !allowed()) return;
     clearIssued();
@@ -1003,11 +1571,22 @@
     listenLoading = false;
     listenUncertain = false;
     listenError = '';
+    directionBusy = false;
+    directionView = '';
+    directionWatch++;
+    pendingPairing = null;
+    pairingBusy = false;
+    pairingUrl.value = '';
+    pairingPreview.hidden = true;
     report(nodesStatus, '');
     report(registerStatus, '');
     report(registerGate, '');
     report(listenStatus, '');
+    report(directionStatus, '');
+    report(directionFailure, '');
+    report(pairingStatus, '');
     renderListen();
+    renderDirection();
     anchor?.focus({preventScroll: true});
   });
   function visibility() {

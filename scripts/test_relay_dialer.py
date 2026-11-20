@@ -8,6 +8,7 @@ offline 原因区分、API 层权限。方向 A 回归由 test_relay_gateway/tes
 与插件同栈），不动主引擎 8180。
 """
 import json
+import hashlib
 import ssl
 import threading
 import time
@@ -124,6 +125,37 @@ class FakePlugin:
                 self.closed_by_peer = True
             else:
                 self.handshakes.append({"__error__": repr(exc)})
+
+
+class ProbeTests(unittest.TestCase):
+    """配对导入预检：只读 TLS/指纹，不兑换凭据、不保存端点。"""
+
+    def _fingerprint(self, plugin):
+        from cryptography import x509
+        from cryptography.hazmat.primitives import serialization
+        cert = x509.load_pem_x509_certificate(plugin.cert_pem)
+        return hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest()
+
+    def test_probe_tls_fingerprint_match_and_mismatch(self):
+        plugin = FakePlugin(tls=True)
+        self.addCleanup(plugin.stop)
+        actual = self._fingerprint(plugin)
+        ok = relay_dialer.probe_endpoint("127.0.0.1", plugin.port, actual)
+        self.assertTrue(ok["ok"], ok)
+        self.assertEqual(ok["stage"], "ok")
+        wrong = relay_dialer.probe_endpoint("127.0.0.1", plugin.port, "b" * 64)
+        self.assertFalse(wrong["ok"])
+        self.assertEqual(wrong["stage"], "tls")
+
+    def test_probe_tcp_closed_is_not_ok(self):
+        import socket
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        result = relay_dialer.probe_endpoint("127.0.0.1", port, "a" * 64)
+        self.assertFalse(result["ok"])
+        self.assertIn(result["stage"], ("tcp", "dns"))
 
 
 class DialerBase(unittest.TestCase):
@@ -518,6 +550,42 @@ class SwitchApiTests(DialerBase):
         self.assertEqual(nodes[0]["switch_state"], "switching")
         self.assertEqual(nodes[0]["switch_target"], "dial")
         self.assertEqual(nodes[0]["dial_state"], "idle")
+
+    def test_nodes_list_exposes_dial_endpoint_without_pairing_token(self):
+        response = self.client.post(
+            f"/relay/nodes/{REMOTE}/dial-endpoint",
+            json={"host": "cloud.example", "port": 18443, "tls": True,
+                  "fingerprint": "a" * 64, "pairing_token": "PAIRING-SECRET"})
+        self.assertEqual(response.status_code, 200)
+        node = self.client.get("/relay/nodes").json()[0]
+        self.assertEqual(node["dial_endpoint"]["host"], "cloud.example")
+        self.assertEqual(node["dial_endpoint"]["port"], 18443)
+        self.assertEqual(node["dial_endpoint"]["fingerprint_short"], "a" * 8)
+        self.assertNotIn("PAIRING-SECRET", json.dumps(node))
+        self.assertNotIn("pairing_token", json.dumps(node))
+
+    def test_probe_endpoint_api_and_bot_forbidden(self):
+        plugin = FakePlugin(tls=True)
+        self.addCleanup(plugin.stop)
+        from cryptography import x509
+        from cryptography.hazmat.primitives import serialization
+        cert = x509.load_pem_x509_certificate(plugin.cert_pem)
+        fingerprint = hashlib.sha256(cert.public_bytes(
+            serialization.Encoding.DER)).hexdigest()
+        response = self.client.post(
+            f"/relay/nodes/{REMOTE}/dial-endpoint/probe",
+            json={"host": "127.0.0.1", "port": plugin.port, "fingerprint": fingerprint})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["ok"], body)
+        self.assertEqual(body["stage"], "ok")
+        from engine import auth
+        bot = {"X-Group-Profile": "default", "X-Group-Key": auth.bot_token("default")}
+        response = self.client.post(
+            f"/relay/nodes/{REMOTE}/dial-endpoint/probe",
+            json={"host": "127.0.0.1", "port": plugin.port, "fingerprint": fingerprint},
+            headers=bot)
+        self.assertEqual(response.status_code, 403)
 
     def test_bot_forbidden(self):
         from engine import auth
