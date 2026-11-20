@@ -107,6 +107,58 @@ def get_hermes_gateway_status(identity=Depends(_resolve_identity)):
 
 
 # --------------------------------------------------------------------------
+# 来源 IP 白名单管理（req#171）：管理员添加/移除/列表；中间件按 socket
+# peer IP 拦截，无缓存——移除即时生效。回环 127.0.0.1/::1 恒放行不落表。
+# --------------------------------------------------------------------------
+
+class _SourceIpBody(BaseModel):
+    ip: str
+
+
+@router_api.get('/admin/source-ips')
+def source_ips_list(identity=Depends(_resolve_identity)):
+    _admin_only(identity, '来源 IP 白名单仅限管理员')
+    from . import ip_allowlist
+    conn = db.get_connection()
+    try:
+        return JSONResponse({
+            'loopback_always_allowed': list(ip_allowlist.LOOPBACK),
+            'entries': ip_allowlist.list_entries(conn),
+        }, headers={'Cache-Control': 'no-store'})
+    finally:
+        conn.close()
+
+
+@router_api.post('/admin/source-ips')
+def source_ips_add(body: _SourceIpBody, identity=Depends(_resolve_identity)):
+    _admin_only(identity, '来源 IP 白名单仅限管理员')
+    from . import ip_allowlist
+    conn = db.get_connection()
+    try:
+        entry = ip_allowlist.add(conn, body.ip)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    finally:
+        conn.close()
+    return entry
+
+
+@router_api.delete('/admin/source-ips/{ip}')
+def source_ips_remove(ip: str, identity=Depends(_resolve_identity)):
+    _admin_only(identity, '来源 IP 白名单仅限管理员')
+    from . import ip_allowlist
+    conn = db.get_connection()
+    try:
+        if not ip_allowlist.remove(conn, ip):
+            raise HTTPException(404, 'IP 不在白名单')
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    finally:
+        conn.close()
+    return {'removed': ip}
+
+
+# --------------------------------------------------------------------------
 # 远程 relay 节点管理（req#168）：注册/吊销凭据/状态/离线点名记录
 # --------------------------------------------------------------------------
 

@@ -139,10 +139,38 @@ from .ui_presence import router as ui_presence_router
 app.include_router(ui_presence_router)
 
 
+# req#171：远程 HTTP 统一按 socket peer IP 白名单拦截。只读 request.client
+# （uvicorn 从 socket 取的对端地址），不读任何 X-Forwarded-For/X-Real-IP 转发
+# 头——伪造头不能获得白名单资格或本机权限。回环恒放行；白名单外全拒（403）。
+# WebSocket scope 不走 http 中间件，relay WS 在端点内同样校验（见下）。
+@app.middleware("http")
+async def source_ip_guard(request: Request, call_next):
+    from . import ip_allowlist
+    from fastapi.responses import JSONResponse
+    peer = request.client.host if request.client else None
+    conn = db.get_connection()
+    try:
+        if not ip_allowlist.allowed(conn, peer):
+            return JSONResponse({"detail": "来源 IP 不在白名单，访问被拒绝"},
+                                status_code=403, headers={"Cache-Control": "no-store"})
+    finally:
+        conn.close()
+    return await call_next(request)
+
+
 # 远程 relay WS 服务端入口（req#168）：ECS 插件主动出站 WSS 连本端点。
+# req#171：握手前按 socket peer IP 白名单校验（与 HTTP 同规则、同表、无缓存）。
 @app.websocket("/relay/ws")
 async def relay_ws_endpoint(websocket: WebSocket):
-    from . import relay_server
+    from . import relay_server, ip_allowlist
+    peer = websocket.client.host if websocket.client else None
+    conn = db.get_connection()
+    try:
+        if not ip_allowlist.allowed(conn, peer):
+            await websocket.close(code=1008, reason="来源 IP 不在白名单，访问被拒绝")
+            return
+    finally:
+        conn.close()
     await relay_server.relay_ws(websocket)
 
 # 静态前端挂在 /app（访问 http://127.0.0.1:8180/app/）

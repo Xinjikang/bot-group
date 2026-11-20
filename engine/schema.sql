@@ -530,3 +530,12 @@ CREATE TABLE IF NOT EXISTS mcp_operations (
     created_at TEXT NOT NULL,
     PRIMARY KEY(owner, operation_id)
 );
+
+-- req#171：来源 IP 白名单（白名单管来源、凭据管身份，两层独立）。
+-- 精确 IP 匹配（IPv4/IPv6 规范化文本），不自动放行网段；回环 127.0.0.1/::1
+-- 恒放行不落此表。无缓存——每次判定直查，移除即时生效。
+CREATE TABLE IF NOT EXISTS source_ip_allowlist (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip         TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
