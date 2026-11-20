@@ -647,6 +647,54 @@ class EntryIdentityAndProxyTests(unittest.TestCase):
         self.assertEqual(result2["proxy_port"], 0, "no_proxy 明确跳过代理")
         result2["_server"].stop()
 
+    def test_proxy_handler_reaches_listener_and_instant_reply(self):
+        """manager node2092：HTTP handler 经 self.server.listener 取转发
+        目标——listener 必须挂在实际 httpd 实例上（否则 AttributeError、
+        业务帧发不出）；响应等待队列先于发帧注册，引擎经配对通道的
+        快速回帧不丢响应。"""
+        import http.client
+        plg = _plugin()
+        mcpproxy = plg["mcpproxy"]
+
+        class Listener:
+            def forward_http_request(self, request_id, method, path, headers, body):
+                # 模拟引擎同步快速回帧（发帧后立即回 http_response）
+                mcpproxy.deliver_http_response(request_id, 200,
+                                               {"content-type": "application/json"},
+                                               '{"projects": ["alpha"]}')
+
+        server = mcpproxy.start_proxy(Listener(), port=0)
+        self.addCleanup(mcpproxy.stop_proxy)
+        self.assertIs(server._httpd.listener, server.listener,
+                      "listener 必须挂在实际 HTTP server 上供 handler 取用")
+        conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+        conn.request("GET", "/members?project=alpha")
+        resp = conn.getresponse()
+        self.assertEqual(resp.status, 200, "快速回帧不得丢失")
+        self.assertIn("alpha", resp.read().decode())
+        conn.close()
+        self.assertEqual(mcpproxy._PENDING, {}, "请求完成后无残留等待位")
+
+    def test_proxy_releases_waiter_when_channel_unavailable(self):
+        """manager node2092：转发失败（通道未认证）→ 502 且释放注册位，
+        不残留等待项。"""
+        import http.client
+        plg = _plugin()
+        mcpproxy = plg["mcpproxy"]
+
+        class Listener:
+            def forward_http_request(self, *args):
+                raise ConnectionError("relay channel not authenticated")
+
+        server = mcpproxy.start_proxy(Listener(), port=0)
+        self.addCleanup(mcpproxy.stop_proxy)
+        conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+        conn.request("GET", "/members?project=alpha")
+        resp = conn.getresponse()
+        self.assertEqual(resp.status, 502)
+        conn.close()
+        self.assertEqual(mcpproxy._PENDING, {}, "失败时释放注册位，无残留")
+
 
 class EngineTunnelIdentityTests(unittest.TestCase):
     """manager node2060 ②：隧道转发绑定实际通道成员身份——外部身份头

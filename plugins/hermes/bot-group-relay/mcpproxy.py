@@ -44,19 +44,25 @@ class _Handler(BaseHTTPRequestHandler):
         headers = {key.lower(): value for key, value in self.headers.items()
                    if key.lower() in _FORWARD_HEADERS}
         request_id = uuid.uuid4().hex
+        # manager node2092：响应等待队列先于发帧注册——引擎经配对通道的
+        # 回帧若在注册前到达（同步快速应答），deliver_http_response 取不到
+        # waiter 即丢响应、本线程空等超时；发帧失败（ConnectionError）时
+        # 释放注册位，避免残留。
+        waiter: queue.Queue = queue.Queue(maxsize=1)
+        with _PENDING_LOCK:
+            _PENDING[request_id] = waiter
         try:
             self.server.listener.forward_http_request(
                 request_id, self.command, path, headers, body)
         except ConnectionError as exc:
+            with _PENDING_LOCK:
+                _PENDING.pop(request_id, None)
             self.send_response(502)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(
                 {"error": f"relay channel not authenticated: {exc}"}).encode())
             return
-        waiter: queue.Queue = queue.Queue(maxsize=1)
-        with _PENDING_LOCK:
-            _PENDING[request_id] = waiter
         try:
             status, resp_headers, resp_body = waiter.get(timeout=300)
         except queue.Empty:
@@ -83,6 +89,10 @@ class MCPProxyServer:
     def __init__(self, listener, port: int):
         self.listener = listener
         self._httpd = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
+        # manager node2092：HTTP handler 经 self.server.listener 取转发目标——
+        # self.server 是 _httpd（ThreadingHTTPServer 实例），listener 必须挂在
+        # 它上面而不是仅存 MCPProxyServer 外层，否则 handler 抛 AttributeError。
+        self._httpd.listener = listener
         self.port = self._httpd.server_address[1]
         self._thread = threading.Thread(target=self._httpd.serve_forever,
                                         name="bot-group-mcpproxy", daemon=True)
