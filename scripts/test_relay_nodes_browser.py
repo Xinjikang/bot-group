@@ -30,6 +30,7 @@ def main():
         'register_fail': False,
         'register_hold': False,
         'nodes_fail': False,
+        'forbidden': False,
         'held': [],
         'issued': [],
         'next_credential': 1,
@@ -68,7 +69,9 @@ def main():
         if path == '/relay/nodes':
             if req.request.method == 'GET':
                 state['node_gets'] += 1
-                if state['nodes_fail']:
+                if state['forbidden']:
+                    req.fulfill(status=403, json={'detail': '仅管理员可查看远程节点'})
+                elif state['nodes_fail']:
                     req.fulfill(status=503, json={'detail': '节点服务暂不可用'})
                 else:
                     req.fulfill(json=deepcopy(state['nodes']))
@@ -262,6 +265,13 @@ def main():
         page.wait_for_function('document.querySelector("#relay-nodes-status").dataset.error === "true"')
         assert '读取远程节点失败' in page.locator('#relay-nodes-status').inner_text()
         state['nodes_fail'] = False
+        page.locator('#relay-refresh').click()
+        page.wait_for_function('document.querySelector("#relay-nodes-status").dataset.error === "false"')
+        state['forbidden'] = True
+        page.locator('#relay-refresh').click()
+        page.wait_for_function('document.querySelector("#relay-nodes-status").dataset.error === "true"')
+        assert '无权管理远程节点' in page.locator('#relay-nodes-status').inner_text()
+        state['forbidden'] = False
         page.locator('#relay-refresh').click()
         page.wait_for_function('document.querySelector("#relay-nodes-status").dataset.error === "false"')
         state['register_fail'] = True

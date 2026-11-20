@@ -67,6 +67,7 @@
     target.setAttribute('role', error ? 'alert' : 'status');
   }
   function message(error) {
+    if (error?.status === 403) return '当前身份无权管理远程节点（需要管理员登录）';
     const text = String(error?.message || '').trim();
     return text && !/^(Internal Server Error|Service Unavailable|Bad Gateway|Gateway Timeout)$/i.test(text)
       ? text : '服务端处理请求失败，请稍后重试。';
@@ -141,7 +142,7 @@
       const revoked = !!node.credential_revoked;
       const online = node.state === 'online' && !revoked;
       badge.className = `relay-badge ${revoked ? 'revoked' : online ? 'online' : 'offline'}`;
-      badge.textContent = revoked ? '凭据已吊销' : online ? '在线' : '离线';
+      badge.textContent = revoked ? '离线 · 凭据已吊销' : online ? '在线' : '离线';
       head.append(name, badge);
 
       const meta = document.createElement('div');
