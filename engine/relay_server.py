@@ -32,6 +32,7 @@ CLOSE_BAD_CREDENTIAL = 4001
 CLOSE_MCP_INCOMPATIBLE = 4002
 CLOSE_BAD_PROTOCOL = 4003
 CLOSE_BAD_SOURCE = 4004   # req#171：peer IP 未绑定到该成员（来源不符）
+CLOSE_WRONG_DIRECTION = 4005  # req#173：节点方向为拨号时插件不得主动连入
 
 
 class RelayTransport:
@@ -223,7 +224,11 @@ def _shutdown_link(link: NodeLink, reason: str) -> None:
     logger.warning("relay link down member=%s generation=%d reason=%s",
                    link.member, link.generation, reason)
     try:
-        asyncio.run_coroutine_threadsafe(link.ws.close(code=1000), link.loop)
+        if link.loop is not None:
+            asyncio.run_coroutine_threadsafe(link.ws.close(code=1000), link.loop)
+        else:
+            # 拨号侧 DialLink（sync websockets 客户端）在调用线程同步关闭
+            link.ws.close(code=1000)
     except Exception:  # noqa: BLE001
         pass
 
@@ -346,6 +351,20 @@ async def relay_ws(websocket: WebSocket) -> None:
                 await websocket.close(code=CLOSE_BAD_PROTOCOL)
                 return
             row = relay.read_node(conn, member)
+            # req#173 单活动通道：插件主动连入（方向 A）只在「方向为 listen」
+            # 或「切换目标是 listen」时接受；方向拨号/切换目标拨号时插件
+            # 旧方向重试连入一律拒（防 dial↔listen 乒乓顶替）。
+            if row is not None:
+                if row["switch_state"] == "switching":
+                    if row["switch_target"] != "listen":
+                        logger.warning("relay wrong direction (switching to dial) member=%s",
+                                       member)
+                        await websocket.close(code=CLOSE_WRONG_DIRECTION)
+                        return
+                elif row["direction"] == "dial":
+                    logger.warning("relay wrong direction member=%s", member)
+                    await websocket.close(code=CLOSE_WRONG_DIRECTION)
+                    return
             expected = row["expected_mcp_sha"] if row else ""
             if expected and expected != mcp_fingerprint:
                 logger.warning("relay mcp fingerprint mismatch member=%s expected=%s got=%s",
@@ -355,6 +374,10 @@ async def relay_ws(websocket: WebSocket) -> None:
             generation = relay.generation_advance(conn, member)
             relay.mark_online(conn, member, code_version=code_version,
                               mcp_fingerprint=mcp_fingerprint, generation=generation)
+            # req#173：切换目标为 listen 时，本连接（方向 A）认证成功即切换
+            # 完成——清切换态、恢复派发（direction 已是 listen 则不变）。
+            if relay.read_node(conn, member)["switch_state"] == "switching":
+                relay.complete_switch(conn, member)
         finally:
             conn.close()
     except (ValueError, KeyError, TypeError):

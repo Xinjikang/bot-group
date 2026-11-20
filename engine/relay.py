@@ -43,6 +43,12 @@ CREATE TABLE IF NOT EXISTS relay_nodes (
     mcp_fingerprint   TEXT NOT NULL DEFAULT '',   -- 插件上报的随包 MCP 内容摘要
     mcp_config        TEXT NOT NULL DEFAULT '{}', -- 引擎侧节点配置：渲染 MCP 启动命令与 env
     expected_mcp_sha  TEXT NOT NULL DEFAULT '',   -- 引擎按渲染产物计算的指纹（configure 前复核）
+    -- req#173 双向接入：连接方向与切换状态机（先断后建，动作驱动不设计时器）
+    direction         TEXT NOT NULL DEFAULT 'listen',  -- listen=引擎监听(方向A) / dial=引擎拨号(方向B)
+    dial_endpoint     TEXT NOT NULL DEFAULT '',   -- 插件监听端点 JSON：{host,port,tls,fingerprint}
+    switch_state      TEXT NOT NULL DEFAULT '',   -- ''=无切换 / 'switching'=切换中（暂停派发）
+    switch_target     TEXT NOT NULL DEFAULT '',   -- 切换目标方向（随节点持久化，重启可读回）
+    switch_error      TEXT NOT NULL DEFAULT '',   -- 最近一次切换/拨号失败原因（页面显示）
     created_at        REAL NOT NULL,
     updated_at        REAL
 );
@@ -440,3 +446,105 @@ def merge_mcp_spec(conn, member: str, spec: dict, *, engine_url: str = "",
 
 def new_credential() -> str:
     return secrets.token_urlsafe(32)
+
+
+# ---------------- req#173 方向与切换状态机（先断后建，动作驱动） ----------------
+
+def offline_reason(conn, member: str) -> str:
+    """节点 offline 的原因（动作驱动，不设计时器）：
+    switch_state='switching' → 'switch'（切换中断链，不触发任务重试/告警）；
+    否则 → 'unexpected'（意外掉线，走普通重连/重试）。"""
+    row = read_node(conn, member)
+    if row is None:
+        return ""
+    if row["state"] != "offline":
+        return ""
+    return "switch" if row["switch_state"] == "switching" else "unexpected"
+
+
+def begin_switch(conn, member: str, target: str, *, now=None) -> None:
+    """记录切换意图+目标方向（随节点持久化，重启可读回）并置切换中：
+    切换期间派发闸门 hold（暂停派发）、offline 记为 switch 原因（不告警）。"""
+    if target not in ("listen", "dial"):
+        raise ValueError("目标方向必须是 listen 或 dial")
+    row = read_node(conn, member)
+    if row is None:
+        raise ValueError("节点不存在")
+    conn.execute(
+        "UPDATE relay_nodes SET switch_state='switching',switch_target=?,"
+        "switch_error='',updated_at=? WHERE member=?",
+        (target, _now() if now is None else now, member))
+    conn.commit()
+
+
+def complete_switch(conn, member: str, *, now=None) -> None:
+    """切换完成（新方向认证成功/用户切回/重启后目标已达成）：清切换态、
+    更新 direction 为目标方向，恢复派发。"""
+    row = read_node(conn, member)
+    if row is None:
+        return
+    target = row["switch_target"] or row["direction"]
+    conn.execute(
+        "UPDATE relay_nodes SET switch_state='',switch_target='',"
+        "direction=?,updated_at=? WHERE member=?",
+        (target, _now() if now is None else now, member))
+    conn.commit()
+
+
+def set_direction(conn, member: str, direction: str, *, now=None) -> None:
+    """管理员直接设定方向（无切换动作时），切换动作请走 begin_switch。"""
+    if direction not in ("listen", "dial"):
+        raise ValueError("方向必须是 listen 或 dial")
+    conn.execute(
+        "UPDATE relay_nodes SET direction=?,updated_at=? WHERE member=?",
+        (direction, _now() if now is None else now, member))
+    conn.commit()
+
+
+def set_dial_endpoint(conn, member: str, endpoint: dict, *, now=None) -> None:
+    """保存插件监听端点（配对记录）：{host, port, tls: bool, fingerprint}。
+    fingerprint=证书指纹（TLS 校验），空=不校验证书指纹（TLS 仍校 CA）。"""
+    row = read_node(conn, member)
+    if row is None:
+        raise ValueError("节点不存在")
+    host = str(endpoint.get("host") or "").strip()
+    if not host:
+        raise ValueError("dial endpoint 必填 host")
+    try:
+        port = int(endpoint.get("port") or 0)
+    except (TypeError, ValueError):
+        raise ValueError("dial endpoint port 必须是整数") from None
+    if not 1 <= port <= 65535:
+        raise ValueError("dial endpoint port 越界")
+    payload = {
+        "host": host,
+        "port": port,
+        "tls": bool(endpoint.get("tls", True)),
+        "fingerprint": str(endpoint.get("fingerprint") or "").strip(),
+    }
+    conn.execute(
+        "UPDATE relay_nodes SET dial_endpoint=?,updated_at=? WHERE member=?",
+        (json.dumps(payload, ensure_ascii=False), _now() if now is None else now, member))
+    conn.commit()
+
+
+def read_dial_endpoint(conn, member: str) -> dict | None:
+    """解析保存的插件监听端点；未配置返回 None。"""
+    row = read_node(conn, member)
+    if row is None or not row["dial_endpoint"]:
+        return None
+    try:
+        payload = json.loads(row["dial_endpoint"])
+    except ValueError:
+        return None
+    if not isinstance(payload, dict) or not payload.get("host"):
+        return None
+    return payload
+
+
+def record_switch_error(conn, member: str, message: str, *, now=None) -> None:
+    """记录切换/拨号失败原因（页面显示失败原因与重试/切回入口）。"""
+    conn.execute(
+        "UPDATE relay_nodes SET switch_error=?,updated_at=? WHERE member=?",
+        (str(message)[:500], _now() if now is None else now, member))
+    conn.commit()

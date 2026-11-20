@@ -256,6 +256,13 @@ def init_schema(conn: sqlite3.Connection) -> None:
     # relay_source_bindings——旧全局表无法映射到成员，直接废弃清除。
     conn.execute("DROP TABLE IF EXISTS source_ip_allowlist")
     conn.commit()
+    # req#173 双向接入：relay_nodes 补方向/拨号端点/切换态列（老库 ALTER；
+    # 新库由 relay.SCHEMA 的 CREATE TABLE IF NOT EXISTS 直接建齐）。
+    _migrate_add_column(conn, "relay_nodes", "direction", "TEXT NOT NULL DEFAULT 'listen'")
+    _migrate_add_column(conn, "relay_nodes", "dial_endpoint", "TEXT NOT NULL DEFAULT ''")
+    _migrate_add_column(conn, "relay_nodes", "switch_state", "TEXT NOT NULL DEFAULT ''")
+    _migrate_add_column(conn, "relay_nodes", "switch_target", "TEXT NOT NULL DEFAULT ''")
+    _migrate_add_column(conn, "relay_nodes", "switch_error", "TEXT NOT NULL DEFAULT ''")
     from . import hermes_session_auth
     conn.executescript(hermes_session_auth.SCHEMA)
 

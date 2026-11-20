@@ -273,6 +273,9 @@ def main(argv=None) -> None:
     # req#172：重启恢复上次远程监听配置（失败不影响回环服务）。
     from . import listen_control
     listen_control.restore_on_startup()
+    # req#173：重启恢复方向/切换态（dial 节点重拨、切换态读回续建）。
+    from . import relay_dialer
+    relay_dialer.restore_on_startup()
     server.run()
 
 

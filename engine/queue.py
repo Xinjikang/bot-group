@@ -66,6 +66,12 @@ def _relay_node_gate(conn, candidate) -> tuple[str, list[int]]:
     from . import wake as wake_module
     if relay.read_node(conn, candidate["profile"]) is None:
         return "go", []
+    # req#173 切换状态机：切换中暂停派发——不投递、不记 offline_waiting、
+    # 不标 expired、不触发任务重试/告警（动作驱动，恢复派发由切换完成清除
+    # 切换态触发）。切换期间同一条点名最多执行一次：hold 保留 queued，
+    # 切换完成后闸门放行投递。
+    if relay.read_node(conn, candidate["profile"])["switch_state"] == "switching":
+        return "hold", []
     mention_ids = [m["message_id"] for m in
                    wake_module._snapshot_pending(conn, candidate["profile"], candidate["kind"],
                                                  candidate["thread_id"], candidate["project"])]

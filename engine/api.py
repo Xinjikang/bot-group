@@ -242,9 +242,25 @@ def relay_nodes_list(identity=Depends(_resolve_identity)):
             'expected_mcp_sha': (r['expected_mcp_sha'] or '')[:16],
             'capacity_used': relay.capacity_used(conn, r['member']),
             'peer_ip': relay_server.last_peer(r['member']),
+            # req#173：方向/切换态（页面同页两按钮 + 切换中显示 + 失败原因）
+            'direction': r['direction'],
+            'switch_state': r['switch_state'],
+            'switch_target': r['switch_target'],
+            'switch_error': r['switch_error'],
+            'offline_reason': relay.offline_reason(conn, r['member']),
+            'dial_state': _dial_state(r['member']),
         } for r in rows], headers={'Cache-Control': 'no-store'})
     finally:
         conn.close()
+
+
+def _dial_state(member: str) -> str:
+    """拨号器运行态（relay_dialer 为可选组件时防御导入）。"""
+    try:
+        from . import relay_dialer
+        return relay_dialer._task_state(member)
+    except Exception:  # noqa: BLE001
+        return 'idle'
 
 
 class _RelayRegisterBody(BaseModel):
@@ -294,6 +310,75 @@ def relay_node_revoke(member: str, identity=Depends(_resolve_identity)):
     if link is not None:
         link.close()  # 现连立即失效
     return {'member': member, 'revoked': True}
+
+
+class _DialEndpointBody(BaseModel):
+    host: str
+    port: int
+    tls: bool = True
+    fingerprint: str = ''   # 证书指纹（自签/专有 CA 必填），空=走系统 CA 校验
+
+
+@router_api.post('/relay/nodes/{member}/dial-endpoint')
+def relay_node_dial_endpoint(member: str, body: _DialEndpointBody,
+                             identity=Depends(_resolve_identity)):
+    """保存插件监听端点（配对记录）：方向 B 拨入地址+TLS/证书指纹。"""
+    _admin_only(identity, 'relay 拨号端点配置仅限管理员')
+    from . import relay
+    conn = db.get_connection()
+    try:
+        if relay.read_node(conn, member) is None:
+            raise HTTPException(404, '节点不存在')
+        relay.set_dial_endpoint(conn, member, body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    finally:
+        conn.close()
+    return {'member': member, 'saved': True}
+
+
+class _SwitchBody(BaseModel):
+    direction: str   # 'listen'（插件连引擎）/ 'dial'（引擎拨插件）
+
+
+@router_api.post('/relay/nodes/{member}/switch')
+def relay_node_switch(member: str, body: _SwitchBody, identity=Depends(_resolve_identity)):
+    """切换连接方向（req#173 先断后建）：记切换意图+目标方向（持久化）→
+    暂停派发 → 断旧连接 → 建新连接（dial 由拨号器拨入，认证成功后自动清
+    切换态恢复派发；listen 等插件重连，relay_ws 认证成功时清切换态）。
+    新方向失败：切换态保持、失败原因可读、可重试/切回。"""
+    _admin_only(identity, 'relay 方向切换仅限管理员')
+    from . import relay, relay_dialer, relay_server
+    conn = db.get_connection()
+    try:
+        if relay.read_node(conn, member) is None:
+            raise HTTPException(404, '节点不存在')
+        current = relay.read_node(conn, member)["direction"]
+        if body.direction not in ("listen", "dial"):
+            raise HTTPException(400, 'direction 必须是 listen 或 dial')
+        if body.direction == current and relay.read_node(conn, member)["switch_state"] != "switching":
+            # 无切换（目标=当前方向）：幂等返回现状
+            return {'member': member, 'direction': current,
+                    'switch_state': '', 'dial_state': relay_dialer._task_state(member)}
+        if body.direction == "dial":
+            if relay.read_dial_endpoint(conn, member) is None:
+                raise HTTPException(400, '拨号方向必须先保存插件监听端点（dial-endpoint）')
+        relay.begin_switch(conn, member, body.direction)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    finally:
+        conn.close()
+    # 断旧连接（单活动通道：旧连接主动关闭不留孤儿）
+    link = relay_server.active_link(member)
+    if link is not None:
+        link.close()
+    if body.direction == "dial":
+        relay_dialer.start_dial(member)   # 建新：拨号器按退避拨入
+    else:
+        relay_dialer.stop_dial(member)    # 目标 listen：停拨号，等插件重连
+    return {'member': member, 'direction': body.direction,
+            'switch_state': 'switching',
+            'dial_state': relay_dialer._task_state(member)}
 
 
 @router_api.get('/relay/mentions')
