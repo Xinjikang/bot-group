@@ -38,6 +38,7 @@ def main():
         'endpoint_posts': [],
         'mcp_verify_posts': [],
         'mcp_verify_ok': True,
+        'mcp_verify_stale': False,
         'bindings': [{'member': 'hermes-remote', 'ips': ['100.64.0.5']}],
         'issued': [],
     }
@@ -147,6 +148,10 @@ def main():
             return
         if path.endswith('/mcp-verify'):
             state['mcp_verify_posts'].append(deepcopy(req.request.post_data_json))
+            if state['mcp_verify_stale']:
+                req.fulfill(json={'member': 'hermes-remote', 'mcp_verify_state': 'ok',
+                                  'mcp_verify_error': ''})
+                return
             if state['mcp_verify_ok']:
                 state['node'].update({'mcp_verify_state': 'ok', 'mcp_verify_error': ''})
                 req.fulfill(json={'member': 'hermes-remote', 'mcp_verify_state': 'ok',
@@ -331,10 +336,26 @@ def main():
         page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-failed"')
         assert 'MCP 只读验证失败' in page.locator('#relay-direction-status').inner_text()
         assert '权限拒绝(403)' in page.locator('#relay-direction-failure').inner_text()
+        assert page.locator('#relay-direction-verify').is_visible()
+        # Recovery is a normal page action: keep the failed state and click re-verify.
         state['mcp_verify_ok'] = True
-        state['node'].update({'mcp_verify_state': '', 'mcp_verify_error': ''})
-        page.locator('#relay-refresh').click()
+        before = len(state['mcp_verify_posts'])
+        page.locator('#relay-direction-verify').click()
         page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-done"')
+        assert len(state['mcp_verify_posts']) == before + 1
+        assert page.locator('#relay-direction-verify').is_hidden()
+        assert 'MCP 只读验证已通过' in page.locator('#relay-direction-status').inner_text()
+
+        # A stale success reply must not light the current connection: the page
+        # reloads the node state and keeps MCP pending when the row is still empty.
+        state['mcp_verify_stale'] = True
+        state['node'].update({'mcp_verify_state': '', 'mcp_verify_error': ''})
+        with page.expect_response(lambda response: response.url.endswith('/mcp-verify')) as stale:
+            page.locator('#relay-refresh').click()
+        assert stale.value.ok
+        page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-current"')
+        assert 'MCP 待只读验证' in page.locator('#relay-direction-status').inner_text()
+        state['mcp_verify_stale'] = False
         state['node'].update({'state': 'offline', 'offline_reason': 'unexpected',
                               'switch_state': '', 'switch_target': '', 'switch_error': '',
                               'dial_state': 'idle', 'dial_failure': None})
@@ -362,7 +383,7 @@ def main():
 
         assert not errors, errors
         browser.close()
-    print('PASS: direction A/B, pairing preview/probe, MCP actual-verify ok/failed, same-direction offline retry, import/switch, switch-back, failure retry, 390px')
+    print('PASS: direction A/B, pairing preview/probe, MCP actual-verify ok/failed/re-verify/stale, same-direction offline retry, import/switch, switch-back, failure retry, 390px')
 
 
 if __name__ == '__main__':

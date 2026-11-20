@@ -257,17 +257,13 @@ def main():
                 assert 'MCP 只读验证失败' in page.locator('#relay-direction-status').inner_text()
                 page.screenshot(path=str(args.evidence / 'direction-mcp-failed-1280-dark.png'),
                                 mask=[page.locator('#relay-issued-credential')])
+                assert page.locator('#relay-direction-verify').is_visible()
                 plugin_mcpproxy.start_proxy(plugin_server['_server'])
-                conn = db.get_connection()
-                try:
-                    conn.execute("UPDATE relay_nodes SET mcp_verify_state='',mcp_verify_error='' "
-                                 "WHERE member=?", (MEMBER,))
-                    conn.commit()
-                finally:
-                    conn.close()
-                page.locator('#relay-refresh').click()
+                page.locator('#relay-direction-verify').click()
                 page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-done"', timeout=45000)
+                page.wait_for_function('document.querySelector("#relay-direction-status").textContent.includes("MCP 只读验证已通过")')
                 assert 'MCP 只读验证已通过' in page.locator('#relay-direction-status').inner_text()
+                assert page.locator('#relay-direction-verify').is_hidden()
 
                 page.set_viewport_size({'width': 390, 'height': 844})
                 for theme in ('dark', 'light'):

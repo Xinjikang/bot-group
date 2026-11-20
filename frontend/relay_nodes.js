@@ -74,6 +74,7 @@
           <p id="relay-direction-failure" class="profile-help" role="alert"></p>
           <div class="relay-direction-actions">
             <button type="button" id="relay-direction-test">测试连接</button>
+            <button type="button" id="relay-direction-verify" hidden>重新验证 MCP</button>
             <button type="button" id="relay-direction-retry">重试当前方向</button>
             <button type="button" id="relay-direction-back">切回另一方向</button>
           </div>
@@ -162,6 +163,7 @@
   const directionStatus = $('#relay-direction-status');
   const directionFailure = $('#relay-direction-failure');
   const directionTest = $('#relay-direction-test');
+  const directionVerify = $('#relay-direction-verify');
   const directionRetry = $('#relay-direction-retry');
   const directionBack = $('#relay-direction-back');
   const stageListen = $('#relay-stage-listen');
@@ -404,6 +406,7 @@
       ? !!listenState?.remote_enabled
       : !!endpoint && (onlineForView || selected.dial_state === 'connected');
     const authenticated = onlineForView;
+    const mcpVerifying = mcpVerifyInflight.has(selected.member);
     const mcpVerified = selected.mcp_verify_state === 'ok';
     const mcpFailed = selected.mcp_verify_state === 'failed';
     const mcp = authenticated && mcpVerified;
@@ -416,6 +419,8 @@
       authenticated ? '已完成' : listening ? '进行中' : '待开始');
     if (mcp) {
       stageState(stageMcp, 'done', '已完成');
+    } else if (authenticated && mcpVerifying) {
+      stageState(stageMcp, 'current', '验证中');
     } else if (authenticated && mcpFailed) {
       stageState(stageMcp, 'failed', '验证失败');
     } else if (authenticated) {
@@ -436,7 +441,9 @@
       status = '凭据已吊销；重新签发后才能建立任一方向的连接。';
       statusError = true;
     } else if (onlineForView) {
-      if (mcpFailed) {
+      if (mcpVerifying) {
+        status = `已连通：${directionLabel(direction)}；MCP 只读验证中：经已认证通道调用随包成员工具…`;
+      } else if (mcpFailed) {
         status = `已连通：${directionLabel(direction)}；MCP 只读验证失败：${selected.mcp_verify_error || '未知原因'}`;
       } else if (mcpVerified) {
         status = `已连通：${directionLabel(direction)}；MCP 只读验证已通过（已读取本项目名单）。`;
@@ -464,7 +471,9 @@
       status = `当前方向：${directionLabel(direction)}；等待连接。`;
     }
     report(directionStatus, status, statusError);
-    if (onlineForView && mcpFailed) {
+    if (onlineForView && mcpVerifying) {
+      failure = '';
+    } else if (onlineForView && mcpFailed) {
       failure = `MCP 只读验证失败：${selected.mcp_verify_error || '未知原因'}`;
       failureError = true;
     } else if (!online && selected.dial_failure?.stage) {
@@ -489,6 +498,9 @@
     directionBack.textContent = direction === 'dial' ? '切回让云端连接这台电脑' : '切回让这台电脑连接云端';
     directionTest.disabled = busy || loading || directionBusy || revoked || direction !== 'dial'
       || !endpoint || switching;
+    directionVerify.hidden = !(direction === 'dial' && onlineForView && mcpFailed);
+    directionVerify.disabled = busy || loading || directionBusy || revoked || mcpVerifying;
+    directionVerify.textContent = mcpVerifying ? 'MCP 验证中…' : '重新验证 MCP';
     directionRetry.disabled = busy || loading || directionBusy || revoked || !nodesReady;
     directionBack.disabled = busy || loading || directionBusy || revoked || !nodesReady;
     directionListen.disabled = busy || loading || directionBusy || !nodesReady;
@@ -617,6 +629,8 @@
     directionTest.disabled = dirLocked || !!dirNode?.credential_revoked
       || !dirNode?.dial_endpoint || dirNode?.switch_state === 'switching'
       || nodeDirection(dirNode) !== 'dial';
+    directionVerify.disabled = dirLocked || !!dirNode?.credential_revoked
+      || mcpVerifyInflight.has(dirNode?.member);
     directionRetry.disabled = dirLocked;
     directionBack.disabled = dirLocked;
     pairingParse.disabled = dirLocked || pairingBusy;
@@ -1398,14 +1412,15 @@
       }
     })();
   }
-  async function verifyMcp(member) {
+  async function verifyMcp(member, {force = false} = {}) {
     if (!allowed() || mcpVerifyInflight.has(member)) return;
     const node = nodes.find(item => item.member === member);
     if (!node || node.state !== 'online' || nodeDirection(node) !== 'dial'
-        || node.mcp_verify_state) return;
+        || (!force && node.mcp_verify_state)) return;
     mcpVerifyInflight.add(member);
+    if (dialog.open) renderDirection();
     try {
-      report(directionStatus, 'MCP 只读验证中：经已认证通道读取本项目成员名单…');
+      report(directionStatus, 'MCP 只读验证中：经已认证通道调用随包成员工具读取本项目名单…');
       const result = await api(`/relay/nodes/${encodeURIComponent(member)}/mcp-verify`, {
         method: 'POST',
         signal: AbortSignal.timeout(30000),
@@ -1423,7 +1438,10 @@
       report(directionStatus, `MCP 只读验证失败：${message(error)}。`, true);
     } finally {
       mcpVerifyInflight.delete(member);
-      if (dialog.open) refreshControls();
+      if (dialog.open) {
+        renderDirection();
+        refreshControls();
+      }
     }
   }
   function maybeVerifyMcp() {
@@ -1543,6 +1561,10 @@
       return;
     }
     switchDirection('dial');
+  });
+  directionVerify.addEventListener('click', () => {
+    const node = selectedDirectionNode();
+    if (node) verifyMcp(node.member, {force: true});
   });
   directionRetry.addEventListener('click', retryDirection);
   directionBack.addEventListener('click', backDirection);
