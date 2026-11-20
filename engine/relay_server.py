@@ -469,8 +469,13 @@ def _engine_url() -> str:
 
 # req#173 方向 B：插件 MCP loopback 隧道转来的 HTTP 请求可转发的路径前缀
 # 白名单（引擎自身 API 的只读/业务端点；/admin/* 管理端点绝不隧道转发）。
+# manager 12774（话题 10150）：/msg 是随包 group_send 的业务端点（POST，按
+# 成员会话凭据+执行范围鉴权，不属管理接口）；/mcp-operations/ 是 recorded
+# 写入链的回执查询（mcp_http 对 POST /msg 挂 X-Group-Operation-Id，结果
+# 不明时靠它按成员/凭据作用域只读核对——消息落库一次的幂等依赖）。心跳
+# /heartbeat 不属发送依赖，保持拒绝。
 _HTTP_TUNNEL_PREFIXES = ("/health", "/projects/", "/tasks/", "/group/",
-                         "/members", "/auth/status")
+                         "/members", "/auth/status", "/msg", "/mcp-operations/")
 
 
 def _serve_relay_http_request(link: NodeLink, envelope: dict) -> None:
@@ -496,8 +501,11 @@ def _serve_relay_http_request(link: NodeLink, envelope: dict) -> None:
     raw_headers = {str(k).lower(): str(v) for k, v in
                    (envelope.get("headers") or {}).items()}
     # 过滤外部身份头（manager node2060 ②）：隧道请求的身份由通道成员决定
+    # manager 12774：x-group-operation-id 必须透传——POST /msg 是 recorded
+    # 写入，mcp_http 挂的幂等操作号随请求到引擎，落库一次的幂等依赖它。
     forward_headers = {k: v for k, v in raw_headers.items()
-                       if k in ("content-type", "accept", "user-agent")}
+                       if k in ("content-type", "accept", "user-agent",
+                                "x-group-operation-id")}
     # 下游授权上下文：实际配对通道成员（引擎 API 按 X-Group-Profile 解析）
     forward_headers["x-group-profile"] = link.member
     from . import auth

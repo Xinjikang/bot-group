@@ -556,6 +556,150 @@ class DirectionBDialTests(unittest.TestCase):
         self.assertEqual(node["mcp_verify_state"], "",
                          "旧连接迟到回执不得点亮新代（结果仍待验）")
 
+    def test_group_send_through_tunnel_lands_once(self):
+        """manager 12774（话题10150）：方向 B 随包 group_send 经隧道 POST
+        /msg 合法转发——点名→同一 thread_id 回复→消息落库一次；心跳与
+        管理路径保持拒绝（边界照旧）。"""
+        import asyncio
+        import socket
+        import uvicorn
+        from fastapi import FastAPI
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+        from engine import api as engine_api, auth, hermes_session_auth
+        result = self._listen_serve(
+            mcp_entry=str(Path(__file__).resolve().parents[1] / "mcp" / "server.py"),
+            mcp_python=sys.executable)
+        self.assertTrue(self._pair_and_dial(result))
+        self.assertTrue(result["proxy_port"] > 0, "listen 必启代理")
+        # chat 会话授权：thread 9001 存在 + 成员会话授权（thread_id=9001）
+        import secrets as _secrets
+        _keys_patch = patch.object(auth, "signing_keys",
+                                   return_value=(1, {1: _secrets.token_bytes(32)}))
+        _keys_patch.start()
+        self.addCleanup(_keys_patch.stop)
+        conn = db.get_connection()
+        try:
+            now = __import__("engine.db", fromlist=["db"]).now_iso()
+            conn.execute("""INSERT INTO threads (project,title,creator,members,
+                status,round,turn_profile,created_at,last_active_at)
+                VALUES ('alpha','fixture thread',?,'["%s"]','open',0,'%s',?,?)"""
+                         % (REMOTE, REMOTE), (REMOTE, now, now))
+            thread_id = conn.execute(
+                "SELECT id FROM threads WHERE title='fixture thread'").fetchone()["id"]
+            bot = __import__("engine.db", fromlist=["db"])._ensure_hermes_bot(conn, REMOTE)
+            conn.execute("""INSERT INTO session_bindings(project,bot_id,profile,
+                kind,thread_id,session_id,runtime,generation,title,updated_at)
+                VALUES('alpha',?,?,'work',?,'isolated-session','hermes',0,
+                'fixture',?)""", (bot, REMOTE, thread_id, now))
+            ctx = hermes_session_auth.context(hermes_session_auth.grant(
+                conn, project="alpha", profile=REMOTE, bot_id=bot, kind="work",
+                thread_id=thread_id, session="fixture", home=".",
+                command=["x"], workdir=".", model_args=[]))
+            # 该会话的活跃执行行（hermes_executions state 非 terminal/非 manual、
+            # 无 cancel_reason；身份与会话一致）——message_execution.validate
+            # 的「可写活跃执行」依赖；delegation cycle 无行即 owned。
+            started_at = time.time()
+            conn.execute("""INSERT INTO hermes_executions (
+                execution_id, session, started_at, project, profile, kind,
+                thread_id, session_id, profile_id, submission_id, state, source,
+                python, home, workdir, submit_deadline, reconcile_deadline)
+                VALUES ('exec-fixture','fixture',?,?,'%s','work',?,
+                'isolated-session','%s','sub-fixture','running','fixture',
+                'py','.', '.',?,?)"""
+                         % (REMOTE, REMOTE),
+                         (started_at, "alpha", thread_id,
+                          started_at + 60, started_at + 120))
+            # wake_runs 同 started_at（message_execution.validate 查它判活跃）
+            conn.execute("""INSERT INTO wake_runs (session, profile, thread_id,
+                runtime_session_id, bot_id, runtime, started_at, project)
+                VALUES ('fixture','%s',?,'isolated-session',?,'hermes',?,'alpha')"""
+                         % REMOTE, (thread_id, bot, started_at))
+            conn.commit()
+        finally:
+            conn.close()
+        key = auth.session_token(REMOTE, ctx)
+        # 真实隔离引擎 API（uvicorn 回环端口；隧道转发目标=引擎自身）。
+        # sock 不能进 with（退出即 close，uvicorn 还在用会 ConnectionRefused）
+        app = FastAPI()
+        app.include_router(engine_api.router_api)
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        self.addCleanup(sock.close)
+        api_port = sock.getsockname()[1]
+        server = uvicorn.Server(uvicorn.Config(app, lifespan="off",
+                                               log_level="error"))
+        worker = threading.Thread(target=server.run,
+                                  kwargs={"sockets": [sock]}, daemon=True)
+        worker.start()
+
+        def _stop_server():
+            server.should_exit = True
+            worker.join(8)
+
+        self.addCleanup(_stop_server)
+        deadline = time.monotonic() + 8
+        while not server.started:
+            self.assertTrue(worker.is_alive() and time.monotonic() < deadline)
+            time.sleep(0.02)
+        # 随包 stdio 进程实际调用 group_send 工具（env 白名单）
+        entry = str(Path(__file__).resolve().parents[1] / "mcp" / "server.py")
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "SYSTEMROOT": os.environ.get("SYSTEMROOT", "") or "C:\\Windows",
+            "TEMP": os.environ.get("TEMP", ""), "TMP": os.environ.get("TMP", ""),
+            "PYTHONUTF8": "1",
+            "GROUP_ENGINE_URL": f"http://127.0.0.1:{result['proxy_port']}",
+            "XDG_GROUP_ENGINE_URL": "",
+            "GROUP_ENGINE_TOKEN": key,
+            "XDG_GROUP_ENGINE_EXECUTION": json.dumps(
+                dict(ctx, credential_type="session"), ensure_ascii=False),
+            "NO_PROXY": "127.0.0.1",
+            "HERMES_PROFILE": REMOTE,
+        }
+        server_params = StdioServerParameters(
+            command=sys.executable, args=["-B", entry],
+            cwd=str(Path(entry).resolve().parent), env=env)
+
+        async def send_via_tool():
+            async with stdio_client(server_params) as (read, write), \
+                    ClientSession(read, write) as client:
+                await client.initialize()
+                return await client.call_tool(
+                    "group_send", {"text": "@user 隔离隧道回复",
+                                   "need_reply": False})
+
+        config_mod = __import__("engine.config", fromlist=["config"])
+        with patch.object(config_mod, "host", return_value="127.0.0.1"), \
+                patch.object(config_mod, "port", return_value=api_port):
+            reply = asyncio.run(asyncio.wait_for(send_via_tool(), timeout=60))
+        self.assertFalse(reply.isError, "工具调用不得报错")
+        payload = json.loads(reply.content[0].text)
+        self.assertIn("message_id", payload, "group_send 必须取得 message_id")
+        # 落库一次：同一 thread_id、同 sender 仅一条
+        conn = db.get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT id, thread_id, sender, content FROM messages "
+                "WHERE thread_id=? AND sender=?", (thread_id, REMOTE)).fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(len(rows), 1, "同一回复只落库一次")
+        self.assertEqual(rows[0]["content"], "@user 隔离隧道回复")
+        # 边界照旧：/admin 管理路径与心跳仍被白名单拒绝
+        fake_ws = _SyncWs()
+        link = relay_dialer.DialLink(REMOTE, fake_ws, 1, "203.0.113.9",
+                                     db_generation=2)
+        from engine import relay_server as rs_mod
+        with patch.object(rs_mod, "active_link", return_value=link):
+            pass  # 白名单常量断言（无需真实往返）
+        self.assertNotIn("/admin", rs_mod._HTTP_TUNNEL_PREFIXES)
+        self.assertFalse(any("/admin".startswith(p)
+                             for p in rs_mod._HTTP_TUNNEL_PREFIXES))
+        self.assertFalse(any("/heartbeat".startswith(p)
+                             for p in rs_mod._HTTP_TUNNEL_PREFIXES),
+                         "心跳不属发送依赖，保持拒绝")
+
     def test_engine_dials_plugin_listen_and_frames(self):
         plg_listen = self.plg["listen"]
         # 隔离：证书生成目录与配对状态都落 TMPDIR（防污染插件真实 state/）
