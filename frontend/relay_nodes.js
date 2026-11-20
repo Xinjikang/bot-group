@@ -16,6 +16,28 @@
         <button type="button" id="relay-refresh">刷新</button>
         <span id="relay-nodes-status" class="profile-help" role="status" aria-live="polite"></span>
       </div>
+      <section id="relay-listen" class="relay-listen" aria-labelledby="relay-listen-title">
+        <div class="relay-listen-head">
+          <h4 id="relay-listen-title">引擎远程监听</h4>
+          <span id="relay-listen-badge" class="relay-badge offline">读取中</span>
+        </div>
+        <p id="relay-listen-summary" class="profile-help" role="status" aria-live="polite"></p>
+        <div class="relay-listen-controls">
+          <label class="relay-field" for="relay-listen-address">本机网卡地址
+            <select id="relay-listen-address"></select>
+          </label>
+          <button type="button" id="relay-listen-save" class="primary" disabled>保存并开启监听</button>
+          <button type="button" id="relay-listen-disable" disabled>停用远程监听</button>
+        </div>
+        <div id="relay-listen-url-row" class="relay-copy-row" hidden>
+          <input id="relay-listen-url" readonly autocomplete="off" spellcheck="false"
+                 aria-label="ECS 插件引擎地址">
+          <button type="button" id="relay-listen-copy">复制地址</button>
+        </div>
+        <p id="relay-listen-sources" class="profile-help"></p>
+        <p class="profile-help">只绑定所选网卡的具体单播地址，禁止 0.0.0.0 与 ::；本机回环始终可用。启用前需至少绑定一个来源 IP。</p>
+        <p id="relay-listen-status" class="profile-help" role="status" aria-live="polite"></p>
+      </section>
       <div id="relay-node-list" aria-live="polite"></div>
       <section id="relay-register" class="relay-register">
         <h4>登记新节点</h4>
@@ -56,6 +78,16 @@
   const refresh = $('#relay-refresh');
   const nodesStatus = $('#relay-nodes-status');
   const list = $('#relay-node-list');
+  const listenBadge = $('#relay-listen-badge');
+  const listenSummary = $('#relay-listen-summary');
+  const listenAddress = $('#relay-listen-address');
+  const listenSave = $('#relay-listen-save');
+  const listenDisable = $('#relay-listen-disable');
+  const listenUrlRow = $('#relay-listen-url-row');
+  const listenUrl = $('#relay-listen-url');
+  const listenSources = $('#relay-listen-sources');
+  const listenStatus = $('#relay-listen-status');
+  const listenCopy = $('#relay-listen-copy');
   const memberSelect = $('#relay-member');
   const registerIp = $('#relay-register-ip');
   const register = $('#relay-register-submit');
@@ -71,6 +103,8 @@
   let bindingsError = '';
   let nodesReady = false, membersReady = false, bindingsReady = false;
   let loading = false, writeUncertain = false;
+  let interfaces = [], listenState = null, interfacesReady = false, statusReady = false;
+  let listenLoading = false, listenUncertain = false, listenError = '';
 
   function report(target, message, error = false) {
     target.textContent = message;
@@ -124,6 +158,94 @@
       return false;
     }
   }
+  function hostPort(address, port) {
+    if (!address) return '';
+    const host = String(address).includes(':') ? `[${address}]` : String(address);
+    return port ? `${host}:${port}` : host;
+  }
+  function engineHttpUrl(state) {
+    return state?.remote_enabled && state.remote_address && state.remote_port
+      ? `http://${hostPort(state.remote_address, state.remote_port)}` : '';
+  }
+  function listenReady() {
+    return interfacesReady && statusReady && !listenLoading && !listenUncertain;
+  }
+  function allowedSourceIps() {
+    const seen = new Set();
+    for (const ips of bindings.values()) {
+      for (const ip of ips) seen.add(ip);
+    }
+    return [...seen].sort();
+  }
+  function renderListenOptions() {
+    const previous = listenAddress.value || listenState?.remote_address || '';
+    listenAddress.replaceChildren();
+    if (!interfacesReady) {
+      listenAddress.append(new Option('正在读取本机网卡地址…', ''));
+      return;
+    }
+    const list = interfaces.filter(item => item && item.address);
+    if (!list.length) {
+      listenAddress.append(new Option('未发现可用网卡地址', ''));
+      return;
+    }
+    listenAddress.append(new Option('选择本机网卡地址', ''));
+    const values = new Set();
+    for (const item of list) {
+      values.add(item.address);
+      listenAddress.append(new Option(`${item.address} · ${item.family || 'IP'}`, item.address));
+    }
+    if (previous && !values.has(previous) && listenState?.remote_enabled) {
+      listenAddress.append(new Option(`${previous}（当前监听）`, previous));
+      values.add(previous);
+    }
+    listenAddress.value = values.has(previous) ? previous : '';
+  }
+  function renderListen() {
+    const enabled = !!(listenState?.remote_enabled && listenState.remote_address);
+    listenBadge.className = `relay-badge ${enabled && !listenUncertain ? 'online' : 'offline'}`;
+    listenBadge.textContent = listenUncertain ? '结果未确认'
+      : listenLoading && !listenState ? '读取中' : enabled ? '已开启' : '仅本机';
+    let summary = '', summaryError = false;
+    if (listenUncertain) {
+      summary = '监听切换结果未确认；请点击刷新核对实际监听状态。';
+      summaryError = true;
+    } else if (listenError) {
+      summary = `监听配置读取失败：${listenError}。请刷新重试。`;
+      summaryError = true;
+    } else if (listenLoading && !listenState) {
+      summary = '正在读取监听状态…';
+    } else if (!listenState) {
+      summary = '监听状态未知，请刷新重试。';
+      summaryError = true;
+    } else if (enabled) {
+      summary = `实际监听 ${hostPort(listenState.remote_address, listenState.remote_port)}（运行结果）`;
+    } else {
+      summary = `未开启远程监听；本机回环 ${listenState.loopback || '127.0.0.1'} 可用。`;
+      if (listenState.error) {
+        summary = `未开启远程监听：${listenState.error}`;
+        summaryError = true;
+      }
+    }
+    report(listenSummary, summary, summaryError);
+
+    const url = listenUncertain ? '' : engineHttpUrl(listenState);
+    listenUrl.value = url;
+    listenUrlRow.hidden = !url;
+    listenCopy.disabled = busy || !url;
+
+    if (!bindingsReady) {
+      report(listenSources, bindingsError
+        ? `允许来源读取失败：${bindingsError}。`
+        : '允许来源：正在读取…', !!bindingsError);
+    } else {
+      const ips = allowedSourceIps();
+      report(listenSources, ips.length
+        ? `允许来源：${ips.join('、')}（本机回环始终放行）。`
+        : '允许来源：尚未绑定；请先在节点卡片绑定来源 IP，再开启远程监听。', false);
+    }
+    renderListenOptions();
+  }
   function updateGate() {
     let text = '', error = false;
     if (loading) {
@@ -156,6 +278,11 @@
     for (const input of list.querySelectorAll('input')) {
       input.disabled = busy || !ready;
     }
+    const lready = listenReady();
+    listenAddress.disabled = busy || loading || !lready;
+    listenSave.disabled = busy || loading || !lready || !listenAddress.value;
+    listenDisable.disabled = busy || loading || !lready || !listenState?.remote_enabled;
+    listenCopy.disabled = busy || !listenUrl.value;
     updateGate();
   }
   function clearIssued() {
@@ -169,7 +296,7 @@
     issuedMember.value = member;
     issuedCredential.value = credential;
     credentialPanel.hidden = false;
-    credentialPanel.scrollIntoView({block: 'nearest'});
+    credentialPanel.scrollIntoView({block: 'center'});
   }
   function renderMembers() {
     const available = candidateMembers();
@@ -342,7 +469,16 @@
     bindingsReady = false;
     loading = false;
     writeUncertain = false;
+    interfaces = [];
+    listenState = null;
+    interfacesReady = false;
+    statusReady = false;
+    listenLoading = false;
+    listenUncertain = false;
+    listenError = '';
     list.replaceChildren();
+    renderListen();
+    report(listenStatus, '');
     report(nodesStatus, '');
     report(registerStatus, '');
     report(registerGate, '');
@@ -416,6 +552,48 @@
       return false;
     }
   }
+  async function loadListen(generation) {
+    listenLoading = true;
+    interfacesReady = false;
+    statusReady = false;
+    listenError = '';
+    renderListen();
+    refreshControls();
+    try {
+      const [ifaceData, statusData] = await Promise.all([
+        api('/admin/listen/interfaces', {cache: 'no-store', signal: AbortSignal.timeout(12000)}),
+        api('/admin/listen/status', {cache: 'no-store', signal: AbortSignal.timeout(12000)}),
+      ]);
+      if (generation !== epoch || !dialog.open) return false;
+      if (!Array.isArray(ifaceData?.interfaces)) throw new Error('网卡枚举响应格式异常');
+      if (!statusData || typeof statusData !== 'object' || !('remote_enabled' in statusData)) {
+        throw new Error('监听状态响应格式异常');
+      }
+      interfaces = ifaceData.interfaces.filter(item =>
+        item && typeof item.address === 'string' && item.address);
+      listenState = statusData;
+      interfacesReady = true;
+      statusReady = true;
+      listenError = '';
+      if (listenStatus.dataset.error === 'true') report(listenStatus, '');
+      renderListen();
+      return true;
+    } catch (error) {
+      if (generation !== epoch || !dialog.open) return false;
+      interfaces = [];
+      listenState = null;
+      listenError = message(error);
+      report(listenStatus, `读取监听配置失败：${listenError}。`, true);
+      renderListen();
+      return false;
+    } finally {
+      if (generation === epoch) {
+        listenLoading = false;
+        if (interfacesReady && statusReady) listenUncertain = false;
+        refreshControls();
+      }
+    }
+  }
   async function reload(quiet = false) {
     const generation = ++epoch;
     loading = true;
@@ -423,18 +601,25 @@
     membersReady = false;
     bindingsReady = false;
     bindingsError = '';
+    listenLoading = true;
+    interfacesReady = false;
+    statusReady = false;
+    listenError = '';
     refreshControls();
     const results = await Promise.all([
       loadNodes(generation, quiet),
       loadMembers(generation),
       loadBindings(generation),
+      loadListen(generation),
     ]);
     if (generation !== epoch || !dialog.open) return;
     [nodesReady, membersReady, bindingsReady] = results;
     loading = false;
+    listenLoading = false;
     if (nodesReady && membersReady && bindingsReady) writeUncertain = false;
     renderNodes();
     renderMembers();
+    renderListen();
     refreshControls();
   }
   async function open() {
@@ -450,8 +635,17 @@
     bindingsReady = false;
     loading = true;
     writeUncertain = false;
+    interfaces = [];
+    listenState = null;
+    interfacesReady = false;
+    statusReady = false;
+    listenLoading = true;
+    listenUncertain = false;
+    listenError = '';
     report(nodesStatus, '');
     report(registerStatus, '');
+    report(listenStatus, '');
+    renderListen();
     if (!allowed()) {
       renderReadonly();
       close.focus();
@@ -650,10 +844,65 @@
       if (dialog.open) refreshControls();
     }
   }
-  async function copy(value, label) {
+  async function applyListen(address) {
+    if (busy || !allowed() || !listenReady()) return;
+    busy = true;
+    refreshControls();
+    report(listenStatus, address ? `正在切换监听至 ${address}…` : '正在停用远程监听…');
+    try {
+      const data = await api('/admin/listen', {
+        method: 'POST',
+        body: JSON.stringify({address}),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!dialog.open || !allowed()) return;
+      if (!data || typeof data !== 'object' || !('remote_enabled' in data)) {
+        throw new Error('监听响应格式异常');
+      }
+      listenState = data;
+      listenUncertain = false;
+      listenError = '';
+      if (address) {
+        if (data.remote_enabled) {
+          report(listenStatus, `远程监听已开启：${hostPort(data.remote_address, data.remote_port)}。请复制上方引擎地址到 ECS 插件。`);
+        } else {
+          report(listenStatus, `监听未开启：${data.error || '所选地址未能绑定，请检查网卡与端口。'}`, true);
+        }
+      } else if (data.remote_enabled) {
+        report(listenStatus, '停用未完成：引擎仍显示远程监听。请刷新核对。', true);
+      } else {
+        report(listenStatus, '远程监听已停用，回退回环；本机仍可用。');
+      }
+      renderListen();
+      await reload(true);
+    } catch (error) {
+      if (!error.status) listenUncertain = true;
+      report(listenStatus, !error.status
+        ? `监听切换结果未确认：${message(error)}。请先点击刷新核对。`
+        : `监听切换失败：${message(error)}。`, true);
+      renderListen();
+    } finally {
+      busy = false;
+      if (dialog.open) refreshControls();
+    }
+  }
+  function saveListen() {
+    if (busy || !allowed() || !listenReady()) return;
+    if (!listenAddress.value) {
+      report(listenStatus, '请选择本机网卡地址。', true);
+      listenAddress.focus();
+      return;
+    }
+    applyListen(listenAddress.value);
+  }
+  function disableListen() {
+    if (busy || !allowed() || !listenReady() || !listenState?.remote_enabled) return;
+    applyListen('');
+  }
+  async function copy(value, label, target = registerStatus) {
     try {
       await navigator.clipboard.writeText(value);
-      report(registerStatus, `已复制${label}。`);
+      report(target, `已复制${label}。`);
     } catch {
       try {
         const area = document.createElement('textarea');
@@ -666,15 +915,21 @@
         const ok = document.execCommand('copy');
         area.remove();
         if (!ok) throw new Error('copy failed');
-        report(registerStatus, `已复制${label}。`);
+        report(target, `已复制${label}。`);
       } catch {
-        report(registerStatus, `复制${label}失败，请手动选择文本。`, true);
+        report(target, `复制${label}失败，请手动选择文本。`, true);
       }
     }
   }
 
   entry.addEventListener('click', open);
   close.addEventListener('click', () => dialog.close());
+  listenSave.addEventListener('click', saveListen);
+  listenDisable.addEventListener('click', disableListen);
+  listenCopy.addEventListener('click', () => {
+    if (listenUrl.value) copy(listenUrl.value, 'ECS 插件引擎地址', listenStatus);
+  });
+  listenAddress.addEventListener('change', refreshControls);
   refresh.addEventListener('click', () => {
     if (busy || loading || !allowed()) return;
     clearIssued();
@@ -741,9 +996,18 @@
     bindingsReady = false;
     loading = false;
     writeUncertain = false;
+    interfaces = [];
+    listenState = null;
+    interfacesReady = false;
+    statusReady = false;
+    listenLoading = false;
+    listenUncertain = false;
+    listenError = '';
     report(nodesStatus, '');
     report(registerStatus, '');
     report(registerGate, '');
+    report(listenStatus, '');
+    renderListen();
     anchor?.focus({preventScroll: true});
   });
   function visibility() {

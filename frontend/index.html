@@ -743,6 +743,18 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 .relay-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0}
 .relay-toolbar .profile-help{flex:1;min-width:140px;margin:0}
 #relay-node-list{display:flex;flex-direction:column;gap:8px;max-height:56dvh;overflow:auto;margin:6px 0}
+.relay-listen{margin:10px 0 12px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--card)}
+.relay-listen-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.relay-listen h4{margin:0;font-size:13px}
+.relay-listen .profile-help{margin:6px 0 0}
+.relay-listen-controls{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:8px}
+.relay-listen-controls .relay-field{flex:1 1 220px}
+.relay-listen-controls>button{flex:0 0 auto;padding:8px 12px;border-radius:8px}
+#relay-listen-url-row{margin-top:8px}
+#relay-listen-url-row input{width:100%}
+#relay-listen-status{margin-top:6px}
+#relay-listen button:disabled{opacity:.5;cursor:not-allowed}
+#relay-listen-status[data-error="true"],#relay-listen-summary[data-error="true"],#relay-listen-sources[data-error="true"]{color:var(--danger)}
 .relay-empty{padding:12px 0;margin:0}
 .relay-node{border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--card)}
 .relay-node-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
@@ -786,7 +798,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 .relay-copy-row input{flex:1;min-width:0;box-sizing:border-box;font-family:Consolas,"Courier New",monospace;font-size:12px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--fg)}
 .relay-copy-row button{flex:0 0 auto;font-size:12px;padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--fg);cursor:pointer}
 #relay-nodes-status[data-error="true"],#relay-register-gate[data-error="true"],#relay-register-status[data-error="true"]{color:var(--danger)}
-@media (max-width:560px){.relay-node-meta{grid-template-columns:1fr}.relay-toolbar .profile-help{min-width:0;flex-basis:100%}.relay-register-line .relay-field{flex-basis:100%}.relay-register-line>button{width:100%}.relay-ip-add input{flex-basis:100%}.relay-ip-add button{flex:1 1 auto}}
+@media (max-width:560px){.relay-node-meta{grid-template-columns:1fr}.relay-toolbar .profile-help{min-width:0;flex-basis:100%}.relay-register-line .relay-field{flex-basis:100%}.relay-register-line>button{width:100%}.relay-ip-add input{flex-basis:100%}.relay-ip-add button{flex:1 1 auto}.relay-listen-controls .relay-field{flex-basis:100%}.relay-listen-controls>button{width:100%}}
 @media(max-width:600px){#topbar-right{max-width:100%;flex-wrap:wrap}#topbar-user-name{max-width:90px}#app-update-notice{max-width:110px}}
 #conn{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg-2)}
 [data-theme="light"] #topbar{background:var(--card)}
@@ -5043,7 +5055,7 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/service_restart.js?v=20261026-settings-icons"></script>
 <script src="/app/app_settings.js?v=20261026-auto-refresh"></script>
 <script src="/app/engine_logs.js?v=20261103"></script>
-<script src="/app/relay_nodes.js?v=20261120-ip"></script>
+<script src="/app/relay_nodes.js?v=20261120-listen"></script>
 <script src="/app/edit_policy_settings.js?v=20261030"></script>
 <script src="/app/background_settings.js?v=20261023-settings-anchor"></script>
 <script src="/app/directory_picker.js?v=20261011"></script>

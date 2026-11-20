@@ -42,6 +42,22 @@ def main():
         'binding_posts': [],
         'binding_deletes': [],
         'held_bindings': [],
+        'listen': {'remote_enabled': False, 'remote_address': None, 'remote_port': None,
+                   'loopback': '127.0.0.1:18042', 'error': ''},
+        'listen_interfaces': [
+            {'address': '100.64.0.10', 'version': 4, 'family': 'IPv4'},
+            {'address': '100.64.0.11', 'version': 4, 'family': 'IPv4'},
+            {'address': 'fd00::10', 'version': 6, 'family': 'IPv6'},
+        ],
+        'listen_gets': 0,
+        'listen_status_gets': 0,
+        'listen_posts': [],
+        'listen_fail': False,
+        'listen_status_fail': False,
+        'listen_apply_fail': False,
+        'listen_lost': False,
+        'listen_hold': False,
+        'held_listen': [],
         'held': [],
         'held_nodes': [],
         'register_bodies': [],
@@ -143,6 +159,42 @@ def main():
             row['ips'] = [item for item in row['ips'] if item != ip]
             req.fulfill(json={'member': member, 'removed': ip})
             return
+        if path == '/admin/listen/interfaces' and req.request.method == 'GET':
+            state['listen_gets'] += 1
+            if state['listen_fail']:
+                req.fulfill(status=503, json={'detail': '网卡枚举服务暂不可用'})
+            else:
+                req.fulfill(json={'interfaces': deepcopy(state['listen_interfaces'])})
+            return
+        if path == '/admin/listen/status' and req.request.method == 'GET':
+            state['listen_status_gets'] += 1
+            if state['listen_status_fail']:
+                req.fulfill(status=503, json={'detail': '监听状态服务暂不可用'})
+            else:
+                req.fulfill(json=deepcopy(state['listen']))
+            return
+        if path == '/admin/listen' and req.request.method == 'POST':
+            body = req.request.post_data_json
+            state['listen_posts'].append(deepcopy(body))
+            writes.append(('POST', path, body))
+            if state['listen_hold']:
+                state['held_listen'].append((req, body))
+                return
+            if state['listen_lost']:
+                req.abort('failed')
+                return
+            if state['listen_apply_fail']:
+                req.fulfill(status=400, json={'detail': '来源绑定未就绪：请先按成员登记来源 IP，再启用远程监听'})
+                return
+            address = body.get('address', '')
+            if address:
+                state['listen'].update({'remote_enabled': True, 'remote_address': address,
+                                        'remote_port': 18042, 'error': ''})
+            else:
+                state['listen'].update({'remote_enabled': False, 'remote_address': None,
+                                        'remote_port': None, 'error': ''})
+            req.fulfill(json=deepcopy(state['listen']))
+            return
         if path == '/relay/nodes':
             if req.request.method == 'GET':
                 state['node_gets'] += 1
@@ -242,6 +294,11 @@ def main():
         page.locator('#btn-relay-nodes').click()
         page.wait_for_function('document.querySelector("#relay-nodes-dialog").open')
         page.wait_for_function('document.querySelector("#relay-nodes-status").textContent.includes("暂无已登记节点")')
+        page.wait_for_function('document.querySelector("#relay-listen-badge").textContent === "仅本机"')
+        assert page.locator('#relay-listen-address option').count() == 4
+        assert '未开启远程监听' in page.locator('#relay-listen-summary').inner_text()
+        listen_options = page.locator('#relay-listen-address option').evaluate_all('(items) => items.map(i => i.value)')
+        assert listen_options == ['', '100.64.0.10', '100.64.0.11', 'fd00::10'], listen_options
         assert page.locator('#relay-readonly').is_hidden()
         assert page.locator('#relay-admin-body').is_visible()
         options = page.locator('#relay-member option').evaluate_all('(items) => items.map(i => i.value)')
@@ -275,13 +332,74 @@ def main():
         page.screenshot(path=str(evidence / 'relay-nodes-issued-1280-dark.png'),
                         mask=[page.locator('#relay-issued-credential')])
 
-        # Copy member and credential, including the actual clipboard value.
+        # Copy the one-time values before refresh clears the credential panel.
         page.locator('#relay-copy-member').click()
         page.wait_for_function('document.querySelector("#relay-register-status").textContent.includes("已复制成员标识")')
         assert page.evaluate('navigator.clipboard.readText()') == 'hermes-remote'
         page.locator('#relay-copy-credential').click()
         page.wait_for_function('document.querySelector("#relay-register-status").textContent.includes("已复制连接凭据")')
         assert page.evaluate('navigator.clipboard.readText()') == credential
+
+        # Listen configuration: enable a concrete interface, show the actual address, copy it, then disable.
+        page.wait_for_function('!document.querySelector("#relay-close").disabled')
+        page.wait_for_function('!document.querySelector("#relay-listen-address").disabled')
+        page.locator('#relay-listen-address').select_option('100.64.0.10')
+        page.wait_for_function('!document.querySelector("#relay-listen-save").disabled')
+        page.locator('#relay-listen-save').click()
+        page.wait_for_function('document.querySelector("#relay-listen-badge").textContent === "已开启"')
+        page.wait_for_function('!document.querySelector("#relay-listen-copy").disabled')
+        assert state['listen_posts'][-1] == {'address': '100.64.0.10'}
+        assert '100.64.0.10:18042' in page.locator('#relay-listen-summary').inner_text()
+        assert '允许来源' in page.locator('#relay-listen-sources').inner_text()
+        assert page.locator('#relay-listen-url').input_value() == 'http://100.64.0.10:18042'
+        assert page.locator('#relay-listen-url-row').is_visible()
+        page.locator('#relay-listen-copy').click()
+        page.wait_for_function('document.querySelector("#relay-listen-status").textContent.includes("已复制")')
+        assert page.evaluate('navigator.clipboard.readText()') == 'http://100.64.0.10:18042'
+        page.wait_for_function('!document.querySelector("#relay-listen-disable").disabled')
+        page.locator('#relay-listen-disable').click()
+        page.wait_for_function('document.querySelector("#relay-listen-badge").textContent === "仅本机"')
+        assert state['listen_posts'][-1] == {'address': ''}
+        assert page.locator('#relay-listen-url-row').is_hidden()
+        assert '回退回环' in page.locator('#relay-listen-status').inner_text()
+
+        # A failed switch must not claim the listener is enabled.
+        state['listen_apply_fail'] = True
+        page.wait_for_function('!document.querySelector("#relay-listen-address").disabled')
+        page.locator('#relay-listen-address').select_option('100.64.0.10')
+        page.wait_for_function('!document.querySelector("#relay-listen-save").disabled')
+        page.locator('#relay-listen-save').click()
+        page.wait_for_function('document.querySelector("#relay-listen-status").textContent.includes("监听切换失败")')
+        assert '来源绑定未就绪' in page.locator('#relay-listen-status').inner_text()
+        assert page.locator('#relay-listen-badge').inner_text() == '仅本机'
+        assert page.locator('#relay-listen-url-row').is_hidden()
+        state['listen_apply_fail'] = False
+
+        # A lost response is an unconfirmed switch, never an enabled claim; refresh resolves it.
+        state['listen_lost'] = True
+        page.wait_for_function('!document.querySelector("#relay-listen-address").disabled')
+        page.locator('#relay-listen-address').select_option('100.64.0.10')
+        page.wait_for_function('!document.querySelector("#relay-listen-save").disabled')
+        page.locator('#relay-listen-save').click()
+        page.wait_for_function('document.querySelector("#relay-listen-status").textContent.includes("结果未确认")')
+        assert page.locator('#relay-listen-badge').inner_text() == '结果未确认'
+        assert page.locator('#relay-listen-url-row').is_hidden()
+        assert page.locator('#relay-listen-save').is_disabled()
+        state['listen_lost'] = False
+        page.locator('#relay-refresh').click()
+        page.wait_for_function('document.querySelector("#relay-listen-badge").textContent === "仅本机"')
+        page.wait_for_function('!document.querySelector("#relay-listen-address").disabled')
+
+        # Listen status read failure is explicit and disables the controls; refresh recovers.
+        state['listen_status_fail'] = True
+        page.locator('#relay-refresh').click()
+        page.wait_for_function('document.querySelector("#relay-listen-summary").textContent.includes("监听配置读取失败")')
+        assert page.locator('#relay-listen-save').is_disabled()
+        assert page.locator('#relay-listen-address').is_disabled()
+        state['listen_status_fail'] = False
+        page.locator('#relay-refresh').click()
+        page.wait_for_function('document.querySelector("#relay-listen-badge").textContent === "仅本机"')
+        page.wait_for_function('!document.querySelector("#relay-listen-address").disabled')
 
         # Registration gate: a nodes request that is pending or failed must disable registration.
         close_dialog()
@@ -493,6 +611,7 @@ def main():
         close_dialog()
         gets_before_bot = state['node_gets']
         binding_gets_before_bot = state['binding_gets']
+        listen_gets_before_bot = (state['listen_gets'], state['listen_status_gets'], len(state['listen_posts']))
         page.evaluate('S.isUserIdentity = false; document.dispatchEvent(new Event("service-auth-changed"))')
         open_settings()
         assert page.locator('#btn-relay-nodes').is_visible()
@@ -503,6 +622,7 @@ def main():
         assert page.locator('#relay-admin-body').is_hidden()
         assert state['node_gets'] == gets_before_bot
         assert state['binding_gets'] == binding_gets_before_bot
+        assert (state['listen_gets'], state['listen_status_gets'], len(state['listen_posts'])) == listen_gets_before_bot
         page.screenshot(path=str(evidence / 'relay-nodes-bot-readonly-1280-dark.png'))
         close_dialog()
         page.evaluate('S.isUserIdentity = true; document.dispatchEvent(new Event("service-auth-changed"))')
@@ -534,6 +654,7 @@ def main():
         # 390px, both themes, no horizontal overflow.
         page.set_viewport_size({'width': 390, 'height': 844})
         open_dialog()
+        page.locator('#relay-nodes-dialog').evaluate('(el) => { el.scrollTop = 0; }')
         box = page.locator('#relay-nodes-dialog').bounding_box()
         assert box['x'] >= 0 and box['x'] + box['width'] <= 390
         overflow = page.locator('#relay-nodes-dialog').evaluate('(el) => el.scrollWidth - el.clientWidth')
@@ -576,12 +697,14 @@ def main():
         assert new_credential not in stored and credential not in stored and spare_credential not in stored
         assert not errors, errors
         assert all(path.startswith('/relay/nodes') or path.startswith('/admin/source-ips')
+                   or path == '/admin/listen'
                    for method, path, _ in writes if method in ('POST', 'DELETE')), writes
         browser.close()
     print('PASS: relay node list, member+source-IP registration via idempotent add, per-card bindings and actual peer IP, '
-          'add/remove IP, two independent page snapshots without overwrite/restore, one-time credential/copy, '
-          'double-click guard, pending/503/bindings gate, unknown-write duplicate guard and recovery, '
-          'online refresh, rotate=true reissue, revoke/reissue confirms, bot read-only, errors and 390px themes')
+          'listen interface selection/actual status/copy/disable/failure, two independent page snapshots without '
+          'overwrite/restore, one-time credential/copy, double-click guard, pending/503/bindings gate, '
+          'unknown-write duplicate guard and recovery, online refresh, rotate=true reissue, revoke/reissue confirms, '
+          'bot read-only, errors and 390px themes')
 
 
 if __name__ == '__main__':
