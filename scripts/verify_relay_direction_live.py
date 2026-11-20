@@ -210,6 +210,7 @@ def main():
                     cert_path=cert, key_path=key, tls=True)
                 pairing_url = plugin_server['pairing_url']
                 assert 'pairing_token=' in pairing_url and fingerprint in pairing_url
+                assert plugin_server['proxy_port'] > 0, '随包 MCP loopback 代理必须启动'
 
                 page.locator('#relay-direction-dial').click()
                 page.wait_for_function('!document.querySelector("#relay-pairing").hidden')
