@@ -48,6 +48,15 @@ def _env(name: str) -> str:
     return value.strip()
 
 
+def platform_mcp_python(config=None) -> str:
+    """随包 MCP 解释器配置值：PlatformConfig.extra.mcp_python 或
+    BOT_GROUP_MCP_PYTHON。独立于 load() 的必填项（listen 场景不需要
+    engine_url/member/credential 也能拿到解释器配置，manager 12793）。"""
+    extra = getattr(config, "extra", {}) or {}
+    value = extra.get("mcp_python") or _env("BOT_GROUP_MCP_PYTHON")
+    return value.strip() if value else ""
+
+
 def load(config=None) -> RelayConfig | None:
     """从 PlatformConfig / 环境组装配置；缺必填项返回 None。"""
     extra = getattr(config, "extra", {}) or {}
@@ -55,7 +64,7 @@ def load(config=None) -> RelayConfig | None:
     member = (extra.get("member") or _env("BOT_GROUP_RELAY_MEMBER")
               or _env("HERMES_PROFILE"))
     credential = extra.get("credential") or _env("BOT_GROUP_RELAY_CREDENTIAL")
-    mcp_python = extra.get("mcp_python") or _env("BOT_GROUP_MCP_PYTHON")
+    mcp_python = platform_mcp_python(config)
     home = extra.get("home") or _env("HERMES_HOME") or str(Path.home() / ".hermes")
     if not engine_url or not member or not credential:
         return None

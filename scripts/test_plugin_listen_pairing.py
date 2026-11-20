@@ -1175,6 +1175,47 @@ class EntryIdentityAndProxyTests(unittest.TestCase):
         conn.close()
         self.assertEqual(mcpproxy._PENDING, {}, "请求完成后无残留等待位")
 
+    def test_mcp_python_resolves_plugin_venv_over_host(self):
+        """manager 12793：常规 listen 入口（不显式传 mcp_python）必须复用
+        mcp_digest 的插件 venv 解析——宿主 Python 没装 mcp 时仍用安装脚本
+        生成的解释器，不落回宿主 sys.executable。"""
+        plg = _plugin()
+        listen_mod = plg["listen"]
+        mcp_digest = plg["mcp_digest"]
+        relay_config = plg["config"]
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_root = Path(tmp) / "plugin"
+            fake_venv = fake_root / "venv" / "Scripts" / "python.exe"
+            fake_venv.parent.mkdir(parents=True)
+            fake_venv.write_text("fake", encoding="utf-8")
+            server = listen_mod.ListenServer(
+                address="127.0.0.1", port=0, cert_path="", key_path="",
+                advertise="127.0.0.1", member=REMOTE, home=tmp, mcp_python="")
+            try:
+                with patch.object(mcp_digest, "PLUGIN_ROOT", fake_root):
+                    self.assertEqual(server._mcp_python(), str(fake_venv),
+                                     "插件 venv 解释器优先于宿主 sys.executable")
+                with patch.object(relay_config, "platform_mcp_python",
+                                  return_value=sys.executable):
+                    self.assertEqual(Path(server._mcp_python()),
+                                     Path(sys.executable),
+                                     "PlatformConfig 配置优先于插件 venv")
+            finally:
+                pass
+            explicit = str(Path(tmp) / "explicit.exe")
+            Path(explicit).write_text("x", encoding="utf-8")
+            server_explicit = listen_mod.ListenServer(
+                address="127.0.0.1", port=0, cert_path="", key_path="",
+                advertise="127.0.0.1", member=REMOTE, home=tmp,
+                mcp_python=explicit)
+            self.assertEqual(server_explicit._mcp_python(), explicit,
+                             "显式参数优先")
+            # 插件 venv 缺失且无配置 → 宿主兜底
+            with patch.object(mcp_digest, "PLUGIN_ROOT", Path(tmp) / "none"):
+                with patch.object(relay_config, "platform_mcp_python",
+                                  return_value=""):
+                    self.assertEqual(server._mcp_python(), sys.executable)
+
     def test_proxy_releases_waiter_when_channel_unavailable(self):
         """manager node2092：转发失败（通道未认证）→ 502 且释放注册位，
         不残留等待项。"""

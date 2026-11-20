@@ -21,6 +21,7 @@ import os
 import queue
 import socket
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -280,7 +281,7 @@ class ListenServer:
                            kind, frame_gen)
             return
         if kind == "mcp_snapshot_request":
-            snapshot = mcp_digest.snapshot(self.mcp_python,
+            snapshot = mcp_digest.snapshot(self._mcp_python(),
                                            code_version=relay_config.plugin_version())
             # manager node2084：随包 MCP 的 GROUP_ENGINE_URL 必须指向本次
             # loopback 代理实际端口——快照带上当前代理端口，引擎侧落库后
@@ -339,6 +340,17 @@ class ListenServer:
             if entry.is_file():
                 return str(entry)
         return None
+
+    def _mcp_python(self) -> str:
+        """随包 MCP 解释器解析（manager 12793）：显式参数/PlatformConfig
+        配置 → 插件目录 venv（安装脚本生成的解释器）→ 宿主 sys.executable
+        兜底。宿主 Python 没装 mcp 依赖时，常规 listen 入口必须仍用
+        插件 venv 解释器（install.sh 安装目标），不落回宿主解释器。"""
+        configured = self.mcp_python or relay_config.platform_mcp_python()
+        resolved = mcp_digest.mcp_python(configured)
+        if resolved and os.path.isfile(resolved):
+            return resolved
+        return sys.executable
 
     def _handle_mcp_verify_request(self, ws, meta: dict, envelope: dict,
                                    generation: int) -> None:
@@ -399,9 +411,7 @@ class ListenServer:
             "NO_PROXY": "127.0.0.1",
             "HERMES_PROFILE": self.member,
         }
-        python = self.mcp_python if (self.mcp_python
-                                     and os.path.isfile(self.mcp_python)) \
-            else sys.executable
+        python = self._mcp_python()
         # 二进制管道（text 模式 universal newlines 会把 '\n' 转 '\r\n'，
         # 与 mcp 库按 b'\n' 分帧不一致——曾致 initialize 静默无响应）
         proc = subprocess.Popen(
