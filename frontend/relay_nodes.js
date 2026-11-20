@@ -459,6 +459,9 @@
       failureError = true;
     }
     report(directionFailure, failure, failureError);
+    const failed = !online && (selected.switch_error || selected.dial_failure?.stage
+      || selected.dial_state === 'abandoned' || selected.offline_reason === 'unexpected');
+    if (failed && pairingStatus.dataset.error !== 'true') report(pairingStatus, '');
 
     directionRetry.hidden = !(selected.switch_error || selected.dial_failure || selected.dial_state === 'abandoned'
       || selected.offline_reason === 'unexpected');

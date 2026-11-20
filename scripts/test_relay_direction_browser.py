@@ -248,8 +248,8 @@ def main():
         state['probe_stage'] = 'ok'
         state['switch_mode'] = 'success'
         page.locator('#relay-pairing-confirm').click()
-        page.wait_for_function('document.querySelector("#relay-direction-dial").getAttribute("aria-pressed") === "true"')
-        page.wait_for_function('document.querySelector("#relay-direction-badge").textContent.includes("已连接")')
+        page.wait_for_function('document.querySelector("#relay-pairing-status").textContent.includes("导入完成")')
+        page.wait_for_function('document.querySelector("#relay-direction-status").textContent.includes("已连通")')
         assert len(state['probe_posts']) == 2
         assert len(state['endpoint_posts']) == 1
         assert state['endpoint_posts'][0]['pairing_token'] == 'ONE-SHOT-SECRET'
@@ -279,9 +279,10 @@ def main():
         assert page.locator('#relay-direction-retry').is_visible()
         assert page.locator('#relay-direction-back').is_visible()
         page.screenshot(path=str(evidence / 'direction-failed-1280-dark.png'))
+        assert '导入完成' not in page.locator('#relay-pairing-status').inner_text()
         state['switch_mode'] = 'success'
         page.locator('#relay-direction-retry').click()
-        page.wait_for_function('document.querySelector("#relay-direction-badge").textContent.includes("已连接")')
+        page.wait_for_function('document.querySelector("#relay-direction-status").textContent.includes("已连通")')
         assert page.locator('#relay-direction-dial').get_attribute('aria-pressed') == 'true'
 
         # A plain connection loss is worded differently from a planned switch.
