@@ -166,6 +166,22 @@ def main():
                     assert overflow <= 0, overflow
                     page.screenshot(path=str(args.evidence / f'relay-live-390-{theme}.png'),
                                     mask=[page.locator('#relay-issued-credential')])
+                for theme in ('dark', 'light'):
+                    page.evaluate('(theme) => applyTheme(theme)', theme)
+                    page.locator('#relay-node-list').evaluate('(el) => { el.scrollTop = el.scrollHeight; }')
+                    page.locator('#relay-nodes-dialog').evaluate(
+                        '(el) => { el.scrollTop = Math.max(0, Math.round((el.scrollHeight - el.clientHeight) * 0.55)); }')
+                    metrics = page.evaluate("""() => {
+                        const d = document.querySelector('#relay-nodes-dialog');
+                        const f = d.querySelector('.dlg-btns');
+                        return {dialogBottom: d.getBoundingClientRect().bottom,
+                                footerBottom: f.getBoundingClientRect().bottom,
+                                footerPaddingBottom: getComputedStyle(f).paddingBottom};
+                    }""")
+                    assert metrics['footerBottom'] >= metrics['dialogBottom'] - 1, metrics
+                    assert metrics['footerPaddingBottom'] == '26px', metrics
+                    page.screenshot(path=str(args.evidence / f'relay-live-390-{theme}-scrolled.png'),
+                                    mask=[page.locator('#relay-issued-credential')])
                 page.set_viewport_size({'width': 1280, 'height': 900})
                 page.evaluate("applyTheme('dark')")
 
