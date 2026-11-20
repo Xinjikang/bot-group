@@ -528,6 +528,22 @@ class SwitchApiTests(DialerBase):
             self.assertEqual(response.status_code, 403)
 
 
+    @staticmethod
+    def _insert_execution(conn, submission_id: str, state: str,
+                          profile: str = REMOTE) -> None:
+        """受控网关记录一次 prompt.submit 的 execution 行（manager node2064
+        附录口径：搭受控 execution 行观察对账顺序）。"""
+        conn.execute(
+            "INSERT INTO hermes_executions"
+            "(execution_id,session,started_at,project,profile,kind,source,"
+            "python,home,workdir,session_id,profile_id,submission_id,state,"
+            "submit_deadline,reconcile_deadline) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (f"exec-{submission_id}", "sess-1", db.now_iso(), "alpha", profile,
+             "chat", "test", "", "", "", "sess-1", profile, submission_id, state,
+             time.time() + 60, time.time() + 3600))
+        conn.commit()
+
     def test_inflight_submission_survives_switch_and_settles_once(self):
         """manager node2057 ③：已被接收且回执延后的同一 submission_id 经
         实际切换、待核对、回执确定、恢复派发全程只提交一次。"""
@@ -536,7 +552,8 @@ class SwitchApiTests(DialerBase):
         try:
             from scripts.project_test_support import enable_members
             enable_members(conn, ("alpha",), profiles=[REMOTE])
-            # 已被接收且回执延后：offline_waiting 点名已挂 submission_id
+            # 已被接收且回执延后：offline_waiting 点名已挂 submission_id，
+            # 受控 execution 行状态 running（回执延后）
             conn.execute(
                 "INSERT INTO relay_offline_mentions"
                 "(member,project,thread_id,message_id,state,created_at) "
@@ -546,12 +563,14 @@ class SwitchApiTests(DialerBase):
             bound = relay.attach_submission(conn, message_ids=[1], member=REMOTE,
                                             submission_id="sub-1")
             self.assertEqual(bound, 1, "未决点名必须挂上 submission_id")
+            self._insert_execution(conn, "sub-1", "running")
             # 切换中：闸门 hold、该记录保持 offline_waiting（不重派不标过期）
             relay.begin_switch(conn, REMOTE, "dial")
             candidate = {"profile": REMOTE, "kind": "chat",
                          "thread_id": 7, "project": "alpha"}
             self.assertEqual(queue_module._relay_node_gate(conn, candidate)[0], "hold")
-            # 切换完成：恢复派发（闸门 go）——未决记录仍待核对，绝不自动重派
+            # 切换完成：complete_switch 内置首次在途核对（manager node2064 ③）
+            # ——execution 未终态（回执延后）→ 未知持久保留，恢复普通派发
             relay.complete_switch(conn, REMOTE)
             relay.mark_online(conn, REMOTE, code_version="", mcp_fingerprint="",
                               generation=1)
@@ -575,6 +594,55 @@ class SwitchApiTests(DialerBase):
                 "SELECT COUNT(*) FROM relay_offline_mentions WHERE member=?",
                 (REMOTE,)).fetchone()[0]
             self.assertEqual(count, 1, "同一条点名至多提交一次")
+        finally:
+            conn.close()
+
+    def test_complete_switch_applies_known_receipt_and_keeps_unknown(self):
+        """manager node2064 ③：complete_switch 内置首次核对——已知回执
+        （execution 已 terminal）立即应用标 submitted；未知（execution
+        不存在）持久保留 offline_waiting 禁止重派。"""
+        conn = db.get_connection()
+        try:
+            from scripts.project_test_support import enable_members
+            enable_members(conn, ("alpha",), profiles=[REMOTE])
+            # 两条未决点名：sub-known（execution 已 terminal=已知回执）、
+            # sub-unknown（execution 不存在=未知）
+            conn.execute(
+                "INSERT INTO relay_offline_mentions"
+                "(member,project,thread_id,message_id,state,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (REMOTE, "alpha", 7, 1, "offline_waiting", db.now_iso()))
+            conn.execute(
+                "INSERT INTO relay_offline_mentions"
+                "(member,project,thread_id,message_id,state,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (REMOTE, "alpha", 7, 2, "offline_waiting", db.now_iso()))
+            conn.commit()
+            relay.attach_submission(conn, message_ids=[1], member=REMOTE,
+                                    submission_id="sub-known")
+            relay.attach_submission(conn, message_ids=[2], member=REMOTE,
+                                    submission_id="sub-unknown")
+            self._insert_execution(conn, "sub-known", "terminal")
+            # 切换 → 完成：内置核对应用已知回执、保留未知
+            relay.begin_switch(conn, REMOTE, "dial")
+            result = relay.reconcile_switch_resume(conn, REMOTE)
+            self.assertEqual(result["applied"], 1, "已知回执立即应用结算")
+            self.assertEqual(result["kept"], 1, "未知持久保留待核对")
+            relay.complete_switch(conn, REMOTE)
+            row1 = conn.execute(
+                "SELECT state FROM relay_offline_mentions "
+                "WHERE member=? AND message_id=1", (REMOTE,)).fetchone()
+            self.assertEqual(row1["state"], "submitted",
+                             "已知回执：切换完成后点名已结算")
+            row2 = conn.execute(
+                "SELECT state,submission_id FROM relay_offline_mentions "
+                "WHERE member=? AND message_id=2", (REMOTE,)).fetchone()
+            self.assertEqual(row2["state"], "offline_waiting",
+                             "未知：持久保留待核对，禁止原提交重派")
+            self.assertEqual(row2["submission_id"], "sub-unknown")
+            # 切换态已清（恢复普通派发）
+            node = relay.read_node(conn, REMOTE)
+            self.assertEqual(node["switch_state"], "")
         finally:
             conn.close()
 

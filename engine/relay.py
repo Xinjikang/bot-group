@@ -392,6 +392,37 @@ def settle_by_submission(conn, *, member: str, submission_id: str, now=None) -> 
     return cur.rowcount
 
 
+def reconcile_switch_resume(conn, member: str, *, now=None) -> dict:
+    """切换恢复的首次在途核对（manager node2064 ③，两握手入口共用）：
+    通道可用后按原 submission_id 核对——已知回执（execution 已 terminal）
+    立即应用结算，未知（execution 不存在或未终态）持久保留 offline_waiting
+    且禁止原提交重派（收口跳过 submission_id 非空者），之后恢复普通派发。
+
+    网络级核对由持续处理帧的位置承担：GatewayClient 会话 resume 时
+    apply_receipt 权威回执走 settle_by_submission 结算（既有链路）。
+    返回 {applied, kept} 计数供日志。"""
+    now = _now() if now is None else now
+    applied = 0
+    kept = 0
+    pending = conn.execute(
+        "SELECT DISTINCT submission_id FROM relay_offline_mentions "
+        "WHERE member=? AND state='offline_waiting' AND submission_id IS NOT NULL",
+        (member,)).fetchall()
+    for row in pending:
+        submission_id = row["submission_id"]
+        execution = conn.execute(
+            "SELECT state FROM hermes_executions WHERE submission_id=? "
+            "AND profile=?", (submission_id, member)).fetchone()
+        if execution is not None and execution["state"] == "terminal":
+            # 已知回执：立即应用（点名标 submitted，不再保留待核对）
+            applied += settle_by_submission(conn, member=member,
+                                            submission_id=submission_id, now=now)
+        else:
+            # 未知：持久保留 offline_waiting，禁止原提交重派
+            kept += 1
+    return {"applied": applied, "kept": kept}
+
+
 def merge_mcp_spec(conn, member: str, spec: dict, *, engine_url: str = "",
                    fetch_report=None) -> dict:
     """远程节点的随包 MCP 配置合并（manager node1977 ③ + node1981 ③）：
@@ -478,12 +509,16 @@ def begin_switch(conn, member: str, target: str, *, now=None) -> None:
 
 
 def complete_switch(conn, member: str, *, now=None) -> None:
-    """切换完成（新方向认证成功/用户切回/重启后目标已达成）：清切换态、
-    更新 direction 为目标方向，恢复派发。"""
+    """切换完成（新方向认证成功/用户切回/重启后目标已达成）：先按原
+    submission_id 做首次在途核对（manager node2064 ③——两握手入口共用
+    同一恢复步骤，不再直接清切换态），再清切换态、更新 direction 为目标
+    方向，恢复普通派发。"""
     row = read_node(conn, member)
     if row is None:
         return
     target = row["switch_target"] or row["direction"]
+    # 首次在途核对：已知回执立即应用，未知持久保留禁止原提交重派
+    reconcile_switch_resume(conn, member, now=now)
     conn.execute(
         "UPDATE relay_nodes SET switch_state='',switch_target='',"
         "direction=?,updated_at=? WHERE member=?",
