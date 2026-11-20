@@ -1182,6 +1182,35 @@ class EntryIdentityAndProxyTests(unittest.TestCase):
         conn.close()
         self.assertEqual(mcpproxy._PENDING, {}, "请求完成后无残留等待位")
 
+    def test_cli_mount_contract_parser_add_subparsers(self):
+        """manager 12801：宿主 _attach_plugin_cli_command 已建插件专属
+        ArgumentParser 再调 setup_fn——register_cli 首步必须
+        add_subparsers（把 parser 当 subparsers 会 AttributeError）；子
+        命令 dest=command 挂在插件命名空间、独立于宿主顶层 dest。用宿主
+        挂载契约解析 listen/register/status 三子命令。"""
+        import argparse
+        plg = _plugin()
+        cli = plg["cli"]
+        host = argparse.ArgumentParser(prog="hermes")
+        host.add_argument("--debug", action="store_true", help="宿主顶层参数")
+        host_sub = host.add_subparsers(dest="top", required=True)
+        plugin_parser = host_sub.add_parser("bot-group-relay",
+                                            help="bot-group relay 插件控制")
+        cli.register_cli(plugin_parser)
+        for argv, expect in (
+                (["status"], "status"),
+                (["register", "--engine-url", "http://127.0.0.1:1",
+                  "--member", "m", "--credential", "c"], "register"),
+                (["listen", "--address", "127.0.0.1", "--port", "8443"],
+                 "listen"),
+        ):
+            args = host.parse_args(["bot-group-relay"] + argv)
+            self.assertEqual(args.top, "bot-group-relay")
+            self.assertEqual(args.command, expect,
+                             "子命令 dest 独立于宿主顶层参数、dispatch 可读")
+        with self.assertRaises(SystemExit):
+            host.parse_args(["bot-group-relay"])  # 缺子命令 required 报错
+
     def test_mcp_python_resolves_plugin_venv_over_host(self):
         """manager 12793：常规 listen 入口（不显式传 mcp_python）必须复用
         mcp_digest 的插件 venv 解析——宿主 Python 没装 mcp 时仍用安装脚本

@@ -66,9 +66,14 @@ def _require_authorized() -> None:
         sys.exit(1)
 
 
-def register_cli(subparsers) -> None:
-    """向 CLI 注册子命令（ctx.register_cli_command 的 setup_fn）。"""
-    parser = subparsers.add_parser("bot-group-relay", help="bot-group relay 插件控制")
+def register_cli(parser) -> None:
+    """向 CLI 注册子命令（ctx.register_cli_command 的 setup_fn）。
+
+    manager 12801：宿主 _attach_plugin_cli_command 已为本插件建好专属
+    ArgumentParser（hermes bot-group-relay ...）再调 setup_fn——首步必须
+    在传入 parser 上 add_subparsers（ArgumentParser 无 add_parser 方法，
+    把 parser 当 subparsers 用会 AttributeError）。子命令 dest=command
+    挂在插件 parser 命名空间内，独立于宿主顶层参数。"""
     sub = parser.add_subparsers(dest="command", required=True)
     p_listen = sub.add_parser("listen", help="方向 B：绑定本机具体网卡地址监听")
     p_listen.add_argument("--address", required=True, help="绑定的本机网卡单播地址")
