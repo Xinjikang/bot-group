@@ -76,6 +76,7 @@ def main():
 
         code_version = relay_server._engine_release_version() or ''
         ws = None
+        ws2 = None
         browser = None
         try:
             with sync_playwright() as pw:
@@ -98,6 +99,7 @@ def main():
                 page.locator('#btn-relay-nodes').click()
                 page.wait_for_function('document.querySelector("#relay-nodes-dialog").open')
                 page.wait_for_function('document.querySelector("#relay-nodes-status").textContent.includes("暂无已登记节点")')
+                page.wait_for_function('document.querySelector("#relay-register-gate").textContent === ""')
                 page.locator('#relay-member option[value="remote-live"]').wait_for(state='attached')
                 page.locator('#relay-member').select_option(MEMBER)
                 page.locator('#relay-register-submit').click()
@@ -111,15 +113,19 @@ def main():
                 page.wait_for_function('document.querySelector("#relay-register-status").textContent.includes("已复制连接凭据")')
                 assert page.evaluate('navigator.clipboard.readText()') == credential
 
-                ws = connect('ws://127.0.0.1:18042/relay/ws', open_timeout=5, close_timeout=1)
-                ws.send(json.dumps({
-                    'relay': {'kind': 'hello'}, 'member': MEMBER, 'credential': credential,
-                    'code_version': code_version, 'mcp_fingerprint': 'fedcba9876543210',
-                    'protocol_version': 1,
-                }))
-                reply = json.loads(ws.recv(timeout=5))
+                def hello(link_credential):
+                    link = connect('ws://127.0.0.1:18042/relay/ws', open_timeout=5, close_timeout=1, legacy=True)
+                    link.send(json.dumps({
+                        'relay': {'kind': 'hello'}, 'member': MEMBER, 'credential': link_credential,
+                        'code_version': code_version, 'mcp_fingerprint': 'fedcba9876543210',
+                        'protocol_version': 1,
+                    }))
+                    return link, json.loads(link.recv(timeout=5))
+
+                ws, reply = hello(credential)
                 assert reply.get('relay', {}).get('kind') == 'hello_ok', reply
                 generation = reply['relay']['generation']
+                assert int(generation) >= 2
 
                 page.locator('#relay-refresh').click()
                 page.wait_for_function('document.querySelector("#relay-node-list").textContent.includes("在线")')
@@ -141,16 +147,45 @@ def main():
                 page.set_viewport_size({'width': 1280, 'height': 900})
                 page.evaluate("applyTheme('dark')")
 
-                page.locator('#relay-node-list button[data-action="revoke"]').click()
+                # Reissue must send rotate=true, close the old link, reject the old credential and accept the new one.
+                page.locator('#relay-node-list article[data-relay-member="remote-live"] button[data-action="reissue"]').click()
+                page.wait_for_function('document.querySelector("#app-alert").open')
+                page.locator('#app-alert button', has_text='确定').click()
+                page.wait_for_function('!document.querySelector("#relay-credential").hidden')
+                new_credential = page.locator('#relay-issued-credential').input_value()
+                assert new_credential and new_credential != credential
+                assert credential not in page.locator('#relay-nodes-dialog').inner_text()
+                page.screenshot(path=str(args.evidence / 'relay-live-reissued-issued-1280-dark.png'),
+                                mask=[page.locator('#relay-issued-credential')])
+                try:
+                    ws.recv(timeout=2)
+                except Exception:
+                    pass  # 旧连接由 rotate 主动关闭。
+                try:
+                    old_probe, old_reply = hello(credential)
+                except Exception:
+                    pass  # 旧凭据握手被拒后连接关闭。
+                else:
+                    assert old_reply.get('relay', {}).get('kind') != 'hello_ok', old_reply
+                    old_probe.close()
+                ws2, reply2 = hello(new_credential)
+                assert reply2.get('relay', {}).get('kind') == 'hello_ok', reply2
+                page.locator('#relay-refresh').click()
+                page.wait_for_function('document.querySelector("#relay-node-list").textContent.includes("在线")')
+                page.screenshot(path=str(args.evidence / 'relay-live-reissued-online-1280-dark.png'),
+                                mask=[page.locator('#relay-issued-credential')])
+
+                page.locator('#relay-node-list article[data-relay-member="remote-live"] button[data-action="revoke"]').click()
                 page.wait_for_function('document.querySelector("#app-alert").open')
                 page.locator('#app-alert button', has_text='确定').click()
                 page.wait_for_function('document.querySelector("#relay-nodes-status").textContent.includes("已吊销")')
                 page.wait_for_function('document.querySelector("#relay-node-list").textContent.includes("凭据已吊销")')
-                assert ws is not None
-                try:
-                    ws.recv(timeout=2)
-                except Exception:
-                    pass  # 现连由 revoke 主动关闭，读端以关闭异常结束。
+                assert ws is not None and ws2 is not None
+                for link in (ws, ws2):
+                    try:
+                        link.recv(timeout=1)
+                    except Exception:
+                        pass  # 现连由 revoke 主动关闭，读端以关闭异常结束。
 
                 page.locator('#relay-close').click()
                 page.wait_for_function('!document.querySelector("#relay-nodes-dialog").open')
@@ -161,15 +196,17 @@ def main():
                 page.wait_for_function('document.querySelector("#relay-nodes-dialog").open')
                 assert page.locator('#relay-credential').is_hidden()
                 assert credential not in page.locator('#relay-nodes-dialog').inner_text()
+                assert new_credential not in page.locator('#relay-nodes-dialog').inner_text()
                 assert not errors, errors
                 browser.close()
                 browser = None
         finally:
-            if ws is not None:
-                try:
-                    ws.close()
-                except Exception:
-                    pass
+            for link in (ws, ws2):
+                if link is not None:
+                    try:
+                        link.close()
+                    except Exception:
+                        pass
             if browser is not None:
                 browser.close()
             relay_server.close_all()
@@ -178,7 +215,7 @@ def main():
             sock.close()
             if thread.is_alive():
                 raise RuntimeError('隔离引擎未停止')
-    print('PASS: live relay registration, real WebSocket handshake online, revoke offline, credential not shown after reload, 390px themes')
+    print('PASS: live relay registration, real handshake online, rotate reissue with old credential rejected and new credential online, revoke offline, credentials hidden after reload, 390px themes')
 
 
 if __name__ == '__main__':

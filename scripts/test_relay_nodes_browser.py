@@ -20,6 +20,7 @@ def main():
     members = [
         {'profile': 'hermes-remote', 'display_name': 'ECS Hermes', 'runtime': 'hermes', 'active': 1},
         {'profile': 'hermes-spare', 'display_name': '备用 Hermes', 'runtime': 'hermes', 'active': 0},
+        {'profile': 'hermes-extra', 'display_name': '备用 Hermes 2', 'runtime': 'hermes', 'active': 1},
         {'profile': 'codex-local', 'display_name': '本地 Codex', 'runtime': 'codex', 'active': 1},
     ]
     state = {
@@ -29,9 +30,13 @@ def main():
         'node_gets': 0,
         'register_fail': False,
         'register_hold': False,
+        'register_lost': False,
         'nodes_fail': False,
+        'nodes_hold': False,
         'forbidden': False,
         'held': [],
+        'held_nodes': [],
+        'register_bodies': [],
         'issued': [],
         'next_credential': 1,
     }
@@ -73,12 +78,18 @@ def main():
                     req.fulfill(status=403, json={'detail': '仅管理员可查看远程节点'})
                 elif state['nodes_fail']:
                     req.fulfill(status=503, json={'detail': '节点服务暂不可用'})
+                elif state['nodes_hold']:
+                    state['held_nodes'].append(req)
                 else:
                     req.fulfill(json=deepcopy(state['nodes']))
                 return
             body = req.request.post_data_json
             state['register_posts'] += 1
+            state['register_bodies'].append(deepcopy(body))
             writes.append(('POST', path, body))
+            if state['register_lost']:
+                req.abort('failed')
+                return
             if state['register_fail']:
                 req.fulfill(status=500, json={'detail': '登记失败，请检查成员标识'})
                 return
@@ -162,7 +173,7 @@ def main():
         assert page.locator('#relay-readonly').is_hidden()
         assert page.locator('#relay-admin-body').is_visible()
         options = page.locator('#relay-member option').evaluate_all('(items) => items.map(i => i.value)')
-        assert options == ['', 'hermes-remote', 'hermes-spare'], options
+        assert options == ['', 'hermes-remote', 'hermes-spare', 'hermes-extra'], options
         assert page.locator('#relay-register-submit').is_disabled()
         page.screenshot(path=str(evidence / 'relay-nodes-empty-1280-dark.png'))
 
@@ -181,6 +192,7 @@ def main():
         assert page.locator('#relay-issued-member').input_value() == 'hermes-remote'
         credential = page.locator('#relay-issued-credential').input_value()
         assert credential == 'TEST-RELAY-CREDENTIAL-1'
+        assert 'rotate' not in state['register_bodies'][0]
         assert page.locator('#relay-node-list').inner_text().count('ECS Hermes') == 1
         assert '离线' in page.locator('#relay-node-list').inner_text()
         assert '未上报' in page.locator('#relay-node-list').inner_text()
@@ -195,12 +207,77 @@ def main():
         page.wait_for_function('document.querySelector("#relay-register-status").textContent.includes("已复制连接凭据")')
         assert page.evaluate('navigator.clipboard.readText()') == credential
 
-        # Reopen the dialog: the credential is not recoverable and no rotation occurs.
+        # Registration gate: a nodes request that is pending or failed must disable registration.
         close_dialog()
+        posts_before_gate = state['register_posts']
+        state['nodes_hold'] = True
+        open_settings()
+        page.locator('#btn-relay-nodes').click()
+        page.wait_for_function('document.querySelector("#relay-nodes-dialog").open')
+        page.locator('#relay-member option[value="hermes-remote"]').wait_for(state='attached')
+        page.locator('#relay-member').select_option('hermes-remote')
+        assert page.locator('#relay-register-submit').is_disabled()
+        assert '正在读取节点与成员列表' in page.locator('#relay-register-gate').inner_text()
+        page.evaluate('document.querySelector("#relay-register-submit").click()')
+        assert state['register_posts'] == posts_before_gate
+        assert len(state['held_nodes']) == 1
+        state['nodes_hold'] = False
+        state['held_nodes'].pop().fulfill(json=deepcopy(state['nodes']))
+        page.wait_for_function('document.querySelector("#relay-register-gate").textContent === ""')
+        assert page.locator('#relay-member option[value="hermes-remote"]').count() == 0
+        assert page.locator('#relay-register-submit').is_disabled()
+        close_dialog()
+
+        state['nodes_fail'] = True
+        open_settings()
+        page.locator('#btn-relay-nodes').click()
+        page.wait_for_function('document.querySelector("#relay-nodes-dialog").open')
+        page.wait_for_function('document.querySelector("#relay-nodes-status").dataset.error === "true"')
+        page.locator('#relay-member option[value="hermes-remote"]').wait_for(state='attached')
+        page.locator('#relay-member').select_option('hermes-remote')
+        assert page.locator('#relay-register-submit').is_disabled()
+        assert '节点列表读取失败' in page.locator('#relay-register-gate').inner_text()
+        page.evaluate('document.querySelector("#relay-register-submit").click()')
+        assert state['register_posts'] == posts_before_gate
+        state['nodes_fail'] = False
+        page.locator('#relay-refresh').click()
+        page.wait_for_function('document.querySelector("#relay-register-gate").textContent === ""')
+        assert page.locator('#relay-member option[value="hermes-remote"]').count() == 0
+        close_dialog()
+
+        # An unknown write result must block duplicate registration until a successful refresh.
+        open_settings()
+        page.locator('#btn-relay-nodes').click()
+        page.wait_for_function('document.querySelector("#relay-nodes-dialog").open')
+        page.wait_for_function('document.querySelector("#relay-register-gate").textContent === ""')
+        state['register_lost'] = True
+        page.locator('#relay-member').select_option('hermes-spare')
+        page.locator('#relay-register-submit').click()
+        page.wait_for_function('document.querySelector("#relay-register-status").textContent.includes("结果未确认")')
+        assert '上次操作结果未确认' in page.locator('#relay-register-gate').inner_text()
+        assert page.locator('#relay-register-submit').is_disabled()
+        lost_posts = state['register_posts']
+        page.evaluate('document.querySelector("#relay-register-submit").click()')
+        assert state['register_posts'] == lost_posts
+        state['register_lost'] = False
+        page.locator('#relay-refresh').click()
+        page.wait_for_function('document.querySelector("#relay-register-gate").textContent === ""')
+        page.locator('#relay-member').select_option('hermes-spare')
+        assert page.locator('#relay-register-submit').is_enabled()
+        page.locator('#relay-register-submit').click()
+        page.wait_for_function('!document.querySelector("#relay-credential").hidden')
+        spare_credential = page.locator('#relay-issued-credential').input_value()
+        assert spare_credential == 'TEST-RELAY-CREDENTIAL-2'
+        assert state['register_posts'] == lost_posts + 1
+        page.wait_for_function('!document.querySelector("#relay-close").disabled')
+        close_dialog()
+
+        # Reopen the dialog: the credential is not recoverable and no rotation occurs.
         posts = state['register_posts']
         open_dialog()
         assert page.locator('#relay-credential').is_hidden()
         assert credential not in page.locator('#relay-nodes-dialog').inner_text()
+        assert spare_credential not in page.locator('#relay-nodes-dialog').inner_text()
         assert state['register_posts'] == posts
 
         # Handshake state from the same page after refresh.
@@ -216,30 +293,32 @@ def main():
         assert page.locator('#relay-credential').is_hidden()
 
         # Revoke needs a separate confirmation; cancel does nothing.
-        page.locator('#relay-node-list button[data-action="revoke"]').click()
+        page.locator('#relay-node-list article[data-relay-member="hermes-remote"] button[data-action="revoke"]').click()
         page.wait_for_function('document.querySelector("#app-alert").open')
         assert '吊销 hermes-remote' in page.locator('#app-alert-message').inner_text()
         assert '当前在线连接会立即断开' in page.locator('#app-alert-message').inner_text()
         page.locator('#app-alert button', has_text='取消').click()
         assert state['revoke_posts'] == 0
-        page.locator('#relay-node-list button[data-action="revoke"]').click()
+        page.locator('#relay-node-list article[data-relay-member="hermes-remote"] button[data-action="revoke"]').click()
         page.wait_for_function('document.querySelector("#app-alert").open')
         page.locator('#app-alert button', has_text='确定').click()
         page.wait_for_function('document.querySelector("#relay-nodes-status").textContent.includes("已吊销")')
         page.wait_for_function('document.querySelector("#relay-node-list").textContent.includes("凭据已吊销")')
         assert state['revoke_posts'] == 1
-        assert page.locator('#relay-node-list button[data-action="revoke"]').count() == 0
+        assert page.locator('#relay-node-list article[data-relay-member="hermes-remote"] button[data-action="revoke"]').count() == 0
 
         # Reissue needs its own confirmation and replaces the credential.
-        page.locator('#relay-node-list button[data-action="reissue"]').click()
+        expected_reissue = f'TEST-RELAY-CREDENTIAL-{state["next_credential"]}'
+        page.locator('#relay-node-list article[data-relay-member="hermes-remote"] button[data-action="reissue"]').click()
         page.wait_for_function('document.querySelector("#app-alert").open')
         assert '重新签发 hermes-remote' in page.locator('#app-alert-message').inner_text()
         assert '旧凭据立即失效' in page.locator('#app-alert-message').inner_text()
         page.locator('#app-alert button', has_text='确定').click()
         page.wait_for_function('!document.querySelector("#relay-credential").hidden')
         new_credential = page.locator('#relay-issued-credential').input_value()
-        assert new_credential == 'TEST-RELAY-CREDENTIAL-2'
+        assert new_credential == expected_reissue
         assert new_credential != credential
+        assert state['register_bodies'][-1].get('rotate') is True
         assert credential not in page.locator('#relay-nodes-dialog').inner_text()
         page.wait_for_function('document.querySelector("#relay-node-list").textContent.includes("离线")')
 
@@ -275,7 +354,7 @@ def main():
         page.locator('#relay-refresh').click()
         page.wait_for_function('document.querySelector("#relay-nodes-status").dataset.error === "false"')
         state['register_fail'] = True
-        page.locator('#relay-member').select_option('hermes-spare')
+        page.locator('#relay-member').select_option('hermes-extra')
         page.locator('#relay-register-submit').click()
         page.wait_for_function('document.querySelector("#relay-register-status").textContent.includes("登记失败")')
         assert page.locator('#relay-credential').is_hidden()
@@ -303,12 +382,13 @@ def main():
         assert page.locator('#relay-credential').is_hidden()
         assert new_credential not in page.locator('#relay-nodes-dialog').inner_text()
         stored = page.evaluate('JSON.stringify({local: {...localStorage}, session: {...sessionStorage}})')
-        assert new_credential not in stored and credential not in stored
+        assert new_credential not in stored and credential not in stored and spare_credential not in stored
         assert not errors, errors
         assert all(path.startswith('/relay/nodes') for method, path, _ in writes if method == 'POST'), writes
         browser.close()
     print('PASS: relay node list, Hermes member selection, one-time credential/copy, double-click guard, '
-          'online refresh, revoke/reissue confirms, bot read-only, errors and 390px themes')
+          'nodes pending/503 gate with zero old-member POST, unknown-write duplicate guard and recovery, '
+          'online refresh, rotate=true reissue, revoke/reissue confirms, bot read-only, errors and 390px themes')
 
 
 if __name__ == '__main__':

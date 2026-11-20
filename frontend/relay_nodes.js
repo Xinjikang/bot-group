@@ -22,6 +22,7 @@
         <label for="relay-member">Hermes 成员</label>
         <select id="relay-member"></select>
         <p class="profile-help">凭据由引擎生成；登记成功后一次性展示成员标识和凭据。已登记成员请使用节点卡片中的“重新签发”。</p>
+        <p id="relay-register-gate" class="profile-help" role="status" aria-live="polite"></p>
         <div class="relay-register-actions">
           <button type="button" id="relay-register-submit" class="primary" disabled>登记</button>
           <span id="relay-register-status" class="profile-help" role="status" aria-live="polite"></span>
@@ -54,12 +55,14 @@
   const memberSelect = $('#relay-member');
   const register = $('#relay-register-submit');
   const registerStatus = $('#relay-register-status');
+  const registerGate = $('#relay-register-gate');
   const credentialPanel = $('#relay-credential');
   const issuedMember = $('#relay-issued-member');
   const issuedCredential = $('#relay-issued-credential');
   const close = $('#relay-close');
 
   let epoch = 0, busy = false, nodes = [], members = [], issued = null;
+  let nodesReady = false, membersReady = false, loading = false, writeUncertain = false;
 
   function report(target, message, error = false) {
     target.textContent = message;
@@ -85,12 +88,32 @@
     const registered = new Set(nodes.map(node => node.member));
     return members.filter(member => !registered.has(member.profile));
   }
+  function registrationReady() {
+    return nodesReady && membersReady && !loading && !writeUncertain;
+  }
+  function updateGate() {
+    let text = '', error = false;
+    if (loading) {
+      text = '正在读取节点与成员列表，登记暂不可用。';
+    } else if (!nodesReady) {
+      text = '节点列表读取失败，登记暂不可用；请刷新成功后再登记。';
+      error = true;
+    } else if (!membersReady) {
+      text = '成员列表读取失败，登记暂不可用；请刷新重试。';
+      error = true;
+    } else if (writeUncertain) {
+      text = '上次操作结果未确认，请先刷新核对，暂不可重复登记。';
+      error = true;
+    }
+    report(registerGate, text, error);
+  }
   function refreshControls() {
-    refresh.disabled = busy;
+    refresh.disabled = busy || loading;
     memberSelect.disabled = busy;
     close.disabled = busy;
-    register.disabled = busy || !selectedMember();
-    for (const button of list.querySelectorAll('button')) button.disabled = busy;
+    register.disabled = busy || !registrationReady() || !selectedMember();
+    for (const button of list.querySelectorAll('button')) button.disabled = busy || !registrationReady();
+    updateGate();
   }
   function clearIssued() {
     issued = null;
@@ -119,6 +142,13 @@
     }
     refreshControls();
   }
+  function renderNodesUnavailable() {
+    list.replaceChildren();
+    const empty = document.createElement('p');
+    empty.className = 'profile-help relay-empty';
+    empty.textContent = '节点列表暂不可用；请刷新重试。';
+    list.append(empty);
+  }
   function renderNodes() {
     list.replaceChildren();
     if (!nodes.length) {
@@ -128,6 +158,7 @@
       list.append(empty);
       return;
     }
+
     for (const node of nodes) {
       const card = document.createElement('article');
       card.className = 'relay-node';
@@ -191,9 +222,14 @@
     clearIssued();
     nodes = [];
     members = [];
+    nodesReady = false;
+    membersReady = false;
+    loading = false;
+    writeUncertain = false;
     list.replaceChildren();
     report(nodesStatus, '');
     report(registerStatus, '');
+    report(registerGate, '');
     readonly.hidden = false;
     body.hidden = true;
   }
@@ -208,16 +244,20 @@
     if (!quiet) report(nodesStatus, '正在读取远程节点…');
     try {
       const data = await api('/relay/nodes', {cache: 'no-store', signal: AbortSignal.timeout(10000)});
-      if (generation !== epoch || !dialog.open) return;
+      if (generation !== epoch || !dialog.open) return false;
       if (!Array.isArray(data)) throw new Error('远程节点响应格式异常');
       nodes = data;
       renderNodes();
       if (!quiet) report(nodesStatus, nodes.length
         ? `已加载 ${nodes.length} 个节点 · 更新于 ${new Date().toLocaleTimeString()}`
         : '暂无已登记节点。');
+      return true;
     } catch (error) {
-      if (generation !== epoch || !dialog.open) return;
+      if (generation !== epoch || !dialog.open) return false;
+      nodes = [];
+      renderNodesUnavailable();
       report(nodesStatus, `读取远程节点失败：${message(error)}。点击刷新重试。`, true);
+      return false;
     } finally {
       if (generation === epoch) refreshControls();
     }
@@ -225,25 +265,44 @@
   async function loadMembers(generation) {
     try {
       const data = await api('/members', {cache: 'no-store', signal: AbortSignal.timeout(10000)});
-      if (generation !== epoch || !dialog.open) return;
+      if (generation !== epoch || !dialog.open) return false;
       members = (data.members || []).filter(member =>
         member && member.profile && member.profile !== 'user' && member.runtime === 'hermes');
       renderMembers();
+      return true;
     } catch (error) {
-      if (generation !== epoch || !dialog.open) return;
+      if (generation !== epoch || !dialog.open) return false;
       members = [];
       renderMembers();
       report(registerStatus, `Hermes 成员列表读取失败：${message(error)}。`, true);
+      return false;
     }
   }
   async function reload(quiet = false) {
     const generation = ++epoch;
-    await Promise.all([loadNodes(generation, quiet), loadMembers(generation)]);
+    loading = true;
+    nodesReady = false;
+    membersReady = false;
+    refreshControls();
+    const [nodesOk, membersOk] = await Promise.all([loadNodes(generation, quiet), loadMembers(generation)]);
+    if (generation !== epoch || !dialog.open) return;
+    nodesReady = nodesOk;
+    membersReady = membersOk;
+    loading = false;
+    if (nodesOk && membersOk) writeUncertain = false;
+    renderMembers();
+    refreshControls();
   }
   async function open() {
     if (dialog.open) return;
     dialog.showModal();
     clearIssued();
+    nodes = [];
+    members = [];
+    nodesReady = false;
+    membersReady = false;
+    loading = true;
+    writeUncertain = false;
     report(nodesStatus, '');
     report(registerStatus, '');
     if (!allowed()) {
@@ -256,7 +315,7 @@
     if (dialog.open && allowed()) memberSelect.focus();
   }
   async function registerNode() {
-    if (busy || !allowed()) return;
+    if (busy || !allowed() || !registrationReady()) return;
     const member = selectedMember();
     if (!member) {
       report(registerStatus, '请选择 Hermes 成员。', true);
@@ -276,12 +335,14 @@
       });
       if (!dialog.open || !allowed()) return;
       if (data.member !== member.profile || !data.credential) throw new Error('登记响应缺少成员标识或凭据');
+      writeUncertain = false;
       showIssued(member.profile, data.credential);
       report(registerStatus, `已登记 ${member.profile}；凭据仅显示一次，请立即复制。`);
       await reload();
     } catch (error) {
       if (dialog.open && allowed()) {
         const lost = !error.status;
+        if (lost) writeUncertain = true;
         report(registerStatus, lost
           ? `登记请求结果未确认：${message(error)}。请先点击刷新核对节点列表，勿直接重复登记。`
           : `登记失败：${message(error)}。`, true);
@@ -292,28 +353,32 @@
     }
   }
   async function revokeNode(member) {
-    if (busy || !allowed() || !nodes.some(node => node.member === member)) return;
+    if (busy || !allowed() || !registrationReady() || !nodes.some(node => node.member === member)) return;
     if (!await showConfirm(`吊销 ${member} 的连接凭据？当前在线连接会立即断开，节点需重新签发凭据才能上线。`)) return;
-    if (busy || !allowed() || !dialog.open) return;
+    if (busy || !allowed() || !dialog.open || !registrationReady()) return;
     busy = true;
     refreshControls();
     report(nodesStatus, `正在吊销 ${member} 的凭据…`);
     try {
       await api(`/relay/nodes/${encodeURIComponent(member)}/revoke`, {method: 'POST'});
+      writeUncertain = false;
       if (issued?.member === member) clearIssued();
       if (dialog.open) report(nodesStatus, `已吊销 ${member} 的凭据；节点将离线，需重新签发才能上线。`);
       await reload(true);
     } catch (error) {
-      if (dialog.open) report(nodesStatus, `吊销失败：${message(error)}。`, true);
+      if (dialog.open) {
+        if (!error.status) writeUncertain = true;
+        report(nodesStatus, `${error.status ? '吊销失败' : '吊销结果未确认'}：${message(error)}${error.status ? '' : '。请先刷新核对，勿直接重复操作'}。`, true);
+      }
     } finally {
       busy = false;
       if (dialog.open) refreshControls();
     }
   }
   async function reissueNode(member) {
-    if (busy || !allowed() || !nodes.some(node => node.member === member)) return;
+    if (busy || !allowed() || !registrationReady() || !nodes.some(node => node.member === member)) return;
     if (!await showConfirm(`重新签发 ${member} 的连接凭据？旧凭据立即失效，新凭据只显示一次。`)) return;
-    if (busy || !allowed() || !dialog.open) return;
+    if (busy || !allowed() || !dialog.open || !registrationReady()) return;
     const node = nodes.find(item => item.member === member);
     busy = true;
     refreshControls();
@@ -321,16 +386,18 @@
     try {
       const data = await api('/relay/nodes', {
         method: 'POST',
-        body: JSON.stringify({member, display_name: node.display_name || member}),
+        body: JSON.stringify({member, display_name: node.display_name || member, rotate: true}),
       });
       if (!dialog.open || !allowed()) return;
       if (data.member !== member || !data.credential) throw new Error('重新签发响应缺少凭据');
+      writeUncertain = false;
       showIssued(member, data.credential);
       report(nodesStatus, `已重新签发 ${member} 的凭据；旧凭据立即失效，新凭据仅显示一次。`);
       await reload(true);
     } catch (error) {
       if (dialog.open && allowed()) {
         const lost = !error.status;
+        if (lost) writeUncertain = true;
         report(nodesStatus, lost
           ? `重新签发结果未确认：${message(error)}。请先刷新节点列表核对，勿直接重复签发。`
           : `重新签发失败：${message(error)}。`, true);
@@ -366,7 +433,7 @@
   entry.addEventListener('click', open);
   close.addEventListener('click', () => dialog.close());
   refresh.addEventListener('click', () => {
-    if (busy || !allowed()) return;
+    if (busy || loading || !allowed()) return;
     clearIssued();
     report(registerStatus, '');
     reload();
@@ -375,7 +442,7 @@
   memberSelect.addEventListener('change', refreshControls);
   list.addEventListener('click', event => {
     const button = event.target.closest('button[data-action]');
-    if (!button || busy) return;
+    if (!button || busy || !registrationReady()) return;
     const card = button.closest('[data-relay-member]');
     if (!card) return;
     if (button.dataset.action === 'revoke') revokeNode(card.dataset.relayMember);
@@ -396,8 +463,13 @@
     list.replaceChildren();
     nodes = [];
     members = [];
+    nodesReady = false;
+    membersReady = false;
+    loading = false;
+    writeUncertain = false;
     report(nodesStatus, '');
     report(registerStatus, '');
+    report(registerGate, '');
     anchor?.focus({preventScroll: true});
   });
   function visibility() {
