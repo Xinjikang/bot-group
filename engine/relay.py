@@ -501,6 +501,20 @@ def set_direction(conn, member: str, direction: str, *, now=None) -> None:
     conn.commit()
 
 
+def update_dial_pairing_token(conn, member: str, token: str) -> None:
+    """持久身份轮换（manager node2057 ①）：首次配对成功后插件下发持久
+    凭据，引擎把它轮换进 dial_endpoint.pairing_token——重连不再用一次性
+    配对票。吊销（插件 clear_persistent）后持久凭据失效才需重新配对。"""
+    endpoint = read_dial_endpoint(conn, member)
+    if endpoint is None:
+        return
+    endpoint["pairing_token"] = token
+    conn.execute(
+        "UPDATE relay_nodes SET dial_endpoint=?,updated_at=? WHERE member=?",
+        (json.dumps(endpoint), time.time(), member))
+    conn.commit()
+
+
 def set_dial_endpoint(conn, member: str, endpoint: dict, *, now=None) -> None:
     """保存插件监听端点（配对记录）：{host, port, tls, fingerprint, pairing_token}。
     认证收紧（manager node2052 ①）：TLS 与证书指纹必填（自托管配对

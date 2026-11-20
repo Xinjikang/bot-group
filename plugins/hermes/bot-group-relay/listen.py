@@ -206,10 +206,14 @@ class ListenServer:
             if protocol_version != relay_config.RELAY_PROTOCOL_VERSION:
                 conn.close(code=4003, reason="protocol mismatch")
                 return
-            # 配对凭据兑换：原子、首次成功即作废（重连不再有效由引擎侧
-            # 单活动通道保证——已认证连接不受重生成影响，吊销才断）
-            if not pairing.redeem_pairing(member=member, token=credential,
-                                          fingerprint=fingerprint):
+            # 认证顺序（manager node2057 ①）：一次性配对票（未兑换）→
+            # 持久身份凭据（首次配对成功后签发，重连/切回用，吊销才断）
+            if pairing.redeem_pairing(member=member, token=credential,
+                                      fingerprint=fingerprint):
+                persistent = pairing.issue_persistent(member)
+            elif pairing.verify_persistent(member, credential):
+                persistent = ""
+            else:
                 conn.close(code=4001, reason="pairing token invalid")
                 return
             # 接替旧连接：单活动通道（新连接认证成功才接管）
@@ -223,9 +227,12 @@ class ListenServer:
                     previous.close(code=1000, reason="replaced")
                 except Exception:  # noqa: BLE001
                     pass
-            conn.send(json.dumps({"relay": {"kind": "hello_ok",
-                                            "generation": generation}},
-                                 ensure_ascii=False))
+            # hello_ok 下发帧代 + 持久身份凭据（首次配对成功才下发新凭据，
+            # 引擎侧轮换进 dial_endpoint；重连认证不再下发）
+            hello_ok = {"relay": {"kind": "hello_ok", "generation": generation}}
+            if persistent:
+                hello_ok["relay"]["credential"] = persistent
+            conn.send(json.dumps(hello_ok, ensure_ascii=False))
             logger.info("bot-group relay dial link up member=%s generation=%d",
                         member, generation)
             self._serve_loop(conn, generation)

@@ -196,6 +196,12 @@ def last_peer(member: str) -> str | None:
         return _LAST_PEERS.get(member)
 
 
+def _db_generation(link: NodeLink) -> int:
+    """状态写库用代：DialLink=本地状态代（manager node2057 ②），
+    NodeLink=连接代（同值）。"""
+    return getattr(link, "db_generation", None) or link.generation
+
+
 def _shutdown_link(link: NodeLink, reason: str) -> None:
     """断开一条成员连接：关 WS、所有流转发哨兵。
 
@@ -218,7 +224,8 @@ def _shutdown_link(link: NodeLink, reason: str) -> None:
         try:
             # 带代条件写 offline：本函数锁外执行，清理期间可能已被新连接接替，
             # 旧代清理不得覆盖新代状态（manager node1981 ②跨代窗口）。
-            relay.mark_offline(conn, link.member, generation=link.generation)
+            # 状态写库用本地状态代（manager node2057 ②：本地代贯穿离线写入）。
+            relay.mark_offline(conn, link.member, generation=_db_generation(link))
         finally:
             conn.close()
     logger.warning("relay link down member=%s generation=%d reason=%s",
@@ -268,11 +275,13 @@ def _route_inbound(link: NodeLink, envelope: dict) -> bool:
         return True
     if kind == "heartbeat":
         # 心跳只判存活（写 online 以当前代为准——上方代次校验已保证，SQL 再带
-        # 代条件防处理瞬间被接替的跨代窗口，manager node1981 ②）
+        # 代条件防处理瞬间被接替的跨代窗口，manager node1981 ②）。状态写库
+        # 用本地状态代（manager node2057 ②：帧代≠本地代时心跳必须更新本地
+        # 代状态，否则心跳对 online/4 的 DB 不生效）。
         link.last_heartbeat = time.time()
         conn = db.get_connection()
         try:
-            relay.heartbeat(conn, link.member, generation=link.generation)
+            relay.heartbeat(conn, link.member, generation=_db_generation(link))
         finally:
             conn.close()
         return True
@@ -291,7 +300,7 @@ def _route_inbound(link: NodeLink, envelope: dict) -> bool:
         conn = db.get_connection()
         try:
             relay.mcp_report(conn, link.member, fingerprint,
-                             generation=link.generation)
+                             generation=_db_generation(link))
         finally:
             conn.close()
         logger.info("relay mcp_report member=%s fingerprint=%s", link.member,

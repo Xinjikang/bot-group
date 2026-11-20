@@ -110,6 +110,47 @@ def redeem_pairing(*, member: str, token: str, fingerprint: str = "") -> bool:
     return True
 
 
+def issue_persistent(member: str) -> str:
+    """配对兑换成功后签发持久身份凭据（manager node2057 ①）：重连不再
+    用一次性配对票，改用持久凭据认证；吊销时 clear_persistent 才断。
+    返回凭据明文（只在 hello_ok 帧下发一次，不落日志）。"""
+    with _LOCK:
+        state = _load_state()
+        token = secrets.token_urlsafe(32)
+        state["persistent"] = {
+            "member": member,
+            "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+            "paired_at": time.time(),
+        }
+        _save_state(state)
+    logger.info("bot-group relay persistent identity issued member=%s", member)
+    return token
+
+
+def verify_persistent(member: str, token: str) -> bool:
+    """持久身份认证：已配对成员 + 持久凭据匹配（不销毁，可反复认证）。"""
+    with _LOCK:
+        persistent = _load_state().get("persistent") or {}
+        if persistent.get("member") != member:
+            return False
+        expected = persistent.get("token_hash") or ""
+    if not expected:
+        return False
+    return hmac.compare_digest(expected, hashlib.sha256((token or "").encode()).hexdigest())
+
+
+def clear_persistent(member: str | None = None) -> None:
+    """吊销持久身份（吊销才断：清态后该成员重连须重新配对）。"""
+    with _LOCK:
+        state = _load_state()
+        persistent = state.get("persistent")
+        if persistent is None or (member and persistent.get("member") != member):
+            return
+        state.pop("persistent", None)
+        _save_state(state)
+    logger.info("bot-group relay persistent identity cleared member=%s", member)
+
+
 def pairing_metadata() -> dict:
     """当前配对状态（脱敏）：指纹/端口/签发与过期时间，不含凭据值。"""
     with _LOCK:

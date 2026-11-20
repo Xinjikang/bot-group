@@ -190,6 +190,14 @@ class DirectionBDialTests(unittest.TestCase):
         self.addCleanup(relay_server.close_all)
         self.addCleanup(relay_dialer.stop_dial, REMOTE)
 
+    def _wait_connected(self, timeout=10.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if relay_dialer._task_state(REMOTE) == "connected":
+                return True
+            time.sleep(0.05)
+        return False
+
     def test_engine_dials_plugin_listen_and_frames(self):
         plg_listen = self.plg["listen"]
         # 隔离：证书生成目录与配对状态都落 TMPDIR（防污染插件真实 state/）
@@ -236,6 +244,66 @@ class DirectionBDialTests(unittest.TestCase):
         # 配对已兑换：二次拨号握手必被拒（单次）
         self.assertFalse(self.plg["pairing"].redeem_pairing(
             member=REMOTE, token=pairing_token), "首次成功后再次兑换必须失败")
+
+    def test_persistent_identity_reconnect_after_pairing(self):
+        """manager node2057 ①：首次配对成功后签发持久身份——断线重连用
+        持久凭据（一次性配对票已作废），吊销持久身份后重连才被拒。"""
+        plg_listen = self.plg["listen"]
+        plg_pairing = self.plg["pairing"]
+        import tempfile
+        tmp_dir = Path(tempfile.mkdtemp(prefix="bgrelay-persist-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp_dir, ignore_errors=True))
+        with patch.object(plg_listen, "STATE_DIR", tmp_dir), \
+                patch.object(plg_listen, "validate_bind_address",
+                             return_value="127.0.0.1"):
+            result = plg_listen.listen_serve(
+                address="127.0.0.1", port=0, advertise="127.0.0.1",
+                member=REMOTE, home=os.environ.get("TMPDIR", "."),
+                mcp_python="", tls=True)
+        from urllib.parse import parse_qs, urlsplit
+        pairing_token = parse_qs(urlsplit(result["pairing_url"]).query)[
+            "pairing_token"][0]
+        conn = db.get_connection()
+        try:
+            relay.set_dial_endpoint(conn, REMOTE,
+                                    {"host": "127.0.0.1", "port": result["port"],
+                                     "tls": True,
+                                     "fingerprint": result["fingerprint"],
+                                     "pairing_token": pairing_token})
+            relay.set_direction(conn, REMOTE, "dial")
+        finally:
+            conn.close()
+        # 首次拨号：兑换一次性配对票 → 插件签发持久凭据下发 → 引擎轮换
+        relay_dialer.start_dial(REMOTE)
+        self.assertTrue(self._wait_connected(10), "首次配对应拨通")
+        conn = db.get_connection()
+        try:
+            endpoint = relay.read_dial_endpoint(conn, REMOTE)
+        finally:
+            conn.close()
+        persistent_token = endpoint["pairing_token"]
+        self.assertNotEqual(persistent_token, pairing_token,
+                            "首次成功后凭据轮换为持久身份凭据")
+        self.assertTrue(plg_pairing.verify_persistent(REMOTE, persistent_token))
+        self.assertFalse(plg_pairing.redeem_pairing(member=REMOTE,
+                                                    token=pairing_token),
+                         "一次性配对票已作废")
+        # 断线重连：hello 出示轮换后的持久凭据 → verify_persistent 通过
+        relay_dialer.stop_dial(REMOTE)
+        self.assertIsNone(relay_server.active_link(REMOTE))
+        relay_dialer.start_dial(REMOTE)
+        self.assertTrue(self._wait_connected(10),
+                        "断线重连用持久身份认证，无需重新配对")
+        # 吊销持久身份：重连被拒（吊销才断）
+        relay_dialer.stop_dial(REMOTE)
+        plg_pairing.clear_persistent(REMOTE)
+        relay_dialer.start_dial(REMOTE)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and \
+                relay_dialer._task_state(REMOTE) != "backoff":
+            time.sleep(0.05)
+        self.assertIsNone(relay_server.active_link(REMOTE),
+                          "吊销持久身份后重连必须被拒（须重新配对）")
 
     def test_mcp_tunnel_http_request_forwarding(self):
         """隧道全链：引擎 DialLink 收到 http_request → 转发引擎回环 API →
@@ -297,6 +365,46 @@ class DirectionBDialTests(unittest.TestCase):
         status, headers, body = waiter.get(timeout=2)
         self.assertEqual(status, 200)
         self.assertEqual(body, '{"ok": true}')
+
+
+    def test_db_generation_used_for_state_writes(self):
+        """manager node2057 ②：帧代≠本地代时，心跳/离线写入必须用本地
+        状态代（帧代 5、本地代 4：心跳后 DB 仍是 online/4 且心跳时间更新，
+        断线后 offline 命中本地代条件）。"""
+        fake_ws = _SyncWs()
+        link = relay_dialer.DialLink(REMOTE, fake_ws, 5, peer_ip="203.0.113.9",
+                                     db_generation=4)
+        with relay_server._LINKS_LOCK:
+            relay_server._LINKS[REMOTE] = link
+        conn = db.get_connection()
+        try:
+            # 造 DB 前提：行代先到 4（generation_advance 3 次），再 mark_online(4)
+            for _ in range(3):
+                relay.generation_advance(conn, REMOTE)
+            relay.mark_online(conn, REMOTE, code_version="", mcp_fingerprint="",
+                              generation=4)
+            before = relay.read_node(conn, REMOTE)
+            # 插件心跳帧（帧代 5）→ 状态写库走本地代 4
+            relay_server._route_inbound(link, {
+                "relay": {"kind": "heartbeat", "generation": 5}})
+            row = relay.read_node(conn, REMOTE)
+            self.assertEqual(row["state"], "online")
+            self.assertEqual(row["generation"], 4, "本地状态代不被帧代覆盖")
+            self.assertGreater(row["last_heartbeat"], before["last_heartbeat"],
+                               "心跳必须更新本地代状态（帧代5/本地代4不命中即漏更）")
+            # mcp_report 同口径
+            relay_server._route_inbound(link, {
+                "relay": {"kind": "mcp_report", "generation": 5},
+                "mcp_fingerprint": "ab" * 32})
+            row = relay.read_node(conn, REMOTE)
+            self.assertEqual(row["mcp_fingerprint"], "ab" * 32,
+                             "mcp_report 写库用本地状态代")
+            # 断线：offline 写库命中本地代
+            relay_server._shutdown_link(link, "test down")
+            self.assertEqual(relay.read_node(conn, REMOTE)["state"], "offline",
+                             "离线写入命中本地状态代条件")
+        finally:
+            conn.close()
 
 
 class _SyncWs:

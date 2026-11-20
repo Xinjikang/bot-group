@@ -528,6 +528,57 @@ class SwitchApiTests(DialerBase):
             self.assertEqual(response.status_code, 403)
 
 
+    def test_inflight_submission_survives_switch_and_settles_once(self):
+        """manager node2057 ③：已被接收且回执延后的同一 submission_id 经
+        实际切换、待核对、回执确定、恢复派发全程只提交一次。"""
+        from engine import queue as queue_module
+        conn = db.get_connection()
+        try:
+            from scripts.project_test_support import enable_members
+            enable_members(conn, ("alpha",), profiles=[REMOTE])
+            # 已被接收且回执延后：offline_waiting 点名已挂 submission_id
+            conn.execute(
+                "INSERT INTO relay_offline_mentions"
+                "(member,project,thread_id,message_id,state,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (REMOTE, "alpha", 7, 1, "offline_waiting", db.now_iso()))
+            conn.commit()
+            bound = relay.attach_submission(conn, message_ids=[1], member=REMOTE,
+                                            submission_id="sub-1")
+            self.assertEqual(bound, 1, "未决点名必须挂上 submission_id")
+            # 切换中：闸门 hold、该记录保持 offline_waiting（不重派不标过期）
+            relay.begin_switch(conn, REMOTE, "dial")
+            candidate = {"profile": REMOTE, "kind": "chat",
+                         "thread_id": 7, "project": "alpha"}
+            self.assertEqual(queue_module._relay_node_gate(conn, candidate)[0], "hold")
+            # 切换完成：恢复派发（闸门 go）——未决记录仍待核对，绝不自动重派
+            relay.complete_switch(conn, REMOTE)
+            relay.mark_online(conn, REMOTE, code_version="", mcp_fingerprint="",
+                              generation=1)
+            self.assertEqual(queue_module._relay_node_gate(conn, candidate)[0], "go")
+            row = conn.execute(
+                "SELECT state,submission_id FROM relay_offline_mentions "
+                "WHERE member=? AND message_id=1", (REMOTE,)).fetchone()
+            self.assertEqual(row["state"], "offline_waiting",
+                             "回执延后的未决记录保持待核对，不自动重派")
+            self.assertEqual(row["submission_id"], "sub-1")
+            # 权威回执确定：settle_by_submission → submitted，只结算一次
+            settled = relay.settle_by_submission(conn, member=REMOTE,
+                                                 submission_id="sub-1")
+            self.assertEqual(settled, 1, "权威回执结算该 submission 关联点名")
+            row = conn.execute(
+                "SELECT state FROM relay_offline_mentions "
+                "WHERE member=? AND message_id=1", (REMOTE,)).fetchone()
+            self.assertEqual(row["state"], "submitted")
+            # 提交次数：全程只有一条点名记录（无重复排队/重复投递）
+            count = conn.execute(
+                "SELECT COUNT(*) FROM relay_offline_mentions WHERE member=?",
+                (REMOTE,)).fetchone()[0]
+            self.assertEqual(count, 1, "同一条点名至多提交一次")
+        finally:
+            conn.close()
+
+
 class SwitchFullChainTests(DialerBase):
     """manager node2052 ③：从 /switch 端点走 A→B→A 全链——真实 relay_ws
     握手、真实关闭、DB/活动连接/派发状态一致、提交次数统计。"""

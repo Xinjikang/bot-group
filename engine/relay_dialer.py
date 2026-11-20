@@ -36,12 +36,18 @@ RECV_TIMEOUT = 15.0
 
 class DialLink:
     """引擎出站连接（方向 B）的活跃通道：与 NodeLink 接口兼容，注册进
-    relay_server._LINKS——send_text/close/transports/request_mcp_snapshot 同构。"""
+    relay_server._LINKS——send_text/close/transports/request_mcp_snapshot 同构。
 
-    def __init__(self, member: str, ws, generation: int, peer_ip: str | None):
+    双代（manager node2057 ②）：generation=插件 hello_ok 下发的帧代
+    （帧路由/心跳出站用）；db_generation=引擎本地 generation_advance 后的
+    状态代（心跳/mcp_report/离线写库用，本地代贯穿状态写入）。"""
+
+    def __init__(self, member: str, ws, generation: int, peer_ip: str | None,
+                 db_generation: int = 0):
         self.member = member
         self.ws = ws                  # websockets.sync ClientConnection（sync send/recv/close）
         self.generation = generation
+        self.db_generation = db_generation or generation
         self.peer_ip = peer_ip
         self.loop = None              # sync 客户端无 asyncio loop；close 走 sync 分支
         self._send_lock = threading.Lock()
@@ -228,11 +234,21 @@ def dial_once(member: str) -> bool:
         # 帧代与状态代分离（方向 A 对称）：插件 hello_ok 下发的代是插件
         # 自己的帧代（此后引擎↔插件帧都带它）；引擎本地代 generation_advance
         # 只用于 DB 状态条件（manager node2052 ②：认证与本地代一致才发布）。
+        # 持久身份轮换（manager node2057 ①）：hello_ok 首次下发持久凭据，
+        # 引擎轮换进 dial_endpoint.pairing_token，重连不再用一次性配对票。
         remote_generation = int((hello_ok.get("relay") or {}).get("generation") or 0)
         if remote_generation <= 0:
             logger.warning("relay dial hello_ok missing generation member=%s", member)
             ws.close(code=4003, reason="bad generation")
             return False
+        persistent_credential = (hello_ok.get("relay") or {}).get("credential") or ""
+        if persistent_credential:
+            conn = db.get_connection()
+            try:
+                relay.update_dial_pairing_token(conn, member, persistent_credential)
+            finally:
+                conn.close()
+            logger.info("relay dial persistent identity rotated member=%s", member)
     except Exception as exc:  # noqa: BLE001
         logger.warning("relay dial handshake failed member=%s err=%s", member, exc)
         try:
@@ -267,9 +283,10 @@ def dial_once(member: str) -> bool:
         conn.close()
 
     # 认证成功：注册通道（单活动通道——接替旧连接，旧连接主动关闭不留孤儿）。
-    # link.generation=插件帧代（hello_ok 下发），帧路由/心跳用；
-    # DB 状态用本地 db_generation。
-    link = DialLink(member, ws, remote_generation, peer_ip=endpoint["host"])
+    # link.generation=插件帧代（hello_ok 下发），帧路由/心跳出站用；
+    # link.db_generation=本地状态代（心跳/mcp_report/离线写库用）。
+    link = DialLink(member, ws, remote_generation, peer_ip=endpoint["host"],
+                    db_generation=db_generation)
     with relay_server._LINKS_LOCK:
         previous = relay_server._LINKS.get(member)
         relay_server._LINKS[member] = link
