@@ -681,6 +681,51 @@ class SwitchFullChainTests(DialerBase):
             reply = ws.receive_json()
         return reply
 
+    def test_switch_resume_reconciles_unknown_execution(self):
+        """manager node2064 附录口径：execution unknown（回执未知、无未决
+        点名）经真实 /switch + /relay/ws 握手——恢复步骤必须做首次核对
+        （ledger.reconcile 被调用），未知持久保留、切换态清空、恢复派发。"""
+        from unittest.mock import patch
+        from engine import queue as queue_module
+        from engine import hermes_gateway_ledger as ledger
+        conn = db.get_connection()
+        try:
+            from scripts.project_test_support import enable_members
+            enable_members(conn, ("alpha",), profiles=[REMOTE])
+            relay.set_direction(conn, REMOTE, "dial")
+            row = ledger.prepare(
+                conn, session="probe", project="alpha", profile=REMOTE,
+                kind="work", thread_id=None, task_id=None, job_id=None,
+                event_floor=0, source="fixture", python="", home="",
+                workdir="", session_id="probe", profile_id=REMOTE)
+            ledger.uncertain(conn, row["execution_id"],
+                             "fixture: waiting for receipt")
+        finally:
+            conn.close()
+        with patch.object(ledger, "reconcile", wraps=ledger.reconcile) as reconcile:
+            response = self.client.post(f"/relay/nodes/{REMOTE}/switch",
+                                        json={"direction": "listen"})
+            self.assertEqual(response.status_code, 200)
+            reply = self._ws_handshake()
+            self.assertEqual(reply["relay"]["kind"], "hello_ok")
+            conn = db.get_connection()
+            try:
+                candidate = {"profile": REMOTE, "kind": "work",
+                             "thread_id": None, "project": "alpha"}
+                node = relay.read_node(conn, REMOTE)
+                self.assertEqual(node["switch_state"], "",
+                                 "切换态已清（恢复步骤执行完毕）")
+                # 握手 with 退出后连接关闭 → 节点按普通离线 hold（非切换中
+                # hold）——恢复普通派发语义由 switch_state 清空证明
+                self.assertEqual(queue_module._relay_node_gate(conn, candidate)[0],
+                                 "hold", "连接关闭后按普通离线保留排队")
+                self.assertEqual(ledger.read(conn, row["execution_id"])["state"],
+                                 "unknown", "回执未知：持久保留待核对")
+                self.assertEqual(reconcile.call_count, 1,
+                                 "恢复步骤必须做首次在途核对（session.resume）")
+            finally:
+                conn.close()
+
     def test_full_chain_switch_via_api(self):
         from engine import queue as queue_module
         # 造一条 queued job（切换前点名）统计执行次数

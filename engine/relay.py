@@ -392,18 +392,43 @@ def settle_by_submission(conn, *, member: str, submission_id: str, now=None) -> 
     return cur.rowcount
 
 
-def reconcile_switch_resume(conn, member: str, *, now=None) -> dict:
+def reconcile_switch_resume(conn, member: str, *, now=None, client=None) -> dict:
     """切换恢复的首次在途核对（manager node2064 ③，两握手入口共用）：
     通道可用后按原 submission_id 核对——已知回执（execution 已 terminal）
-    立即应用结算，未知（execution 不存在或未终态）持久保留 offline_waiting
-    且禁止原提交重派（收口跳过 submission_id 非空者），之后恢复普通派发。
+    立即应用结算；未知时先尝试一次网络核对（client 给定时按 session.resume
+    口径走 ledger.reconcile——无 admission_id 的 DB 短路同样生效），仍未知
+    则持久保留 offline_waiting 且禁止原提交重派（收口跳过 submission_id
+    非空者），之后恢复普通派发。
 
-    网络级核对由持续处理帧的位置承担：GatewayClient 会话 resume 时
-    apply_receipt 权威回执走 settle_by_submission 结算（既有链路）。
-    返回 {applied, kept} 计数供日志。"""
+    核对对象两部分：
+    1. 未决点名（relay_offline_mentions 的 offline_waiting+submission_id）
+       ——已知回执 settle 标 submitted、未知保留待核对；
+    2. 该成员未终态的 hermes_executions（无未决点名也核对——manager 附录
+       口径：execution unknown 经切换恢复也要首次核对 session.resume）。
+
+    持续的网络核对由能持续处理帧的位置承担：GatewayClient 会话循环按
+    execution 生命周期持续调用 ledger.reconcile（hermes_gateway 既有链路）。
+    返回 {applied, kept, reconciled} 计数供日志。"""
     now = _now() if now is None else now
     applied = 0
     kept = 0
+    reconciled = 0
+    from . import hermes_gateway_ledger as ledger
+
+    def _try_reconcile(execution: dict) -> bool:
+        """首次核对尝试：返回 True=已核对出终态（回执已知）。"""
+        nonlocal reconciled
+        try:
+            ledger.reconcile(client, conn, execution["execution_id"], now=now)
+            reconciled += 1
+            refreshed = conn.execute(
+                "SELECT state FROM hermes_executions WHERE execution_id=?",
+                (execution["execution_id"],)).fetchone()
+            return refreshed is not None and refreshed["state"] == "terminal"
+        except Exception:  # noqa: BLE001 RPC 不可用按未知保留
+            return False
+
+    # 1) 未决点名按原 submission_id 核对
     pending = conn.execute(
         "SELECT DISTINCT submission_id FROM relay_offline_mentions "
         "WHERE member=? AND state='offline_waiting' AND submission_id IS NOT NULL",
@@ -411,16 +436,27 @@ def reconcile_switch_resume(conn, member: str, *, now=None) -> dict:
     for row in pending:
         submission_id = row["submission_id"]
         execution = conn.execute(
-            "SELECT state FROM hermes_executions WHERE submission_id=? "
-            "AND profile=?", (submission_id, member)).fetchone()
+            "SELECT execution_id, state FROM hermes_executions "
+            "WHERE submission_id=? AND profile=?",
+            (submission_id, member)).fetchone()
         if execution is not None and execution["state"] == "terminal":
             # 已知回执：立即应用（点名标 submitted，不再保留待核对）
+            applied += settle_by_submission(conn, member=member,
+                                            submission_id=submission_id, now=now)
+        elif execution is not None and _try_reconcile(execution):
             applied += settle_by_submission(conn, member=member,
                                             submission_id=submission_id, now=now)
         else:
             # 未知：持久保留 offline_waiting，禁止原提交重派
             kept += 1
-    return {"applied": applied, "kept": kept}
+    # 2) 该成员未终态执行记录做首次核对（manager node2064 附录口径：
+    #    execution unknown 经切换恢复也要核对，无未决点名同样生效）
+    in_flight = conn.execute(
+        "SELECT execution_id, state FROM hermes_executions "
+        "WHERE profile=? AND state NOT IN ('terminal')", (member,)).fetchall()
+    for execution in in_flight:
+        _try_reconcile(execution)
+    return {"applied": applied, "kept": kept, "reconciled": reconciled}
 
 
 def merge_mcp_spec(conn, member: str, spec: dict, *, engine_url: str = "",
