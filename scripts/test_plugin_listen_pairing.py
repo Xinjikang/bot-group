@@ -441,6 +441,37 @@ class EntryAuthorizationTests(unittest.TestCase):
                 cli._require_authorized()
             self.assertEqual(caught.exception.code, 1)
 
+    def test_cli_authorization_uses_kernel_identity(self):
+        """manager node2074/12711：CLI 以 OS 内核主体核对白名单，不以可
+        伪造的 USERNAME/USER 环境变量为准（Windows 走 GetUserNameExW 登录
+        会话主体）。"""
+        plg = _plugin()
+        cli = plg["cli"]
+        if os.name != "nt":
+            self.skipTest("Windows 内核身份用例")
+
+        def fake_get_name(fmt, buf, size_ptr):  # noqa: ANN001
+            buf.value = "DOMAIN\\realuser"
+            return 1
+
+        with patch.object(os, "name", "nt"), \
+                patch("ctypes.windll.advapi32.GetUserNameExW",
+                      side_effect=fake_get_name, create=True), \
+                patch.dict(os.environ, {
+                    "USERNAME": "fake-env-user",
+                    "BOT_GROUP_RELAY_ALLOWED_USERS": "DOMAIN\\realuser"}):
+            self.assertTrue(cli._authorized_local_user(),
+                            "内核主体 DOMAIN\\realuser 命中白名单")
+        # 内核 API 失败：返回空 → 即使环境 USERNAME 命中也不放行
+        with patch.object(os, "name", "nt"), \
+                patch("ctypes.windll.advapi32.GetUserNameExW",
+                      return_value=0, create=True), \
+                patch.dict(os.environ, {
+                    "USERNAME": "env-user",
+                    "BOT_GROUP_RELAY_ALLOWED_USERS": "env-user"}):
+            self.assertFalse(cli._authorized_local_user(),
+                             "内核身份取不到时拒绝，环境变量不算数")
+
     def test_private_chat_requires_admin_allowlist(self):
         plg = _plugin()
         tools = plg["tools"]
@@ -449,13 +480,21 @@ class EntryAuthorizationTests(unittest.TestCase):
             result = json.loads(tools.bot_group_listen(
                 {"address": "127.0.0.1", "port": 1}))
             self.assertFalse(result["ok"])
-        # 配置白名单但会话上下文不含白名单身份：拒绝
+        # 配置白名单但会话上下文不是 dm 私聊：拒绝（正向匹配 dm，
+        # manager node2074/12711）
         with patch.object(tools, "_authorized_profiles", return_value={"admin"}):
-            result = json.loads(tools.bot_group_relay_status({}))
-            self.assertFalse(result["ok"])
-        # 身份命中白名单：放行（status 无副作用）
+            with patch.dict(os.environ, {
+                    "HERMES_SESSION_CHAT_TYPE": "group",
+                    "HERMES_SESSION_PLATFORM": "telegram",
+                    "HERMES_SESSION_ACTOR_ID": "admin"}):
+                result = json.loads(tools.bot_group_relay_status({}))
+                self.assertFalse(result["ok"], "群聊不是私聊，拒绝")
+        # dm 私聊 + 渠道与本轮 ACTOR_ID 命中白名单：放行（status 无副作用）
         with patch.object(tools, "_authorized_profiles", return_value={"admin"}), \
-                patch.object(tools, "_caller_identity", return_value="admin"):
+                patch.dict(os.environ, {
+                    "HERMES_SESSION_CHAT_TYPE": "dm",
+                    "HERMES_SESSION_PLATFORM": "telegram",
+                    "HERMES_SESSION_ACTOR_ID": "admin"}):
             result = json.loads(tools.bot_group_relay_status({}))
             self.assertTrue(result["ok"])
 
@@ -464,21 +503,49 @@ class EntryIdentityAndProxyTests(unittest.TestCase):
     """manager node2060 ①③：受信调用者身份（不可信 session_id 不绕过）、
     CLI 交互/非交互配对材料语义、listen 必启随包 MCP 代理。"""
 
-    def test_caller_identity_is_trusted_profile_not_session_id(self):
-        """私聊入口身份=受信 HERMES_PROFILE；不可信 kwargs 的 session_id
-        命中白名单也绝不放行（会话句柄不是身份，manager node2060 ①）。"""
+    def test_caller_identity_is_trusted_dm_channel_actor_not_session_id(self):
+        """私聊入口身份=宿主受信会话字段（manager node2074/12711）：
+        正向匹配 chat_type=dm + 渠道与本轮 ACTOR_ID 核对白名单；不可信
+        kwargs 的 session_id 命中白名单也绝不放行（会话句柄不是身份）。"""
         plg = _plugin()
         tools = plg["tools"]
         with patch.object(tools, "_authorized_profiles", return_value={"admin"}), \
-                patch.dict(os.environ, {"HERMES_PROFILE": ""}):
-            # kwargs 带 session_id='admin'（不可信注入）→ 身份解析为空 → 拒绝
+                patch.dict(os.environ, {
+                    "HERMES_SESSION_CHAT_TYPE": "dm",
+                    "HERMES_SESSION_PLATFORM": "telegram",
+                    "HERMES_SESSION_ACTOR_ID": "mallory"}):
+            # kwargs 带 session_id='admin'（不可信注入）→ actor=mallory 未
+            # 授权 → 拒绝（session_id 绝不成为授权身份）
             result = json.loads(tools.bot_group_relay_status(
                 {}, session_id="admin", task_id="t-1"))
             self.assertFalse(result["ok"], "不可信的 session_id 不得成为授权身份")
-        with patch.object(tools, "_authorized_profiles", return_value={"admin"}), \
-                patch.dict(os.environ, {"HERMES_PROFILE": "admin"}):
+        # 渠道限定条目 platform:actor 命中
+        with patch.object(tools, "_authorized_profiles",
+                          return_value={"telegram:admin"}), \
+                patch.dict(os.environ, {
+                    "HERMES_SESSION_CHAT_TYPE": "dm",
+                    "HERMES_SESSION_PLATFORM": "telegram",
+                    "HERMES_SESSION_ACTOR_ID": "admin",
+                    "HERMES_SESSION_ACTOR_NAME": "展示名"}):
             result = json.loads(tools.bot_group_relay_status({}))
-            self.assertTrue(result["ok"], "受信 HERMES_PROFILE 身份放行")
+            self.assertTrue(result["ok"], "渠道+ACTOR_ID 命中白名单放行")
+        # 渠道不符：同 actor 在别的渠道不命中限定条目
+        with patch.object(tools, "_authorized_profiles",
+                          return_value={"telegram:admin"}), \
+                patch.dict(os.environ, {
+                    "HERMES_SESSION_CHAT_TYPE": "dm",
+                    "HERMES_SESSION_PLATFORM": "lark",
+                    "HERMES_SESSION_ACTOR_ID": "admin"}):
+            result = json.loads(tools.bot_group_relay_status({}))
+            self.assertFalse(result["ok"], "渠道不符的限定条目不放行")
+        # 缺渠道或 ACTOR：拒绝
+        with patch.object(tools, "_authorized_profiles", return_value={"admin"}), \
+                patch.dict(os.environ, {
+                    "HERMES_SESSION_CHAT_TYPE": "dm",
+                    "HERMES_SESSION_PLATFORM": "",
+                    "HERMES_SESSION_ACTOR_ID": "admin"}):
+            result = json.loads(tools.bot_group_relay_status({}))
+            self.assertFalse(result["ok"], "缺渠道拒绝")
 
     def test_cli_interactive_outputs_pairing_material(self):
         """CLI 交互（TTY）：输出含 pairing_url（用户本人在场可取配对材料）；
@@ -625,7 +692,12 @@ class EngineTunnelIdentityTests(unittest.TestCase):
         # 下游请求头：外部身份头全滤，注入实际通道成员
         self.assertNotIn("authorization", captured_headers,
                          "外部 authorization 不得透传")
-        self.assertNotIn("x-group-key", captured_headers)
+        # manager node2074/12711：外部 x-group-key 一律过滤，注入通道成员
+        # 的既有作用域凭据（引擎现场签发 bot_token，verify_bot 可核验）
+        from engine import auth
+        self.assertEqual(captured_headers.get("x-group-key"),
+                         auth.bot_token(REMOTE),
+                         "隧道按通道成员注入作用域凭据，外部密钥不得透传")
         self.assertEqual(captured_headers.get("x-group-profile"), REMOTE,
                          "下游授权上下文必须绑定实际配对通道成员")
         self.assertEqual(captured_headers.get("content-type"), "application/json",
@@ -638,6 +710,52 @@ class EngineTunnelIdentityTests(unittest.TestCase):
         self.assertEqual(response["relay"]["kind"], "http_response")
         self.assertEqual(response["status"], 200)
         self.assertEqual(response["relay"]["request_id"], "r-1")
+
+    def test_forward_members_path_with_member_scope_key(self):
+        """manager node2074/12711：随包 group_list_members 实际 GET /members
+        ——路径在白名单（转发而非 403）、下游带成员作用域凭据与成员身份。"""
+        fake_ws = _SyncWs()
+        link = relay_dialer.DialLink(REMOTE, fake_ws, 1, peer_ip="203.0.113.9")
+        captured_headers = {}
+        captured_url = {}
+
+        class _Resp:
+            status = 200
+            headers = {"content-type": "application/json"}
+
+            def read(self):
+                return b'{"members": [{"profile": "remote1", "role": "member"}], "count": 1}'
+
+            def close(self):
+                pass
+
+        def fake_urlopen(request, timeout=120):  # noqa: ARG001
+            captured_headers.update({k.lower(): v for k, v in request.headers.items()})
+            captured_url["full"] = request.full_url
+            return _Resp()
+
+        envelope = {
+            "relay": {"kind": "http_request", "request_id": "r-2",
+                      "generation": 1},
+            "method": "GET", "path": "/members?project=alpha",
+            "headers": {},
+            "body": "",
+        }
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            relay_server._serve_relay_http_request(link, envelope)
+        self.assertIn("/members", captured_url["full"],
+                     "/members 在白名单内必须实际转发")
+        self.assertEqual(captured_headers.get("x-group-profile"), REMOTE)
+        from engine import auth
+        self.assertEqual(captured_headers.get("x-group-key"),
+                         auth.bot_token(REMOTE),
+                         "成员作用域凭据随转发注入（verify_bot 可核验）")
+        frames = fake_ws.sent
+        self.assertTrue(frames)
+        response = json.loads(frames[-1])
+        self.assertEqual(response["relay"]["kind"], "http_response")
+        self.assertEqual(response["status"], 200)
+        self.assertIn("members", response["body"])
 
 
 if __name__ == "__main__":

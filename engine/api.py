@@ -1301,6 +1301,11 @@ def get_members(project: str = "", active_only: bool = False, role: str | None =
                 (r["project"], r["profile"]): dict(r)
                 for r in conn.execute("SELECT project, profile, active, role, role_id FROM project_members WHERE project=?", (project,))
             }
+            # req#173 成员权限链（manager node2074/12711）：bot 身份读指定项目
+            # 名单须自身已加入该项目——未加入返回 403（无权读取成员名单）。
+            if request is not None and request.state.identity[1] == "bot" \
+                    and (project, request.state.identity[0]) not in pm:
+                raise HTTPException(403, "未加入该项目，无权读取成员名单")
         for r in rows:
             if enrolled_only and (project, r["profile"]) not in pm:
                 continue

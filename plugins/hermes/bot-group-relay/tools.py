@@ -16,7 +16,10 @@ import os
 
 logger = logging.getLogger(__name__)
 
-# 授权管理员白名单：BOT_GROUP_RELAY_ADMIN 逗号分隔（profile 名/成员名）。
+# 授权管理员白名单：BOT_GROUP_RELAY_ADMIN 逗号分隔。条目二选一
+# （manager node2074/12711：以渠道和本轮 ACTOR_ID 核对管理员）：
+# - "actor_id"：任意渠道该发送者；
+# - "platform:actor_id"：限定渠道的该发送者。
 # 缺省空 = 私聊入口拒绝一切（必须先显式授权），CLI 白名单不受影响。
 
 
@@ -26,33 +29,61 @@ def _authorized_profiles() -> set[str]:
             if name.strip()}
 
 
-def _caller_identity(kwargs: dict) -> str:
-    """受信任的调用者身份（manager node2060 ①）：私聊工具 handler 由
-    Hermes 宿主 dispatcher 调用，注入的 session_id/task_id 是会话句柄
-    不是身份、不可作授权依据。受信身份取宿主 per-profile 环境
-    HERMES_PROFILE（hosted 进程按 profile 隔离），兜底宿主 API
-    get_active_profile_name；两者都不可用 → 空（拒绝）。
-    session_id/task_id 只进审计日志，绝不参与授权。"""
-    profile = (os.environ.get("HERMES_PROFILE") or "").strip()
-    if profile:
-        return profile
+def _session_context() -> dict:
+    """宿主受信会话字段（gateway.session_context get_session_env：
+    ContextVar 优先、os.environ 兜底；工具 handler 运行在宿主进程内）。
+    读不到一律空串——授权按空处理（拒绝）。"""
     try:
-        from hermes_cli.profiles import get_active_profile_name
-        return get_active_profile_name() or ""
-    except Exception:  # noqa: BLE001 宿主 API 不可用按未授权处理
-        return ""
+        from gateway.session_context import get_session_env
+    except Exception:  # noqa: BLE001 非宿主进程（测试/CLI）不可用
+
+        def get_session_env(name, default=""):  # noqa: ANN001
+            return os.getenv(name, default) or default
+
+    def _read(name: str) -> str:
+        try:
+            return get_session_env(name, "") or ""
+        except Exception:  # noqa: BLE001
+            return ""
+
+    return {
+        # 私聊正确定义：宿主 session.py 将私聊设为 chat_type=dm（12711），
+        # 正向匹配 dm；空/group/channel 一律拒绝（群聊不适用私聊工具）。
+        "chat_type": _read("HERMES_SESSION_CHAT_TYPE").strip(),
+        "platform": (_read("HERMES_SESSION_PLATFORM").strip()
+                     or _read("HERMES_SESSION_SOURCE").strip()),
+        # 本轮发送者（受信：网关按 MessageEvent 绑定，worker 复制后
+        # 外部不可改）；ACTOR_NAME 仅展示、绝不参与授权。
+        "actor_id": _read("HERMES_SESSION_ACTOR_ID").strip(),
+        "actor_name": _read("HERMES_SESSION_ACTOR_NAME").strip(),
+        # 宿主归属（审计用，不作为授权主体）
+        "profile": _read("HERMES_SESSION_PROFILE").strip(),
+    }
 
 
 def _check_authorized(kwargs: dict) -> bool:
+    """私聊入口授权（manager node2074/12711）：正向匹配 dm + 渠道与本轮
+    ACTOR_ID 核对管理员白名单；session_id/task_id 只进审计日志，绝不参与
+    授权；ACTOR_NAME 仅展示；profile 用于宿主归属审计。"""
     allowed = _authorized_profiles()
     if not allowed:
         return False
-    caller = _caller_identity(kwargs)
-    if not caller:
+    ctx = _session_context()
+    if ctx["chat_type"] != "dm":
+        # 非私聊（群聊/渠道/空）拒绝——私聊工具只在 dm 会话可用
+        logger.info("bot-group relay tool rejected non-dm chat_type=%s",
+                    ctx["chat_type"] or "(empty)")
         return False
-    granted = caller in allowed
-    logger.info("bot-group relay tool auth profile=%s granted=%s (session=%s)",
-                caller, granted, kwargs.get("session_id") or "")
+    if not ctx["platform"] or not ctx["actor_id"]:
+        logger.info("bot-group relay tool rejected missing channel/actor "
+                    "platform=%s", ctx["platform"] or "(empty)")
+        return False
+    granted = (ctx["actor_id"] in allowed
+               or f"{ctx['platform']}:{ctx['actor_id']}" in allowed)
+    logger.info("bot-group relay tool auth chat_type=dm platform=%s "
+                "actor=%s granted=%s profile=%s (session=%s)",
+                ctx["platform"], ctx["actor_id"], granted,
+                ctx["profile"] or "(empty)", kwargs.get("session_id") or "")
     return granted
 
 

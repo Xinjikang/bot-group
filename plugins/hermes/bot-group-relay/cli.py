@@ -7,19 +7,41 @@
 """
 from __future__ import annotations
 
-import getpass
 import json
 import os
 import sys
 from pathlib import Path
 
 
+def _os_kernel_identity() -> str:
+    """按平台取内核 OS 主体身份（manager node2074/12711：不以可伪造的
+    USERNAME/USER 环境变量为准）：
+    - Windows：advapi32 GetUserNameExW（登录会话主体，环境变量无法伪造）；
+    - POSIX：内核 uid → pwd 主体名。
+    取不到返回空串 → 白名单匹配失败（拒绝）。"""
+    if os.name == "nt":
+        import ctypes
+        try:
+            buffer = ctypes.create_unicode_buffer(256)
+            size = ctypes.c_uint(256)
+            if ctypes.windll.advapi32.GetUserNameExW(2, buffer, ctypes.byref(size)):
+                return buffer.value
+        except Exception:  # noqa: BLE001 API 不可用按未授权处理
+            return ""
+        return ""
+    try:
+        import pwd
+        return pwd.getpwuid(os.getuid()).pw_name
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _authorized_local_user() -> bool:
-    """CLI 授权本地 OS 身份核验：目录所有者或显式白名单。"""
+    """CLI 授权本地 OS 身份核验：内核主体对白名单，目录所有者兜底。"""
     allowed = [name.strip() for name in
                (os.environ.get("BOT_GROUP_RELAY_ALLOWED_USERS") or "").split(",")
                if name.strip()]
-    current = getpass.getuser()
+    current = _os_kernel_identity()
     if current in allowed:
         return True
     if os.name == "posix" and allowed == []:

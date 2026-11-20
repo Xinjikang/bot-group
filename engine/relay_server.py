@@ -454,7 +454,8 @@ def _engine_url() -> str:
 
 # req#173 方向 B：插件 MCP loopback 隧道转来的 HTTP 请求可转发的路径前缀
 # 白名单（引擎自身 API 的只读/业务端点；/admin/* 管理端点绝不隧道转发）。
-_HTTP_TUNNEL_PREFIXES = ("/health", "/projects/", "/tasks/", "/group/", "/auth/status")
+_HTTP_TUNNEL_PREFIXES = ("/health", "/projects/", "/tasks/", "/group/",
+                         "/members", "/auth/status")
 
 
 def _serve_relay_http_request(link: NodeLink, envelope: dict) -> None:
@@ -477,6 +478,14 @@ def _serve_relay_http_request(link: NodeLink, envelope: dict) -> None:
                        if k in ("content-type", "accept", "user-agent")}
     # 下游授权上下文：实际配对通道成员（引擎 API 按 X-Group-Profile 解析）
     forward_headers["x-group-profile"] = link.member
+    # 成员作用域凭据（manager node2074/12711）：按通道成员签发既有作用域
+    # 凭据（auth.bot_token——relay_nodes 只存凭据哈希不落明文，引擎持
+    # signing keys 现场签发），access.resolve_identity 的 verify_bot 核验
+    # 通过后照常施加该成员的项目/会话/执行限制；绝不用权限更宽的通用
+    # 成员密钥，也绝不注入本地管理员身份。
+    from . import auth
+    member_key = auth.bot_token(link.member)
+    forward_headers["x-group-key"] = member_key
     body = envelope.get("body") or ""
     response = None
     if method not in ("GET", "POST"):

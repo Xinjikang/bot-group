@@ -57,6 +57,29 @@ class AccessContractTests(unittest.TestCase):
         self.assertEqual(self.client.get("/commands", headers=self.bot).status_code, 200)
         self.assertEqual(self.client.get("/members", headers=self.admin).status_code, 200)
 
+    def test_bot_members_read_requires_project_membership(self):
+        """manager node2074/12711 成员权限链：bot 身份经隧道 GET /members
+        ?project= 须自身已加入该项目——获准项目 200+实际成员、未加入 403。"""
+        from scripts.project_test_support import enable_members
+        conn = db.get_connection()
+        try:
+            # remote1 加入 alpha；default 不加入 gamma（未加入项目反例）
+            enable_members(conn, ("alpha",), profiles=["remote1"])
+            enable_members(conn, ("gamma",), profiles=["remote1"])
+            conn.commit()  # 跨连接可见（请求线程是独立连接）
+        finally:
+            conn.close()
+        # 未加入项目（bot=default 不在 gamma）：403（无权读取成员名单）
+        response = self.client.get("/members?project=gamma", headers=self.bot)
+        self.assertEqual(response.status_code, 403, response.text)
+        # 已加入项目：200 + 实际成员（bot 只看到项目内成员）
+        response = self.client.get("/members?project=alpha", headers=self.bot)
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        profiles = [m["profile"] for m in body["members"]]
+        self.assertIn("remote1", profiles, "获准项目返回实际成员")
+        self.assertEqual(body["count"], len(body["members"]))
+
     def test_login_unicode_types_rate_limit_and_expiry(self):
         for value in ("错误", None, 123, {}, []):
             self.assertEqual(self.client.post("/auth/login", json={"password": value}).status_code, 401)
