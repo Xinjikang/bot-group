@@ -93,7 +93,11 @@ class DialLink:
             return None
 
     def _on_snapshot_response(self, request_id: str, report: dict) -> None:
-        report["generation"] = self.generation
+        # manager node2088：写库代必须用本连接的本地状态代（db_generation）
+        # ——首次真实拨号帧代=1、库代=2，用帧代写库（WHERE generation=?）
+        # 不命中，快照代理端口落库 0、GROUP_ENGINE_URL 回落错误地址。
+        # 线上帧校验仍用插件帧代（generation），旧连接不得借用新代。
+        report["generation"] = self.db_generation or self.generation
         with self._snapshot_waiters_lock:
             waiter = self._snapshot_waiters.pop(request_id, None)
         if waiter is not None:

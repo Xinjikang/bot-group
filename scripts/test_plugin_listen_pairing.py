@@ -870,5 +870,45 @@ class EngineTunnelIdentityTests(unittest.TestCase):
             conn.close()
 
 
+    def test_dial_snapshot_generation_uses_local_db_generation(self):
+        """manager node2088：首次拨号帧代≠本地状态代（帧 1/库 2）时，快照
+        写库代必须用本连接 db_generation——帧代写库（WHERE generation=?）
+        不命中，proxy_port 落库 0、GROUP_ENGINE_URL 回落错误地址。帧校验
+        仍用插件帧代，旧连接不得借用新代。"""
+        import queue as queue_module
+        fake_ws = _SyncWs()
+        link = relay_dialer.DialLink(REMOTE, fake_ws, generation=1,
+                                     peer_ip="203.0.113.9", db_generation=2)
+        waiter = queue_module.Queue(maxsize=1)
+        link._snapshot_waiters["snap-1"] = waiter
+        link._on_snapshot_response("snap-1", {
+            "mcp_fingerprint": "fp-dial", "code_version": "v1",
+            "proxy_port": 62630})
+        report = waiter.get(timeout=2)
+        self.assertEqual(report["generation"], 2,
+                         "写库代必须用本地状态代 db_generation")
+        self.assertEqual(link.generation, 1, "线上帧校验仍用插件帧代")
+        # 快照经 merge_mcp_spec 写库：帧代 1 不命中、本地代 2 命中
+        conn = db.get_connection()
+        try:
+            relay.register_node(conn, REMOTE, CREDENTIAL, display_name="r")
+            conn.execute("UPDATE relay_nodes SET generation=2,mcp_config=?,"
+                         "direction=? WHERE member=?",
+                         (json.dumps({"command": "python", "args": [],
+                                      "env": {"GROUP_ENGINE_URL": "{engine_url}"}}),
+                          "dial", REMOTE))
+            conn.commit()
+            merged = relay.merge_mcp_spec(conn, REMOTE, {"command": "python"},
+                                          engine_url="http://engine:8201",
+                                          fetch_report=lambda: report)
+            row = relay.read_node(conn, REMOTE)
+            self.assertEqual(row["proxy_port"], 62630, "快照代理端口按本地代落库")
+            self.assertEqual(merged["env"]["GROUP_ENGINE_URL"],
+                             "http://127.0.0.1:62630",
+                             "dial 渲染为插件 loopback 代理实际端口")
+        finally:
+            conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()
