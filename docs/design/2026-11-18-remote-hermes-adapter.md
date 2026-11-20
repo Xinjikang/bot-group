@@ -41,7 +41,7 @@ ECS 上 Hermes gateway 常驻（systemd 托管），bot-group 插件随 gateway 
 - 主人已定「全程界面操作」：改 .env、配防火墙一律不作为交给用户的联调步骤；监听与白名单变更由设置菜单完成（#171 引擎+界面任务）。
 - 实现约束（沿用已坐实结论）：双栈监听时第二 Server 禁用 lifespan（engine/main.py:136 app 挂 `lifespan → _engine_lifespan`，双起=queue worker/scanner/topic-dispatch/hud 跑两份）；监听失败重试 + 地址变更可重绑；第二监听服务完整 API（MCP HTTP 同走远程入口）。
 - 安全约束：默认拒绝（白名单外全拒）；监听绑 0.0.0.0 时白名单是唯一防线，必须先于监听生效。
-- 白名单实现约束（2026-11-20 bot-43）：①ASGI 级中间件（判断 `scope["type"] in ("http","websocket")`）——FastAPI `@app.middleware("http")` 不覆盖 WebSocket，`/relay/ws` 必须同规则拦截；②来源地址归一化后再匹配（`::1`、`::ffff:x.x.x.x`、IPv6 压缩写法与 IPv4 统一比较，防双栈监听漏判）；③白名单读 TCP peer IP——引擎在 Docker/NAT/反代后部署时所有外部来源都是网关地址，按 IP 放行失效（首版按直接部署生效，已知边界注明；可信代理配置「只在来源是代理时读转发头」为后续扩展，与默认不信任转发头分开）；④远程监听 `uvicorn.Config` 显式 `proxy_headers=False`（main.py:226 现沿用默认且本机 Uvicorn 默认开启 proxy_headers，FORWARDED_ALLOW_IPS 不得为 `*`），白名单只读 `scope["client"][0]`，任何路径不读 XFF——验收须走真实 uvicorn 入口验证伪造用例（白名单外来源带 `X-Forwarded-For: 白名单内 IP` 仍拒，TestClient/直接传 scope 覆盖不到解析层）。
+- 白名单实现约束（2026-11-20 bot-43）：①ASGI 级中间件（判断 `scope["type"] in ("http","websocket")`）——FastAPI `@app.middleware("http")` 不覆盖 WebSocket，`/relay/ws` 必须同规则拦截；②来源地址归一化后再匹配（`::1`、`::ffff:x.x.x.x`、IPv6 压缩写法与 IPv4 统一比较，防双栈监听漏判）；③白名单只读 TCP peer IP（当前部署引擎直接跑宿主机、ECS 走 relay，看到的就是真实来源）；④远程监听 `uvicorn.Config` 显式 `proxy_headers=False`（main.py:226 现沿用默认且本机 Uvicorn 默认开启 proxy_headers，FORWARDED_ALLOW_IPS 不得为 `*`），白名单只读 `scope["client"][0]`，任何路径不读 XFF——验收须走真实 uvicorn 入口验证伪造用例（白名单外来源带 `X-Forwarded-For: 白名单内 IP` 仍拒，TestClient/直接传 scope 覆盖不到解析层）。
 
 ## 3. 全程 relay 架构
 
