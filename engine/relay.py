@@ -14,10 +14,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 import time
 
 from . import db
+
+logger = logging.getLogger(__name__)
 
 # 心跳 TTL：只判存活，绝不据此判任务结束重跑（设计 4 章）。
 HEARTBEAT_TTL_SECONDS = 90.0

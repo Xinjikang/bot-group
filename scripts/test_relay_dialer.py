@@ -925,6 +925,60 @@ class SwitchFullChainTests(DialerBase):
         self.assertEqual(events, ["submit_once", "receipt_query"],
                          "受控网关：一次 submit、一次原 ID 查询")
 
+    def test_switch_resume_survives_receipt_query_failure(self):
+        """manager node2073/node2076 缺陷 2：首次问询失败（网关断连/传输
+        错误）——worker 线程不崩（logger 已定义，无 NameError）、执行
+        保留待核对不重派、切换态按设计恢复派发（gate=go）。"""
+        import time as time_module
+        from unittest.mock import patch
+        from engine import hermes_gateway_ledger as ledger
+        from engine.hermes_gateway_client import GatewayTransportError
+        conn = db.get_connection()
+        try:
+            from scripts.project_test_support import enable_members
+            enable_members(conn, ("alpha",), profiles=[REMOTE])
+            relay.set_direction(conn, REMOTE, "dial")
+            row = ledger.prepare(
+                conn, session="probe", project="alpha", profile=REMOTE,
+                kind="work", thread_id=None, task_id=None, job_id=None,
+                event_floor=0, source="fixture", python="", home="",
+                workdir="", session_id="probe", profile_id=REMOTE)
+            eid = row["execution_id"]
+            ledger.apply_receipt(conn, eid, {
+                "admission_id": "accepted-1", "status": "started",
+                "ref": {"session_id": "probe", "profile_id": REMOTE},
+                "execution_generation": 0, "authority_epoch": 1})
+        finally:
+            conn.close()
+        # 受控网关问询抛传输错误（RPC 断连）
+        with patch.object(ledger, "reconcile",
+                          side_effect=GatewayTransportError(
+                              "Hermes RPC outcome unknown")):
+            response = self.client.post(f"/relay/nodes/{REMOTE}/switch",
+                                        json={"direction": "listen"})
+            self.assertEqual(response.status_code, 200)
+            with self.client.websocket_connect("/relay/ws") as ws:
+                ws.send_json({"relay": {"kind": "hello"}, "member": REMOTE,
+                              "credential": CREDENTIAL,
+                              "code_version": self.RELEASE,
+                              "mcp_fingerprint": "", "protocol_version": 1})
+                reply = ws.receive_json()
+                self.assertEqual(reply["relay"]["kind"], "hello_ok")
+                self.assertTrue(self._wait_switch_clear(REMOTE),
+                                "问询失败后切换态仍应按设计恢复（worker 不崩）")
+        conn = db.get_connection()
+        try:
+            state = ledger.read(conn, eid)["state"]
+            self.assertEqual(state, "running",
+                             "问询失败：执行保留待核对，不自动重派")
+            candidate = {"profile": REMOTE, "kind": "work",
+                         "thread_id": None, "project": "alpha"}
+            from engine import queue as queue_module
+            self.assertEqual(queue_module._relay_node_gate(conn, candidate)[0],
+                             "hold", "连接关闭后按普通离线保留排队")
+        finally:
+            conn.close()
+
     def test_full_chain_switch_via_api(self):
         from engine import queue as queue_module
         # 造一条 queued job（切换前点名）统计执行次数
