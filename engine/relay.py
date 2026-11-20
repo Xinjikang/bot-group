@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS relay_nodes (
     direction         TEXT NOT NULL DEFAULT 'listen',  -- listen=引擎监听(方向A) / dial=引擎拨号(方向B)
     dial_endpoint     TEXT NOT NULL DEFAULT '',   -- 插件监听端点 JSON：{host,port,tls,fingerprint}
     proxy_port        INTEGER NOT NULL DEFAULT 0,  -- 插件 loopback MCP 代理端口（方向B随包MCP GROUP_ENGINE_URL指向）
+    mcp_verify_state  TEXT NOT NULL DEFAULT '',   -- MCP 只读验证（manager node2102）：''待验/ok/failed；换代作废
+    mcp_verify_error  TEXT NOT NULL DEFAULT '',   -- 验证失败原因（脱敏：阶段/状态码/拒绝原因，不含凭据）
     switch_state      TEXT NOT NULL DEFAULT '',   -- ''=无切换 / 'switching'=切换中（暂停派发）
     switch_target     TEXT NOT NULL DEFAULT '',   -- 切换目标方向（随节点持久化，重启可读回）
     switch_error      TEXT NOT NULL DEFAULT '',   -- 最近一次切换/拨号失败原因（页面显示）
@@ -159,11 +161,32 @@ def list_nodes(conn):
     return conn.execute("SELECT * FROM relay_nodes ORDER BY member").fetchall()
 
 
+def set_mcp_verify(conn, member: str, *, state: str, error: str = "",
+                   generation: int | None = None) -> None:
+    """MCP 只读验证结果落库（manager node2102）：state=ok/failed、error 脱敏
+    失败原因；带代条件写（旧连接迟到的验证结果不得覆盖新代状态）。"""
+    if state not in ("ok", "failed"):
+        raise ValueError("验证结果必须是 ok 或 failed")
+    if generation is None:
+        conn.execute(
+            "UPDATE relay_nodes SET mcp_verify_state=?,mcp_verify_error=?,"
+            "updated_at=? WHERE member=?",
+            (state, str(error)[:300], _now(), member))
+    else:
+        conn.execute(
+            "UPDATE relay_nodes SET mcp_verify_state=?,mcp_verify_error=?,"
+            "updated_at=? WHERE member=? AND generation=?",
+            (state, str(error)[:300], _now(), member, generation))
+    conn.commit()
+
+
 def generation_advance(conn, member: str, *, now=None) -> int:
-    """重连后连接代 +1（旧代帧从此拒收）。"""
+    """重连后连接代 +1（旧代帧从此拒收）。manager node2102：换代即新连接
+    ——上一代的 MCP 只读验证结果一并作废（置回待验，页面不得沿用旧成功）。"""
     now = _now() if now is None else now
     conn.execute(
-        "UPDATE relay_nodes SET generation=(generation % ?) + 1, updated_at=? WHERE member=?",
+        "UPDATE relay_nodes SET generation=(generation % ?) + 1, updated_at=?,"
+        "mcp_verify_state='',mcp_verify_error='' WHERE member=?",
         (MAX_GENERATION, now, member))
     conn.commit()
     row = read_node(conn, member)

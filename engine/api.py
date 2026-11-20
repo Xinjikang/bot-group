@@ -251,6 +251,9 @@ def relay_nodes_list(identity=Depends(_resolve_identity)):
             'dial_state': _dial_state(r['member']),
             'dial_endpoint': _dial_endpoint_view(conn, r['member']),
             'dial_failure': _dial_failure(r['member']),
+            # manager node2102：MCP 只读验证（实际受限调用结果，换代作废）
+            'mcp_verify_state': r['mcp_verify_state'],
+            'mcp_verify_error': r['mcp_verify_error'],
         } for r in rows], headers={'Cache-Control': 'no-store'})
     finally:
         conn.close()
@@ -411,7 +414,13 @@ def relay_node_switch(member: str, body: _SwitchBody, identity=Depends(_resolve_
         if body.direction not in ("listen", "dial"):
             raise HTTPException(400, 'direction 必须是 listen 或 dial')
         if body.direction == current and relay.read_node(conn, member)["switch_state"] != "switching":
-            # 无切换（目标=当前方向）：幂等返回现状
+            # 无切换（目标=当前方向）：在线幂等返回现状；同方向离线/退避
+            # 耗尽时是显式重试——实际启动拨号（manager node2102：曾在线
+            # 意外掉线耗尽后点同方向重试必须发起请求，不能静默不动作）。
+            if body.direction == "dial" and relay_dialer._task_state(member) != "connected":
+                relay_dialer.start_dial(member)
+                return {'member': member, 'direction': current,
+                        'switch_state': '', 'dial_state': relay_dialer._task_state(member)}
             return {'member': member, 'direction': current,
                     'switch_state': '', 'dial_state': relay_dialer._task_state(member)}
         if body.direction == "dial":
@@ -433,6 +442,85 @@ def relay_node_switch(member: str, body: _SwitchBody, identity=Depends(_resolve_
     return {'member': member, 'direction': body.direction,
             'switch_state': 'switching',
             'dial_state': relay_dialer._task_state(member)}
+
+
+def _verify_error_reason(status, body: str) -> str:
+    """MCP 只读验证失败原因（脱敏）：状态码 + 响应拒绝原因，不含凭据。"""
+    if status == 403:
+        try:
+            detail = json.loads(body or "{}").get("detail") or ""
+            return f"权限拒绝(403): {str(detail)[:200]}"
+        except ValueError:
+            return "权限拒绝(403)"
+    if status == 401:
+        return "凭据无效(401)"
+    if status == 502:
+        return "插件代理不可达(502)"
+    if status == 503:
+        return "服务暂不可用(503)"
+    return f"HTTP {status}"
+
+
+@router_api.post('/relay/nodes/{member}/mcp-verify')
+def relay_node_mcp_verify(member: str, identity=Depends(_resolve_identity)):
+    """manager node2102：配对导入并认证后，以实际随包 MCP 路径做一次受限
+    项目只读验证——引擎经已认证通道下发成员会话凭据（不享受本地管理员
+    身份），插件本机经 loopback 代理走真实隧道回引擎鉴权；结果落库
+    （mcp_verify_state=ok/failed+脱敏原因；连接换代即作废）。"""
+    _admin_only(identity, 'relay MCP 验证仅限管理员')
+    from . import auth, hermes_session_auth, relay, relay_dialer, relay_server
+    conn = db.get_connection()
+    try:
+        row = relay.read_node(conn, member)
+        if row is None:
+            raise HTTPException(404, '节点不存在')
+        if row["direction"] != "dial":
+            raise HTTPException(400, 'MCP 验证仅适用于拨号方向（方向 B）')
+        grant = conn.execute(
+            "SELECT * FROM hermes_session_grants WHERE profile=? AND revoked=0 "
+            "ORDER BY generation DESC LIMIT 1", (member,)).fetchone()
+        if grant is None:
+            error = '成员无未吊销的会话授权，无法签发受限凭据'
+            relay.set_mcp_verify(conn, member, state="failed", error=error,
+                                 generation=row["generation"])
+            return {'member': member, 'mcp_verify_state': 'failed',
+                    'mcp_verify_error': error}
+        ctx = hermes_session_auth.context(grant)
+        project = ctx["project"]
+        key = auth.session_token(member, ctx)
+    finally:
+        conn.close()
+    link = relay_server.active_link(member)
+    if link is None or not hasattr(link, "request_mcp_verify"):
+        conn = db.get_connection()
+        try:
+            error = '无在线的拨号通道，无法发起验证'
+            relay.set_mcp_verify(conn, member, state="failed", error=error,
+                                 generation=relay.read_node(conn, member)["generation"])
+        finally:
+            conn.close()
+        return {'member': member, 'mcp_verify_state': 'failed',
+                'mcp_verify_error': error}
+    report = link.request_mcp_verify(key, project)
+    conn = db.get_connection()
+    try:
+        row = relay.read_node(conn, member)
+        generation = row["generation"] if row else None
+        if report is None:
+            state, error = "failed", "验证超时或链路断链"
+        elif report.get("status") == 200:
+            state, error = "ok", ""
+        else:
+            state, error = "failed", _verify_error_reason(
+                report.get("status"), report.get("body") or "")
+        relay.set_mcp_verify(conn, member, state=state, error=error,
+                             generation=generation)
+    finally:
+        conn.close()
+    logger.info("relay mcp verify member=%s project=%s state=%s",
+                member, project, state)
+    return {'member': member, 'mcp_verify_state': state,
+            'mcp_verify_error': error}
 
 
 @router_api.get('/relay/mentions')

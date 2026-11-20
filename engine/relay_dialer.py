@@ -23,6 +23,7 @@ import socket
 import ssl
 import threading
 import time
+import urllib.parse
 
 from . import db, relay, relay_server
 
@@ -214,6 +215,43 @@ class DialLink:
         # 不命中，快照代理端口落库 0、GROUP_ENGINE_URL 回落错误地址。
         # 线上帧校验仍用插件帧代（generation），旧连接不得借用新代。
         report["generation"] = self.db_generation or self.generation
+        with self._snapshot_waiters_lock:
+            waiter = self._snapshot_waiters.pop(request_id, None)
+        if waiter is not None:
+            waiter.put(report)
+
+    def request_mcp_verify(self, x_group_key: str, project: str,
+                           timeout: float = 20.0) -> dict | None:
+        """manager node2102：配对导入并认证后的实际受限只读 MCP 验证——
+        发 mcp_verify_request 帧给插件（带成员会话凭据，仅沿已认证通道
+        下发），插件本机经 loopback 代理走真实隧道回引擎鉴权，状态回传。
+        返回 {status, body} 或 None（超时/断链）。"""
+        if self.closed:
+            return None
+        with self._snapshot_waiters_lock:
+            self._snapshot_seq += 1
+            request_id = f"verify-{self._snapshot_seq}"
+            waiter: queue.Queue = queue.Queue(maxsize=1)
+            self._snapshot_waiters[request_id] = waiter
+        try:
+            self.send_text(json.dumps({
+                "relay": {"kind": "mcp_verify_request", "request_id": request_id,
+                          "generation": self.generation},
+                "path": "/members", "query": f"project={urllib.parse.quote(project)}",
+                "x_group_key": x_group_key,
+            }, ensure_ascii=False))
+        except ConnectionError:
+            with self._snapshot_waiters_lock:
+                self._snapshot_waiters.pop(request_id, None)
+            return None
+        try:
+            return waiter.get(timeout=timeout)
+        except queue.Empty:
+            with self._snapshot_waiters_lock:
+                self._snapshot_waiters.pop(request_id, None)
+            return None
+
+    def _on_verify_response(self, request_id: str, report: dict) -> None:
         with self._snapshot_waiters_lock:
             waiter = self._snapshot_waiters.pop(request_id, None)
         if waiter is not None:
@@ -479,7 +517,8 @@ def dial_once(member: str) -> bool:
 
 def dial_loop(member: str, task: dict) -> None:
     """拨号任务线程：认证成功后循环在 dial_once 内；失败按退避重试，
-    耗尽 MAX_ATTEMPTS 后 abandoned（写切换错误，等管理员重试/切回）。"""
+    耗尽 MAX_ATTEMPTS 后 abandoned（写切换错误，等管理员重试/切回）。
+    manager node2102：退避等待可被 poke（管理员显式重试）提前唤醒。"""
     attempt = 0
     while not task["stop"].is_set():
         task["attempt"] = attempt
@@ -498,19 +537,33 @@ def dial_loop(member: str, task: dict) -> None:
                 logger.warning("relay dial abandoned member=%s", member)
                 return
             backoff = BACKOFF_SEQUENCE[min(attempt, len(BACKOFF_SEQUENCE)) - 1]
-            task["stop"].wait(timeout=backoff)
+            task["poke"].clear()
+            deadline = time.monotonic() + backoff
+            while not task["stop"].is_set() and time.monotonic() < deadline:
+                if task["poke"].wait(timeout=min(1.0, deadline - time.monotonic())):
+                    break  # 管理员显式重试：跳过剩余退避立即再拨
     task["abandoned"] = False
 
 
 def start_dial(member: str) -> None:
-    """启动/重启该成员的拨号任务（幂等：已有存活任务则只清 abandoned 继续）。"""
+    """启动/重启该成员的拨号任务。幂等：已连接（active DialLink）不动；
+    存活任务退避中→poke 唤醒立即再拨；abandoned/线程已死→新建任务线程。"""
     _clear_failure(member)
     with _TASKS_LOCK:
         task = _TASKS.get(member)
         if task is not None and task["thread"] is not None and task["thread"].is_alive():
+            # 在线重复点击维持幂等（不打断已连接通道）；离线/退避中则
+            # 唤醒立即重拨（manager node2102：同方向离线显式重试实际发起）。
+            link = relay_server.active_link(member)
+            if isinstance(link, DialLink):
+                task["abandoned"] = False
+                return
             task["abandoned"] = False
+            task["attempt"] = 0
+            task["poke"].set()
             return
-        task = {"thread": None, "attempt": 0, "abandoned": False, "stop": threading.Event()}
+        task = {"thread": None, "attempt": 0, "abandoned": False,
+                "stop": threading.Event(), "poke": threading.Event()}
         _TASKS[member] = task
         thread = threading.Thread(target=dial_loop, args=(member, task),
                                   name=f"relay-dial-{member}", daemon=True)

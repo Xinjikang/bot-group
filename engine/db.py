@@ -261,6 +261,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _migrate_add_column(conn, "relay_nodes", "direction", "TEXT NOT NULL DEFAULT 'listen'")
     _migrate_add_column(conn, "relay_nodes", "dial_endpoint", "TEXT NOT NULL DEFAULT ''")
     _migrate_add_column(conn, "relay_nodes", "proxy_port", "INTEGER NOT NULL DEFAULT 0")
+    _migrate_add_column(conn, "relay_nodes", "mcp_verify_state", "TEXT NOT NULL DEFAULT ''")
+    _migrate_add_column(conn, "relay_nodes", "mcp_verify_error", "TEXT NOT NULL DEFAULT ''")
     _migrate_add_column(conn, "relay_nodes", "switch_state", "TEXT NOT NULL DEFAULT ''")
     _migrate_add_column(conn, "relay_nodes", "switch_target", "TEXT NOT NULL DEFAULT ''")
     _migrate_add_column(conn, "relay_nodes", "switch_error", "TEXT NOT NULL DEFAULT ''")

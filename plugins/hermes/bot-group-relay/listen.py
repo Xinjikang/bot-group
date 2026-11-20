@@ -305,6 +305,16 @@ class ListenServer:
                                            envelope.get("headers") or {},
                                            envelope.get("body") or "")
             return
+        if kind == "mcp_verify_request":
+            # manager node2102：引擎发起的实际受限只读验证——本机经 loopback
+            # 代理发起 GET（代理打包 http_request 帧沿已认证通道回引擎执行
+            # 真实鉴权），状态回传。**必须独立线程**：本分支同步 urlopen 会
+            # 阻塞收帧循环，http_response 帧无法派发给代理 handler（20s 超时
+            # 链——收帧线程与代理应答同链路，不能同线程同步等）。
+            threading.Thread(target=self._handle_mcp_verify_request,
+                             args=(ws, meta, envelope, generation),
+                             name="bot-group-mcp-verify", daemon=True).start()
+            return
         if kind != "frame":
             return
         stream = meta.get("stream")
@@ -316,6 +326,44 @@ class ListenServer:
             local.send_text(json.dumps(frame, ensure_ascii=False))
         except streams_mod.StreamClosed:
             logger.warning("bot-group relay dial frame dropped stream=%s (closed)", stream)
+
+    def _handle_mcp_verify_request(self, ws, meta: dict, envelope: dict,
+                                   generation: int) -> None:
+        """mcp_verify_request 的独立处理线程（manager node2102）：本机经
+        loopback 代理发起 GET（代理打包 http_request 帧沿已认证通道回引擎
+        执行真实鉴权），状态回传。代理未启/请求失败如实回传错误。"""
+        import urllib.error
+        import urllib.request
+        request_id = meta.get("request_id") or ""
+        from . import mcpproxy
+        status = 502
+        body = '{"error": "proxy not running"}'
+        if mcpproxy._ACTIVE_SERVER is not None:
+            port = mcpproxy._ACTIVE_SERVER.port
+            url = (f"http://127.0.0.1:{port}"
+                   f"{str(envelope.get('path') or '/')}"
+                   f"?{str(envelope.get('query') or '')}")
+            req = urllib.request.Request(url, method="GET")
+            req.add_header("x-group-key",
+                           str(envelope.get("x_group_key") or ""))
+            try:
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    status = resp.status
+                    body = resp.read().decode("utf-8", errors="replace")[:4000]
+            except urllib.error.HTTPError as exc:
+                status = exc.code
+                body = exc.read().decode("utf-8", errors="replace")[:4000]
+            except OSError as exc:
+                status = 502
+                body = json.dumps({"error": f"proxy unreachable: {exc}"})
+        try:
+            ws.send(json.dumps({
+                "relay": {"kind": "mcp_verify_response", "request_id": request_id,
+                          "generation": generation},
+                "status": status, "body": body,
+            }, ensure_ascii=False))
+        except Exception:  # noqa: BLE001 断链时验证结果作废（换代清）
+            logger.warning("bot-group relay verify response send failed")
 
     def _on_local_event(self, local: streams_mod.LocalGatewayStream, frame: dict) -> None:
         envelope = json.dumps({

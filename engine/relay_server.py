@@ -316,6 +316,17 @@ def _route_inbound(link: NodeLink, envelope: dict) -> bool:
         # 响应以 http_response 帧回传。成员身份=配对连接成员（握手已认证）。
         _serve_relay_http_request(link, envelope)
         return True
+    if kind == "mcp_verify_response":
+        # manager node2102：插件完成本机经代理的真实只读调用后回传状态——
+        # 交还 request_mcp_verify 的等待线程（DialLink 持有 waiter）。
+        request_id = meta.get("request_id") or ""
+        handler = getattr(link, "_on_verify_response", None)
+        if handler is not None and request_id:
+            handler(request_id, {
+                "status": envelope.get("status"),
+                "body": str(envelope.get("body") or "")[:4000],
+            })
+        return True
     stream = meta.get("stream")
     transport = link.transports.get(stream) if isinstance(stream, str) else None
     frame = envelope.get("frame")
