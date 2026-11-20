@@ -43,6 +43,7 @@ ECS 上 Hermes gateway 常驻（systemd 托管），bot-group 插件随 gateway 
 - 现状：引擎监听 127.0.0.1:8180（本机实测坐实），「保存后实际开启监听」尚未交付（#171 漏项，按主人已给开发授权补关联需求）。
 - 主人已定「全程界面操作」：改 .env、配防火墙一律不作为交给用户的联调步骤；监听与名单变更由设置菜单完成。
 - 实现约束（沿用已坐实结论）：多监听时第二 Server 禁用 lifespan（engine/main.py:136 app 挂 `lifespan → _engine_lifespan`，双起=queue worker/scanner/topic-dispatch/hud 跑两份）；监听失败重试 + 地址变更可重绑；远程监听服务完整 API（MCP HTTP 同走远程入口）；监听切换必须真实生效（不重启进程也生效或引导重启并校验）。
+- 实现约束补充（2026-11-20 bot-43 12536）：①第二 Uvicorn 不与主 Server 共用信号处理——`uvicorn serve` 会 `capture_signals`，双 Server 同主线程互相覆盖、关停只停一个；第二实例放独立线程+独立事件循环（lifespan="off"）或显式禁用其信号捕获。②防火墙限源用「一条 block 所有来源到该端口的规则 + 每个白名单 IP 一条 allow」（Windows 入站 block 优先于 allow，名单外天然被拒），覆盖域/专用/公用三 profile；不靠「审计现有宽泛规则」判限源（优先级难穷举易误判）；验收用名单外机器实测 TCP 拒绝，不靠读规则列表。
 
 ## 3. 全程 relay 架构
 
