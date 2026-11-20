@@ -502,8 +502,10 @@ def set_direction(conn, member: str, direction: str, *, now=None) -> None:
 
 
 def set_dial_endpoint(conn, member: str, endpoint: dict, *, now=None) -> None:
-    """保存插件监听端点（配对记录）：{host, port, tls: bool, fingerprint}。
-    fingerprint=证书指纹（TLS 校验），空=不校验证书指纹（TLS 仍校 CA）。"""
+    """保存插件监听端点（配对记录）：{host, port, tls, fingerprint, pairing_token}。
+    认证收紧（manager node2052 ①）：TLS 与证书指纹必填（自托管配对
+    必有证书，公开配置不接受明文 WS/空指纹）；一次性配对凭据随端点保存。
+    """
     row = read_node(conn, member)
     if row is None:
         raise ValueError("节点不存在")
@@ -516,11 +518,16 @@ def set_dial_endpoint(conn, member: str, endpoint: dict, *, now=None) -> None:
         raise ValueError("dial endpoint port 必须是整数") from None
     if not 1 <= port <= 65535:
         raise ValueError("dial endpoint port 越界")
+    if not endpoint.get("tls", True):
+        raise ValueError("拨号端点必须启用 TLS（不接受明文 WS）")
+    fingerprint = str(endpoint.get("fingerprint") or "").strip().lower().replace(":", "")
+    if len(fingerprint) != 64 or any(c not in "0123456789abcdef" for c in fingerprint):
+        raise ValueError("拨号端点必须提供 64 位十六进制证书指纹")
     payload = {
         "host": host,
         "port": port,
-        "tls": bool(endpoint.get("tls", True)),
-        "fingerprint": str(endpoint.get("fingerprint") or "").strip(),
+        "tls": True,
+        "fingerprint": fingerprint,
         # 一次性配对凭据（插件 listen 签发）：拨号 hello 出示，插件侧兑换
         "pairing_token": str(endpoint.get("pairing_token") or "").strip(),
     }

@@ -192,26 +192,30 @@ class DirectionBDialTests(unittest.TestCase):
 
     def test_engine_dials_plugin_listen_and_frames(self):
         plg_listen = self.plg["listen"]
-        # 测试用回环绑（真机/联调场景绑 LAN；绑定校验单测已覆盖）
-        from unittest.mock import patch
-        with patch.object(plg_listen, "validate_bind_address",
-                          return_value="127.0.0.1"):
+        # 隔离：证书生成目录与配对状态都落 TMPDIR（防污染插件真实 state/）
+        import tempfile
+        tmp_dir = Path(tempfile.mkdtemp(prefix="bgrelay-listen-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp_dir, ignore_errors=True))
+        with patch.object(plg_listen, "STATE_DIR", tmp_dir), \
+                patch.object(plg_listen, "validate_bind_address",
+                             return_value="127.0.0.1"):
             result = plg_listen.listen_serve(
                 address="127.0.0.1", port=0, advertise="127.0.0.1",
                 member=REMOTE, home=os.environ.get("TMPDIR", "."),
-                mcp_python="", tls=False)
+                mcp_python="", tls=True)
         self.assertEqual(result["status"], "listening")
+        self.assertTrue(result["fingerprint"], "TLS 监听必须带证书指纹")
         # 配对凭据只出现在配对链接查询参数（结果 dict 不含凭据值）
         from urllib.parse import parse_qs, urlsplit
         pairing_token = parse_qs(urlsplit(result["pairing_url"]).query)[
             "pairing_token"][0]
-        # 引擎侧按配对记录拨入（配对端点+一次性凭据随 dial_endpoint 保存，
-        # 拨号器 hello 出示、插件侧兑换）
+        # 引擎侧按配对记录拨入（TLS+证书指纹+一次性凭据）
         conn = db.get_connection()
         try:
             relay.set_dial_endpoint(conn, REMOTE,
                                     {"host": "127.0.0.1", "port": result["port"],
-                                     "tls": False, "fingerprint": "",
+                                     "tls": True,
+                                     "fingerprint": result["fingerprint"],
                                      "pairing_token": pairing_token})
             relay.set_direction(conn, REMOTE, "dial")
         finally:

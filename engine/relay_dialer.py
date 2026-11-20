@@ -183,6 +183,11 @@ def dial_once(member: str) -> bool:
         conn.close()
     if endpoint is None or row is None or row["credential_revoked"]:
         return False
+    # 认证收紧（manager node2052 ①）：缺一次性配对凭据保持未认证，
+    # 不发起拨号（插件侧无凭据可兑换，连接必然被拒）。
+    if not str(endpoint.get("pairing_token") or ""):
+        logger.warning("relay dial skipped member=%s reason=no pairing token", member)
+        return False
     scheme = "wss" if endpoint.get("tls") else "ws"
     context = None
     fingerprint = ""
@@ -220,7 +225,14 @@ def dial_once(member: str) -> bool:
             logger.warning("relay dial bad hello response member=%s", member)
             ws.close(code=4003, reason="bad hello response")
             return False
-        generation = int(hello_ok["relay"]["generation"])
+        # 帧代与状态代分离（方向 A 对称）：插件 hello_ok 下发的代是插件
+        # 自己的帧代（此后引擎↔插件帧都带它）；引擎本地代 generation_advance
+        # 只用于 DB 状态条件（manager node2052 ②：认证与本地代一致才发布）。
+        remote_generation = int((hello_ok.get("relay") or {}).get("generation") or 0)
+        if remote_generation <= 0:
+            logger.warning("relay dial hello_ok missing generation member=%s", member)
+            ws.close(code=4003, reason="bad generation")
+            return False
     except Exception as exc:  # noqa: BLE001
         logger.warning("relay dial handshake failed member=%s err=%s", member, exc)
         try:
@@ -247,8 +259,17 @@ def dial_once(member: str) -> bool:
         ws.close(code=4005, reason="direction is listen")
         return False
 
-    # 认证成功：注册通道（单活动通道——接替旧连接，旧连接主动关闭不留孤儿）
-    link = DialLink(member, ws, generation, peer_ip=endpoint["host"])
+    # 本地状态代 +1（与方向 A relay_ws 握手同口径），mark_online 按本地代写库
+    conn = db.get_connection()
+    try:
+        db_generation = relay.generation_advance(conn, member)
+    finally:
+        conn.close()
+
+    # 认证成功：注册通道（单活动通道——接替旧连接，旧连接主动关闭不留孤儿）。
+    # link.generation=插件帧代（hello_ok 下发），帧路由/心跳用；
+    # DB 状态用本地 db_generation。
+    link = DialLink(member, ws, remote_generation, peer_ip=endpoint["host"])
     with relay_server._LINKS_LOCK:
         previous = relay_server._LINKS.get(member)
         relay_server._LINKS[member] = link
@@ -258,7 +279,7 @@ def dial_once(member: str) -> bool:
     try:
         relay.mark_online(conn, member, code_version=row["code_version"] or "",
                           mcp_fingerprint=row["mcp_fingerprint"] or "",
-                          generation=generation)
+                          generation=db_generation)
         # 切换完成：切换目标 dial 且本连接认证成功 → 清切换态、恢复派发
         _row = relay.read_node(conn, member)
         if _row and _row["switch_state"] == "switching" and \
@@ -266,7 +287,8 @@ def dial_once(member: str) -> bool:
             relay.complete_switch(conn, member)
     finally:
         conn.close()
-    logger.info("relay dial link up member=%s generation=%d", member, generation)
+    logger.info("relay dial link up member=%s frame_generation=%d db_generation=%d",
+                member, remote_generation, db_generation)
     # 帧循环：收插件帧（heartbeat/mcp_report/frame/mcp_snapshot 响应），
     # 每 HEARTBEAT_INTERVAL 发心跳；断链返回 False 由退避调度接管。
     last_sent = time.time()

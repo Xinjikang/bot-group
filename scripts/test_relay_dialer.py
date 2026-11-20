@@ -144,15 +144,27 @@ class DialerBase(unittest.TestCase):
         relay_dialer.stop_dial(REMOTE)
         relay_server.close_all()
 
-    def _set_endpoint(self, port: int, *, tls=False, fingerprint=""):
+    def _set_endpoint(self, port: int, *, tls=True, fingerprint="a" * 64,
+                      pairing_token="test-pairing-token"):
         conn = db.get_connection()
         try:
             relay.set_dial_endpoint(conn, REMOTE,
                                     {"host": "127.0.0.1", "port": port,
-                                     "tls": tls, "fingerprint": fingerprint})
+                                     "tls": tls, "fingerprint": fingerprint,
+                                     "pairing_token": pairing_token})
             relay.set_direction(conn, REMOTE, "dial")
         finally:
             conn.close()
+
+    @staticmethod
+    def _der_fingerprint(plugin) -> str:
+        """FakePlugin 自签证书的 DER sha256 指纹（与引擎校验口径一致）。"""
+        import hashlib
+        from cryptography import x509
+        from cryptography.hazmat.primitives import serialization
+        cert = x509.load_pem_x509_certificate(plugin.cert_pem)
+        return hashlib.sha256(cert.public_bytes(
+            serialization.Encoding.DER)).hexdigest()
 
     def _wait_connected(self, timeout=10.0) -> bool:
         deadline = time.monotonic() + timeout
@@ -165,9 +177,9 @@ class DialerBase(unittest.TestCase):
 
 class DialerConnectionTests(DialerBase):
     def test_dial_connects_registers_and_routes_frames(self):
-        plugin = FakePlugin()
+        plugin = FakePlugin(tls=True)
         self.addCleanup(plugin.stop)
-        self._set_endpoint(plugin.port)
+        self._set_endpoint(plugin.port, fingerprint=self._der_fingerprint(plugin))
         relay_dialer.start_dial(REMOTE)
         self.assertTrue(self._wait_connected(), "拨号应在退避前连上")
         self.assertEqual(relay_dialer._task_state(REMOTE), "connected")
@@ -175,12 +187,23 @@ class DialerConnectionTests(DialerBase):
         link = relay_server.active_link(REMOTE)
         self.assertIsNotNone(link)
         self.assertIsInstance(link, relay_dialer.DialLink)
-        # 握手 hello 内容：direction=dial + 协议版本 + 成员
+        # 握手 hello 内容：direction=dial + 协议版本 + 成员 + 配对凭据
         self.assertEqual(len(plugin.handshakes), 1)
         hello = plugin.handshakes[0]
         self.assertEqual(hello["member"], REMOTE)
         self.assertEqual(hello["direction"], "dial")
         self.assertEqual(hello["protocol_version"], relay_server.RELAY_PROTOCOL_VERSION)
+        self.assertEqual(hello["credential"], "test-pairing-token",
+                         "拨号 hello 必须出示一次性配对凭据（可验证配对身份证明）")
+        # 帧代=插件 hello_ok 代（协议对称）；状态代=引擎本地 advance 后的代
+        self.assertEqual(link.generation, GENERATION, "帧代采用插件下发代")
+        conn = db.get_connection()
+        try:
+            self.assertEqual(relay.read_node(conn, REMOTE)["generation"],
+                             GENERATION + 1,
+                             "状态代=引擎本地 generation_advance 后的代")
+        finally:
+            conn.close()
         # 出站帧路由：open_transport → send → 插件收到 frame envelope
         transport = relay_server.open_transport(REMOTE)
         self.assertIsNotNone(transport)
@@ -192,6 +215,17 @@ class DialerConnectionTests(DialerBase):
         self.assertEqual(plugin.frames[0]["relay"]["kind"], "frame")
         # 插件应答帧回引擎 transport
         self.assertIsNotNone(next(transport))
+
+    def test_dial_without_pairing_token_stays_unauth(self):
+        plugin = FakePlugin(tls=True)
+        self.addCleanup(plugin.stop)
+        # 缺配对凭据：保持未认证，不发起拨号（manager node2052 ①）
+        self._set_endpoint(plugin.port, fingerprint=self._der_fingerprint(plugin),
+                           pairing_token="")
+        relay_dialer.start_dial(REMOTE)
+        time.sleep(1.0)
+        self.assertNotEqual(relay_dialer._task_state(REMOTE), "connected")
+        self.assertEqual(plugin.handshakes, [], "无凭据不得发起拨号")
 
     def test_dial_tls_fingerprint_mismatch_rejected(self):
         import hashlib
@@ -223,9 +257,9 @@ class DialerConnectionTests(DialerBase):
                                          peer_ip="127.0.0.1")
         with relay_server._LINKS_LOCK:
             relay_server._LINKS[REMOTE] = old_link
-        plugin = FakePlugin()
+        plugin = FakePlugin(tls=True)
         self.addCleanup(plugin.stop)
-        self._set_endpoint(plugin.port)
+        self._set_endpoint(plugin.port, fingerprint=self._der_fingerprint(plugin))
         relay_dialer.start_dial(REMOTE)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline and \
@@ -242,13 +276,15 @@ class DialerConnectionTests(DialerBase):
         self._set_endpoint(65531)  # 无监听端口：拨号必失败
         time.sleep(1.0)
         self.assertNotEqual(relay_dialer._task_state(REMOTE), "connected")
-        plugin = FakePlugin()
+        plugin = FakePlugin(tls=True)
         self.addCleanup(plugin.stop)
         conn = db.get_connection()
         try:
             relay.set_dial_endpoint(conn, REMOTE,
                                     {"host": "127.0.0.1", "port": plugin.port,
-                                     "tls": False, "fingerprint": ""})
+                                     "tls": True,
+                                     "fingerprint": self._der_fingerprint(plugin),
+                                     "pairing_token": "test-pairing-token"})
         finally:
             conn.close()
         self.assertTrue(self._wait_connected(15), "退避后端点可达应连上")
@@ -300,13 +336,15 @@ class SwitchStateMachineTests(DialerBase):
             conn.close()
 
     def test_switch_to_dial_full_chain(self):
-        plugin = FakePlugin()
+        plugin = FakePlugin(tls=True)
         self.addCleanup(plugin.stop)
         conn = db.get_connection()
         try:
             relay.set_dial_endpoint(conn, REMOTE,
                                     {"host": "127.0.0.1", "port": plugin.port,
-                                     "tls": False, "fingerprint": ""})
+                                     "tls": True,
+                                     "fingerprint": self._der_fingerprint(plugin),
+                                     "pairing_token": "test-pairing-token"})
         finally:
             conn.close()
         # 用户点切换：意图+目标方向持久化 → 暂停派发 → 断旧 → 建新
@@ -328,13 +366,15 @@ class SwitchStateMachineTests(DialerBase):
     def test_switch_back_to_listen_completes_on_plugin_reconnect(self):
         # B→A：dial 连接中 → 用户切回 listen → dial 停+断 → 插件重连
         # （relay_ws 认证成功）→ 清切换态
-        plugin = FakePlugin()
+        plugin = FakePlugin(tls=True)
         self.addCleanup(plugin.stop)
         conn = db.get_connection()
         try:
             relay.set_dial_endpoint(conn, REMOTE,
                                     {"host": "127.0.0.1", "port": plugin.port,
-                                     "tls": False, "fingerprint": ""})
+                                     "tls": True,
+                                     "fingerprint": self._der_fingerprint(plugin),
+                                     "pairing_token": "test-pairing-token"})
             relay.set_direction(conn, REMOTE, "dial")
         finally:
             conn.close()
@@ -377,13 +417,15 @@ class SwitchStateMachineTests(DialerBase):
 
     def test_switch_persists_across_restart(self):
         # 引擎重启：切换态读回——target=dial 未达成 → 续建拨号
-        plugin = FakePlugin()
+        plugin = FakePlugin(tls=True)
         self.addCleanup(plugin.stop)
         conn = db.get_connection()
         try:
             relay.set_dial_endpoint(conn, REMOTE,
                                     {"host": "127.0.0.1", "port": plugin.port,
-                                     "tls": False, "fingerprint": ""})
+                                     "tls": True,
+                                     "fingerprint": self._der_fingerprint(plugin),
+                                     "pairing_token": "test-pairing-token"})
             relay.begin_switch(conn, REMOTE, "dial")
         finally:
             conn.close()
@@ -432,10 +474,24 @@ class SwitchApiTests(DialerBase):
         response = self.client.post(f"/relay/nodes/{REMOTE}/switch",
                                     json={"direction": "sideways"})
         self.assertEqual(response.status_code, 400)
-        # 保存 dial-endpoint（校验）
+        # 认证收紧：明文 WS / 空指纹 / 非法指纹格式一律 400（manager node2052 ①）
         response = self.client.post(f"/relay/nodes/{REMOTE}/dial-endpoint",
                                     json={"host": "127.0.0.1", "port": 65531,
-                                          "tls": False})
+                                          "tls": False, "fingerprint": "a" * 64})
+        self.assertEqual(response.status_code, 400, "不接受明文 WS")
+        response = self.client.post(f"/relay/nodes/{REMOTE}/dial-endpoint",
+                                    json={"host": "127.0.0.1", "port": 65531,
+                                          "tls": True, "fingerprint": ""})
+        self.assertEqual(response.status_code, 400, "空指纹不接受")
+        response = self.client.post(f"/relay/nodes/{REMOTE}/dial-endpoint",
+                                    json={"host": "127.0.0.1", "port": 65531,
+                                          "tls": True, "fingerprint": "not-hex"})
+        self.assertEqual(response.status_code, 400, "非法指纹格式不接受")
+        # 合法端点（TLS+指纹）→ 200
+        response = self.client.post(f"/relay/nodes/{REMOTE}/dial-endpoint",
+                                    json={"host": "127.0.0.1", "port": 65531,
+                                          "tls": True, "fingerprint": "a" * 64,
+                                          "pairing_token": "tok"})
         self.assertEqual(response.status_code, 200)
         # 切 dial：断旧+起拨号（端点可达性无影响，切换态持久化）
         response = self.client.post(f"/relay/nodes/{REMOTE}/switch",
@@ -470,6 +526,122 @@ class SwitchApiTests(DialerBase):
                      f"/relay/nodes/{REMOTE}/dial-endpoint"):
             response = self.client.post(path, json={}, headers=bot)
             self.assertEqual(response.status_code, 403)
+
+
+class SwitchFullChainTests(DialerBase):
+    """manager node2052 ③：从 /switch 端点走 A→B→A 全链——真实 relay_ws
+    握手、真实关闭、DB/活动连接/派发状态一致、提交次数统计。"""
+
+    RELEASE = "v0.2.16"
+
+    def setUp(self):
+        super().setUp()
+        from unittest.mock import patch
+        self._version_patch = patch.object(relay_server, "_engine_release_version",
+                                           return_value=self.RELEASE)
+        self._version_patch.start()
+        self.addCleanup(self._version_patch.stop)
+        from fastapi import FastAPI, WebSocket
+        from fastapi.testclient import TestClient
+        from engine import api
+        app = FastAPI()
+        app.include_router(api.router_api)
+
+        @app.websocket("/relay/ws")
+        async def endpoint(websocket: WebSocket):
+            await relay_server.relay_ws(websocket)
+        self.client = TestClient(app, client=("127.0.0.1", 4321))
+        self.addCleanup(self.client.close)
+
+    def _ws_handshake(self) -> dict:
+        """方向 A 插件握手（真实 relay_ws 全逻辑）。"""
+        with self.client.websocket_connect("/relay/ws") as ws:
+            ws.send_json({"relay": {"kind": "hello"}, "member": REMOTE,
+                          "credential": CREDENTIAL, "code_version": self.RELEASE,
+                          "mcp_fingerprint": "", "protocol_version": 1})
+            reply = ws.receive_json()
+        return reply
+
+    def test_full_chain_switch_via_api(self):
+        from engine import queue as queue_module
+        # 造一条 queued job（切换前点名）统计执行次数
+        conn = db.get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO wake_jobs(project,profile,kind,trigger,status,enqueued_at) "
+                "VALUES('alpha',?,'work','fullchain', 'queued', ?)",
+                (REMOTE, db.now_iso()))
+            conn.commit()
+        finally:
+            conn.close()
+        # A 连接：真实握手（TestClient 走 relay_ws 全认证链路；with 退出即
+        # 连接关闭，随后手动注册等价 NodeLink 模拟「连接存续中」）
+        reply = self._ws_handshake()
+        self.assertEqual(reply["relay"]["kind"], "hello_ok")
+        link_a = relay_server.NodeLink(REMOTE, _SyncFakeWs(), GENERATION,
+                                       peer_ip="127.0.0.1")
+        with relay_server._LINKS_LOCK:
+            relay_server._LINKS[REMOTE] = link_a
+        # 切换中闸门：hold（不投递）
+        candidate = {"profile": REMOTE, "kind": "work", "thread_id": None,
+                     "project": "alpha"}
+        with closing(db.get_connection()) as c:
+            relay.begin_switch(c, REMOTE, "dial")
+            self.assertEqual(queue_module._relay_node_gate(c, candidate)[0], "hold")
+        # 用户点切换（真实 /switch 端点）：断旧 + 起拨号
+        plugin = FakePlugin(tls=True)
+        self.addCleanup(plugin.stop)
+        with closing(db.get_connection()) as c:
+            relay.set_dial_endpoint(c, REMOTE,
+                                    {"host": "127.0.0.1", "port": plugin.port,
+                                     "tls": True,
+                                     "fingerprint": self._der_fingerprint(plugin),
+                                     "pairing_token": "test-pairing-token"})
+        response = self.client.post(f"/relay/nodes/{REMOTE}/switch",
+                                    json={"direction": "dial"})
+        self.assertEqual(response.status_code, 200)
+        # 旧连接已断（单活动通道）
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not link_a.closed:
+            time.sleep(0.05)
+        self.assertTrue(link_a.closed, "先断旧：A 连接必须主动关闭")
+        # 拨号认证成功 → 切换完成
+        self.assertTrue(self._wait_connected(10), "拨号应接通")
+        with closing(db.get_connection()) as c:
+            row = relay.read_node(c, REMOTE)
+            self.assertEqual(row["switch_state"], "", "认证成功清切换态")
+            self.assertEqual(row["direction"], "dial")
+            self.assertEqual(row["state"], "online")
+            self.assertEqual(queue_module._relay_node_gate(c, candidate)[0], "go",
+                             "恢复派发")
+        # 切回 listen：断 dial → 插件（A）重连握手 → 清切换态
+        response = self.client.post(f"/relay/nodes/{REMOTE}/switch",
+                                    json={"direction": "listen"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(relay_server.active_link(REMOTE),
+                          "切回后拨号连接必须关闭")
+        reply = self._ws_handshake()
+        self.assertEqual(reply["relay"]["kind"], "hello_ok")
+        with closing(db.get_connection()) as c:
+            row = relay.read_node(c, REMOTE)
+            self.assertEqual(row["direction"], "listen")
+            self.assertEqual(row["switch_state"], "")
+            # 切回完成：切换态已清；节点随后离线（TestClient 连接关闭）→
+            # 闸门按普通离线 hold（保留 queued 不标 expired，恢复派发语义）
+            self.assertEqual(queue_module._relay_node_gate(c, candidate)[0], "hold")
+            offline_count = c.execute(
+                "SELECT COUNT(*) FROM relay_offline_mentions WHERE member=?",
+                (REMOTE,)).fetchone()[0]
+            self.assertEqual(offline_count, 0, "kind=work 无发言位不记 offline_mention")
+        # 提交次数：同一条点名全程只有一条 job、零次实际执行记录（全程未投递）
+        with closing(db.get_connection()) as c:
+            jobs = c.execute("SELECT COUNT(*) FROM wake_jobs WHERE profile=? "
+                             "AND trigger='fullchain'", (REMOTE,)).fetchone()[0]
+            self.assertEqual(jobs, 1, "同一条点名最多执行一次（无重复排队）")
+            execs = c.execute(
+                "SELECT COUNT(*) FROM hermes_executions WHERE profile=?",
+                (REMOTE,)).fetchone()[0]
+            self.assertEqual(execs, 0, "切换期间未投递、恢复后按正常链路单次投递")
 
 
 class SwitchDispatchTests(DialerBase):
