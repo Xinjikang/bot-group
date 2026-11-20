@@ -32,16 +32,14 @@ ECS 上 Hermes gateway 常驻（systemd 托管），bot-group 插件随 gateway 
 - ECS 安装位置：运行 gateway 的 Hermes 用户插件目录 `$HERMES_HOME/plugins/bot-group-relay/`（默认 home 即 `~/.hermes/plugins/bot-group-relay/`），由 Hermes gateway 加载。
 - 引擎侧接收连接与派发的代码在 bot-group `engine/`。
 
-### 2.2 引擎远程入口（2026-11-20 主人定调：来源 IP 白名单，不绑定 Tailscale）
+### 2.2 引擎远程入口（2026-11-20 主人 12499 最终定调：设置里填的 IP = 引擎监听地址）
 
-- **访问控制=成员级来源绑定（2026-11-20 主人 12417/bot-36 12419 修正，替代原全局 IP 白名单）**：节点记录按成员保存允许的来源 IP 集合（一成员可多 IP、同一 IP 可多成员共享）；只放行本机回环 + 已绑定到某成员的来源 IP；relay 握手在凭据校验通过后额外核对 socket peer IP 属于该成员的绑定集合（防交换来源冒用另一节点的地址）。页面直接展示成员↔IP 对应关系。成员凭据继续负责身份核验——来源绑定管「从哪来」，凭据管「你是谁」。
-- 连接方式不限：Tailscale 只是可选方式之一；主人自搭服务容器、局域网、VPN 均可。引擎按部署形态监听可达地址，白名单与监听方式解耦。
-- 验收口径（bot-36 2026-11-20 修正版）：两个节点各配一个 IP，重开设置仍各自对应；交换来源无法冒用另一节点的地址；未绑定来源的机器 HTTP 与 WebSocket 均被拒；移除即时生效。
+- **核心语义（主人 12499，此前团队两轮理解偏）**：设置页里填的 IP 是**引擎监听地址**——引擎 bind 到该 IP/网卡，ECS、主人自搭服务容器等远端经这个地址连入。不是「允许哪些来源 IP 访问」。
+- 监听地址配置=设置页能力：填 IP → 引擎监听该地址（引擎侧 bind 该接口；现有 --host 参数为底，界面化保存并生效）。默认仍为 127.0.0.1 回环，本机访问恒可用。
+- 来源过滤（来源 IP 白名单/成员级绑定）此前系团队误解所加，不属于主人要求；是否保留由主人另行明确，未明确前不进实现基线。
 - 现状：引擎监听 127.0.0.1:8180（本机实测坐实），远程入口未就绪时联调挂起，报告口径「节点管理页可用，ECS 入口尚未就绪」。
-- 主人已定「全程界面操作」：改 .env、配防火墙一律不作为交给用户的联调步骤；监听与白名单变更由设置菜单完成（#171 引擎+界面任务）。
-- 实现约束（沿用已坐实结论）：双栈监听时第二 Server 禁用 lifespan（engine/main.py:136 app 挂 `lifespan → _engine_lifespan`，双起=queue worker/scanner/topic-dispatch/hud 跑两份）；监听失败重试 + 地址变更可重绑；第二监听服务完整 API（MCP HTTP 同走远程入口）。
-- 安全约束：默认拒绝（未绑定来源全拒）；监听绑 0.0.0.0 时来源绑定是唯一防线，必须先于监听生效。
-- 来源绑定实现约束（2026-11-20 bot-43）：①ASGI 级中间件（判断 `scope["type"] in ("http","websocket")`）——FastAPI `@app.middleware("http")` 不覆盖 WebSocket，`/relay/ws` 必须同规则拦截；②来源地址归一化后再匹配（`::1`、`::ffff:x.x.x.x`、IPv6 压缩写法与 IPv4 统一比较，防双栈监听漏判）；③只读 TCP peer IP（当前部署引擎直接跑宿主机、ECS 走 relay，看到的就是真实来源）；④远程监听 `uvicorn.Config` 显式 `proxy_headers=False`（main.py:226 现沿用默认且本机 Uvicorn 默认开启 proxy_headers，FORWARDED_ALLOW_IPS 不得为 `*`），任何路径不读 XFF——验收须走真实 uvicorn 入口验证伪造用例（未绑定来源带 `X-Forwarded-For: 已绑定 IP` 仍拒，TestClient/直接传 scope 覆盖不到解析层）。
+- 主人已定「全程界面操作」：改 .env、配防火墙一律不作为交给用户的联调步骤；监听变更由设置菜单完成。
+- 实现约束（沿用已坐实结论）：多监听时第二 Server 禁用 lifespan（engine/main.py:136 app 挂 `lifespan → _engine_lifespan`，双起=queue worker/scanner/topic-dispatch/hud 跑两份）；监听失败重试 + 地址变更可重绑；远程监听服务完整 API（MCP HTTP 同走远程入口）。
 
 ## 3. 全程 relay 架构
 
