@@ -145,6 +145,30 @@ def source_bindings_set(body: _SourceBindingBody, identity=Depends(_resolve_iden
     return result
 
 
+class _SourceBindingAddBody(BaseModel):
+    member: str
+    ip: str
+
+
+@router_api.post('/admin/source-ips/add')
+def source_binding_add(body: _SourceBindingAddBody, identity=Depends(_resolve_identity)):
+    """按成员幂等添加单条来源 IP（#320 manager node2030 并发覆盖阻断）。
+
+    只插入本次 IP，不清除该成员已有绑定——并发页面各加各的不互相覆盖；
+    重复添加同地址仅一条。校验口径与整体替换接口一致。
+    """
+    _admin_only(identity, '来源 IP 绑定仅限管理员')
+    from . import ip_allowlist
+    conn = db.get_connection()
+    try:
+        result = ip_allowlist.add_binding(conn, body.member, body.ip)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    finally:
+        conn.close()
+    return result
+
+
 @router_api.delete('/admin/source-ips/{member}/{ip}')
 def source_binding_remove(member: str, ip: str, identity=Depends(_resolve_identity)):
     _admin_only(identity, '来源 IP 绑定仅限管理员')

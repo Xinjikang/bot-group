@@ -117,6 +117,28 @@ def set_bindings(conn: sqlite3.Connection, member: str, ips: list[str]) -> dict:
     return {"member": member, "ips": normalized}
 
 
+def add_binding(conn: sqlite3.Connection, member: str, ip: str) -> dict:
+    """按 (member, ip) 原子幂等添加单条绑定（#320 manager node2030）。
+
+    与 set_bindings 同口径校验（归一化/回环拒绝/格式），但只插入、
+    不清除该成员已有绑定——并发页面各自添加不同地址时互不覆盖；
+    重复添加同地址仅保留一条（INSERT OR IGNORE，复合主键去重）。
+    """
+    if not member or not member.strip():
+        raise ValueError("member 必填")
+    member = member.strip()
+    norm = _normalize(ip)
+    if norm is None:
+        raise ValueError(f"无效的 IP 地址：{ip}")
+    if norm in LOOPBACK:
+        raise ValueError("本机回环地址始终放行，无需登记")
+    conn.execute(
+        f"INSERT OR IGNORE INTO {_TABLE}(member, ip, created_at) VALUES(?,?,?)",
+        (member, norm, db.now_iso()))
+    conn.commit()
+    return {"member": member, "ip": norm}
+
+
 def remove_binding(conn: sqlite3.Connection, member: str, ip: str) -> bool:
     """移除单条绑定；无缓存，删除后立即生效。"""
     norm = _normalize(ip)

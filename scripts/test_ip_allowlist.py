@@ -233,6 +233,56 @@ class MemberSourceBindingTests(unittest.TestCase):
         self.assertEqual(self.remote(IP_C).get("/commands",
                                                headers=self.bot_headers("architect")).status_code, 403)
 
+    # ---- 幂等添加端点（#320 manager node2030 并发覆盖阻断） ----
+
+    def test_add_binding_idempotent_endpoint(self):
+        # 两个独立页面快照分别添加两个地址：均保留（不清已有、互不覆盖）
+        self.loop.post("/admin/source-ips/add", json={"member": "architect", "ip": IP_A})
+        self.loop.post("/admin/source-ips/add", json={"member": "architect", "ip": IP_B})
+        listing = self.loop.get("/admin/source-ips").json()
+        by_member = {b["member"]: b["ips"] for b in listing["bindings"]}
+        self.assertEqual(sorted(by_member["architect"]), sorted([IP_A, IP_B]),
+                         "并发页面各加各的地址必须都保留")
+        # 重复添加同地址：只一条
+        self.loop.post("/admin/source-ips/add", json={"member": "architect", "ip": IP_A})
+        listing = self.loop.get("/admin/source-ips").json()
+        by_member = {b["member"]: b["ips"] for b in listing["bindings"]}
+        self.assertEqual(sorted(by_member["architect"]), sorted([IP_A, IP_B]),
+                         "重复添加同地址只能有一条")
+
+    def test_add_binding_does_not_restore_removed(self):
+        # 一方移除后另一方加不同地址：已移除项不得被带回
+        self.bind("architect", [IP_A])
+        self.loop.delete(f"/admin/source-ips/architect/{IP_A}")
+        self.loop.post("/admin/source-ips/add", json={"member": "architect", "ip": IP_B})
+        listing = self.loop.get("/admin/source-ips").json()
+        by_member = {b["member"]: b["ips"] for b in listing["bindings"]}
+        self.assertEqual(by_member.get("architect", []), [IP_B],
+                         "旧快照添加其他地址不得带回已移除项")
+
+    def test_add_binding_preserves_existing(self):
+        # 登记绑定改用幂等语义：保留已有 IP，只追加新 IP
+        self.bind("architect", [IP_A])
+        self.loop.post("/admin/source-ips/add", json={"member": "architect", "ip": IP_B})
+        listing = self.loop.get("/admin/source-ips").json()
+        by_member = {b["member"]: b["ips"] for b in listing["bindings"]}
+        self.assertEqual(sorted(by_member["architect"]), sorted([IP_A, IP_B]),
+                         "幂等添加必须保留该成员已有绑定")
+
+    def test_add_binding_validation_and_permissions(self):
+        response = self.loop.post("/admin/source-ips/add", json={"member": "architect", "ip": "bad"})
+        self.assertEqual(response.status_code, 400)
+        response = self.loop.post("/admin/source-ips/add", json={"member": "", "ip": IP_A})
+        self.assertEqual(response.status_code, 400)
+        response = self.loop.post("/admin/source-ips/add", json={"member": "architect", "ip": "127.0.0.1"})
+        self.assertEqual(response.status_code, 400, "回环恒放行，无需登记")
+        # bot 身份 403
+        self.bind("architect", [IP_A])
+        response = self.loop.post("/admin/source-ips/add",
+                                  json={"member": "architect", "ip": IP_B},
+                                  headers=self.bot_headers("default"))
+        self.assertEqual(response.status_code, 403, "幂等添加端点同样仅管理员")
+
 
 if __name__ == "__main__":
     unittest.main()
