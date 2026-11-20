@@ -45,8 +45,8 @@ def load_plugin():
     package = importlib.util.module_from_spec(spec)
     sys.modules['bot_group_relay'] = package
     spec.loader.exec_module(package)
-    from bot_group_relay import config, listen, pairing
-    return config, listen, pairing
+    from bot_group_relay import config, listen, mcpproxy, pairing
+    return config, listen, mcpproxy, pairing
 
 
 def main():
@@ -61,7 +61,7 @@ def main():
     lan = local_ipv4()
     if not lan:
         raise RuntimeError('本机没有可用于测试的 IPv4 单播地址')
-    plugin_config, plugin_listen, plugin_pairing = load_plugin()
+    plugin_config, plugin_listen, plugin_mcpproxy, plugin_pairing = load_plugin()
 
     with tempfile.TemporaryDirectory(prefix='direction-live-') as tmp:
         tmp = Path(tmp)
@@ -248,6 +248,27 @@ def main():
                 page.screenshot(path=str(args.evidence / 'direction-a-again-1280-dark.png'),
                                 mask=[page.locator('#relay-issued-credential')])
 
+                # With the plugin listener still open but its MCP proxy stopped,
+                # the page must show the failed scoped read, not a completed MCP stage.
+                plugin_mcpproxy.stop_proxy()
+                page.locator('#relay-direction-dial').click()
+                page.wait_for_function('document.querySelector("#relay-direction-status").textContent.includes("已连通")')
+                page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-failed"')
+                assert 'MCP 只读验证失败' in page.locator('#relay-direction-status').inner_text()
+                page.screenshot(path=str(args.evidence / 'direction-mcp-failed-1280-dark.png'),
+                                mask=[page.locator('#relay-issued-credential')])
+                plugin_mcpproxy.start_proxy(plugin_server['_server'])
+                conn = db.get_connection()
+                try:
+                    conn.execute("UPDATE relay_nodes SET mcp_verify_state='',mcp_verify_error='' "
+                                 "WHERE member=?", (MEMBER,))
+                    conn.commit()
+                finally:
+                    conn.close()
+                page.locator('#relay-refresh').click()
+                page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-done"', timeout=45000)
+                assert 'MCP 只读验证已通过' in page.locator('#relay-direction-status').inner_text()
+
                 page.set_viewport_size({'width': 390, 'height': 844})
                 for theme in ('dark', 'light'):
                     page.evaluate('(theme) => applyTheme(theme)', theme)
@@ -270,7 +291,7 @@ def main():
                     pass
             if plugin_server is not None:
                 try:
-                    plugin_listen.mcpproxy.stop_proxy()
+                    plugin_mcpproxy.stop_proxy()
                 except Exception:
                     pass
                 try:
