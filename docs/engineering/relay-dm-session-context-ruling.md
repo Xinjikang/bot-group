@@ -34,3 +34,43 @@ CLI 入口的授权不受上述字段影响，按本地 OS 主体核验（Window
 
 1. MCP loopback 隧道路径白名单 `_HTTP_TUNNEL_PREFIXES = ("/health", "/projects/", "/tasks/", "/group/", "/auth/status")`（engine/relay_server.py），不覆盖 `GET /members`（engine/api.py 的 group_list_members 落点）——经隧道请求 /members 必 403。
 2. `GET /members` 走 access.py 的 `require_project(profile, project)`——转发只注入 X-Group-Profile 而无成员凭据时必 401。修复方向为按通道配对成员签发有效成员凭据并补白名单。
+
+## 五、取得与传入链路（manager 追问补充，2026-11-20）
+
+**问 1：宿主从哪里取得私聊渠道和发送者标识？**
+
+源头 = 平台 adapter 入站事件。以飞书（本仓宿主平台）为例（plugins/platforms/feishu/adapter.py）：
+
+- `_process_inbound_message`（2561 行起）接收 WebSocket 事件，从事件消息取 sender_id 与 chat_type；发送者主标识 `sender_primary` 取 `sender_id.open_id / user_id / union_id`（2586-2589）；`_resolve_sender_profile` 解析发送者 profile（user_id / user_name / user_id_alt）（2598）；
+- `build_source(...)`（2599-2609）构造 SessionSource：`chat_type` 经 `_resolve_source_chat_type` 归一化（p2p→"dm"，其余→"group"，3192 行），`user_id` = 发送者 profile 的主 ID；
+- 2620-2628：包成 MessageEvent 进入平台无关的入站链。
+
+平台无关路径：任何 adapter 均产出 `SessionSource(platform, chat_id, chat_type, user_id, ...)` + `MessageEvent`，会话来源字段的取值与飞书同构。
+
+**问 2：怎样传入 gateway.session_context？**
+
+- `gateway/session.py build_session_context`（1460-1479）：`actor = event if event.user_id 非空 else source`——**发送者（actor）= 本回合事件身份，会话路由（source）= 会话级身份**；SessionContext.actor_user_id / actor_user_name / turn_event 由此确定（SessionContext 定义 177-203，183-188 注释即此语义）。
+- `gateway/run.py _set_session_env`（3910-3940）：把 SessionContext 逐字段绑定进 ContextVar——`platform→HERMES_SESSION_PLATFORM`、`chat_type→HERMES_SESSION_CHAT_TYPE`、`user_id→HERMES_SESSION_USER_ID`、`actor_id/actor_name→HERMES_SESSION_ACTOR_ID/_NAME`（actor 为 None 时 set_session_vars 内部回退路由 user，gateway/session_context.py:182）。
+- 每条消息入站先 `reset_session_vars()`（run_inbound.py:164-168，防跨会话泄漏），绑定范围 = 当前 turn 的任务上下文；插件工具 handler 在 turn 内被 dispatcher 调用，进程内读 ContextVar 即当前 turn 的权威值。
+- 准入链：无 user_id / 未授权的入站在绑定前即被丢弃（run_inbound.py:228-233）——到达插件工具 handler 的 turn 必然已过宿主 `_is_user_authorized_for_source` 闸门；但插件自己的管理员白名单（BOT_GROUP_RELAY_ADMIN）是独立授权层，仍须 handler 内逐项核验。
+
+**问 3：字段缺失时怎样拒绝请求？**
+
+缺失三态（gateway/session_context.py）：
+
+1. 变量从未绑定（`_UNSET`）：`get_session_env` 回退 os.environ、再回退 default，插件读回空串（220-235）；
+2. 明确清空（`""`）：非消息 turn（如插件命令 handler 无 turn 上下文）或 `clear_session_vars` 之后（192-203）；
+3. ACTOR 特殊缺失：`_bound_session_value`（224-227）在轮次事件被折叠（turn_event.user_id 为空）时强制返回空串——「本轮无单一发送者」。
+
+拒绝语义：插件 `_check_authorized`（本仓 plugins/hermes/bot-group-relay/tools.py:46-56）已实现 fail-closed 骨架（白名单空→拒；caller 空→拒；不在名单→拒）。补全要求 = 把渠道（PLATFORM 为空或非白名单→拒）与类型（CHAT_TYPE ≠ "dm"→拒）加入同一条 fail-closed 链。**判定一律「空或非白名单 = 拒绝」，绝不拿 USER_ID 当发送者兜底**；session_id/task_id 只进审计日志。
+
+## 六、代码位置索引（供后端接入与审查复核）
+
+| 事项 | 位置 |
+| --- | --- |
+| 会话来源变量定义与读取 | gateway/session_context.py:34-50（定义）、159-189（set_session_vars）、220-235（get_session_env / ACTOR 折叠） |
+| SessionContext 与 actor 选择 | gateway/session.py:177-203（定义）、1460-1479（build_session_context） |
+| 逐字段绑定传入点 | gateway/run.py:3910-3940（_set_session_env） |
+| 入站重置与未授权丢弃 | gateway/run_inbound.py:164-168、228-233 |
+| 飞书入站源构造 | plugins/platforms/feishu/adapter.py:2561-2617、3192（p2p→dm） |
+| 插件侧现有核验（fail-closed 骨架） | 本仓 plugins/hermes/bot-group-relay/tools.py:29-56 |
