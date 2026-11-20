@@ -195,7 +195,7 @@ class RelayHandshakeTests(RelayBase):
     def test_mcp_fingerprint_mismatch_rejected(self):
         conn = self.conn()
         try:
-            relay.register_node(conn, REMOTE, CREDENTIAL, mcp_config={
+            relay.register_node(conn, REMOTE, CREDENTIAL, rotate=True, mcp_config={
                 "command": ["python"], "env": {}, "_package_sha": "expected-pkg-sha"})
         finally:
             conn.close()
@@ -213,7 +213,7 @@ class RelayHandshakeTests(RelayBase):
     def test_mcp_fingerprint_match_accepted(self):
         conn = self.conn()
         try:
-            relay.register_node(conn, REMOTE, CREDENTIAL, mcp_config={
+            relay.register_node(conn, REMOTE, CREDENTIAL, rotate=True, mcp_config={
                 "command": ["python"], "env": {}, "_package_sha": "expected-pkg-sha"})
         finally:
             conn.close()
@@ -536,7 +536,7 @@ class RelayFrameTests(RelayBase):
         from engine.hermes_gateway_client import GatewayRefusal
         conn = self.conn()
         try:
-            relay.register_node(conn, REMOTE, CREDENTIAL, mcp_config={
+            relay.register_node(conn, REMOTE, CREDENTIAL, rotate=True, mcp_config={
                 "command": ["python"], "env": {}, "_package_sha": "pkg-v2"})
             relay.mark_online(conn, REMOTE, code_version=RELEASE_VERSION,
                               mcp_fingerprint="pkg-v1", generation=1)
@@ -566,7 +566,7 @@ class RelayFrameTests(RelayBase):
         from engine.hermes_gateway_client import GatewayRefusal
         conn = self.conn()
         try:
-            relay.register_node(conn, REMOTE, CREDENTIAL, mcp_config={
+            relay.register_node(conn, REMOTE, CREDENTIAL, rotate=True, mcp_config={
                 "command": ["python"], "env": {}, "_package_sha": "pkg-v2"})
             relay.mark_online(conn, REMOTE, code_version=RELEASE_VERSION,
                               mcp_fingerprint="pkg-v2", generation=1)
@@ -590,7 +590,7 @@ class RelayFrameTests(RelayBase):
         # 写库按代条件不匹配，不得覆盖新代摘要。
         conn = self.conn()
         try:
-            relay.register_node(conn, REMOTE, CREDENTIAL, mcp_config={
+            relay.register_node(conn, REMOTE, CREDENTIAL, rotate=True, mcp_config={
                 "command": ["python"], "env": {}, "_package_sha": "pkg-v2"})
             # 新代连接握手：generation_advance 推进到 2 后 mark_online 写入新摘要
             relay.generation_advance(conn, REMOTE)
@@ -687,7 +687,7 @@ class RelayGateTests(RelayBase):
         from engine import hermes_gateway_ledger as ledger
         conn = self.conn()
         try:
-            relay.register_node(conn, REMOTE, CREDENTIAL,
+            relay.register_node(conn, REMOTE, CREDENTIAL, rotate=True,
                                 mcp_config={"_concurrency": 1})
             relay.mark_online(conn, REMOTE, code_version="v", mcp_fingerprint="",
                               generation=1)
@@ -910,7 +910,7 @@ class RelayMcpTests(RelayBase):
     def test_render_mcp_config_substitution(self):
         conn = self.conn()
         try:
-            relay.register_node(conn, REMOTE, CREDENTIAL, mcp_config={
+            relay.register_node(conn, REMOTE, CREDENTIAL, rotate=True, mcp_config={
                 "command": ["python", "{engine_url}"],
                 "args": ["--url", "{engine_url}"],
                 "env": {"GROUP_ENGINE_URL": "{engine_url}", "KEEP": "1"},
@@ -933,7 +933,7 @@ class RelayMcpTests(RelayBase):
         from engine.hermes_gateway_client import GatewayRefusal
         conn = self.conn()
         try:
-            relay.register_node(conn, REMOTE, CREDENTIAL, mcp_config={
+            relay.register_node(conn, REMOTE, CREDENTIAL, rotate=True, mcp_config={
                 "command": ["python"], "env": {}, "_package_sha": "pkg-v2"})
             relay.mark_online(conn, REMOTE, code_version="v", mcp_fingerprint="pkg-v1",
                               generation=1)
@@ -957,7 +957,7 @@ class RelayMcpTests(RelayBase):
         from engine.hermes_gateway_client import GatewayRefusal
         conn = self.conn()
         try:
-            relay.register_node(conn, REMOTE, CREDENTIAL, mcp_config={"env": {}})
+            relay.register_node(conn, REMOTE, CREDENTIAL, rotate=True, mcp_config={"env": {}})
             relay.mark_online(conn, REMOTE, code_version="v", mcp_fingerprint="",
                               generation=1)
             with self.assertRaises(GatewayRefusal) as ctx:
@@ -971,7 +971,7 @@ class RelayMcpTests(RelayBase):
         # GROUP_ENGINE_URL 以远端渲染值为准，本机会话 env 不得覆盖（manager node1977 ③）
         conn = self.conn()
         try:
-            relay.register_node(conn, REMOTE, CREDENTIAL, mcp_config={
+            relay.register_node(conn, REMOTE, CREDENTIAL, rotate=True, mcp_config={
                 "command": ["python"], "env": {"GROUP_ENGINE_URL": "{engine_url}"}})
             relay.mark_online(conn, REMOTE, code_version="v", mcp_fingerprint="",
                               generation=1)

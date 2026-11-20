@@ -80,23 +80,49 @@ def mcp_fingerprint(mcp_config: dict) -> str:
 
 
 def register_node(conn, member: str, credential: str, *, display_name: str = "",
-                  mcp_config: dict | None = None, now=None) -> dict:
+                  mcp_config: dict | None = None, rotate: bool = False, now=None) -> dict:
     """注册/更新节点：凭据只存 hash。mcp_config 的 _package_sha 字段是
-    随包 MCP 入口内容摘要（管理员记录的期望指纹），握手时与插件上报比对。"""
+    随包 MCP 入口内容摘要（管理员记录的期望指纹），握手时与插件上报比对。
+
+    req#170 返修（manager node2011 契约）：
+    - 节点不存在：创建，凭据由引擎生成（credential 为空时）并一次性下发；
+    - 已存在 + rotate=false（首次登记防重复/刷新）：完全不动——不轮换凭据
+      （credential_hash 不变）、不覆盖 mcp_config/expected_mcp_sha、
+      响应不含新凭据；
+    - 已存在 + rotate=true（重签）：仅轮换凭据（引擎生成下发）、
+      credential_revoked=0；mcp_config 缺省 None 时保留原配置与原期望摘要
+      （防 UI 缺省 {} 清空），显式传入则按传入更新。
+    """
     now = _now() if now is None else now
-    config_json = json.dumps(mcp_config or {}, sort_keys=True, ensure_ascii=False)
-    expected = str((mcp_config or {}).get("_package_sha") or "")
+    existing = read_node(conn, member)
+    if existing is not None and not rotate:
+        return {"member": member, "credential": None, "created": False,
+                "node": existing}
+    if existing is not None:
+        # 重签：仅轮换凭据；缺省 mcp_config 保留原配置与原期望摘要
+        cred = credential or new_credential()
+        config = mcp_config if mcp_config is not None else json.loads(existing["mcp_config"] or "{}")
+        config_json = json.dumps(config, sort_keys=True, ensure_ascii=False)
+        expected = str(config.get("_package_sha") or "")
+        conn.execute(
+            "UPDATE relay_nodes SET credential_hash=?, credential_revoked=0, "
+            "mcp_config=?, expected_mcp_sha=?, updated_at=? WHERE member=?",
+            (hash_credential(cred), config_json, expected, now, member))
+        conn.commit()
+        return {"member": member, "credential": cred, "created": False,
+                "node": read_node(conn, member)}
+    cred = credential or new_credential()
+    config = mcp_config or {}
+    config_json = json.dumps(config, sort_keys=True, ensure_ascii=False)
+    expected = str(config.get("_package_sha") or "")
     conn.execute(
         "INSERT INTO relay_nodes(member,display_name,credential_hash,generation,state,"
         "mcp_config,expected_mcp_sha,created_at,updated_at) "
-        "VALUES(?,?,?,1,'offline',?,?,?,?) "
-        "ON CONFLICT(member) DO UPDATE SET display_name=excluded.display_name,"
-        "credential_hash=excluded.credential_hash,credential_revoked=0,"
-        "mcp_config=excluded.mcp_config,expected_mcp_sha=excluded.expected_mcp_sha,"
-        "updated_at=excluded.updated_at",
-        (member, display_name, hash_credential(credential), config_json, expected, now, now))
+        "VALUES(?,?,?,1,'offline',?,?,?,?)",
+        (member, display_name, hash_credential(cred), config_json, expected, now, now))
     conn.commit()
-    return read_node(conn, member)
+    return {"member": member, "credential": cred, "created": True,
+            "node": read_node(conn, member)}
 
 
 def revoke_credential(conn, member: str, *, now=None) -> None:

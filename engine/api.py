@@ -188,7 +188,11 @@ class _RelayRegisterBody(BaseModel):
     member: str
     display_name: str = ''
     credential: str = ''   # 空=引擎生成并一次性返回（凭据值只此一次可读）
-    mcp_config: dict = {}
+    # None=未传（重签时保留原配置/期望摘要）；{} 显式传空才清空。
+    mcp_config: dict | None = None
+    # req#170 返修：rotate=false 首次登记（遇已存在成员不动，防刷新/双击
+    # 意外轮换）；rotate=true 重签（仅轮换凭据）。
+    rotate: bool = False
 
 
 @router_api.post('/relay/nodes')
@@ -197,16 +201,19 @@ def relay_node_register(body: _RelayRegisterBody, identity=Depends(_resolve_iden
     from . import relay
     if not body.member or not body.member.strip():
         raise HTTPException(400, 'member 必填')
-    credential = body.credential or relay.new_credential()
     conn = db.get_connection()
     try:
-        relay.register_node(conn, body.member.strip(), credential,
-                            display_name=body.display_name,
-                            mcp_config=body.mcp_config)
+        result = relay.register_node(conn, body.member.strip(), body.credential,
+                                     display_name=body.display_name,
+                                     mcp_config=body.mcp_config,
+                                     rotate=body.rotate)
     finally:
         conn.close()
+    # 凭据仅新创建或重签时生成下发；首次登记遇已存在成员不返回凭据、
+    # 不轮换（credential_hash 不变）；调用方显式传入的凭据不回显
     return {'member': body.member.strip(),
-            'credential': credential if not body.credential else None}
+            'credential': result['credential'] if not body.credential else None,
+            'created': result['created']}
 
 
 @router_api.post('/relay/nodes/{member}/revoke')
