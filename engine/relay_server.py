@@ -98,10 +98,12 @@ def _engine_release_version() -> str | None:
 class NodeLink:
     """一条成员连接的活跃状态（内存注册表项）。"""
 
-    def __init__(self, member: str, ws: WebSocket, generation: int):
+    def __init__(self, member: str, ws: WebSocket, generation: int,
+                 peer_ip: str | None = None):
         self.member = member
         self.ws = ws
         self.generation = generation
+        self.peer_ip = peer_ip
         try:
             self.loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -177,6 +179,20 @@ class NodeLink:
 
 _LINKS: dict[str, NodeLink] = {}
 _LINKS_LOCK = threading.Lock()
+_LAST_PEERS: dict[str, str] = {}
+
+
+def last_peer(member: str) -> str | None:
+    """最近一次成功握手的 socket peer IP；当前连接优先。
+
+    仅用于管理界面展示实际连接来源，不参与访问判断。连接关闭后保留最后
+    一次值，供页面区分「从未连接」和「离线但曾连接」；引擎重启后清空。
+    """
+    with _LINKS_LOCK:
+        link = _LINKS.get(member)
+        if link is not None and not link.closed and link.peer_ip:
+            return link.peer_ip
+        return _LAST_PEERS.get(member)
 
 
 def _shutdown_link(link: NodeLink, reason: str) -> None:
@@ -291,6 +307,7 @@ async def relay_ws(websocket: WebSocket) -> None:
     """/relay/ws 端点：成员级认证握手 → 帧路由循环。"""
     await websocket.accept()
     member = None
+    peer = None
     try:
         raw = await websocket.receive_text()
         hello = json.loads(raw)
@@ -309,8 +326,9 @@ async def relay_ws(websocket: WebSocket) -> None:
             # 绑定集合——B 成员凭据从 A 成员已绑定 IP 连接被拒（防交换来源
             # 冒用）。回环恒放行。
             from . import ip_allowlist
-            peer = websocket.client.host if websocket.client else None
-            if not ip_allowlist.member_allowed(conn, member, peer):
+            peer_raw = websocket.client.host if websocket.client else None
+            peer = ip_allowlist._normalize(peer_raw or "") or peer_raw
+            if not ip_allowlist.member_allowed(conn, member, peer_raw):
                 logger.warning("relay source not bound to member=%s peer=%s", member, peer)
                 await websocket.close(code=CLOSE_BAD_SOURCE)
                 return
@@ -345,13 +363,15 @@ async def relay_ws(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         return
 
-    link = NodeLink(member, websocket, generation)
+    link = NodeLink(member, websocket, generation, peer_ip=peer)
     # 接替：先注册新连接（新连接成为当前代），旧连接的清理在锁外进行——
     # _shutdown_link 自取 _LINKS_LOCK，持锁调用会死锁；旧代清理因「非当前
     # 注册连接」不写 offline，不覆盖新连接状态（manager node1977 ①）。
     with _LINKS_LOCK:
         previous = _LINKS.get(member)
         _LINKS[member] = link
+        if peer:
+            _LAST_PEERS[member] = peer
     if previous is not None and not previous.closed:
         previous.close()
     try:

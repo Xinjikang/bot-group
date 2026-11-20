@@ -167,7 +167,7 @@ def source_binding_remove(member: str, ip: str, identity=Depends(_resolve_identi
 @router_api.get('/relay/nodes')
 def relay_nodes_list(identity=Depends(_resolve_identity)):
     _admin_only(identity, 'relay 节点列表仅限管理员')
-    from . import relay
+    from . import relay, relay_server
     conn = db.get_connection()
     try:
         rows = relay.list_nodes(conn)
@@ -179,6 +179,7 @@ def relay_nodes_list(identity=Depends(_resolve_identity)):
             'mcp_fingerprint': (r['mcp_fingerprint'] or '')[:16],
             'expected_mcp_sha': (r['expected_mcp_sha'] or '')[:16],
             'capacity_used': relay.capacity_used(conn, r['member']),
+            'peer_ip': relay_server.last_peer(r['member']),
         } for r in rows], headers={'Cache-Control': 'no-store'})
     finally:
         conn.close()

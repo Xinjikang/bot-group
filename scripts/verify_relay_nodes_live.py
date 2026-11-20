@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 PASSWORD = 'relay-live-admin-pass'
 MEMBER = 'remote-live'
+MEMBER2 = 'remote-live-2'
 
 
 def main():
@@ -39,16 +40,17 @@ def main():
         conn = db.get_connection()
         try:
             db.init_schema(conn)
-            cur = conn.execute(
-                "INSERT INTO bots(host_type,profile,config_root,runtime,display_name) "
-                "VALUES('hermes',?,?, 'hermes',?)",
-                (MEMBER, str(data_dir), 'ECS Hermes'),
-            )
-            conn.execute(
-                "INSERT INTO members(profile,display_name,bot_id,source,created_at) "
-                "VALUES(?,?,?,'api',datetime('now'))",
-                (MEMBER, 'ECS Hermes', cur.lastrowid),
-            )
+            for profile, display_name in ((MEMBER, 'ECS Hermes'), (MEMBER2, '备机 Hermes')):
+                cur = conn.execute(
+                    "INSERT INTO bots(host_type,profile,config_root,runtime,display_name) "
+                    "VALUES('hermes',?,?, 'hermes',?)",
+                    (profile, str(data_dir), display_name),
+                )
+                conn.execute(
+                    "INSERT INTO members(profile,display_name,bot_id,source,created_at) "
+                    "VALUES(?,?,?,'api',datetime('now'))",
+                    (profile, display_name, cur.lastrowid),
+                )
             conn.commit()
         finally:
             conn.close()
@@ -101,17 +103,32 @@ def main():
                 page.wait_for_function('document.querySelector("#relay-nodes-status").textContent.includes("暂无已登记节点")')
                 page.wait_for_function('document.querySelector("#relay-register-gate").textContent === ""')
                 page.locator('#relay-member option[value="remote-live"]').wait_for(state='attached')
-                page.locator('#relay-member').select_option(MEMBER)
-                page.locator('#relay-register-submit').click()
-                page.wait_for_function('!document.querySelector("#relay-credential").hidden')
-                credential = page.locator('#relay-issued-credential').input_value()
-                assert credential and page.locator('#relay-issued-member').input_value() == MEMBER
+
+                def register(member, ip):
+                    page.locator('#relay-member').select_option(member)
+                    page.locator('#relay-register-ip').fill(ip)
+                    assert page.locator('#relay-register-submit').is_enabled()
+                    page.locator('#relay-register-submit').click()
+                    page.wait_for_function(
+                        f'document.querySelector("#relay-issued-member").value === {json.dumps(member)}')
+                    assert page.locator('#relay-issued-member').input_value() == member
+                    page.wait_for_function('!document.querySelector("#relay-close").disabled')
+                    return page.locator('#relay-issued-credential').input_value()
+
+                credential = register(MEMBER, '100.64.0.10')
+                assert credential
+                page.wait_for_function('document.querySelector("#relay-node-list").textContent.includes("100.64.0.10")')
                 page.screenshot(path=str(args.evidence / 'relay-live-issued-1280-dark.png'),
+                                mask=[page.locator('#relay-issued-credential')])
+                credential2 = register(MEMBER2, '100.64.0.11')
+                assert credential2 and credential2 != credential
+                page.wait_for_function('document.querySelector("#relay-node-list").textContent.includes("100.64.0.11")')
+                page.screenshot(path=str(args.evidence / 'relay-live-bindings-1280-dark.png'),
                                 mask=[page.locator('#relay-issued-credential')])
 
                 page.locator('#relay-copy-credential').click()
                 page.wait_for_function('document.querySelector("#relay-register-status").textContent.includes("已复制连接凭据")')
-                assert page.evaluate('navigator.clipboard.readText()') == credential
+                assert page.evaluate('navigator.clipboard.readText()') == credential2
 
                 def hello(link_credential):
                     link = connect('ws://127.0.0.1:18042/relay/ws', open_timeout=5, close_timeout=1, legacy=True)
@@ -132,6 +149,11 @@ def main():
                 online_text = page.locator('#relay-node-list').inner_text()
                 assert '最近心跳' in online_text and '—' not in online_text.split('最近心跳', 1)[1].split('占用', 1)[0]
                 assert 'MCP 指纹' in online_text and 'fedcba9876543210' in online_text
+                remote_text = page.locator('#relay-node-list article[data-relay-member="remote-live"]').inner_text()
+                spare_text = page.locator('#relay-node-list article[data-relay-member="remote-live-2"]').inner_text()
+                assert '100.64.0.10' in remote_text and '127.0.0.1' in remote_text
+                assert '尚未连接' not in remote_text
+                assert '100.64.0.11' in spare_text and '尚未连接' in spare_text
                 page.screenshot(path=str(args.evidence / 'relay-live-online-1280-dark.png'),
                                 mask=[page.locator('#relay-issued-credential')])
 
@@ -146,6 +168,20 @@ def main():
                                     mask=[page.locator('#relay-issued-credential')])
                 page.set_viewport_size({'width': 1280, 'height': 900})
                 page.evaluate("applyTheme('dark')")
+
+                # Reopen the settings dialog: member-to-IP bindings remain and credentials do not.
+                page.locator('#relay-close').click()
+                page.wait_for_function('!document.querySelector("#relay-nodes-dialog").open')
+                page.locator('#btn-settings').click()
+                page.locator('#btn-relay-nodes').click()
+                page.wait_for_function('document.querySelector("#relay-nodes-dialog").open')
+                page.wait_for_function('document.querySelector("#relay-register-gate").textContent === ""')
+                assert page.locator('#relay-credential').is_hidden()
+                reopened_remote = page.locator('#relay-node-list article[data-relay-member="remote-live"]').inner_text()
+                reopened_spare = page.locator('#relay-node-list article[data-relay-member="remote-live-2"]').inner_text()
+                assert '100.64.0.10' in reopened_remote and '127.0.0.1' in reopened_remote
+                assert '100.64.0.11' in reopened_spare and '尚未连接' in reopened_spare
+                page.screenshot(path=str(args.evidence / 'relay-live-reopened-bindings-1280-dark.png'))
 
                 # Reissue must send rotate=true, close the old link, reject the old credential and accept the new one.
                 page.locator('#relay-node-list article[data-relay-member="remote-live"] button[data-action="reissue"]').click()
@@ -196,6 +232,7 @@ def main():
                 page.wait_for_function('document.querySelector("#relay-nodes-dialog").open')
                 assert page.locator('#relay-credential').is_hidden()
                 assert credential not in page.locator('#relay-nodes-dialog').inner_text()
+                assert credential2 not in page.locator('#relay-nodes-dialog').inner_text()
                 assert new_credential not in page.locator('#relay-nodes-dialog').inner_text()
                 assert not errors, errors
                 browser.close()

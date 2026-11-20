@@ -739,9 +739,10 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 #app-settings-menu button:hover{background:var(--hover)}
 #app-settings-menu button:focus-visible,#btn-settings:focus-visible,#app-update-notice:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 #relay-nodes-dialog{width:680px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);overflow:auto;box-sizing:border-box}
+#relay-nodes-dialog .dlg-btns{position:sticky;bottom:0;background:var(--card);padding-top:12px;z-index:2}
 .relay-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0}
 .relay-toolbar .profile-help{flex:1;min-width:140px;margin:0}
-#relay-node-list{display:flex;flex-direction:column;gap:8px;max-height:36dvh;overflow:auto;margin:6px 0}
+#relay-node-list{display:flex;flex-direction:column;gap:8px;max-height:56dvh;overflow:auto;margin:6px 0}
 .relay-empty{padding:12px 0;margin:0}
 .relay-node{border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--card)}
 .relay-node-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
@@ -753,25 +754,39 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 .relay-node-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 12px;margin:8px 0;font-size:12px;color:var(--fg-2)}
 .relay-node-meta>span{min-width:0;overflow-wrap:anywhere}
 .relay-key{color:var(--fg-3);margin-right:6px}
-.relay-node-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+.relay-node-source{margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft)}
+.relay-source-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.relay-source-title{font-size:12px;color:var(--fg-2)}
+.relay-source-head button,.relay-ip-add button{font-size:12px;padding:4px 8px;border-radius:7px;border:1px solid var(--border);background:var(--card);color:var(--fg);cursor:pointer}
+.relay-source-head button:hover:not(:disabled),.relay-ip-add button:hover:not(:disabled){border-color:var(--accent);color:var(--accent-2)}
+.relay-ip-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.relay-ip-chip{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border);border-radius:999px;padding:2px 5px 2px 9px;font-size:12px;font-family:Consolas,"Courier New",monospace;background:var(--bg);color:var(--fg)}
+.relay-ip-chip button{border:0;background:transparent;color:var(--fg-3);font-size:13px;line-height:1;padding:0 2px;cursor:pointer}
+.relay-ip-chip button:hover{color:var(--danger)}
+.relay-source-empty{color:var(--danger)}
+.relay-ip-add{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px}
+.relay-ip-add input{flex:1 1 150px;min-width:0;box-sizing:border-box;border:1px solid var(--border);border-radius:7px;padding:5px 8px;font:inherit;font-size:12px;background:var(--bg);color:var(--fg)}
+.relay-source-status{flex:1 1 100%;min-width:0;margin:2px 0 0}
+.relay-node-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:8px}
 .relay-node-actions button{font-size:12px;padding:5px 9px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--fg);cursor:pointer}
 .relay-node-actions button:hover:not(:disabled){border-color:var(--accent);color:var(--accent-2)}
 .relay-node-actions button:disabled{opacity:.5;cursor:wait}
 .relay-node-actions .relay-danger{color:var(--danger);border-color:rgba(224,92,106,.45)}
 .relay-register{margin-top:14px;padding-top:12px;border-top:1px solid var(--border-soft)}
 .relay-register h4,#relay-credential h4{margin:0 0 6px;font-size:13px}
-.relay-register label{display:block;margin:6px 0 4px;font-size:12px;color:var(--fg-2)}
-#relay-member{width:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit;background:var(--card);color:var(--fg)}
-.relay-register-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px}
-.relay-register-actions .profile-help{flex:1;min-width:140px;margin:0}
+.relay-register-line{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-top:8px}
+.relay-field{display:flex;flex-direction:column;gap:4px;flex:1 1 180px;min-width:0;margin:0;font-size:12px;color:var(--fg-2)}
+.relay-field select,.relay-field input{width:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit;background:var(--card);color:var(--fg)}
+.relay-register-line>button{flex:0 0 auto;padding:8px 14px;border-radius:8px}
+#relay-register-gate,#relay-register-status{margin:6px 0 0}
 #relay-credential{margin-top:14px;padding:10px 12px;border:1px solid var(--accent);border-radius:10px;background:rgba(201,162,75,.08)}
 #relay-credential .profile-help[role="alert"]{color:var(--accent-2)}
 #relay-credential>label{display:block;margin:8px 0 4px;font-size:12px;color:var(--fg-2)}
 .relay-copy-row{display:flex;gap:8px;align-items:center}
 .relay-copy-row input{flex:1;min-width:0;box-sizing:border-box;font-family:Consolas,"Courier New",monospace;font-size:12px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--fg)}
 .relay-copy-row button{flex:0 0 auto;font-size:12px;padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--fg);cursor:pointer}
-#relay-nodes-status[data-error="true"],#relay-register-status[data-error="true"]{color:var(--danger)}
-@media (max-width:560px){.relay-node-meta{grid-template-columns:1fr}.relay-toolbar .profile-help,.relay-register-actions .profile-help{min-width:0;flex-basis:100%}}
+#relay-nodes-status[data-error="true"],#relay-register-gate[data-error="true"],#relay-register-status[data-error="true"]{color:var(--danger)}
+@media (max-width:560px){.relay-node-meta{grid-template-columns:1fr}.relay-toolbar .profile-help{min-width:0;flex-basis:100%}.relay-register-line .relay-field{flex-basis:100%}.relay-register-line>button{width:100%}.relay-ip-add input{flex-basis:100%}.relay-ip-add button{flex:1 1 auto}}
 @media(max-width:600px){#topbar-right{max-width:100%;flex-wrap:wrap}#topbar-user-name{max-width:90px}#app-update-notice{max-width:110px}}
 #conn{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg-2)}
 [data-theme="light"] #topbar{background:var(--card)}
@@ -5028,7 +5043,7 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/service_restart.js?v=20261026-settings-icons"></script>
 <script src="/app/app_settings.js?v=20261026-auto-refresh"></script>
 <script src="/app/engine_logs.js?v=20261103"></script>
-<script src="/app/relay_nodes.js?v=20261120"></script>
+<script src="/app/relay_nodes.js?v=20261120-ip"></script>
 <script src="/app/edit_policy_settings.js?v=20261030"></script>
 <script src="/app/background_settings.js?v=20261023-settings-anchor"></script>
 <script src="/app/directory_picker.js?v=20261011"></script>

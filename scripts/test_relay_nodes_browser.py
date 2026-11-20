@@ -3,7 +3,7 @@ import argparse
 import mimetypes
 from copy import deepcopy
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from playwright.sync_api import sync_playwright
 
@@ -34,6 +34,14 @@ def main():
         'nodes_fail': False,
         'nodes_hold': False,
         'forbidden': False,
+        'bindings': [],
+        'bindings_fail': False,
+        'binding_gets': 0,
+        'binding_fail': False,
+        'binding_hold': False,
+        'binding_posts': [],
+        'binding_deletes': [],
+        'held_bindings': [],
         'held': [],
         'held_nodes': [],
         'register_bodies': [],
@@ -46,7 +54,7 @@ def main():
         data = {'member': member, 'display_name': display_name, 'credential_revoked': False,
                 'generation': 1, 'state': 'offline', 'code_version': '',
                 'last_heartbeat': None, 'mcp_fingerprint': '', 'expected_mcp_sha': '',
-                'capacity_used': 0}
+                'capacity_used': 0, 'peer_ip': None}
         data.update(extra)
         return data
 
@@ -70,6 +78,50 @@ def main():
             file = ROOT / 'frontend' / (path[5:] or 'index.html')
             req.fulfill(body=file.read_bytes(),
                         content_type=mimetypes.guess_type(file.name)[0] or 'text/plain')
+            return
+        if path == '/admin/source-ips':
+            if req.request.method == 'GET':
+                state['binding_gets'] += 1
+                if state['bindings_fail']:
+                    req.fulfill(status=503, json={'detail': '来源 IP 绑定服务暂不可用'})
+                else:
+                    req.fulfill(json={'loopback_always_allowed': ['127.0.0.1', '::1'],
+                                      'bindings': deepcopy(state['bindings'])})
+                return
+            body = req.request.post_data_json
+            state['binding_posts'].append(deepcopy(body))
+            writes.append(('POST', path, body))
+            if state['binding_fail']:
+                req.fulfill(status=400, json={'detail': '无效的 IP 地址'})
+                return
+            if state['binding_hold']:
+                state['held_bindings'].append((req, body))
+                return
+            member = body.get('member', '')
+            ips = []
+            for ip in body.get('ips', []):
+                if ip and ip not in ips:
+                    ips.append(ip)
+            row = next((item for item in state['bindings'] if item['member'] == member), None)
+            if row:
+                row['ips'] = ips
+            else:
+                state['bindings'].append({'member': member, 'ips': ips})
+            req.fulfill(json={'member': member, 'ips': ips})
+            return
+        if path.startswith('/admin/source-ips/') and req.request.method == 'DELETE':
+            rest = path[len('/admin/source-ips/'):]
+            member, ip = rest.split('/', 1)
+            member = unquote(member)
+            ip = unquote(ip)
+            state['binding_deletes'].append({'member': member, 'ip': ip})
+            writes.append(('DELETE', path, {}))
+            row = next((item for item in state['bindings'] if item['member'] == member), None)
+            if not row or ip not in row['ips']:
+                req.fulfill(status=404, json={'detail': '绑定不存在'})
+                return
+            row['ips'] = [item for item in row['ips'] if item != ip]
+            req.fulfill(json={'member': member, 'removed': ip})
             return
         if path == '/relay/nodes':
             if req.request.method == 'GET':
@@ -180,6 +232,7 @@ def main():
         # Register: a double click while the request is in flight must not rotate twice.
         state['register_hold'] = True
         page.locator('#relay-member').select_option('hermes-remote')
+        page.locator('#relay-register-ip').fill('100.64.0.5')
         assert page.locator('#relay-register-submit').is_enabled()
         page.locator('#relay-register-submit').click()
         page.wait_for_function('document.querySelector("#relay-register-submit").disabled')
@@ -189,13 +242,16 @@ def main():
         state['held'].pop().fulfill(json=register_response({'member': 'hermes-remote',
                                                             'display_name': 'ECS Hermes'}))
         page.wait_for_function('!document.querySelector("#relay-credential").hidden')
+        page.wait_for_function('document.querySelector("#relay-node-list").textContent.includes("100.64.0.5")')
         assert page.locator('#relay-issued-member').input_value() == 'hermes-remote'
         credential = page.locator('#relay-issued-credential').input_value()
         assert credential == 'TEST-RELAY-CREDENTIAL-1'
         assert 'rotate' not in state['register_bodies'][0]
+        assert state['binding_posts'][-1] == {'member': 'hermes-remote', 'ips': ['100.64.0.5']}
         assert page.locator('#relay-node-list').inner_text().count('ECS Hermes') == 1
         assert '离线' in page.locator('#relay-node-list').inner_text()
         assert '未上报' in page.locator('#relay-node-list').inner_text()
+        assert '尚未连接' in page.locator('#relay-node-list').inner_text()
         page.screenshot(path=str(evidence / 'relay-nodes-issued-1280-dark.png'),
                         mask=[page.locator('#relay-issued-credential')])
 
@@ -217,7 +273,7 @@ def main():
         page.locator('#relay-member option[value="hermes-remote"]').wait_for(state='attached')
         page.locator('#relay-member').select_option('hermes-remote')
         assert page.locator('#relay-register-submit').is_disabled()
-        assert '正在读取节点与成员列表' in page.locator('#relay-register-gate').inner_text()
+        assert '正在读取节点、成员和来源 IP' in page.locator('#relay-register-gate').inner_text()
         page.evaluate('document.querySelector("#relay-register-submit").click()')
         assert state['register_posts'] == posts_before_gate
         assert len(state['held_nodes']) == 1
@@ -245,6 +301,20 @@ def main():
         assert page.locator('#relay-member option[value="hermes-remote"]').count() == 0
         close_dialog()
 
+        state['bindings_fail'] = True
+        binding_posts_before = len(state['binding_posts'])
+        open_settings()
+        page.locator('#btn-relay-nodes').click()
+        page.wait_for_function('document.querySelector("#relay-nodes-dialog").open')
+        page.wait_for_function('document.querySelector("#relay-register-gate").textContent.includes("来源 IP 绑定读取失败")')
+        assert page.locator('#relay-register-submit').is_disabled()
+        assert page.locator('#relay-node-list button[data-action="add-ip"]').first.is_disabled()
+        assert len(state['binding_posts']) == binding_posts_before
+        state['bindings_fail'] = False
+        page.locator('#relay-refresh').click()
+        page.wait_for_function('document.querySelector("#relay-register-gate").textContent === ""')
+        close_dialog()
+
         # An unknown write result must block duplicate registration until a successful refresh.
         open_settings()
         page.locator('#btn-relay-nodes').click()
@@ -252,6 +322,8 @@ def main():
         page.wait_for_function('document.querySelector("#relay-register-gate").textContent === ""')
         state['register_lost'] = True
         page.locator('#relay-member').select_option('hermes-spare')
+        page.locator('#relay-register-ip').fill('100.64.0.6')
+        assert page.locator('#relay-register-submit').is_enabled()
         page.locator('#relay-register-submit').click()
         page.wait_for_function('document.querySelector("#relay-register-status").textContent.includes("结果未确认")')
         assert '上次操作结果未确认' in page.locator('#relay-register-gate').inner_text()
@@ -263,28 +335,61 @@ def main():
         page.locator('#relay-refresh').click()
         page.wait_for_function('document.querySelector("#relay-register-gate").textContent === ""')
         page.locator('#relay-member').select_option('hermes-spare')
+        page.locator('#relay-register-ip').fill('100.64.0.6')
         assert page.locator('#relay-register-submit').is_enabled()
         page.locator('#relay-register-submit').click()
         page.wait_for_function('!document.querySelector("#relay-credential").hidden')
         spare_credential = page.locator('#relay-issued-credential').input_value()
         assert spare_credential == 'TEST-RELAY-CREDENTIAL-2'
         assert state['register_posts'] == lost_posts + 1
+        assert state['binding_posts'][-1] == {'member': 'hermes-spare', 'ips': ['100.64.0.6']}
         page.wait_for_function('!document.querySelector("#relay-close").disabled')
         close_dialog()
 
-        # Reopen the dialog: the credential is not recoverable and no rotation occurs.
+        # Reopen the dialog: credentials are not recoverable; member-to-IP bindings remain visible.
         posts = state['register_posts']
         open_dialog()
         assert page.locator('#relay-credential').is_hidden()
         assert credential not in page.locator('#relay-nodes-dialog').inner_text()
         assert spare_credential not in page.locator('#relay-nodes-dialog').inner_text()
         assert state['register_posts'] == posts
+        remote_card = page.locator('#relay-node-list article[data-relay-member="hermes-remote"]')
+        spare_card = page.locator('#relay-node-list article[data-relay-member="hermes-spare"]')
+        assert '100.64.0.5' in remote_card.inner_text()
+        assert '100.64.0.6' in spare_card.inner_text()
+        assert '尚未连接' in remote_card.inner_text()
+        page.screenshot(path=str(evidence / 'relay-nodes-bindings-1280-dark.png'))
 
-        # Handshake state from the same page after refresh.
-        state['nodes'][0].update({'state': 'online', 'last_heartbeat': 1760000000.0,
+        # Add and remove an extra source IP from the node card; both take effect immediately.
+        remote_card.locator('button[data-action="add-ip"]').click()
+        form = remote_card.locator('[data-ip-form]')
+        assert form.is_visible()
+        form.locator('input').fill('100.64.0.7')
+        form.locator('button[type="submit"]').click()
+        page.wait_for_function('document.querySelector("#relay-register-status").textContent.includes("添加来源 IP")')
+        assert state['binding_posts'][-1] == {
+            'member': 'hermes-remote', 'ips': ['100.64.0.5', '100.64.0.7']}
+        remote_card = page.locator('#relay-node-list article[data-relay-member="hermes-remote"]')
+        page.wait_for_function('document.querySelector("#relay-node-list").textContent.includes("100.64.0.7")')
+        remote_card.locator('button[data-action="remove-ip"][data-ip="100.64.0.7"]').click()
+        page.wait_for_function('document.querySelector("#relay-register-status").textContent.includes("已移除")')
+        assert state['binding_deletes'][-1] == {'member': 'hermes-remote', 'ip': '100.64.0.7'}
+        page.wait_for_function('!document.querySelector("#relay-node-list").textContent.includes("100.64.0.7")')
+        assert '100.64.0.5' in page.locator('#relay-node-list article[data-relay-member="hermes-remote"]').inner_text()
+
+        # The actual peer IP belongs to the node card; never-connected remains explicit.
+        state['nodes'][0].update({'peer_ip': '100.64.0.5', 'state': 'online',
+                                  'last_heartbeat': 1760000000.0,
                                   'mcp_fingerprint': 'abcdef0123456789', 'capacity_used': 2,
                                   'code_version': '0.2.1'})
         page.locator('#relay-refresh').click()
+        page.wait_for_function('document.querySelector("#relay-node-list").textContent.includes("实际连接 IP")')
+        remote_text = page.locator('#relay-node-list article[data-relay-member="hermes-remote"]').inner_text()
+        assert '100.64.0.5' in remote_text and '尚未连接' not in remote_text
+        spare_text = page.locator('#relay-node-list article[data-relay-member="hermes-spare"]').inner_text()
+        assert '尚未连接' in spare_text
+
+        # Handshake state from the same page after refresh.
         page.wait_for_function('document.querySelector("#relay-node-list").textContent.includes("在线")')
         text = page.locator('#relay-node-list').inner_text()
         assert 'abcdef0123456789' in text
@@ -325,6 +430,7 @@ def main():
         # Bot identity: read-only explanation, no node requests.
         close_dialog()
         gets_before_bot = state['node_gets']
+        binding_gets_before_bot = state['binding_gets']
         page.evaluate('S.isUserIdentity = false; document.dispatchEvent(new Event("service-auth-changed"))')
         open_settings()
         assert page.locator('#btn-relay-nodes').is_visible()
@@ -334,6 +440,7 @@ def main():
         assert '仅可查看说明' in page.locator('#relay-readonly').inner_text()
         assert page.locator('#relay-admin-body').is_hidden()
         assert state['node_gets'] == gets_before_bot
+        assert state['binding_gets'] == binding_gets_before_bot
         page.screenshot(path=str(evidence / 'relay-nodes-bot-readonly-1280-dark.png'))
         close_dialog()
         page.evaluate('S.isUserIdentity = true; document.dispatchEvent(new Event("service-auth-changed"))')
@@ -355,6 +462,7 @@ def main():
         page.wait_for_function('document.querySelector("#relay-nodes-status").dataset.error === "false"')
         state['register_fail'] = True
         page.locator('#relay-member').select_option('hermes-extra')
+        page.locator('#relay-register-ip').fill('100.64.0.8')
         page.locator('#relay-register-submit').click()
         page.wait_for_function('document.querySelector("#relay-register-status").textContent.includes("登记失败")')
         assert page.locator('#relay-credential').is_hidden()
@@ -372,6 +480,10 @@ def main():
             page.evaluate('(theme) => applyTheme(theme)', theme)
             page.screenshot(path=str(evidence / f'relay-nodes-390-{theme}.png'))
         page.evaluate("applyTheme('dark')")
+        spare_add = page.locator('#relay-node-list article[data-relay-member="hermes-spare"] button[data-action="add-ip"]')
+        spare_add.scroll_into_view_if_needed()
+        assert spare_add.is_visible()
+        page.screenshot(path=str(evidence / 'relay-nodes-390-dark-scrolled.png'))
         close_dialog()
 
         # Page reload: credentials and node state are re-read, never persisted in browser storage.
@@ -384,11 +496,13 @@ def main():
         stored = page.evaluate('JSON.stringify({local: {...localStorage}, session: {...sessionStorage}})')
         assert new_credential not in stored and credential not in stored and spare_credential not in stored
         assert not errors, errors
-        assert all(path.startswith('/relay/nodes') for method, path, _ in writes if method == 'POST'), writes
+        assert all(path.startswith('/relay/nodes') or path.startswith('/admin/source-ips')
+                   for method, path, _ in writes if method in ('POST', 'DELETE')), writes
         browser.close()
-    print('PASS: relay node list, Hermes member selection, one-time credential/copy, double-click guard, '
-          'nodes pending/503 gate with zero old-member POST, unknown-write duplicate guard and recovery, '
-          'online refresh, rotate=true reissue, revoke/reissue confirms, bot read-only, errors and 390px themes')
+    print('PASS: relay node list, member+source-IP registration, per-card bindings and actual peer IP, '
+          'add/remove IP, one-time credential/copy, double-click guard, pending/503/bindings gate, '
+          'unknown-write duplicate guard and recovery, online refresh, rotate=true reissue, '
+          'revoke/reissue confirms, bot read-only, errors and 390px themes')
 
 
 if __name__ == '__main__':
