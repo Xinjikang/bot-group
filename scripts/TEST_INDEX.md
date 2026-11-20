@@ -34,6 +34,8 @@ Hermes 旧版唤醒分流（Issue #28）：使用 `python -X utf8 -B -m scripts.
 
 远程节点管理界面（req#170 #318）：`python -X utf8 -B scripts/test_relay_nodes_browser.py --evidence <主目录报告路径>`。真实 Chrome + 合成管理员 API，覆盖设置菜单入口、节点列表字段（成员/显示名/在线或吊销/代次/最近心跳/占用/MCP 指纹前 16 位）、刷新不登记不轮换、仅未登记 Hermes 成员进入登记下拉、登记请求双击保护、一次性凭据展示与复制、关闭/刷新/重开不显示凭据且浏览器存储不含凭据、握手后在线、吊销与重新签发各自二次确认（取消不请求）、Bot 身份只读说明不请求节点数据、读取/登记失败反馈，以及 390px 深浅主题无横向溢出。后端复用 `scripts.test_relay_gateway` 的节点注册/吊销/列表契约，不修改引擎。
 
+真实全链（隔离引擎 + 真实 WS 握手）：`env -u PYTHONPATH .venv/Scripts/python.exe -X utf8 -B scripts/verify_relay_nodes_live.py --evidence <主目录报告下的新绝对目录>`。脚本使用隔离 `GROUP_DATA_DIR`/SQLite 和测试管理员密码，在分配的后端端口 18042 启动仅含 API、`/relay/ws` 与 `/app` 的最小引擎；真实登录后从设置菜单登记隔离 Hermes 成员，复制一次性凭据，用 `websockets.sync` 发 hello（真实凭据、引擎版本、MCP 指纹）建立连接，同一页刷新看到 online/心跳/指纹；确认吊销后节点转凭据已吊销，重载页面凭据不可见；另覆盖 390px 深浅主题并脱敏截图。退出关闭 WS、uvicorn 并删除临时数据目录。
+
 消息上屏竞态：`python -X utf8 -B scripts/test_message_visibility_browser.py --evidence <主目录报告下的新绝对目录>`。需要 Playwright 与 Chrome，所有 HTTP 使用合成响应。覆盖发送回执主动刷新、旧列表响应期间合并新消息补拉、已读确认挂起时上屏，以及换话题后旧响应与补拉隔离。
 
 Hermes MCP 初始化恢复：使用 `scripts.run_isolated_tests --report <主目录 reports/tests 下的新绝对目录> scripts.test_hermes_startup scripts.test_hermes_gateway_ledger scripts.test_hermes_gateway scripts.test_hermes_gateway_sessions scripts.test_hermes_session_reuse scripts.test_execution_errors scripts.test_queue_claim_race scripts.test_task_retry`。隔离数据库、合成终态回执及模拟 RPC 验证诊断脱敏、终态补读、模型/工具零执行判定、原作业 ID 和顺序、一次重试预算、话题换轮及停止保护、MCP 重连失败时零业务提交。日志记录接入阶段与耗时。无需生产网关或真实模型调用；运行器校验资源隔离和线程清理。
