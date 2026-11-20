@@ -445,17 +445,23 @@ def relay_node_switch(member: str, body: _SwitchBody, identity=Depends(_resolve_
 
 
 def _verify_error_reason(status, body: str) -> str:
-    """MCP 只读验证失败原因（脱敏）：状态码 + 响应拒绝原因，不含凭据。"""
-    if status == 403:
-        try:
-            detail = json.loads(body or "{}").get("detail") or ""
-            return f"权限拒绝(403): {str(detail)[:200]}"
-        except ValueError:
-            return "权限拒绝(403)"
+    """MCP 只读验证失败原因（脱敏）：优先取工具层错误文本（含引擎
+    401/403 语义），无文本再按状态归类。不含凭据。"""
+    try:
+        data = json.loads(body or "{}")
+        error = str(data.get("error") or data.get("detail") or "")
+    except ValueError:
+        error = ""
+    if "engine 403" in error or "Session project mismatch" in error:
+        return f"权限拒绝(403): {error[:200]}"
+    if "engine 401" in error:
+        return f"凭据无效(401): {error[:200]}"
+    if error:
+        return f"验证失败: {error[:200]}"
     if status == 401:
         return "凭据无效(401)"
     if status == 502:
-        return "插件代理不可达(502)"
+        return "验证执行失败(502)"
     if status == 503:
         return "服务暂不可用(503)"
     return f"HTTP {status}"
@@ -488,6 +494,7 @@ def relay_node_mcp_verify(member: str, identity=Depends(_resolve_identity)):
         ctx = hermes_session_auth.context(grant)
         project = ctx["project"]
         key = auth.session_token(member, ctx)
+        execution = dict(ctx, credential_type="session")
     finally:
         conn.close()
     link = relay_server.active_link(member)
@@ -501,26 +508,41 @@ def relay_node_mcp_verify(member: str, identity=Depends(_resolve_identity)):
             conn.close()
         return {'member': member, 'mcp_verify_state': 'failed',
                 'mcp_verify_error': error}
-    report = link.request_mcp_verify(key, project)
+    # manager node2102：写库必须用**发起时的连接代**——验证期间旧连接
+    # 换代（掉线重连）后，迟到的回执按旧代条件写不命中，新行保持待验。
+    verify_generation = (getattr(link, "db_generation", None)
+                         or getattr(link, "generation", None))
+    report = link.request_mcp_verify(key, project, execution=execution)
     conn = db.get_connection()
     try:
-        row = relay.read_node(conn, member)
-        generation = row["generation"] if row else None
         if report is None:
             state, error = "failed", "验证超时或链路断链"
         elif report.get("status") == 200:
-            state, error = "ok", ""
+            # 实际工具调用结果：members 数组正常且非空才算读到了本项目名单
+            try:
+                data = json.loads(report.get("body") or "{}")
+            except ValueError:
+                data = {}
+            members = data.get("members")
+            if isinstance(members, list) and members:
+                state, error = "ok", ""
+            else:
+                state, error = "failed", "成员名单为空或结果结构异常"
         else:
             state, error = "failed", _verify_error_reason(
                 report.get("status"), report.get("body") or "")
         relay.set_mcp_verify(conn, member, state=state, error=error,
-                             generation=generation)
+                             generation=verify_generation)
+        # 返回落库后的真实状态：旧代迟到回执条件写不命中时，库中仍是待验
+        row = relay.read_node(conn, member)
+        stored_state = row["mcp_verify_state"] if row else state
+        stored_error = row["mcp_verify_error"] if row else error
     finally:
         conn.close()
-    logger.info("relay mcp verify member=%s project=%s state=%s",
-                member, project, state)
-    return {'member': member, 'mcp_verify_state': state,
-            'mcp_verify_error': error}
+    logger.info("relay mcp verify member=%s project=%s state=%s stored=%s",
+                member, project, state, stored_state)
+    return {'member': member, 'mcp_verify_state': stored_state,
+            'mcp_verify_error': stored_error}
 
 
 @router_api.get('/relay/mentions')

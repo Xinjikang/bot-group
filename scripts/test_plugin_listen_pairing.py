@@ -249,9 +249,11 @@ class DirectionBDialTests(unittest.TestCase):
 
     # ---------------- manager node2102：同方向重拨 + MCP 实际验证 ----------------
 
-    def _listen_serve(self, port: int = 0, tmp_key: str = "retry", tmp_dir=None):
+    def _listen_serve(self, port: int = 0, tmp_key: str = "retry", tmp_dir=None,
+                      mcp_entry=None, mcp_python=None):
         """起真实插件监听（隔离证书/配对状态落 TMPDIR），返回 result。
-        重启场景复用同一 tmp_dir：证书一致则指纹不变，免重新配对。"""
+        重启场景复用同一 tmp_dir：证书一致则指纹不变，免重新配对。
+        mcp_entry/mcp_python 供 node2106 随包工具调用全链用例指定。"""
         plg_listen = self.plg["listen"]
         if tmp_dir is None:
             tmp_dir = Path(tempfile.mkdtemp(prefix=f"bgrelay-{tmp_key}-"))
@@ -263,7 +265,8 @@ class DirectionBDialTests(unittest.TestCase):
             return plg_listen.listen_serve(
                 address="127.0.0.1", port=port, advertise="127.0.0.1",
                 member=REMOTE, home=os.environ.get("TMPDIR", "."),
-                mcp_python="", tls=True)
+                mcp_python=mcp_python or "", tls=True,
+                mcp_entry=mcp_entry or "")
 
     def _pair_and_dial(self, result):
         """把真实插件监听写入引擎拨号端点并拨入，返回 connected 是否达成。"""
@@ -350,8 +353,10 @@ class DirectionBDialTests(unittest.TestCase):
         link._on_verify_response(frame["relay"]["request_id"],
                                  {"status": 200, "body": '{"members": []}'})
         thread.join(timeout=5)
-        self.assertEqual(holder["report"],
-                         {"status": 200, "body": '{"members": []}'})
+        # 回执带发起时本地状态代（node2106：写库按原代条件，防旧连接点亮新代）
+        self.assertEqual(holder["report"]["status"], 200)
+        self.assertEqual(holder["report"]["body"], '{"members": []}')
+        self.assertEqual(holder["report"]["generation"], 2)
 
     def test_mcp_verify_endpoint_flow_and_generation_invalidation(self):
         """manager node2102 ①：/mcp-verify 端点——方向 B + 成员会话授权
@@ -387,21 +392,26 @@ class DirectionBDialTests(unittest.TestCase):
         seen = {}
         link_stub = type("LinkStub", (), {
             "member": REMOTE,
-            "request_mcp_verify": lambda self, key, project: (
-                seen.update(key=key, project=project) or {"status": 200, "body": "{}"}),
+            "request_mcp_verify": lambda self, key, project, execution=None: (
+                seen.update(key=key, project=project, execution=execution)
+                or {"status": 200,
+                    "body": '{"members":[{"profile":"remote1"}]}'}),
         })()
         with patch.object(relay_server, "active_link", return_value=link_stub):
             response = self._api_client().post(f"/relay/nodes/{REMOTE}/mcp-verify")
         body = response.json()
         self.assertEqual(body["mcp_verify_state"], "ok")
         self.assertEqual(seen["project"], "alpha", "验证用成员的会话项目")
+        self.assertEqual(seen["execution"].get("credential_type"), "session",
+                         "执行范围随帧下发（受限会话）")
         # 受限凭据：verify_bot 通过且带会话范围
         self.assertIsNotNone(auth.session_scope(REMOTE, seen["key"],
                                                 auth.signing_keys()[1]))
         # 权限拒绝：403 → failed + 脱敏原因
         link_403 = type("LinkStub", (), {
-            "request_mcp_verify": lambda self, key, project:
-                {"status": 403, "body": '{"detail": "Session project mismatch"}'},
+            "request_mcp_verify": lambda self, key, project, execution=None:
+                {"status": 403,
+                 "body": '{"error": "engine 403: Session project mismatch"}'},
         })()
         with patch.object(relay_server, "active_link", return_value=link_403):
             response = self._api_client().post(f"/relay/nodes/{REMOTE}/mcp-verify")
@@ -430,7 +440,9 @@ class DirectionBDialTests(unittest.TestCase):
         POST /mcp-verify → 引擎发帧 → 插件本机经 loopback 代理走真实
         隧道回引擎（假引擎 API 鉴权响应）→ 状态回传落库。"""
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-        result = self._listen_serve()
+        result = self._listen_serve(
+            mcp_entry=str(Path(__file__).resolve().parents[1] / "mcp" / "server.py"),
+            mcp_python=sys.executable)
         self.assertTrue(self._pair_and_dial(result))
         self.assertTrue(result["proxy_port"] > 0, "listen 必启代理")
         self._ensure_grant()
@@ -480,6 +492,69 @@ class DirectionBDialTests(unittest.TestCase):
         nodes = self._api_client().get("/relay/nodes").json()
         node = next(n for n in nodes if n["member"] == REMOTE)
         self.assertEqual(node["mcp_verify_state"], "")
+
+    def test_mcp_verify_entry_unavailable_failed(self):
+        """manager node2106：随包 MCP 运行入口不可用时验证失败并如实回传
+        （不得伪成功，也不得残留旧结果）。"""
+        from engine import api as engine_api
+        result = self._listen_serve(mcp_entry=str(
+            Path(__file__).resolve().parents[1] / "mcp" / "no-such-entry.py"),
+            mcp_python=sys.executable)
+        self.assertTrue(self._pair_and_dial(result))
+        self._ensure_grant()
+        # 真实链路：帧到插件，插件如实回传入口不可用
+        reply = engine_api.relay_node_mcp_verify(REMOTE, ("fixture", "user"))
+        self.assertEqual(reply["mcp_verify_state"], "failed")
+        self.assertIn("entry unavailable", reply["mcp_verify_error"])
+        # 失败不残留旧成功：换代后仍待验
+        conn = db.get_connection()
+        try:
+            relay.generation_advance(conn, REMOTE)
+        finally:
+            conn.close()
+        nodes = self._api_client().get("/relay/nodes").json()
+        node = next(n for n in nodes if n["member"] == REMOTE)
+        self.assertEqual(node["mcp_verify_state"], "")
+
+    def test_mcp_verify_stale_reply_does_not_light_new_generation(self):
+        """manager node2106 反例：旧连接发起验证途中换代，迟到回执按
+        原代条件写不命中——新连接保持待验，不得被旧成功点亮。"""
+        from engine import api as engine_api
+        conn = db.get_connection()
+        try:
+            relay.set_direction(conn, REMOTE, "dial")
+            relay.generation_advance(conn, REMOTE)  # 换代作废：当前行待验
+        finally:
+            conn.close()
+        self._ensure_grant()
+
+        class DelayedReply:
+            db_generation = 1
+
+            def request_mcp_verify(self, key, project, execution=None):
+                conn = db.get_connection()
+                try:
+                    advanced = relay.generation_advance(conn, REMOTE)
+                finally:
+                    conn.close()
+                assert advanced >= 1
+                return {"status": 200,
+                        "body": '{"members":[{"profile":"%s"}]}' % REMOTE,
+                        "generation": 1}
+
+        with patch.object(relay_server, "active_link",
+                          return_value=DelayedReply()):
+            reply = engine_api.relay_node_mcp_verify(REMOTE, ("fixture", "user"))
+        # 端点返回落库后的真实状态：旧代条件写不命中 → 仍待验
+        conn = db.get_connection()
+        try:
+            node = relay.read_node(conn, REMOTE)
+        finally:
+            conn.close()
+        self.assertEqual(reply["mcp_verify_state"], "",
+                         "API 返回与库一致：旧回执未点亮新代")
+        self.assertEqual(node["mcp_verify_state"], "",
+                         "旧连接迟到回执不得点亮新代（结果仍待验）")
 
     def test_engine_dials_plugin_listen_and_frames(self):
         plg_listen = self.plg["listen"]

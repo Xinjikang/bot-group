@@ -126,7 +126,7 @@ class ListenServer:
 
     def __init__(self, *, address: str, port: int, cert_path: str, key_path: str,
                  advertise: str, member: str, home: str, mcp_python: str,
-                 scheme: str = "wss"):
+                 scheme: str = "wss", mcp_entry: str = ""):
         self.address = address
         self.port = port
         self.cert_path = cert_path
@@ -135,6 +135,7 @@ class ListenServer:
         self.member = member
         self.home = home
         self.mcp_python = mcp_python
+        self.mcp_entry = mcp_entry
         self.scheme = scheme
         self._streams = streams_mod.StreamRegistry(home, on_event=self._on_local_event)
         self._stop = threading.Event()
@@ -327,35 +328,46 @@ class ListenServer:
         except streams_mod.StreamClosed:
             logger.warning("bot-group relay dial frame dropped stream=%s (closed)", stream)
 
+    def _mcp_entry(self) -> str | None:
+        """随包 MCP stdio 入口 mcp/server.py：发布态在插件包根/mcp/，
+        源码态回退仓库根/mcp/；测试可经 listen_serve(mcp_entry=) 显式给。"""
+        if self.mcp_entry:
+            return self.mcp_entry
+        for base in (Path(__file__).resolve().parent,
+                     Path(__file__).resolve().parent.parents[2]):
+            entry = base / "mcp" / "server.py"
+            if entry.is_file():
+                return str(entry)
+        return None
+
     def _handle_mcp_verify_request(self, ws, meta: dict, envelope: dict,
                                    generation: int) -> None:
-        """mcp_verify_request 的独立处理线程（manager node2102）：本机经
-        loopback 代理发起 GET（代理打包 http_request 帧沿已认证通道回引擎
-        执行真实鉴权），状态回传。代理未启/请求失败如实回传错误。"""
-        import urllib.error
-        import urllib.request
+        """mcp_verify_request 的独立处理线程（manager node2102/2106）：用
+        实际配置的随包程序调用 group_list_members 工具（spawn mcp/server.py
+        stdio，JSON-RPC initialize+tools/call），工具经 GROUP_ENGINE_URL=
+        本机 loopback 代理走已认证隧道回引擎鉴权。结果含成员名单回传。
+        入口缺失/代理未启/调用失败如实回传错误。收帧线程不阻塞（同步
+        调用会卡死同链路 http_response 派发）。"""
         request_id = meta.get("request_id") or ""
-        from . import mcpproxy
         status = 502
         body = '{"error": "proxy not running"}'
-        if mcpproxy._ACTIVE_SERVER is not None:
-            port = mcpproxy._ACTIVE_SERVER.port
-            url = (f"http://127.0.0.1:{port}"
-                   f"{str(envelope.get('path') or '/')}"
-                   f"?{str(envelope.get('query') or '')}")
-            req = urllib.request.Request(url, method="GET")
-            req.add_header("x-group-key",
-                           str(envelope.get("x_group_key") or ""))
+        from . import mcpproxy
+        proxy = mcpproxy._ACTIVE_SERVER
+        entry = self._mcp_entry()
+        if proxy is not None and entry and os.path.isfile(entry):
             try:
-                with urllib.request.urlopen(req, timeout=20) as resp:
-                    status = resp.status
-                    body = resp.read().decode("utf-8", errors="replace")[:4000]
-            except urllib.error.HTTPError as exc:
-                status = exc.code
-                body = exc.read().decode("utf-8", errors="replace")[:4000]
-            except OSError as exc:
+                status, body = self._call_group_list_members(
+                    entry, proxy.port, envelope, request_id)
+            except Exception as exc:  # noqa: BLE001 如实回传
+                logger.warning("bot-group relay verify tool call failed: %s", exc)
                 status = 502
-                body = json.dumps({"error": f"proxy unreachable: {exc}"})
+                body = json.dumps({"error": f"tool call failed: {exc}"},
+                                  ensure_ascii=False)
+        elif proxy is None:
+            body = '{"error": "proxy not running"}'
+        else:
+            body = json.dumps({"error": "packaged mcp entry unavailable"},
+                              ensure_ascii=False)
         try:
             ws.send(json.dumps({
                 "relay": {"kind": "mcp_verify_response", "request_id": request_id,
@@ -364,6 +376,104 @@ class ListenServer:
             }, ensure_ascii=False))
         except Exception:  # noqa: BLE001 断链时验证结果作废（换代清）
             logger.warning("bot-group relay verify response send failed")
+
+    def _call_group_list_members(self, entry: str, proxy_port: int,
+                                 envelope: dict, request_id: str) -> tuple[int, str]:
+        """spawn 随包 mcp/server.py（stdio）调 group_list_members 工具。
+
+        子进程环境白名单构造（不继承宿主 env）：GROUP_ENGINE_URL 指向本机
+        代理、凭据用本次会话凭据、执行范围用引擎下发的 XDG_GROUP_ENGINE_
+        EXECUTION——工具沿代理隧道回引擎按成员会话范围鉴权。"""
+        import subprocess
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "SYSTEMROOT": os.environ.get("SYSTEMROOT", "") or "C:\\Windows",
+            "TEMP": os.environ.get("TEMP", "") or os.environ.get("TMP", ""),
+            "TMP": os.environ.get("TMP", "") or os.environ.get("TEMP", ""),
+            "PYTHONUTF8": "1",
+            "GROUP_ENGINE_URL": f"http://127.0.0.1:{proxy_port}",
+            "XDG_GROUP_ENGINE_URL": "",
+            "GROUP_ENGINE_TOKEN": str(envelope.get("x_group_key") or ""),
+            "XDG_GROUP_ENGINE_EXECUTION":
+                json.dumps(envelope.get("execution") or {}, ensure_ascii=False),
+            "NO_PROXY": "127.0.0.1",
+            "HERMES_PROFILE": self.member,
+        }
+        python = self.mcp_python if (self.mcp_python
+                                     and os.path.isfile(self.mcp_python)) \
+            else sys.executable
+        # 二进制管道（text 模式 universal newlines 会把 '\n' 转 '\r\n'，
+        # 与 mcp 库按 b'\n' 分帧不一致——曾致 initialize 静默无响应）
+        proc = subprocess.Popen(
+            [python, "-B", entry],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, env=env,
+            cwd=str(Path(entry).resolve().parent))
+
+        def rpc(payload: dict) -> dict:
+            if proc.stdin is None or proc.stdout is None:
+                raise RuntimeError("stdio closed")
+            proc.stdin.write(json.dumps(payload).encode("utf-8") + b"\n")
+            proc.stdin.flush()
+            line = proc.stdout.readline()
+            if not line:
+                raise RuntimeError("stdio closed before reply")
+            return json.loads(line)
+
+        def notify(payload: dict) -> None:
+            # 通知无响应：只写不读（读过会永久阻塞）
+            if proc.stdin is None:
+                raise RuntimeError("stdio closed")
+            proc.stdin.write(json.dumps(payload).encode("utf-8") + b"\n")
+            proc.stdin.flush()
+
+        try:
+            rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"protocolVersion": "2025-06-18",
+                            "capabilities": {},
+                            "clientInfo": {"name": "bot-group-relay-verify",
+                                           "version": "1.0"}}})
+            notify({"jsonrpc": "2.0", "method": "notifications/initialized",
+                    "params": {}})
+            reply = rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                         "params": {"name": "group_list_members",
+                                    "arguments": {}}})
+        finally:
+            try:
+                proc.stdin.close()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                proc.wait(timeout=10)
+            except Exception:  # noqa: BLE001
+                proc.kill()
+        if reply.get("error"):
+            return 502, json.dumps({"error": str(reply["error"])[:500]},
+                                   ensure_ascii=False)
+        result = reply.get("result") or {}
+        content = result.get("content") or []
+        if result.get("isError"):
+            text = (content[0].get("text", "") if content else "")
+            return 502, text[:2000] or '{"error": "tool reported error"}'
+        text = content[0].get("text", "{}") if content else "{}"
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return 502, json.dumps(
+                {"error": f"unexpected tool result: {text[:300]}"},
+                ensure_ascii=False)
+        if not isinstance(data, dict):
+            return 502, json.dumps({"error": "unexpected tool result shape"},
+                                   ensure_ascii=False)
+        if data.get("error"):
+            # 工具层错误（如 engine 403: Session project mismatch）如实回传
+            error_text = str(data["error"])
+            if "engine 403" in error_text or "mismatch" in error_text:
+                return 403, json.dumps({"error": error_text[:500]},
+                                       ensure_ascii=False)
+            return 502, json.dumps({"error": error_text[:500]},
+                                   ensure_ascii=False)
+        return 200, text
 
     def _on_local_event(self, local: streams_mod.LocalGatewayStream, frame: dict) -> None:
         envelope = json.dumps({
@@ -391,7 +501,8 @@ def listen_serve(*, address: str, port: int, advertise: str = "",
                  member: str = "", home: str = "", mcp_python: str = "",
                  cert_path: str | None = None, key_path: str | None = None,
                  tls: bool = True, link_to_file: bool = False,
-                 proxy_port: int = 0, no_proxy: bool = False) -> dict:
+                 proxy_port: int = 0, no_proxy: bool = False,
+                 mcp_entry: str = "") -> dict:
     """listen 工具入口：校验→证书→监听→签发配对链接→启动 MCP loopback
     代理。返回结果 dict（含 proxy_port——ECS 本地 GROUP_ENGINE_URL 指向
     http://127.0.0.1:<proxy_port>）。
@@ -415,7 +526,7 @@ def listen_serve(*, address: str, port: int, advertise: str = "",
     home = home or os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
     server = ListenServer(address=bind, port=port, cert_path=cert, key_path=key,
                           advertise=advertise or bind, member=member, home=home,
-                          mcp_python=mcp_python, scheme=scheme)
+                          mcp_python=mcp_python, scheme=scheme, mcp_entry=mcp_entry)
     try:
         server.start()  # 绑定失败抛 RuntimeError，保持原状
         issued = pairing.issue_pairing(member=member, advertise=server.advertise,

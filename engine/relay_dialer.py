@@ -221,13 +221,17 @@ class DialLink:
             waiter.put(report)
 
     def request_mcp_verify(self, x_group_key: str, project: str,
+                           execution: dict | None = None,
                            timeout: float = 20.0) -> dict | None:
         """manager node2102：配对导入并认证后的实际受限只读 MCP 验证——
-        发 mcp_verify_request 帧给插件（带成员会话凭据，仅沿已认证通道
-        下发），插件本机经 loopback 代理走真实隧道回引擎鉴权，状态回传。
-        返回 {status, body} 或 None（超时/断链）。"""
+        发 mcp_verify_request 帧给插件（带成员会话凭据+执行范围，仅沿已
+        认证通道下发），插件用随包 MCP 程序实际调用 group_list_members
+        （沿 loopback 代理回引擎鉴权），状态回传。返回 {status, body,
+        generation} 或 None（超时/断链）；generation 是发起时的本地状态
+        代——写库必须用它，旧连接迟到的回执不得点亮新代。"""
         if self.closed:
             return None
+        verify_generation = self.db_generation or self.generation
         with self._snapshot_waiters_lock:
             self._snapshot_seq += 1
             request_id = f"verify-{self._snapshot_seq}"
@@ -239,17 +243,20 @@ class DialLink:
                           "generation": self.generation},
                 "path": "/members", "query": f"project={urllib.parse.quote(project)}",
                 "x_group_key": x_group_key,
+                "project": project,
+                "execution": execution or {},
             }, ensure_ascii=False))
         except ConnectionError:
             with self._snapshot_waiters_lock:
                 self._snapshot_waiters.pop(request_id, None)
             return None
         try:
-            return waiter.get(timeout=timeout)
+            report = waiter.get(timeout=timeout)
         except queue.Empty:
             with self._snapshot_waiters_lock:
                 self._snapshot_waiters.pop(request_id, None)
             return None
+        return dict(report, generation=verify_generation)
 
     def _on_verify_response(self, request_id: str, report: dict) -> None:
         with self._snapshot_waiters_lock:
