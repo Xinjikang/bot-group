@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS relay_nodes (
     -- req#173 双向接入：连接方向与切换状态机（先断后建，动作驱动不设计时器）
     direction         TEXT NOT NULL DEFAULT 'listen',  -- listen=引擎监听(方向A) / dial=引擎拨号(方向B)
     dial_endpoint     TEXT NOT NULL DEFAULT '',   -- 插件监听端点 JSON：{host,port,tls,fingerprint}
+    proxy_port        INTEGER NOT NULL DEFAULT 0,  -- 插件 loopback MCP 代理端口（方向B随包MCP GROUP_ENGINE_URL指向）
     switch_state      TEXT NOT NULL DEFAULT '',   -- ''=无切换 / 'switching'=切换中（暂停派发）
     switch_target     TEXT NOT NULL DEFAULT '',   -- 切换目标方向（随节点持久化，重启可读回）
     switch_error      TEXT NOT NULL DEFAULT '',   -- 最近一次切换/拨号失败原因（页面显示）
@@ -331,7 +332,13 @@ def render_mcp_config(conn, member: str, *, engine_url: str = "") -> dict:
         return {}
     config = {key: value for key, value in config.items()
               if not key.startswith("_")}
-    rendered = _substitute(config, {"engine_url": engine_url})
+    # manager node2084：方向 B（引擎拨号、插件监听）的随包 MCP 进程
+    # 在 ECS 本机——GROUP_ENGINE_URL 渲染为插件 loopback 代理实际端口
+    # （请求沿已认证通道回引擎按成员权限执行）；方向 A 用引擎直连地址。
+    render_url = engine_url
+    if row["direction"] == "dial" and row["proxy_port"]:
+        render_url = f"http://127.0.0.1:{row['proxy_port']}"
+    rendered = _substitute(config, {"engine_url": render_url})
     return rendered
 
 
@@ -348,17 +355,25 @@ def _substitute(value, variables: dict):
 
 
 def mcp_report(conn, member: str, fingerprint: str, *, generation: int | None = None,
-               now=None) -> None:
+               proxy_port: int = 0, now=None) -> None:
     """连接存续中插件换包后上报的新摘要（manager node1977 ③）：
     更新为 configure 前复核用的远端实际摘要。带代条件防旧代迟到上报
-    覆盖新代（manager node1981 ②）。"""
+    覆盖新代（manager node1981 ②）。proxy_port 为插件 loopback MCP
+    代理端口（manager node2084：方向 B 随包 MCP 的 GROUP_ENGINE_URL
+    指向它，0=本次会话未启代理）。"""
+    updates = "mcp_fingerprint=?"
+    args: list = [fingerprint]
+    if proxy_port:
+        updates += ",proxy_port=?"
+        args.append(proxy_port)
+    args.append(_now() if now is None else now)
     if generation is None:
-        conn.execute("UPDATE relay_nodes SET mcp_fingerprint=?,updated_at=? "
-                     "WHERE member=?", (fingerprint, _now() if now is None else now, member))
+        conn.execute(f"UPDATE relay_nodes SET {updates},updated_at=? "
+                     "WHERE member=?", (*args, member))
     else:
-        conn.execute("UPDATE relay_nodes SET mcp_fingerprint=?,updated_at=? "
+        conn.execute(f"UPDATE relay_nodes SET {updates},updated_at=? "
                      "WHERE member=? AND generation=?",
-                     (fingerprint, _now() if now is None else now, member, generation))
+                     (*args, member, generation))
     conn.commit()
 
 
@@ -503,6 +518,13 @@ def merge_mcp_spec(conn, member: str, spec: dict, *, engine_url: str = "",
         row_gen = _row["generation"] if _row is not None else None
         write_gen = report.get("generation") if report.get("generation") is not None else row_gen
         mcp_report(conn, member, report["mcp_fingerprint"], generation=write_gen)
+        # manager node2084：快照带本次 loopback 代理实际端口（含 0=未启代理，
+        # 换包/停代理后旧值必须清零，否则 GROUP_ENGINE_URL 残留旧端口）
+        if isinstance(report.get("proxy_port"), int):
+            conn.execute("UPDATE relay_nodes SET proxy_port=? "
+                         "WHERE member=? AND generation=?",
+                         (report["proxy_port"], member, write_gen))
+            conn.commit()
         if report.get("code_version"):
             conn.execute("UPDATE relay_nodes SET code_version=? "
                          "WHERE member=? AND generation=?",

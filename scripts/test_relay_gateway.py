@@ -512,10 +512,11 @@ class RelayFrameTests(RelayBase):
                                 "mcp_fingerprint": "fresh-sha",
                                 "code_version": RELEASE_VERSION}))
             thread.join(timeout=6)
-            # 响应附本连接代：configure 写库按代条件（reviewer 返修①）
+            # 响应附本连接代：configure 写库按代条件（reviewer 返修①）；
+            # proxy_port 为插件 loopback 代理端口（manager node2084，0=未启）
             self.assertEqual(result.get("report"), {
                 "mcp_fingerprint": "fresh-sha", "code_version": RELEASE_VERSION,
-                "generation": reply["relay"]["generation"]})
+                "generation": reply["relay"]["generation"], "proxy_port": 0})
         finally:
             ws.close()
 

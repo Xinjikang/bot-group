@@ -318,6 +318,14 @@ class DirectionBDialTests(unittest.TestCase):
         """隧道全链：引擎 DialLink 收到 http_request → 转发引擎回环 API →
         http_response 回传（插件 mcpproxy.deliver 收单）。"""
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from engine import auth
+
+        # manager node2084：随包 MCP 自带 hermes_session_auth 注入的受限
+        # 会话凭据，隧道核验属于通道成员后原样转发（范围随行）
+        credential = auth.session_token(REMOTE, {
+            "profile": REMOTE, "project": "alpha", "thread_id": None,
+            "session": "sess-1", "session_id": "sid-1", "generation": 1})
+        member_headers = {"x-group-key": credential}
 
         class EngineAPI(BaseHTTPRequestHandler):
             def log_message(self, *a):  # noqa: A003
@@ -345,7 +353,8 @@ class DirectionBDialTests(unittest.TestCase):
             relay_server._serve_relay_http_request(link, {
                 "relay": {"kind": "http_request", "request_id": request_id,
                           "generation": 1},
-                "method": "GET", "path": "/health", "headers": {}, "body": ""})
+                "method": "GET", "path": "/health", "headers": member_headers,
+                "body": ""})
         sent = json.loads(fake_ws.sent[0])
         self.assertEqual(sent["relay"]["kind"], "http_response")
         self.assertEqual(sent["status"], 200)
@@ -359,7 +368,8 @@ class DirectionBDialTests(unittest.TestCase):
             relay_server._serve_relay_http_request(link, {
                 "relay": {"kind": "http_request", "request_id": "req-2",
                           "generation": 1},
-                "method": "GET", "path": "/admin/secrets", "headers": {}, "body": ""})
+                "method": "GET", "path": "/admin/secrets",
+                "headers": member_headers, "body": ""})
         sent = json.loads(fake_ws.sent[1])
         self.assertEqual(sent["status"], 403, "管理端点绝不隧道转发")
 
@@ -455,7 +465,7 @@ class EntryAuthorizationTests(unittest.TestCase):
             return 1
 
         with patch.object(os, "name", "nt"), \
-                patch("ctypes.windll.advapi32.GetUserNameExW",
+                patch("ctypes.windll.secur32.GetUserNameExW",
                       side_effect=fake_get_name, create=True), \
                 patch.dict(os.environ, {
                     "USERNAME": "fake-env-user",
@@ -464,7 +474,7 @@ class EntryAuthorizationTests(unittest.TestCase):
                             "内核主体 DOMAIN\\realuser 命中白名单")
         # 内核 API 失败：返回空 → 即使环境 USERNAME 命中也不放行
         with patch.object(os, "name", "nt"), \
-                patch("ctypes.windll.advapi32.GetUserNameExW",
+                patch("ctypes.windll.secur32.GetUserNameExW",
                       return_value=0, create=True), \
                 patch.dict(os.environ, {
                     "USERNAME": "env-user",
@@ -651,7 +661,8 @@ class EngineTunnelIdentityTests(unittest.TestCase):
         relay.register_node(conn, REMOTE, CREDENTIAL, display_name="r")
         conn.close()
 
-    def test_forward_binds_channel_member_identity(self):
+    def _forward_harness(self, envelope):
+        """运行一次隧道转发（patch urlopen 记录下游头），返回 (captured, ws_frames)。"""
         fake_ws = _SyncWs()
         link = relay_dialer.DialLink(REMOTE, fake_ws, 1, peer_ip="203.0.113.9")
         captured_headers = {}
@@ -673,6 +684,20 @@ class EngineTunnelIdentityTests(unittest.TestCase):
             captured_url["method"] = request.get_method()
             return _Resp()
 
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            relay_server._serve_relay_http_request(link, envelope)
+        return (captured_headers, captured_url, fake_ws.sent)
+
+    def _session_credential(self, member=REMOTE):
+        """构造该成员的受限会话凭据（hermes_session_auth 同口径注入）。"""
+        from engine import auth
+        return auth.session_token(member, {
+            "profile": member, "project": "alpha", "thread_id": None,
+            "session": "sess-1", "session_id": "sid-1", "generation": 1})
+
+    def test_forward_requires_member_scoped_credential(self):
+        """manager node2084：外部身份头一律过滤；凭据缺失或不属于通道成员
+        → 401 拒绝，绝不注入无 scope 的 bot_token 静默降级。"""
         envelope = {
             "relay": {"kind": "http_request", "request_id": "r-1",
                       "generation": 1},
@@ -683,79 +708,166 @@ class EngineTunnelIdentityTests(unittest.TestCase):
                 "x-group-key": "external-key",
                 "x-group-profile": "someone-else",
                 "content-type": "application/json",
-                "accept": "application/json",
             },
             "body": "",
         }
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            relay_server._serve_relay_http_request(link, envelope)
-        # 下游请求头：外部身份头全滤，注入实际通道成员
-        self.assertNotIn("authorization", captured_headers,
-                         "外部 authorization 不得透传")
-        # manager node2074/12711：外部 x-group-key 一律过滤，注入通道成员
-        # 的既有作用域凭据（引擎现场签发 bot_token，verify_bot 可核验）
-        from engine import auth
-        self.assertEqual(captured_headers.get("x-group-key"),
-                         auth.bot_token(REMOTE),
-                         "隧道按通道成员注入作用域凭据，外部密钥不得透传")
-        self.assertEqual(captured_headers.get("x-group-profile"), REMOTE,
-                         "下游授权上下文必须绑定实际配对通道成员")
-        self.assertEqual(captured_headers.get("content-type"), "application/json",
-                         "内容头正常透传")
-        self.assertIn("/projects/", captured_url["full"])
-        # http_response 帧回传（插件代理收单）
-        frames = fake_ws.sent
-        self.assertTrue(frames, "必须回传 http_response 帧")
+        captured, captured_url, frames = self._forward_harness(envelope)
+        self.assertEqual(captured_url, {}, "凭据缺失/外部身份 → 不得转发到引擎")
+        self.assertNotIn("authorization", captured)
         response = json.loads(frames[-1])
         self.assertEqual(response["relay"]["kind"], "http_response")
-        self.assertEqual(response["status"], 200)
-        self.assertEqual(response["relay"]["request_id"], "r-1")
+        self.assertEqual(response["status"], 401,
+                         "外部身份头全滤后无通道成员凭据：401 拒绝")
+        # 其他成员的有效凭据同样拒绝（凭据必须属于通道成员本人）
+        from engine import auth
+        alien = auth.session_token("someone-else", {
+            "profile": "someone-else", "project": "alpha", "thread_id": None,
+            "session": "sess-2", "session_id": "sid-2", "generation": 1})
+        envelope["headers"] = {"x-group-key": alien}
+        captured, captured_url, frames = self._forward_harness(envelope)
+        self.assertEqual(captured_url, {}, "非通道成员凭据不得转发")
+        self.assertEqual(json.loads(frames[-1])["status"], 401)
 
-    def test_forward_members_path_with_member_scope_key(self):
-        """manager node2074/12711：随包 group_list_members 实际 GET /members
-        ——路径在白名单（转发而非 403）、下游带成员作用域凭据与成员身份。"""
-        fake_ws = _SyncWs()
-        link = relay_dialer.DialLink(REMOTE, fake_ws, 1, peer_ip="203.0.113.9")
-        captured_headers = {}
-        captured_url = {}
-
-        class _Resp:
-            status = 200
-            headers = {"content-type": "application/json"}
-
-            def read(self):
-                return b'{"members": [{"profile": "remote1", "role": "member"}], "count": 1}'
-
-            def close(self):
-                pass
-
-        def fake_urlopen(request, timeout=120):  # noqa: ARG001
-            captured_headers.update({k.lower(): v for k, v in request.headers.items()})
-            captured_url["full"] = request.full_url
-            return _Resp()
-
+    def test_forward_preserves_member_scoped_credential(self):
+        """manager node2084：随包 MCP 自带 hermes_session_auth 注入的受限
+        会话凭据——核验属于通道成员后原样转发，session/execution 范围
+        随行（access 侧照常施加项目/会话/执行限制）；不再替换为 bot_token
+        （该类型 session_scope/execution_scope 均为空会丢权限链）。"""
+        from engine import auth
+        credential = self._session_credential()
+        self.assertIsNotNone(auth.session_scope(REMOTE, credential,
+                                                auth.signing_keys()[1]),
+                             "夹具凭据须带会话范围")
         envelope = {
             "relay": {"kind": "http_request", "request_id": "r-2",
                       "generation": 1},
             "method": "GET", "path": "/members?project=alpha",
-            "headers": {},
+            "headers": {
+                "x-group-key": credential,
+                "x-group-profile": "someone-else",  # 外部身份仍须被覆盖
+                "content-type": "application/json",
+                "accept": "application/json",
+            },
             "body": "",
         }
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            relay_server._serve_relay_http_request(link, envelope)
+        captured, captured_url, frames = self._forward_harness(envelope)
         self.assertIn("/members", captured_url["full"],
                      "/members 在白名单内必须实际转发")
-        self.assertEqual(captured_headers.get("x-group-profile"), REMOTE)
-        from engine import auth
-        self.assertEqual(captured_headers.get("x-group-key"),
-                         auth.bot_token(REMOTE),
-                         "成员作用域凭据随转发注入（verify_bot 可核验）")
-        frames = fake_ws.sent
-        self.assertTrue(frames)
+        self.assertEqual(captured.get("x-group-profile"), REMOTE,
+                         "下游授权上下文必须绑定实际配对通道成员")
+        self.assertEqual(captured.get("x-group-key"), credential,
+                         "成员受限凭据原样保留（原会话/执行范围随行）")
+        self.assertNotEqual(captured.get("x-group-key"), auth.bot_token(REMOTE),
+                            "不得降级为无 scope 的通用成员密钥")
+        self.assertEqual(captured.get("content-type"), "application/json",
+                         "内容头正常透传")
         response = json.loads(frames[-1])
         self.assertEqual(response["relay"]["kind"], "http_response")
         self.assertEqual(response["status"], 200)
-        self.assertIn("members", response["body"])
+
+    def test_forward_members_path_with_member_scope_key(self):
+        """manager node2074/12711 + node2084：随包 group_list_members 实际
+        GET /members——路径在白名单（转发而非 403）、下游保留成员作用域
+        凭据与成员身份。"""
+        credential = self._session_credential()
+        envelope = {
+            "relay": {"kind": "http_request", "request_id": "r-3",
+                      "generation": 1},
+            "method": "GET", "path": "/members?project=alpha",
+            "headers": {"x-group-key": credential},
+            "body": "",
+        }
+        captured, captured_url, frames = self._forward_harness(envelope)
+        self.assertIn("/members", captured_url["full"],
+                     "/members 在白名单内必须实际转发")
+        self.assertEqual(captured.get("x-group-profile"), REMOTE)
+        self.assertEqual(captured.get("x-group-key"), credential,
+                         "成员作用域凭据随转发保留（verify_bot 可核验）")
+        response = json.loads(frames[-1])
+        self.assertEqual(response["relay"]["kind"], "http_response")
+        self.assertEqual(response["status"], 200)
+        self.assertIn("projects", response["body"])
+
+    def test_proxy_port_flow_renders_loopback_url_for_dial(self):
+        """manager node2084：方向 B 随包 MCP 的 GROUP_ENGINE_URL 必须指向
+        插件 loopback 代理实际端口——快照 proxy_port 落库（含 0 清零），
+        render_mcp_config 按节点方向渲染；方向 A 仍用引擎直连地址。"""
+        conn = db.get_connection()
+        try:
+            relay.register_node(conn, REMOTE, CREDENTIAL, display_name="r")
+            conn.execute("UPDATE relay_nodes SET mcp_config=?,direction=? "
+                         "WHERE member=?",
+                         (json.dumps({"command": "python", "args": [],
+                                      "env": {"GROUP_ENGINE_URL": "{engine_url}"}}),
+                          "dial", REMOTE))
+            conn.commit()
+            # 快照带本次代理端口 → 落库
+            relay.mcp_report(conn, REMOTE, "fp-1", generation=1, proxy_port=52310)
+            rendered = relay.render_mcp_config(conn, REMOTE,
+                                               engine_url="http://engine:8201")
+            self.assertEqual(rendered["env"]["GROUP_ENGINE_URL"],
+                             "http://127.0.0.1:52310",
+                             "方向 B 渲染为插件 loopback 代理实际端口")
+            # 停代理/换包：proxy_port=0 清零（不得残留旧端口）
+            relay.mcp_report(conn, REMOTE, "fp-2", generation=1, proxy_port=0)
+            conn.execute("UPDATE relay_nodes SET proxy_port=0 WHERE member=?",
+                         (REMOTE,))
+            conn.commit()
+            rendered = relay.render_mcp_config(conn, REMOTE,
+                                               engine_url="http://engine:8201")
+            self.assertEqual(rendered["env"]["GROUP_ENGINE_URL"],
+                             "http://engine:8201",
+                             "代理未启（proxy_port=0）回落引擎直连地址")
+            # 方向 A（引擎监听）：始终用引擎直连地址
+            conn.execute("UPDATE relay_nodes SET direction='listen',proxy_port=52311 "
+                         "WHERE member=?", (REMOTE,))
+            conn.commit()
+            rendered = relay.render_mcp_config(conn, REMOTE,
+                                               engine_url="http://engine:8201")
+            self.assertEqual(rendered["env"]["GROUP_ENGINE_URL"],
+                             "http://engine:8201",
+                             "方向 A 不走插件 loopback 代理")
+        finally:
+            conn.close()
+
+    def test_merge_mcp_spec_snapshot_proxy_port_writes_and_clears(self):
+        """manager node2084：configure 前 fetch_report（mcp_snapshot 同步
+        问询）带回的 proxy_port 按代写库，0 值同样生效（旧端口清零）。"""
+        conn = db.get_connection()
+        try:
+            relay.register_node(conn, REMOTE, CREDENTIAL, display_name="r")
+            conn.execute("UPDATE relay_nodes SET mcp_config=? WHERE member=?",
+                         (json.dumps({"command": "python", "args": [],
+                                      "env": {"GROUP_ENGINE_URL": "{engine_url}"}}),
+                          REMOTE))
+            conn.execute("UPDATE relay_nodes SET proxy_port=52312 WHERE member=?",
+                         (REMOTE,))
+            conn.commit()
+            calls = {"n": 0}
+
+            def fetch_report():
+                calls["n"] += 1
+                return {"mcp_fingerprint": "fp-snap", "code_version": "v2",
+                        "generation": 1, "proxy_port": 52313}
+
+            merged = relay.merge_mcp_spec(conn, REMOTE, {"command": "python"},
+                                          engine_url="http://engine:8201",
+                                          fetch_report=fetch_report)
+            row = relay.read_node(conn, REMOTE)
+            self.assertEqual(row["proxy_port"], 52313, "快照代理端口按代写库")
+            self.assertIn("env", merged)
+            # 第二次问询 proxy_port=0：旧端口必须清零
+            def fetch_report_zero():  # noqa: ANN001
+                return {"mcp_fingerprint": "fp-snap2", "code_version": "v2",
+                        "generation": 1, "proxy_port": 0}
+
+            relay.merge_mcp_spec(conn, REMOTE, {"command": "python"},
+                                 engine_url="http://engine:8201",
+                                 fetch_report=fetch_report_zero)
+            row = relay.read_node(conn, REMOTE)
+            self.assertEqual(row["proxy_port"], 0, "停代理后旧端口清零")
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

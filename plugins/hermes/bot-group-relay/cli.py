@@ -16,7 +16,9 @@ from pathlib import Path
 def _os_kernel_identity() -> str:
     """按平台取内核 OS 主体身份（manager node2074/12711：不以可伪造的
     USERNAME/USER 环境变量为准）：
-    - Windows：advapi32 GetUserNameExW（登录会话主体，环境变量无法伪造）；
+    - Windows：secur32 GetUserNameExW（登录会话主体，环境变量无法伪造；
+      manager node2084 实测该导出在 secur32 而非 advapi32——advapi32 无
+      此导出，原实现恒返回空）；
     - POSIX：内核 uid → pwd 主体名。
     取不到返回空串 → 白名单匹配失败（拒绝）。"""
     if os.name == "nt":
@@ -24,7 +26,7 @@ def _os_kernel_identity() -> str:
         try:
             buffer = ctypes.create_unicode_buffer(256)
             size = ctypes.c_uint(256)
-            if ctypes.windll.advapi32.GetUserNameExW(2, buffer, ctypes.byref(size)):
+            if ctypes.windll.secur32.GetUserNameExW(2, buffer, ctypes.byref(size)):
                 return buffer.value
         except Exception:  # noqa: BLE001 API 不可用按未授权处理
             return ""

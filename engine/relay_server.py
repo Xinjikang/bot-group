@@ -290,17 +290,21 @@ def _route_inbound(link: NodeLink, envelope: dict) -> bool:
         # 必须能取到本次配置的远端实际摘要，不能只靠握手缓存）
         fingerprint = envelope.get("mcp_fingerprint") or ""
         request_id = meta.get("request_id")
+        proxy_port = envelope.get("proxy_port")
+        proxy_port = proxy_port if isinstance(proxy_port, int) and proxy_port > 0 else 0
         if request_id:
             # mcp_snapshot 问询的同步响应（manager node1981 ③）
             link._on_snapshot_response(request_id, {
                 "mcp_fingerprint": fingerprint,
                 "code_version": envelope.get("code_version") or "",
+                "proxy_port": proxy_port,
             })
             return True
         conn = db.get_connection()
         try:
             relay.mcp_report(conn, link.member, fingerprint,
-                             generation=_db_generation(link))
+                             generation=_db_generation(link),
+                             proxy_port=proxy_port)
         finally:
             conn.close()
         logger.info("relay mcp_report member=%s fingerprint=%s", link.member,
@@ -465,7 +469,14 @@ def _serve_relay_http_request(link: NodeLink, envelope: dict) -> None:
     manager node2060 ②：下游授权上下文绑定实际通道成员——外部身份头
     （authorization/x-group-key/x-group-profile）一律过滤丢弃，注入
     X-Group-Profile=<link.member>（配对通道成员身份，绝不以本地管理员
-    或外部身份执行）；只透传内容头（content-type/accept/user-agent）。"""
+    或外部身份执行）；只透传内容头（content-type/accept/user-agent）。
+
+    manager node2084：凭据保留原会话/执行范围——随包 MCP 进程自带
+    hermes_session_auth 注入的受限凭据（session./run. 带项目/会话/执行
+    范围），不再替换成 auth.bot_token（该类型 session_scope 与
+    execution_scope 均为空，会丢权限链）。原请求凭据必须存在且经
+    verify_bot 核验属于通道成员本人，原样转发保留原授权链；无凭据或
+    凭据不属于通道成员一律 401，绝不注入空 scope 的通用成员密钥。"""
     import urllib.error
     import urllib.request
     request_id = (envelope.get("relay") or {}).get("request_id") or ""
@@ -478,22 +489,30 @@ def _serve_relay_http_request(link: NodeLink, envelope: dict) -> None:
                        if k in ("content-type", "accept", "user-agent")}
     # 下游授权上下文：实际配对通道成员（引擎 API 按 X-Group-Profile 解析）
     forward_headers["x-group-profile"] = link.member
-    # 成员作用域凭据（manager node2074/12711）：按通道成员签发既有作用域
-    # 凭据（auth.bot_token——relay_nodes 只存凭据哈希不落明文，引擎持
-    # signing keys 现场签发），access.resolve_identity 的 verify_bot 核验
-    # 通过后照常施加该成员的项目/会话/执行限制；绝不用权限更宽的通用
-    # 成员密钥，也绝不注入本地管理员身份。
     from . import auth
-    member_key = auth.bot_token(link.member)
-    forward_headers["x-group-key"] = member_key
+    # manager node2084：识别既有受限凭据并按通道成员校验——保留原会话/
+    # 执行权限（session./run. 凭据随行，access 侧照常施加项目/会话/执行
+    # 限制）；凭据缺失或不属于通道成员则拒绝，绝不降级为无 scope 的
+    # bot_token 通用密钥。
+    credential = raw_headers.get("x-group-key") or ""
+    if not credential and raw_headers.get("authorization", "").startswith("Bearer "):
+        credential = raw_headers["authorization"][7:].strip()
     body = envelope.get("body") or ""
     response = None
-    if method not in ("GET", "POST"):
+    if not credential or not auth.verify_bot(link.member, credential):
+        status, resp_headers, resp_body = 401, {}, \
+            '{"error": "member credential required for tunnel"}'
+        logger.warning("relay http_request rejected member=%s %s %s "
+                       "credential_missing_or_mismatched", link.member, method, path)
+    elif method not in ("GET", "POST"):
         status, resp_headers, resp_body = 405, {}, '{"error": "method not allowed"}'
     elif not any(path.startswith(prefix) for prefix in _HTTP_TUNNEL_PREFIXES):
         logger.warning("relay http_request blocked member=%s path=%s", link.member, path)
         status, resp_headers, resp_body = 403, {}, '{"error": "path not allowed"}'
     else:
+        # 凭据原样保留（session./run. 范围随行，access.resolve_identity 的
+        # verify_bot 分支解析 session_scope/execution_scope 施加成员限制）
+        forward_headers["x-group-key"] = credential
         from . import config
         url = f"http://{config.host()}:{config.port()}{path}"
         request = urllib.request.Request(

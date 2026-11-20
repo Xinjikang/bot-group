@@ -281,6 +281,12 @@ class ListenServer:
         if kind == "mcp_snapshot_request":
             snapshot = mcp_digest.snapshot(self.mcp_python,
                                            code_version=relay_config.plugin_version())
+            # manager node2084：随包 MCP 的 GROUP_ENGINE_URL 必须指向本次
+            # loopback 代理实际端口——快照带上当前代理端口，引擎侧落库后
+            # 按节点方向渲染。
+            from . import mcpproxy
+            proxy_port = (mcpproxy._ACTIVE_SERVER.port
+                          if mcpproxy._ACTIVE_SERVER is not None else 0)
             ws.send(json.dumps({
                 "relay": {"kind": "mcp_report", "request_id": meta.get("request_id"),
                           "generation": generation},
@@ -288,6 +294,7 @@ class ListenServer:
                 "code_version": snapshot["code_version"],
                 "mcp_python": snapshot["mcp_python"],
                 "mcp_entry": snapshot["mcp_entry"],
+                "proxy_port": proxy_port,
             }, ensure_ascii=False))
             return
         if kind == "http_response":
