@@ -99,6 +99,9 @@
   function bindingFor(member) {
     return bindings.get(member) || [];
   }
+  function addLocalBinding(member, ip) {
+    if (!bindingFor(member).includes(ip)) bindings.set(member, [...bindingFor(member), ip]);
+  }
   function registrationReady() {
     return nodesReady && membersReady && bindingsReady && !loading && !writeUncertain;
   }
@@ -498,14 +501,14 @@
       writeUncertain = false;
       showIssued(member.profile, data.credential);
       try {
-        const bound = await api('/admin/source-ips', {
+        const bound = await api('/admin/source-ips/add', {
           method: 'POST',
-          body: JSON.stringify({member: member.profile, ips: [ip]}),
+          body: JSON.stringify({member: member.profile, ip}),
         });
-        const saved = Array.isArray(bound.ips) ? bound.ips : [ip];
-        bindings.set(member.profile, saved);
+        if (bound.member !== member.profile || !bound.ip) throw new Error('来源 IP 绑定响应格式异常');
+        addLocalBinding(member.profile, bound.ip);
         writeUncertain = false;
-        report(registerStatus, `已登记 ${member.profile} 并绑定来源 IP ${saved.join('、')}；凭据仅显示一次，请立即复制。`);
+        report(registerStatus, `已登记 ${member.profile} 并绑定来源 IP ${bound.ip}；凭据仅显示一次，请立即复制。`);
         registerIp.value = '';
       } catch (bindError) {
         if (!bindError.status) writeUncertain = true;
@@ -611,14 +614,14 @@
     refreshControls();
     report(status, '正在保存来源 IP…');
     try {
-      const data = await api('/admin/source-ips', {
+      const data = await api('/admin/source-ips/add', {
         method: 'POST',
-        body: JSON.stringify({member, ips: [...existing, ip]}),
+        body: JSON.stringify({member, ip}),
       });
-      const saved = Array.isArray(data.ips) ? data.ips : [...existing, ip];
-      bindings.set(member, saved);
+      if (data.member !== member || !data.ip) throw new Error('来源 IP 绑定响应格式异常');
+      addLocalBinding(member, data.ip);
       writeUncertain = false;
-      report(registerStatus, `已为 ${member} 添加来源 IP ${ip}；立即生效。`);
+      report(registerStatus, `已为 ${member} 添加来源 IP ${data.ip}；立即生效。`);
       await reload(true);
     } catch (error) {
       if (!error.status) writeUncertain = true;

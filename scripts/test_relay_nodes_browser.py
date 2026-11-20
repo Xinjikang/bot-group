@@ -109,6 +109,26 @@ def main():
                 state['bindings'].append({'member': member, 'ips': ips})
             req.fulfill(json={'member': member, 'ips': ips})
             return
+        if path == '/admin/source-ips/add' and req.request.method == 'POST':
+            body = req.request.post_data_json
+            state['binding_posts'].append(deepcopy(body))
+            writes.append(('POST', path, body))
+            if state['binding_fail']:
+                req.fulfill(status=400, json={'detail': '无效的 IP 地址'})
+                return
+            if state['binding_hold']:
+                state['held_bindings'].append((req, body))
+                return
+            member = body.get('member', '')
+            ip = body.get('ip', '')
+            row = next((item for item in state['bindings'] if item['member'] == member), None)
+            if row:
+                if ip and ip not in row['ips']:
+                    row['ips'].append(ip)
+            else:
+                state['bindings'].append({'member': member, 'ips': [ip]})
+            req.fulfill(json={'member': member, 'ip': ip})
+            return
         if path.startswith('/admin/source-ips/') and req.request.method == 'DELETE':
             rest = path[len('/admin/source-ips/'):]
             member, ip = rest.split('/', 1)
@@ -247,7 +267,7 @@ def main():
         credential = page.locator('#relay-issued-credential').input_value()
         assert credential == 'TEST-RELAY-CREDENTIAL-1'
         assert 'rotate' not in state['register_bodies'][0]
-        assert state['binding_posts'][-1] == {'member': 'hermes-remote', 'ips': ['100.64.0.5']}
+        assert state['binding_posts'][-1] == {'member': 'hermes-remote', 'ip': '100.64.0.5'}
         assert page.locator('#relay-node-list').inner_text().count('ECS Hermes') == 1
         assert '离线' in page.locator('#relay-node-list').inner_text()
         assert '未上报' in page.locator('#relay-node-list').inner_text()
@@ -342,7 +362,7 @@ def main():
         spare_credential = page.locator('#relay-issued-credential').input_value()
         assert spare_credential == 'TEST-RELAY-CREDENTIAL-2'
         assert state['register_posts'] == lost_posts + 1
-        assert state['binding_posts'][-1] == {'member': 'hermes-spare', 'ips': ['100.64.0.6']}
+        assert state['binding_posts'][-1] == {'member': 'hermes-spare', 'ip': '100.64.0.6'}
         page.wait_for_function('!document.querySelector("#relay-close").disabled')
         close_dialog()
 
@@ -367,8 +387,7 @@ def main():
         form.locator('input').fill('100.64.0.7')
         form.locator('button[type="submit"]').click()
         page.wait_for_function('document.querySelector("#relay-register-status").textContent.includes("添加来源 IP")')
-        assert state['binding_posts'][-1] == {
-            'member': 'hermes-remote', 'ips': ['100.64.0.5', '100.64.0.7']}
+        assert state['binding_posts'][-1] == {'member': 'hermes-remote', 'ip': '100.64.0.7'}
         remote_card = page.locator('#relay-node-list article[data-relay-member="hermes-remote"]')
         page.wait_for_function('document.querySelector("#relay-node-list").textContent.includes("100.64.0.7")')
         remote_card.locator('button[data-action="remove-ip"][data-ip="100.64.0.7"]').click()
@@ -376,6 +395,49 @@ def main():
         assert state['binding_deletes'][-1] == {'member': 'hermes-remote', 'ip': '100.64.0.7'}
         page.wait_for_function('!document.querySelector("#relay-node-list").textContent.includes("100.64.0.7")')
         assert '100.64.0.5' in page.locator('#relay-node-list article[data-relay-member="hermes-remote"]').inner_text()
+
+        # Two independent page snapshots must not overwrite each other's additions.
+        # A stale page that still has a removed IP must not restore it when adding another IP.
+        close_dialog()
+        page2 = context.new_page()
+        page2.on('pageerror', lambda error: errors.append(str(error)))
+        page2.route('**/*', route)
+        page2.goto('http://127.0.0.1:18045/app/index.html')
+        page2.wait_for_function('document.querySelector("#login").hidden && S.isUserIdentity === true')
+        page2.locator('#btn-settings').click()
+        page2.locator('#btn-relay-nodes').click()
+        page2.wait_for_function('document.querySelector("#relay-nodes-dialog").open')
+        page2.wait_for_function('!document.querySelector("#relay-nodes-status").textContent.includes("正在读取")')
+        open_dialog()
+
+        def add_via_card(target, ip):
+            card = target.locator('#relay-node-list article[data-relay-member="hermes-remote"]')
+            card.locator('button[data-action="add-ip"]').click()
+            form = card.locator('[data-ip-form]')
+            form.locator('input').fill(ip)
+            form.locator('button[type="submit"]').click()
+            target.wait_for_function(
+                'document.querySelector("#relay-register-status").textContent.includes("添加来源 IP")')
+            target.wait_for_function(
+                f'document.querySelector(\'#relay-node-list article[data-relay-member="hermes-remote"]\').textContent.includes("{ip}")')
+
+        add_via_card(page, '100.64.0.8')
+        add_via_card(page2, '100.64.0.9')
+        remote_bindings = next(item['ips'] for item in state['bindings'] if item['member'] == 'hermes-remote')
+        assert set(remote_bindings) == {'100.64.0.5', '100.64.0.8', '100.64.0.9'}, remote_bindings
+
+        page2.locator('#relay-node-list article[data-relay-member="hermes-remote"] '
+                     'button[data-action="remove-ip"][data-ip="100.64.0.5"]').click()
+        page2.wait_for_function('document.querySelector("#relay-register-status").textContent.includes("已移除")')
+        page2.wait_for_function(
+            '!document.querySelector(\'#relay-node-list article[data-relay-member="hermes-remote"]\').textContent.includes("100.64.0.5")')
+        add_via_card(page, '100.64.0.10')
+        remote_bindings = next(item['ips'] for item in state['bindings'] if item['member'] == 'hermes-remote')
+        assert set(remote_bindings) == {'100.64.0.8', '100.64.0.9', '100.64.0.10'}, remote_bindings
+        assert state['binding_posts'][-1] == {'member': 'hermes-remote', 'ip': '100.64.0.10'}
+        page.wait_for_function(
+            '!document.querySelector(\'#relay-node-list article[data-relay-member="hermes-remote"]\').textContent.includes("100.64.0.5")')
+        page2.close()
 
         # The actual peer IP belongs to the node card; never-connected remains explicit.
         state['nodes'][0].update({'peer_ip': '100.64.0.5', 'state': 'online',
@@ -516,10 +578,10 @@ def main():
         assert all(path.startswith('/relay/nodes') or path.startswith('/admin/source-ips')
                    for method, path, _ in writes if method in ('POST', 'DELETE')), writes
         browser.close()
-    print('PASS: relay node list, member+source-IP registration, per-card bindings and actual peer IP, '
-          'add/remove IP, one-time credential/copy, double-click guard, pending/503/bindings gate, '
-          'unknown-write duplicate guard and recovery, online refresh, rotate=true reissue, '
-          'revoke/reissue confirms, bot read-only, errors and 390px themes')
+    print('PASS: relay node list, member+source-IP registration via idempotent add, per-card bindings and actual peer IP, '
+          'add/remove IP, two independent page snapshots without overwrite/restore, one-time credential/copy, '
+          'double-click guard, pending/503/bindings gate, unknown-write duplicate guard and recovery, '
+          'online refresh, rotate=true reissue, revoke/reissue confirms, bot read-only, errors and 390px themes')
 
 
 if __name__ == '__main__':
