@@ -196,6 +196,7 @@
   let listenLoading = false, listenUncertain = false, listenError = '';
   let directionBusy = false, directionWatch = 0, pendingPairing = null, pairingBusy = false;
   let directionView = '';
+  const mcpVerifyInflight = new Set();
 
   function report(target, message, error = false) {
     target.textContent = message;
@@ -403,7 +404,9 @@
       ? !!listenState?.remote_enabled
       : !!endpoint && (onlineForView || selected.dial_state === 'connected');
     const authenticated = onlineForView;
-    const mcp = authenticated && !!selected.mcp_fingerprint;
+    const mcpVerified = selected.mcp_verify_state === 'ok';
+    const mcpFailed = selected.mcp_verify_state === 'failed';
+    const mcp = authenticated && mcpVerified;
     if (direction === 'dial' && !listening && endpoint) {
       stageState(stageListen, 'current', '已配置，待拨通');
     } else {
@@ -411,8 +414,15 @@
     }
     stageState(stageAuth, authenticated ? 'done' : listening ? 'current' : 'pending',
       authenticated ? '已完成' : listening ? '进行中' : '待开始');
-    stageState(stageMcp, mcp ? 'done' : authenticated ? 'current' : 'pending',
-      mcp ? '已完成' : authenticated ? '进行中' : '待开始');
+    if (mcp) {
+      stageState(stageMcp, 'done', '已完成');
+    } else if (authenticated && mcpFailed) {
+      stageState(stageMcp, 'failed', '验证失败');
+    } else if (authenticated) {
+      stageState(stageMcp, 'current', '待验证');
+    } else {
+      stageState(stageMcp, 'pending', '待开始');
+    }
 
     directionDetail.hidden = false;
     stageListen.hidden = false;
@@ -426,7 +436,13 @@
       status = '凭据已吊销；重新签发后才能建立任一方向的连接。';
       statusError = true;
     } else if (onlineForView) {
-      status = `已连通：${directionLabel(direction)}${mcp ? '；MCP 已上报指纹。' : '；MCP 指纹未上报。'}`;
+      if (mcpFailed) {
+        status = `已连通：${directionLabel(direction)}；MCP 只读验证失败：${selected.mcp_verify_error || '未知原因'}`;
+      } else if (mcpVerified) {
+        status = `已连通：${directionLabel(direction)}；MCP 只读验证已通过（已读取本项目名单）。`;
+      } else {
+        status = `已连通：${directionLabel(direction)}；MCP 待只读验证。`;
+      }
     } else if (online) {
       status = `当前已连接：${directionLabel(serverDirection)}；目标${directionLabel(direction)}尚未切换。`;
     } else if (selected.switch_error) {
@@ -448,7 +464,10 @@
       status = `当前方向：${directionLabel(direction)}；等待连接。`;
     }
     report(directionStatus, status, statusError);
-    if (!online && selected.dial_failure?.stage) {
+    if (onlineForView && mcpFailed) {
+      failure = `MCP 只读验证失败：${selected.mcp_verify_error || '未知原因'}`;
+      failureError = true;
+    } else if (!online && selected.dial_failure?.stage) {
       failure = `引擎拨号 ${selected.dial_failure.address || remote} 卡在${stageLabel(selected.dial_failure.stage)}：${selected.dial_failure.error || '未知错误'}`;
       failureError = true;
     } else if (!online && selected.switch_error) {
@@ -459,8 +478,9 @@
       failureError = true;
     }
     report(directionFailure, failure, failureError);
-    const failed = !online && (selected.switch_error || selected.dial_failure?.stage
-      || selected.dial_state === 'abandoned' || selected.offline_reason === 'unexpected');
+    const failed = (!online && (selected.switch_error || selected.dial_failure?.stage
+      || selected.dial_state === 'abandoned' || selected.offline_reason === 'unexpected'))
+      || (onlineForView && mcpFailed);
     if (failed && pairingStatus.dataset.error !== 'true') report(pairingStatus, '');
 
     directionRetry.hidden = !(selected.switch_error || selected.dial_failure || selected.dial_state === 'abandoned'
@@ -995,7 +1015,10 @@
     }
     renderAdmin();
     await reload();
-    if (dialog.open && allowed()) memberSelect.focus();
+    if (dialog.open && allowed()) {
+      maybeVerifyMcp();
+      memberSelect.focus();
+    }
   }
   async function registerNode() {
     if (busy || !allowed() || !registrationReady()) return;
@@ -1357,13 +1380,15 @@
             if (target === 'dial') {
               report(pairingStatus, '配对导入完成：引擎已认证并连通云端监听。');
             }
+            renderDirection();
+            maybeVerifyMcp();
           } else {
             report(directionStatus, `切换未完成：${node.switch_error || '新方向尚未认证'}`, true);
             if (target === 'dial') {
               report(pairingStatus, `配对已保存，但拨号未连通：${node.switch_error || '新方向尚未认证'}`, true);
             }
+            renderDirection();
           }
-          renderDirection();
           return;
         }
       }
@@ -1372,6 +1397,40 @@
         renderDirection();
       }
     })();
+  }
+  async function verifyMcp(member) {
+    if (!allowed() || mcpVerifyInflight.has(member)) return;
+    const node = nodes.find(item => item.member === member);
+    if (!node || node.state !== 'online' || nodeDirection(node) !== 'dial'
+        || node.mcp_verify_state) return;
+    mcpVerifyInflight.add(member);
+    try {
+      report(directionStatus, 'MCP 只读验证中：经已认证通道读取本项目成员名单…');
+      const result = await api(`/relay/nodes/${encodeURIComponent(member)}/mcp-verify`, {
+        method: 'POST',
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!result || !['ok', 'failed'].includes(result.mcp_verify_state)) {
+        throw new Error('MCP 验证响应格式异常');
+      }
+      await reload(true);
+      if (!dialog.open || !allowed()) return;
+      const fresh = nodes.find(item => item.member === member);
+      if (fresh?.mcp_verify_state === 'failed') {
+        report(directionFailure, `MCP 只读验证失败：${fresh.mcp_verify_error || '未知原因'}`, true);
+      }
+    } catch (error) {
+      report(directionStatus, `MCP 只读验证失败：${message(error)}。`, true);
+    } finally {
+      mcpVerifyInflight.delete(member);
+      if (dialog.open) refreshControls();
+    }
+  }
+  function maybeVerifyMcp() {
+    const node = selectedDirectionNode();
+    if (!node || node.state !== 'online' || nodeDirection(node) !== 'dial'
+        || node.mcp_verify_state) return;
+    verifyMcp(node.member);
   }
   async function switchDirection(target) {
     if (busy || loading || directionBusy || !allowed()) return;
@@ -1388,7 +1447,8 @@
     renderDirection();
     refreshControls();
     const current = nodeDirection(node);
-    if (target === current && node.switch_state !== 'switching') {
+    const online = node.state === 'online' && !node.credential_revoked;
+    if (target === current && node.switch_state !== 'switching' && online) {
       report(directionStatus, `当前已经是${directionLabel(target)}。`);
       return;
     }
@@ -1478,7 +1538,7 @@
   directionTest.addEventListener('click', () => {
     const node = selectedDirectionNode();
     if (!node) return;
-    if (node.state === 'online') {
+    if (node.state === 'online' && nodeDirection(node) === 'dial') {
       report(directionStatus, '当前节点已在线；测试连接由已建立的活动通道完成。');
       return;
     }
@@ -1501,11 +1561,12 @@
       report(pairingStatus, '');
     }
   });
-  refresh.addEventListener('click', () => {
+  refresh.addEventListener('click', async () => {
     if (busy || loading || !allowed()) return;
     clearIssued();
     report(registerStatus, '');
-    reload();
+    await reload();
+    if (dialog.open && allowed()) maybeVerifyMcp();
   });
   register.addEventListener('click', registerNode);
   registerIp.addEventListener('input', refreshControls);

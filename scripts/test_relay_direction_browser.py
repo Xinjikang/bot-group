@@ -36,6 +36,8 @@ def main():
         'probe_stage': 'ok',
         'probe_posts': [],
         'endpoint_posts': [],
+        'mcp_verify_posts': [],
+        'mcp_verify_ok': True,
         'bindings': [{'member': 'hermes-remote', 'ips': ['100.64.0.5']}],
         'issued': [],
     }
@@ -53,6 +55,7 @@ def main():
             'peer_ip': None, 'direction': 'listen', 'switch_state': '',
             'switch_target': '', 'switch_error': '', 'offline_reason': '',
             'dial_state': 'idle', 'dial_endpoint': None, 'dial_failure': None,
+            'mcp_verify_state': '', 'mcp_verify_error': '',
         }
 
     def route(req):
@@ -142,6 +145,18 @@ def main():
             }
             req.fulfill(json={'member': 'hermes-remote', 'saved': True})
             return
+        if path.endswith('/mcp-verify'):
+            state['mcp_verify_posts'].append(deepcopy(req.request.post_data_json))
+            if state['mcp_verify_ok']:
+                state['node'].update({'mcp_verify_state': 'ok', 'mcp_verify_error': ''})
+                req.fulfill(json={'member': 'hermes-remote', 'mcp_verify_state': 'ok',
+                                  'mcp_verify_error': ''})
+            else:
+                state['node'].update({'mcp_verify_state': 'failed',
+                                      'mcp_verify_error': '权限拒绝(403): 项目只读被拒'})
+                req.fulfill(json={'member': 'hermes-remote', 'mcp_verify_state': 'failed',
+                                  'mcp_verify_error': '权限拒绝(403): 项目只读被拒'})
+            return
         if path.endswith('/switch'):
             body = req.request.post_data_json
             target = body.get('direction')
@@ -151,16 +166,19 @@ def main():
                                       'switch_error': '', 'state': 'online', 'offline_reason': '',
                                       'dial_state': 'connected' if target == 'dial' else 'idle',
                                       'dial_failure': None,
+                                      'mcp_verify_state': '', 'mcp_verify_error': '',
                                       'mcp_fingerprint': 'abcdef0123456789', 'last_heartbeat': 1760000000})
             elif state['switch_mode'] == 'transition':
                 state['node'].update({'switch_target': target, 'switch_state': 'switching',
                                       'state': 'offline', 'offline_reason': 'switch',
-                                      'dial_state': 'connecting' if target == 'dial' else 'idle'})
+                                      'dial_state': 'connecting' if target == 'dial' else 'idle',
+                                      'mcp_verify_state': '', 'mcp_verify_error': ''})
             elif state['switch_mode'] == 'fail':
                 state['node'].update({'switch_target': target, 'switch_state': 'switching',
                                       'switch_error': '拨号重连次数耗尽，等待重试或切回',
                                       'state': 'offline', 'offline_reason': 'switch',
                                       'dial_state': 'abandoned',
+                                      'mcp_verify_state': '', 'mcp_verify_error': '',
                                       'dial_failure': {'stage': 'tls', 'address': 'cloud.example:18443',
                                                        'error': '证书指纹不匹配'}})
             req.fulfill(json={'member': 'hermes-remote', 'direction': target,
@@ -209,7 +227,8 @@ def main():
         page.wait_for_function('document.querySelector("#relay-direction-badge").textContent.includes("已连接")')
         assert page.locator('#relay-stage-listen').get_attribute('class') == 'relay-stage-done'
         assert page.locator('#relay-stage-auth').get_attribute('class') == 'relay-stage-done'
-        assert page.locator('#relay-stage-mcp').get_attribute('class') == 'relay-stage-done'
+        assert page.locator('#relay-stage-mcp').get_attribute('class') != 'relay-stage-done'
+        assert 'MCP 待只读验证' in page.locator('#relay-direction-status').inner_text()
         assert '已测通 · 推荐' in page.locator('#relay-direction-listen').inner_text()
         assert page.locator('#relay-direction-dial').is_enabled()
 
@@ -250,6 +269,9 @@ def main():
         page.locator('#relay-pairing-confirm').click()
         page.wait_for_function('document.querySelector("#relay-pairing-status").textContent.includes("导入完成")')
         page.wait_for_function('document.querySelector("#relay-direction-status").textContent.includes("已连通")')
+        page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-done"')
+        assert len(state['mcp_verify_posts']) == 1
+        assert 'MCP 只读验证已通过' in page.locator('#relay-direction-status').inner_text()
         assert len(state['probe_posts']) == 2
         assert len(state['endpoint_posts']) == 1
         assert state['endpoint_posts'][0]['pairing_token'] == 'ONE-SHOT-SECRET'
@@ -284,8 +306,35 @@ def main():
         page.locator('#relay-direction-retry').click()
         page.wait_for_function('document.querySelector("#relay-direction-status").textContent.includes("已连通")')
         assert page.locator('#relay-direction-dial').get_attribute('aria-pressed') == 'true'
+        page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-done"')
 
-        # A plain connection loss is worded differently from a planned switch.
+        # B was online, then dropped unexpectedly and exhausted retries. A retry
+        # on the same direction must send a real switch request, not be a no-op.
+        state['node'].update({'state': 'offline', 'offline_reason': 'unexpected',
+                              'switch_state': '', 'switch_target': '', 'switch_error': '',
+                              'dial_state': 'abandoned', 'dial_failure': None,
+                              'mcp_verify_state': '', 'mcp_verify_error': ''})
+        page.locator('#relay-refresh').click()
+        page.wait_for_function('document.querySelector("#relay-direction-badge").textContent === "拨号已停止"')
+        with page.expect_request(lambda request: request.method == 'POST'
+                                 and request.url.endswith('/switch')) as switch_request:
+            page.locator('#relay-direction-retry').click()
+        assert switch_request.value, '同方向离线重试必须实际发出 /switch'
+        page.wait_for_function('document.querySelector("#relay-direction-status").textContent.includes("已连通")')
+        page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-done"')
+
+        # A fingerprint alone is not enough: a failed scoped read shows the failure
+        # and never marks the MCP stage complete.
+        state['mcp_verify_ok'] = False
+        state['node'].update({'mcp_verify_state': '', 'mcp_verify_error': ''})
+        page.locator('#relay-refresh').click()
+        page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-failed"')
+        assert 'MCP 只读验证失败' in page.locator('#relay-direction-status').inner_text()
+        assert '权限拒绝(403)' in page.locator('#relay-direction-failure').inner_text()
+        state['mcp_verify_ok'] = True
+        state['node'].update({'mcp_verify_state': '', 'mcp_verify_error': ''})
+        page.locator('#relay-refresh').click()
+        page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-done"')
         state['node'].update({'state': 'offline', 'offline_reason': 'unexpected',
                               'switch_state': '', 'switch_target': '', 'switch_error': '',
                               'dial_state': 'idle', 'dial_failure': None})
@@ -313,7 +362,7 @@ def main():
 
         assert not errors, errors
         browser.close()
-    print('PASS: direction A/B buttons, addresses/stages, pairing preview + TLS probe, import/switch, switch-back, failure retry, 390px')
+    print('PASS: direction A/B, pairing preview/probe, MCP actual-verify ok/failed, same-direction offline retry, import/switch, switch-back, failure retry, 390px')
 
 
 if __name__ == '__main__':

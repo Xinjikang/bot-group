@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 from playwright.sync_api import sync_playwright
 from websockets.sync.client import connect
@@ -25,6 +26,7 @@ sys.path.insert(0, str(ROOT))
 PORT = 18042
 PASSWORD = 'direction-live-admin-pass'
 MEMBER = 'direction-live'
+PROJECT = 'direction-live'
 
 
 def local_ipv4():
@@ -48,10 +50,13 @@ def load_plugin():
 
 
 def main():
+    global PORT
     parser = argparse.ArgumentParser()
     parser.add_argument('--evidence', type=Path, required=True)
+    parser.add_argument('--port', type=int, default=PORT)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
+    PORT = args.port
 
     lan = local_ipv4()
     if not lan:
@@ -69,8 +74,13 @@ def main():
         import uvicorn
         from fastapi import FastAPI, WebSocket
         from fastapi.staticfiles import StaticFiles
-        from engine import db, listen_control, relay_dialer, relay_server
+        from engine import auth, db, hermes_session_auth, listen_control, relay_dialer, relay_server
         from engine.api import router_api
+
+        keys_patch = patch.object(
+            auth, 'signing_keys',
+            return_value=(1, {1: b'direction-live-signing-key-0123456789'[:32]}))
+        keys_patch.start()
 
         conn = db.get_connection()
         try:
@@ -79,10 +89,26 @@ def main():
                 "INSERT INTO bots(host_type,profile,config_root,runtime,display_name) "
                 "VALUES('hermes',?,?, 'hermes','Direction Hermes')",
                 (MEMBER, str(tmp)))
+            bot_id = cur.lastrowid
             conn.execute(
                 "INSERT INTO members(profile,display_name,bot_id,source,created_at) "
                 "VALUES(?,?,?,'api',datetime('now'))",
-                (MEMBER, 'Direction Hermes', cur.lastrowid))
+                (MEMBER, 'Direction Hermes', bot_id))
+            conn.execute(
+                "INSERT INTO projects(display_name,name,root,created_at) VALUES(?,?,?,datetime('now'))",
+                ('Direction Live', PROJECT, str(tmp)))
+            conn.execute(
+                "INSERT INTO project_members(project,profile,active,bot_id,role) VALUES(?,?,1,?,'dev')",
+                (PROJECT, MEMBER, bot_id))
+            conn.execute(
+                "INSERT INTO session_bindings(project,bot_id,profile,kind,thread_id,session_id,"
+                "runtime,generation,switching,title,updated_at) "
+                "VALUES(?,?,?,'work',0,'direction-live-session','hermes',0,0,'live',datetime('now'))",
+                (PROJECT, bot_id, MEMBER))
+            hermes_session_auth.grant(
+                conn, project=PROJECT, profile=MEMBER, bot_id=bot_id, kind='work',
+                thread_id=0, session='direction-live-session', home=str(tmp),
+                command=['live'], workdir=str(tmp), model_args=[])
             conn.commit()
         finally:
             conn.close()
@@ -178,15 +204,11 @@ def main():
                 plugin_listen._generate_cert_with_cryptography(Path(cert), Path(key))
                 fingerprint = plugin_listen.certificate_fingerprint(cert)
                 plugin_pairing._state_dir = lambda: tmp / 'pair-state'
-                plugin_server = plugin_listen.ListenServer(
-                    address=lan, port=0, cert_path=cert, key_path=key,
-                    advertise=lan, member=MEMBER, home=str(tmp / 'plugin-home'),
-                    mcp_python=sys.executable, scheme='wss')
-                plugin_server.start()
-                pairing = plugin_pairing.issue_pairing(
-                    member=MEMBER, advertise=lan, port=plugin_server.bound_port(),
-                    fingerprint=fingerprint, scheme='wss')
-                pairing_url = pairing['pairing_url']
+                plugin_server = plugin_listen.listen_serve(
+                    address=lan, port=0, advertise=lan, member=MEMBER,
+                    home=str(tmp / 'plugin-home'), mcp_python=sys.executable,
+                    cert_path=cert, key_path=key, tls=True)
+                pairing_url = plugin_server['pairing_url']
                 assert 'pairing_token=' in pairing_url and fingerprint in pairing_url
 
                 page.locator('#relay-direction-dial').click()
@@ -199,12 +221,13 @@ def main():
                 page.locator('#relay-pairing-confirm').click()
                 page.wait_for_function('document.querySelector("#relay-direction-status").textContent.includes("已连通")')
                 page.wait_for_function('document.querySelector("#relay-direction-dial").getAttribute("aria-pressed") === "true"')
+                page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-done"', timeout=45000)
+                assert 'MCP 只读验证已通过' in page.locator('#relay-direction-status').inner_text()
                 assert page.locator('#relay-stage-auth').get_attribute('class') == 'relay-stage-done'
-                assert page.locator('#relay-stage-mcp').get_attribute('class') == 'relay-stage-done'
                 assert lan in page.locator('#relay-direction-remote').inner_text()
-                assert str(plugin_server.bound_port()) in page.locator('#relay-direction-remote').inner_text()
+                assert str(plugin_server['port']) in page.locator('#relay-direction-remote').inner_text()
                 assert page.locator('#relay-pairing-preview').is_hidden()
-                assert plugin_server._active_ws is not None, '引擎未拨通插件监听'
+                assert plugin_server['_server']._active_ws is not None, '引擎未拨通插件监听'
                 page.screenshot(path=str(args.evidence / 'direction-b-online-1280-dark.png'),
                                 mask=[page.locator('#relay-issued-credential')])
 
@@ -246,7 +269,11 @@ def main():
                     pass
             if plugin_server is not None:
                 try:
-                    plugin_server.stop()
+                    plugin_listen.mcpproxy.stop_proxy()
+                except Exception:
+                    pass
+                try:
+                    plugin_server['_server'].stop()
                 except Exception:
                     pass
             if browser is not None:
@@ -254,6 +281,7 @@ def main():
                     browser.close()
                 except Exception:
                     pass
+            keys_patch.stop()
             relay_dialer.stop_dial(MEMBER)
             listen_control.ensure(None)
             relay_server.close_all()

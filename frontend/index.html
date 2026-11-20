@@ -775,6 +775,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 .relay-stages li.relay-stage-done{border-color:var(--accent);color:var(--accent-2)}
 .relay-stages li.relay-stage-current{border-color:var(--accent);color:var(--fg)}
 .relay-stages li.relay-stage-pending{opacity:.7}
+.relay-stages li.relay-stage-failed{border-color:var(--danger);color:var(--danger);background:rgba(229,72,77,.08)}
 #relay-direction-status,#relay-direction-failure{margin:7px 0 0}
 #relay-direction-status[data-error="true"],#relay-direction-failure[data-error="true"],#relay-pairing-status[data-error="true"]{color:var(--danger)}
 .relay-direction-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-top:8px}
@@ -5088,7 +5089,7 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/service_restart.js?v=20261026-settings-icons"></script>
 <script src="/app/app_settings.js?v=20261026-auto-refresh"></script>
 <script src="/app/engine_logs.js?v=20261103"></script>
-<script src="/app/relay_nodes.js?v=20261120-direction"></script>
+<script src="/app/relay_nodes.js?v=20261121-mcp"></script>
 <script src="/app/edit_policy_settings.js?v=20261030"></script>
 <script src="/app/background_settings.js?v=20261023-settings-anchor"></script>
 <script src="/app/directory_picker.js?v=20261011"></script>
