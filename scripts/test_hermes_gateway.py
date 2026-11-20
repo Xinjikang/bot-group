@@ -32,7 +32,8 @@ class GatewayTests(unittest.TestCase):
         self.eid = self.row['execution_id']
         app = FastAPI()
         app.include_router(api.router_api)
-        self.client = TestClient(app)
+        # req#171：来源绑定第二层按 socket peer 核对；夹具用回环模拟生产本机来源
+        self.client = TestClient(app, client=('127.0.0.1', 4321))
         self.addCleanup(self.client.close)
         context = dict(profile='default', project='alpha', thread_id=None,
                        session=self.session, wake_started_at=self.start)

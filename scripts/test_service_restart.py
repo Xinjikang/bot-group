@@ -81,7 +81,8 @@ class RestartTests(unittest.TestCase):
              patch.object(app.state, 'restart', controller, create=True), \
              patch.object(app.state, 'shutdown', Mock(snapshot=lambda: {'state': 'running'}), create=True), \
              patch.object(restart.subprocess, 'Popen') as spawn:
-            client = TestClient(app)
+            # req#171：来源绑定第二层按 socket peer 核对；夹具用回环模拟生产本机来源
+            client = TestClient(app, client=('127.0.0.1', 4321))
             for path in ('/admin/restart', '/admin/shutdown'):
                 self.assertEqual(client.post(path).status_code, 401)
                 self.assertEqual(client.post(path, headers={'X-Group-Profile': 'bot-test',

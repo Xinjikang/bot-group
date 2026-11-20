@@ -37,7 +37,8 @@ class AuthorizeIsolationTests(unittest.TestCase):
         self.headers = {'X-Group-Profile': 'default', 'X-Group-Key': auth.execution_token('default', context)}
         self.app = FastAPI()
         self.app.include_router(api.router_api)
-        self.client = TestClient(self.app)
+        # req#171：来源绑定第二层按 socket peer 核对；夹具用回环模拟生产本机来源
+        self.client = TestClient(self.app, client=('127.0.0.1', 4321))
         self.addCleanup(self.client.close)
 
     def prepare(self, conn, started):
@@ -141,7 +142,8 @@ class AuthorizeIsolationTests(unittest.TestCase):
         @app.post('/heartbeat', dependencies=[Depends(access.authorize)])
         def endpoint():
             return {'ok': True}
-        with patch.object(access, '_authorize_member', side_effect=checked), TestClient(app) as client:
+        with patch.object(access, '_authorize_member', side_effect=checked), \
+             TestClient(app, client=('127.0.0.1', 4321)) as client:
             self.assertEqual(client.post('/heartbeat', headers=self.headers, json={'pid': 77}).status_code, 200)
         self.assertTrue(statements)
 

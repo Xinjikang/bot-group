@@ -24,7 +24,8 @@ class AccessContractTests(unittest.TestCase):
         auth._LOGIN_ATTEMPTS.clear()
         self.app = FastAPI()
         self.app.include_router(api.router_api)
-        self.client = TestClient(self.app)
+        # req#171：来源绑定第二层按 socket peer 核对；夹具用回环模拟生产本机来源
+        self.client = TestClient(self.app, client=('127.0.0.1', 4321))
         self.addCleanup(self.client.close)
         self.admin = {"Authorization": "Bearer " + auth.login("测试密码")["token"]}
         self.bot = {"X-Group-Profile": "default", "X-Group-Key": auth.bot_token("default")}
@@ -77,7 +78,9 @@ class AccessContractTests(unittest.TestCase):
 
     def test_development_mode_requires_loopback_and_same_origin(self):
         with patch.dict(os.environ, {"GROUP_ADMIN_PASSWORD": "", "GROUP_SECRET": ""}):
-            self.assertEqual(self.client.get("/commands").status_code, 401)
+            # 开发模式：未配置密码时非回环来源拒绝（远程隔离）、回环放行
+            with TestClient(self.app, client=("192.0.2.1", 4321)) as remote:
+                self.assertEqual(remote.get("/commands").status_code, 401)
             payload = "admin:9999999999"
             forged = base64.urlsafe_b64encode(
                 f"{payload}.{auth._sign(payload)}".encode()).decode()

@@ -22,7 +22,8 @@ class OperationTest(unittest.TestCase):
         self.addCleanup(fixture.__exit__, None, None, None)
         self.app = FastAPI()
         self.app.include_router(api.router_api)
-        self.client = TestClient(self.app)
+        # req#171：来源绑定第二层按 socket peer 核对；夹具用回环模拟生产本机来源
+        self.client = TestClient(self.app, client=('127.0.0.1', 4321))
         self.addCleanup(self.client.close)
         self.headers = {'X-Group-Profile': 'default', 'X-Group-Key': auth.bot_token('default')}
         self.body = {'arguments': {'project': 'alpha', 'title': 'Once', **REQUIREMENT_FIELDS}}
@@ -46,7 +47,7 @@ class OperationTest(unittest.TestCase):
         self.assertIn('requirement_id', first.json())
         fresh_app = FastAPI()
         fresh_app.include_router(api.router_api)
-        with TestClient(fresh_app) as restarted:
+        with TestClient(fresh_app, client=('127.0.0.1', 4321)) as restarted:
             second = restarted.post('/task-tools/req_create', json=self.body,
                                     headers={**self.headers, 'X-Group-Operation-Id': 'a' * 32})
             receipt = restarted.get('/mcp-operations/' + 'a' * 32, headers=self.headers).json()
