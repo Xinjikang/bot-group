@@ -31,6 +31,7 @@ RELAY_PROTOCOL_VERSION = 1
 CLOSE_BAD_CREDENTIAL = 4001
 CLOSE_MCP_INCOMPATIBLE = 4002
 CLOSE_BAD_PROTOCOL = 4003
+CLOSE_BAD_SOURCE = 4004   # req#171：peer IP 未绑定到该成员（来源不符）
 
 
 class RelayTransport:
@@ -303,6 +304,15 @@ async def relay_ws(websocket: WebSocket) -> None:
         try:
             if not member or not relay.verify_credential(conn, member, credential):
                 await websocket.close(code=CLOSE_BAD_CREDENTIAL)
+                return
+            # req#171 第二层：凭据验证通过后核对 socket peer IP 属于该成员
+            # 绑定集合——B 成员凭据从 A 成员已绑定 IP 连接被拒（防交换来源
+            # 冒用）。回环恒放行。
+            from . import ip_allowlist
+            peer = websocket.client.host if websocket.client else None
+            if not ip_allowlist.member_allowed(conn, member, peer):
+                logger.warning("relay source not bound to member=%s peer=%s", member, peer)
+                await websocket.close(code=CLOSE_BAD_SOURCE)
                 return
             if protocol_version != RELAY_PROTOCOL_VERSION:
                 logger.warning("relay protocol version mismatch member=%s got=%s",

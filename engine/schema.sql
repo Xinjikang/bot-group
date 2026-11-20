@@ -531,11 +531,13 @@ CREATE TABLE IF NOT EXISTS mcp_operations (
     PRIMARY KEY(owner, operation_id)
 );
 
--- req#171：来源 IP 白名单（白名单管来源、凭据管身份，两层独立）。
--- 精确 IP 匹配（IPv4/IPv6 规范化文本），不自动放行网段；回环 127.0.0.1/::1
--- 恒放行不落此表。无缓存——每次判定直查，移除即时生效。
-CREATE TABLE IF NOT EXISTS source_ip_allowlist (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    ip         TEXT NOT NULL UNIQUE,
-    created_at TEXT NOT NULL
+-- req#171：成员级来源绑定（主人 12417：节点与 IP 一一对应可见；一成员
+-- 多 IP、同 IP 多成员）。凭据管身份、来源绑定管来源。精确 IP 匹配（IPv4/
+-- IPv6 规范化文本），不自动放行网段；回环 127.0.0.1/::1 恒放行不落此表。
+-- 无缓存——每次判定直查，移除/变更即时生效。
+CREATE TABLE IF NOT EXISTS relay_source_bindings (
+    member     TEXT NOT NULL,
+    ip         TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (member, ip)
 );

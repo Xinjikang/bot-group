@@ -252,6 +252,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE projects SET display_name=name WHERE display_name=''")
     conn.execute("UPDATE projects SET directory_mode=CASE WHEN COALESCE(worktree_root,'')='' "
                  "THEN 'shared' ELSE 'worktree' END WHERE directory_mode=''")
+    # req#171 模型修正：全局来源白名单（无成员维度）改为成员级绑定
+    # relay_source_bindings——旧全局表无法映射到成员，直接废弃清除。
+    conn.execute("DROP TABLE IF EXISTS source_ip_allowlist")
     conn.commit()
     from . import hermes_session_auth
     conn.executescript(hermes_session_auth.SCHEMA)

@@ -47,6 +47,18 @@ def resolve_identity(
             raise HTTPException(503, str(exc)) from None
         if not auth.verify_bot(profile, key, ring=ring) or db.is_builtin_user(profile):
             raise HTTPException(401, "Invalid member credential")
+        # req#171 第二层：凭据验证通过后核对 socket peer IP 属于该 member 的
+        # 绑定集合（防交换来源冒用：B 成员从 A 成员已绑定 IP 发起 HTTP 请求
+        # 在此被拒）。回环恒放行；request=None（非 HTTP 上下文）跳过。
+        if request is not None:
+            from . import ip_allowlist
+            peer = request.client.host if request.client else None
+            conn = db.get_connection()
+            try:
+                if not ip_allowlist.member_allowed(conn, profile, peer):
+                    raise HTTPException(403, "来源 IP 未绑定到该成员，访问被拒绝")
+            finally:
+                conn.close()
         if request is not None:
             session_scope = auth.session_scope(profile, key, ring[1])
             previous = getattr(request.state, 'execution_scope', None)
