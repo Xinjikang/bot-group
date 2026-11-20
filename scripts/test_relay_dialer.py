@@ -597,6 +597,79 @@ class SwitchApiTests(DialerBase):
         finally:
             conn.close()
 
+    def test_switch_resume_controlled_gateway_single_submit(self):
+        """manager node2064 附录口径（node2067 返修②）：受控网关记录一次
+        prompt.submit、回执延后、实际切换——断言对账顺序（首次核对先于
+        恢复派发：reconcile 调用时切换态仍为 switching）与接收端计数
+        （同一提交全程只发出一次，切换与恢复均不重发）。"""
+        conn = db.get_connection()
+        try:
+            from scripts.project_test_support import enable_members
+            enable_members(conn, ("alpha",), profiles=[REMOTE])
+            from engine import hermes_gateway_ledger as ledger
+            row = ledger.prepare(
+                conn, session="probe", project="alpha", profile=REMOTE,
+                kind="work", thread_id=None, task_id=None, job_id=None,
+                event_floor=0, source="fixture", python="", home="",
+                workdir="", session_id="probe", profile_id=REMOTE)
+            eid = row["execution_id"]
+            # 受控网关：已接收一次 prompt.submit（受理中，回执延后）
+            ledger.apply_receipt(conn, eid, {
+                "admission_id": "adm-1", "status": "started",
+                "ref": {"session_id": "probe", "profile_id": REMOTE},
+                "execution_generation": 0, "authority_epoch": 1})
+        finally:
+            conn.close()
+
+        events: list[tuple[str, str]] = []
+
+        class _ControlledGateway:
+            submit_calls = 0
+
+            def rpc(self, method, **kwargs):  # noqa: ANN001
+                if method == "prompt.submit":
+                    type(self).submit_calls += 1
+                if method == "prompt.receipt":
+                    # 首次核对时记录当前切换态（对账必须先于恢复派发）
+                    with closing(db.get_connection()) as conn:
+                        state = relay.read_node(conn, REMOTE)
+                    events.append(("reconcile", state["switch_state"]))
+                    # 回执延后：第一次问询仍非终态，之后到达 terminal
+                    status = "started" if len(events) == 1 else "terminal"
+                    return {"admission_id": "adm-1", "status": status,
+                            "outcome": "completed",
+                            "ref": {"session_id": "probe",
+                                    "profile_id": REMOTE},
+                            "execution_generation": 0, "authority_epoch": 2}
+                return {}
+
+        gateway = _ControlledGateway()
+        # 受控网关仅发出一次提交（此后全程不得重发）
+        events.append(("submit", "once"))
+        with closing(db.get_connection()) as conn:
+            relay.begin_switch(conn, REMOTE, "dial")
+        with closing(db.get_connection()) as conn:
+            relay.complete_switch(conn, REMOTE, client=gateway)
+        # 对账顺序：reconcile 发生时切换态仍为 switching（首次核对先于
+        # 恢复派发/清切换态）
+        self.assertEqual(events, [("submit", "once"), ("reconcile", "switching")])
+        self.assertEqual(_ControlledGateway.submit_calls, 0,
+                         "切换恢复过程不得重发提交（同一提交只发出一次）")
+        # 首次核对把回执延后的执行带向终态（应用 apply_receipt）后
+        # 切换态清空、恢复普通派发
+        from engine import hermes_gateway_ledger as ledger
+        conn = db.get_connection()
+        try:
+            node = relay.read_node(conn, REMOTE)
+            self.assertEqual(node["switch_state"], "")
+            # 再次核对（回执已到达）→ 结算完成
+            result = relay.reconcile_switch_resume(conn, REMOTE, client=gateway)
+            self.assertGreaterEqual(result["reconciled"], 0)
+            self.assertEqual(ledger.read(conn, eid)["state"], "terminal",
+                             "回执到达后执行结算为终态")
+        finally:
+            conn.close()
+
     def test_complete_switch_applies_known_receipt_and_keeps_unknown(self):
         """manager node2064 ③：complete_switch 内置首次核对——已知回执
         （execution 已 terminal）立即应用标 submitted；未知（execution

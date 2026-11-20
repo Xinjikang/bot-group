@@ -544,17 +544,18 @@ def begin_switch(conn, member: str, target: str, *, now=None) -> None:
     conn.commit()
 
 
-def complete_switch(conn, member: str, *, now=None) -> None:
+def complete_switch(conn, member: str, *, now=None, client=None) -> None:
     """切换完成（新方向认证成功/用户切回/重启后目标已达成）：先按原
     submission_id 做首次在途核对（manager node2064 ③——两握手入口共用
     同一恢复步骤，不再直接清切换态），再清切换态、更新 direction 为目标
-    方向，恢复普通派发。"""
+    方向，恢复普通派发。client 给定时首次核对走 session.resume 网络
+    问询（GatewayClient 会话循环之外的握手入口可传）。"""
     row = read_node(conn, member)
     if row is None:
         return
     target = row["switch_target"] or row["direction"]
     # 首次在途核对：已知回执立即应用，未知持久保留禁止原提交重派
-    reconcile_switch_resume(conn, member, now=now)
+    reconcile_switch_resume(conn, member, now=now, client=client)
     conn.execute(
         "UPDATE relay_nodes SET switch_state='',switch_target='',"
         "direction=?,updated_at=? WHERE member=?",
