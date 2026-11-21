@@ -354,13 +354,16 @@ body::before{
   background:rgba(17,26,46,.9);
 }
 #composer textarea{
-  flex:1;resize:none;height:66px;border:1px solid var(--border);border-radius:var(--radius);
-  padding:11px 15px;font:inherit;font-size:13.5px;outline:none;line-height:1.6;
-  background:rgba(10,14,26,.6);color:var(--fg);transition:.2s;
+  flex:1;resize:none;height:66px;min-height:66px;border:1px solid var(--border);border-radius:var(--radius);
+  padding:11px 15px;font:inherit;font-size:13.5px;outline:none;line-height:1.5;
+  background:rgba(10,14,26,.6);color:var(--fg);transition:border-color .2s,box-shadow .2s;
+  overflow-y:auto;overscroll-behavior-y:contain;scrollbar-width:none;
 }
 #composer textarea:focus{border-color:var(--accent);box-shadow:var(--glow)}
 #composer textarea::-webkit-scrollbar{width:0}
-#composer textarea{overflow:hidden;line-height:1.5}
+#composer textarea.composer-measure{
+  position:absolute;top:0;left:0;height:0;min-height:0;visibility:hidden;overflow:hidden;
+}
 #composer button{
   border:1px solid var(--accent);border-radius:var(--radius);padding:0 26px;cursor:pointer;
   font-size:14px;letter-spacing:3px;font-weight:700;color:var(--accent-2);
@@ -3090,6 +3093,71 @@ async function retractMessage(messageId, btn) {
 // 需求2：切项目=消息归属跟着走——composer 绑定当前项目，每次请求显式带 project
 const composerImages = createImageComposer($("#composer"), $("#composer-text"),
   () => ({project: S.currentProject, thread_id: S.currentThread}));
+let resizeMainComposer = () => {};
+// The message navigation row is inserted by a later script; include it in the height budget.
+document.addEventListener("DOMContentLoaded", () => {
+  resizeMainComposer = bindMainComposerLayout($("#composer"), $("#composer-text"));
+}, {once: true});
+
+function bindMainComposerLayout(form, field) {
+  const wrap = field.parentElement;
+  const column = form.parentElement;
+  const fixed = [...column.children].filter(el => el !== form && el.id !== "msg-list");
+  // Measure native textarea wrapping without collapsing the live field or disturbing either scroll position.
+  const measure = document.createElement("textarea");
+  measure.className = "composer-measure";
+  measure.disabled = true;
+  measure.setAttribute("aria-hidden", "true");
+  wrap.appendChild(measure);
+  let width;
+
+  function resize(scrollBeforeBreak) {
+    width = wrap.getBoundingClientRect().width;
+    if (!width) return; // The signed-out app is hidden.
+    const style = getComputedStyle(field);
+    const min = parseFloat(style.minHeight);
+    const border = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+    // Subtract non-text controls, not the flexed message list. Reserve space for readable history.
+    let available = column.clientHeight - (form.offsetHeight - field.offsetHeight);
+    for (const el of fixed) {
+      const css = getComputedStyle(el);
+      if (css.display !== "none" && css.position !== "absolute" && css.position !== "fixed") {
+        available -= el.offsetHeight + parseFloat(css.marginTop) + parseFloat(css.marginBottom);
+      }
+    }
+    // Keep at least half and, where possible, enough for a complete message at a scrolled position.
+    const max = Math.max(min, Math.min(240, Math.floor(available / 2), available - 156));
+    measure.value = field.value;
+    const height = `${Math.max(min, Math.min(max, measure.scrollHeight + border))}px`;
+    if (field.style.height !== height) field.style.height = height;
+
+    if (scrollBeforeBreak !== undefined && field.scrollHeight > field.clientHeight) {
+      // Alt+Enter places the caret immediately after a hard break. Native layout of the prefix
+      // includes that empty line, and does not depend on the text after the break.
+      measure.value = field.value.slice(0, field.selectionStart);
+      const bottom = measure.scrollHeight - parseFloat(style.paddingBottom);
+      const top = bottom - parseFloat(style.lineHeight);
+      // scrollHeight is integer-rounded; keep a pixel of clearance at each boundary.
+      field.scrollTop = Math.max(bottom - field.clientHeight + 1, Math.min(scrollBeforeBreak, top - 1));
+    }
+    measure.value = "";
+  }
+
+  field.addEventListener("input", () => resize());
+  let frame = 0;
+  const observer = new ResizeObserver(entries => {
+    if (frame || !entries.some(({target, contentRect}) => target !== wrap || contentRect.width !== width)) return;
+    // Let observed boxes finish layout before a resize writes back to their descendants.
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      resize();
+    });
+  });
+  for (const el of [column, wrap, form.querySelector(".image-toolbar"), ...fixed]) observer.observe(el);
+  resize();
+  return resize;
+}
+
 $("#composer").addEventListener("submit", async (e) => {
   e.preventDefault();
   const text = $("#composer-text").value.trim();
@@ -3105,7 +3173,10 @@ $("#composer").addEventListener("submit", async (e) => {
     if (body.text.length > 2000) throw new Error(`消息过长（${body.text.length}/2000 字符），请删减字符`);
     if (await sendImageMessage(body)) {
       if (S.currentProject === body.project && (S.currentThread || null) === (body.thread_id || null)
-          && $("#composer-text").value.trim() === text) $("#composer-text").value = "";
+          && $("#composer-text").value.trim() === text) {
+        $("#composer-text").value = "";
+        resizeMainComposer();
+      }
       composerImages.refresh();
       if (view === S.messageView) refreshAfterMessageChange();
     }
@@ -3121,9 +3192,10 @@ $("#composer-text").addEventListener("keydown", (e) => {
   } else if (e.key === "Enter" && e.altKey) {
     e.preventDefault();
     const ta = e.target;
-    const { selectionStart, selectionEnd, value } = ta;
+    const { selectionStart, selectionEnd, value, scrollTop } = ta;
     ta.value = value.slice(0, selectionStart) + "\n" + value.slice(selectionEnd);
     ta.selectionStart = ta.selectionEnd = selectionStart + 1;
+    resizeMainComposer(scrollTop);
   }
 });
 
@@ -3200,6 +3272,7 @@ function mpApply(idx) {
   const cleaned = hadPrefix ? after.replace(/^[^\s]*\s?/, "") : after;
   const np = insertMemberMention(ta, m, before.length, ta.value.length - cleaned.length, S.currentProject);
   ta.selectionStart = ta.selectionEnd = np;
+  if (ta.id === "composer-text") resizeMainComposer();
   ta.focus();
 }
 function mpHide() {

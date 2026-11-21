@@ -37,7 +37,7 @@ const element = selector => {
 let alerts = [], posted = [], refreshes = 0;
 const ctx = {S: {currentThread: null, currentProject: null},
   $: element, esc: s => s, NAME_OF: p => p, showAlert: m => alerts.push(m),
-  requestSubmit() {}, composerImages: {refresh() {}},
+  requestSubmit() {}, composerImages: {refresh() {}}, resizeMainComposer() {},
   refreshAfterMessageChange() { refreshes++; },
   sendImageMessage: async (body) => { posted.push(body); return true; },
   api(url, options) { posted.push({url, options}); return Promise.resolve({}); },
