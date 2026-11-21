@@ -86,6 +86,9 @@ async def _engine_lifespan(app: FastAPI):
     # SSE 跨线程投递：后台线程（reaper/心跳线程/queue worker）发事件要 threadsafe 切回主 loop
     from . import events
     events.set_loop(asyncio.get_running_loop())
+    from . import listen_control, relay_dialer
+    listen_control.restore_on_startup()
+    relay_dialer.restore_on_startup()
     from . import hermes_gateway
     hermes_gateway.recover()
 
@@ -277,12 +280,6 @@ def main(argv=None) -> None:
         # （非 *），伪造 X-Forwarded-For 不能改写 client 地址。
         proxy_headers=False, forwarded_allow_ips='127.0.0.1'))
     app.state.server = server
-    # req#172：重启恢复上次远程监听配置（失败不影响回环服务）。
-    from . import listen_control
-    listen_control.restore_on_startup()
-    # req#173：重启恢复方向/切换态（dial 节点重拨、切换态读回续建）。
-    from . import relay_dialer
-    relay_dialer.restore_on_startup()
     server.run()
 
 

@@ -225,7 +225,7 @@ def status() -> dict:
 
 
 def restore_on_startup(port: int | None = None) -> dict:
-    """重启后恢复上次监听配置（main() 启动时调用；失败不影响回环启动）。"""
+    """数据库初始化后恢复上次监听配置，绑定失败时仍可通过回环访问。"""
     conn = db.get_connection()
     try:
         saved = read_config(conn)

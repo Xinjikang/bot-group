@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+远程节点旧库升级启动回归使用 `python -X utf8 -B -m unittest scripts.test_service_restart.RestartTests.test_startup_migrates_legacy_relay_before_restoring_switch`。用项目 Python 在随机回环端口启动完整引擎，隔离临时库中预置缺少身份表的旧节点，核验健康接口、节点列表和切换恢复，最后通过管理员接口退出。
+
 ### Hermes 项目成员换模
 
 Hermes 项目换模回执、定向提醒与注册默认值覆盖在 `scripts.test_hermes_gateway_sessions`、`scripts.test_discovery` 和 `scripts.test_profile_create`，使用项目 Python 运行 `-m scripts.run_isolated_tests --report <报告绝对目录> <模块...>`。界面用 `python -B scripts/test_project_models_browser.py`（Playwright 和 Chrome）检查桌面和 390px 宽度的项目范围提示。

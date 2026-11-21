@@ -87,7 +87,7 @@ class CliThroughTest(unittest.TestCase):
         from engine import wake
 
         # 模拟 main(['--host','127.0.0.1','--port','18042','--data-dir', tmp])，mock run 不启真实服务
-        with mock.patch.object(main_mod, "ManagedServer") as MockServer:
+        with mock.patch.object(main_mod, "_setup_logging"), mock.patch.object(main_mod, "ManagedServer") as MockServer:
             main_mod.main(['--host', '127.0.0.1', '--port', '18042',
                            '--data-dir', str(self.data_dir)])
             uvicorn_config = MockServer.call_args[0][0]
