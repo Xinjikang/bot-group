@@ -40,9 +40,11 @@
 
 修复：停滞执行（manual / 等待超时）且任务未完成且仍归该成员时，会话判「可接续」而非「忙」，已排队的唤醒正常投递；投递落地复用原 execution 的接续路径（注入 task_id + 后台进程句柄 + 待核对结果），不重跑已发出的命令。
 
+manual 接续的落点（现缺口）：`hermes_delegations.direct_wait` 只匹配 `state='waiting_delegation'`、`enqueue_direct` 也只接受 `waiting_delegation`，manual 会在此被拒。恢复信号进入 B 会话的路径 = 扩展接续入口接受 manual：恢复信号作为新的 delegation_input 注入原 execution，worker 以 manual 接续模式重启，在 poll 里把恢复信号 submit 到 B 会话（session_id 不变），bot 醒来读任务节点继续；追回执（discover_turns）的失败不得阻塞恢复信号的 submit（恢复与回执核对解耦）。不重发原命令——恢复信号只带 task_id + 后台进程句柄 + 待核对结果。
+
 ### 防并发接手（同一任务单点推进）
 
-- 归属校验：投递与接手都复核 task 的 claimed_by/next_bot 仍指向该成员（复用 `hermes_delegations.owned` 的归属语义），易主即放弃。
+- 归属校验：投递与接手都复核 task 的 claimed_by/next_bot 仍指向该成员，易主即放弃。注意 `hermes_delegations.owned` 只核对会话绑定（generation / 授权 / 成员活跃 / 话题状态），任务归属仅在 execution.task_id 非空时才查；点对点派活的 task_id 常为空（现场 execution 的 task_id=None），owned 会漏掉归属校验——续办前必须从任务队列（tasks 表）单独核对 claimed_by/next_bot 指向该成员。
 - 单点推进：execution 级「本轮恢复已投递」标记，同次恢复只投递一次。
 - 队列兜底：`wake_jobs` 的 partial unique index（work 按 profile+project）保证同成员同项目同一时刻只有一个 queued/running job。
 
@@ -50,7 +52,7 @@
 
 - `recover_on_startup` 已把 running 的 job 重置回 queued。
 - 接续投递按 execution 记录幂等：`hermes_delegation_inputs` 的 `UNIQUE(execution_id, message_id)` 防同一消息重复注入。
-- 恢复信号随附本次恢复标记，重启后重扫不重复投递同一恢复；后续出现新的停滞仍可再次催办。
+- 恢复信号随附本次恢复标识（幂等键 = execution_id + 停滞轮次，持久化到执行记录），重启前后使用同一标识：重启后重扫命中同一标识即不重复投递同一恢复；后续出现新的停滞（新轮次）仍可再次催办。
 
 ### 用户可见提醒
 
@@ -60,7 +62,7 @@
 
 在隔离环境复现「旧执行占用、回执缺失、催办已排队」：
 
-1. 达到恢复条件后，当前会话实际收到原任务并能追加节点，全程无需访问会话 A。
+1. 夹具：旧执行停在 manual（回执缺失、自动核对已停）+ 催办已排队；达到恢复条件后，当前会话 B 实际收到恢复信号并在原任务追加节点，全程无需访问会话 A。
 2. 边界覆盖：原执行仍活跃、后台进程仍运行或已有结果、任务已完成或已易主、扫描并发、引擎重启、迟到或重复回调——各自得到正确处理，不误续办、不重复接手。
 3. 同次恢复只接手一次；已发命令不重复启动；其他成员工作不受影响。
 4. 再次停滞可再次催办。
