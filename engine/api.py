@@ -350,6 +350,104 @@ class _DialEndpointBody(BaseModel):
     pairing_token: str = ''  # 插件 listen 签发的一次性配对凭据（拨号 hello 出示）
 
 
+@router_api.post('/relay/invitations')
+def relay_invitation_issue(identity=Depends(_resolve_identity)):
+    """req#175 方向 A（云端主动连电脑）：引擎签发一次性邀请，云端插件
+    register --invite 使用。仅管理员；兑换单次、过期失效。engine_url 指向
+    本机监听地址（listen_control 配置），未配置监听时返回 listen_configured
+    =false（前端引导先配监听；邀请本身不依赖监听先后）。"""
+    _admin_only(identity, 'relay 邀请签发仅限管理员')
+    from . import relay, listen_control, config
+    conn = db.get_connection()
+    try:
+        issued = relay.issue_invitation(conn)
+        listen_address = listen_control.read_config(conn)
+    finally:
+        conn.close()
+    address = listen_address or "127.0.0.1"
+    return {'invite_token': issued['invite_token'],
+            'expires_at': issued['expires_at'],
+            'engine_url': f"wss://{address}:{config.port()}/relay/ws",
+            'listen_configured': bool(listen_address)}
+
+
+class _PairingImportBody(BaseModel):
+    pairing_url: str
+
+
+def _parse_pairing_url(pairing_url: str) -> dict:
+    """配对链接解析：wss://advertise:port?pairing_token=...&fingerprint=...
+    &member=...（req#175 插件签发时带宿主实际成员）。格式非法抛 ValueError。"""
+    from urllib.parse import urlsplit, parse_qs
+    parsed = urlsplit((pairing_url or '').strip())
+    if parsed.scheme not in ('wss', 'ws') or not parsed.hostname:
+        raise ValueError('配对链接格式非法：需要 wss://地址:端口')
+    query = parse_qs(parsed.query)
+    member = (query.get('member') or [''])[0].strip()
+    token = (query.get('pairing_token') or [''])[0].strip()
+    fingerprint = (query.get('fingerprint') or [''])[0].strip()
+    if not member or not token or not fingerprint or not parsed.port:
+        raise ValueError('配对链接缺少远端成员、一次性凭据或证书指纹')
+    return {'member': member, 'host': parsed.hostname, 'port': parsed.port,
+            'tls': parsed.scheme == 'wss', 'fingerprint': fingerprint,
+            'pairing_token': token}
+
+
+@router_api.post('/relay/pairings/preview')
+def relay_pairing_preview(body: _PairingImportBody,
+                          identity=Depends(_resolve_identity)):
+    """req#175：导入前只读解析配对链接——展示远端身份（配对过程携带的
+    宿主成员）与短指纹供确认；不落库、不建节点、不兑换凭据。"""
+    _admin_only(identity, 'relay 配对预览仅限管理员')
+    try:
+        parsed = _parse_pairing_url(body.pairing_url)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    from . import relay
+    conn = db.get_connection()
+    try:
+        exists = relay.read_node(conn, parsed['member']) is not None
+    finally:
+        conn.close()
+    return {'member': parsed['member'],
+            'host': parsed['host'], 'port': parsed['port'],
+            'tls': parsed['tls'],
+            'fingerprint_short': parsed['fingerprint'][:8],
+            'name_conflict': exists}
+
+
+@router_api.post('/relay/pairings/import')
+def relay_pairing_import(body: _PairingImportBody,
+                         identity=Depends(_resolve_identity)):
+    """req#175 方向 B（电脑主动连云端）：导入插件生成的配对链接，按链接
+    携带的远端成员建独立节点（不依赖本地名册选择）。同名冲突 409 不覆盖、
+    不接管；成功后保存拨号端点并启动拨号。"""
+    _admin_only(identity, 'relay 配对导入仅限管理员')
+    try:
+        parsed = _parse_pairing_url(body.pairing_url)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    from . import relay, relay_dialer
+    conn = db.get_connection()
+    try:
+        if relay.read_node(conn, parsed['member']) is not None:
+            raise HTTPException(409, '同名成员已存在：不得覆盖或接管已有身份')
+        endpoint = {'host': parsed['host'], 'port': parsed['port'],
+                    'tls': parsed['tls'], 'fingerprint': parsed['fingerprint'],
+                    'pairing_token': parsed['pairing_token']}
+        node = relay.register_remote_node(conn, parsed['member'],
+                                          parsed['pairing_token'],
+                                          direction='dial')
+        if node is None:
+            raise HTTPException(409, '同名成员已存在：不得覆盖或接管已有身份')
+        relay.set_dial_endpoint(conn, parsed['member'], endpoint)
+    finally:
+        conn.close()
+    relay_dialer.start_dial(parsed['member'])
+    return {'member': parsed['member'], 'direction': 'dial',
+            'imported': True, 'dial_state': relay_dialer._task_state(parsed['member'])}
+
+
 @router_api.post('/relay/nodes/{member}/dial-endpoint')
 def relay_node_dial_endpoint(member: str, body: _DialEndpointBody,
                              identity=Depends(_resolve_identity)):

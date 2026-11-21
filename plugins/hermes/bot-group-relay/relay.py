@@ -37,6 +37,7 @@ class RelayClient:
         self.cfg = cfg
         self._on_status = on_status or (lambda state: None)
         self._generation = 0
+        self._credential = cfg.credential   # req#175：邀请兑换后更新为持久凭据
         self._engine_url = ""
         self._streams = streams_mod.StreamRegistry(cfg.home, on_event=self._on_local_event)
         self._send_queue: queue.Queue = queue.Queue()
@@ -92,15 +93,22 @@ class RelayClient:
     def _handshake(self, ws) -> bool:
         snapshot = mcp_digest.snapshot(self.cfg.mcp_python,
                                        code_version=relay_config.plugin_version())
+        # 认证材料（req#175）：持久凭据优先（含邀请兑换后落盘的），
+        # 无凭据才带一次性邀请——邀请只用于首次接入。
+        from . import pairing
+        credential = (self.cfg.credential
+                      or pairing.load_register_credential(self.cfg.member))
         hello = {"relay": {"kind": "hello"},
                  "member": self.cfg.member,
-                 "credential": self.cfg.credential,
+                 "credential": credential,
                  "code_version": snapshot["code_version"],
                  "plugin_version": snapshot["code_version"],
                  "mcp_fingerprint": snapshot["mcp_fingerprint"],
                  "protocol_version": relay_config.RELAY_PROTOCOL_VERSION,
                  "mcp_python": snapshot["mcp_python"],
                  "mcp_entry": snapshot["mcp_entry"]}
+        if not credential and self.cfg.invite:
+            hello["invite"] = self.cfg.invite
         try:
             ws.send(json.dumps(hello, ensure_ascii=False))
             reply = json.loads(ws.recv())
@@ -114,6 +122,12 @@ class RelayClient:
             raise
         if reply.get("relay", {}).get("kind") != "hello_ok":
             return False
+        # req#175 邀请兑换：hello_ok 下发节点持久凭据 → 落盘供重连
+        issued_credential = reply.get("relay", {}).get("credential") or ""
+        if issued_credential:
+            from . import pairing
+            pairing.save_register_credential(self.cfg.member, issued_credential)
+            self._credential = issued_credential
         self._generation = int(reply["relay"].get("generation") or 0)
         self._engine_url = reply.get("engine_url") or ""
         logger.info("bot-group relay link up member=%s generation=%d",

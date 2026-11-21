@@ -69,6 +69,16 @@ CREATE TABLE IF NOT EXISTS relay_offline_mentions (
     updated_at    REAL,
     PRIMARY KEY (message_id, member)
 );
+-- req#175 首次接入（方向 A=云端主动连电脑）：引擎签发的一次性邀请。
+-- 兑换原子单次、过期失效；兑换后按 hello 上报的远端成员建独立节点。
+CREATE TABLE IF NOT EXISTS relay_invitations (
+    token_hash   TEXT PRIMARY KEY,
+    expires_at   REAL NOT NULL,
+    redeemed     INTEGER NOT NULL DEFAULT 0,
+    redeemed_by  TEXT NOT NULL DEFAULT '',
+    created_at   REAL NOT NULL,
+    redeemed_at  REAL
+);
 """
 
 
@@ -82,6 +92,68 @@ def _now() -> float:
 
 def hash_credential(credential: str) -> str:
     return hashlib.sha256(credential.encode()).hexdigest()
+
+
+# ---------------- req#175 一次性邀请（方向 A=云端主动连电脑） ----------------
+
+INVITATION_TTL_SECONDS = 3600.0   # 一次性邀请 1 小时内兑换有效
+
+
+def issue_invitation(conn, *, ttl_seconds: float = INVITATION_TTL_SECONDS,
+                     now=None) -> dict:
+    """引擎签发一次性邀请（管理员动作）：返回
+    {invite_token, engine_url_scheme_placeholder? 不含}——调用方组装展示。
+    只存 token hash；兑换原子单次、过期失效。"""
+    token = secrets.token_urlsafe(32)
+    now = _now() if now is None else now
+    conn.execute(
+        "INSERT INTO relay_invitations (token_hash, expires_at, redeemed, "
+        "created_at) VALUES (?,?,0,?)",
+        (hash_credential(token), now + ttl_seconds, now))
+    conn.commit()
+    return {"invite_token": token, "expires_at": now + ttl_seconds}
+
+
+def redeem_invitation(conn, token: str, member: str, *, now=None) -> bool:
+    """邀请兑换：未过期、未兑换才通过；成功后置 redeemed 并记录兑换者。
+    同名冲突（member 已存在节点）由调用方先查再兑换——兑换只保证单次。"""
+    if not token:
+        return False
+    now = _now() if now is None else now
+    row = conn.execute("SELECT * FROM relay_invitations WHERE token_hash=?",
+                       (hash_credential(token),)).fetchone()
+    if row is None or row["redeemed"] or now > row["expires_at"]:
+        return False
+    conn.execute(
+        "UPDATE relay_invitations SET redeemed=1,redeemed_by=?,redeemed_at=? "
+        "WHERE token_hash=? AND redeemed=0",
+        (member, now, hash_credential(token)))
+    conn.commit()
+    return conn.total_changes > 0
+
+
+def register_remote_node(conn, member: str, credential: str, *, direction: str,
+                         peer_ip: str = "", now=None) -> dict | None:
+    """req#175：按远端上报成员建独立节点——member 已存在（本地名册成员或
+    已登记节点）返回 None（同名冲突不覆盖、不接管），否则新建并返回节点。
+    direction：'dial'（本机连云端，导入配对链接）/'listen'（云端连本机，
+    邀请兑换）。peer_ip 给定时写入该成员首个来源绑定（首接自动绑定，
+    来源 IP 从零走通不需要管理员预知云端地址）。"""
+    if read_node(conn, member) is not None:
+        return None
+    now = _now() if now is None else now
+    conn.execute(
+        "INSERT INTO relay_nodes (member, credential_hash, direction, "
+        "created_at, updated_at) VALUES (?,?,?,?,?)",
+        (member, hash_credential(credential), direction, now, now))
+    conn.commit()
+    if peer_ip:
+        from . import ip_allowlist
+        # 回环恒放行无需登记（ip_allowlist.set_bindings 拒绝回环）；只有
+        # 非回环首接才自动首绑（req#175 来源 IP 从零走通）。
+        if not ip_allowlist._is_loopback(peer_ip):
+            ip_allowlist.set_bindings(conn, member, [peer_ip])
+    return read_node(conn, member)
 
 
 def mcp_fingerprint(mcp_config: dict) -> str:

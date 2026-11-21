@@ -416,6 +416,17 @@ def dial_once(member: str) -> bool:
             logger.warning("relay dial hello_ok missing generation member=%s", member)
             ws.close(code=4003, reason="bad generation")
             return False
+        # req#175 验收 5/6：插件 hello_ok 主动上报宿主实际成员——必须与
+        # dial_endpoint 归属一致（不一致=旧连接冒名点亮新节点/成员错配，
+        # 断链不接管、不轮换凭据）。
+        reported_member = (hello_ok.get("relay") or {}).get("member") or ""
+        if reported_member and reported_member != member:
+            _record_failure(member, "auth", uri,
+                            f"成员上报不一致：期望 {member}，上报 {reported_member}")
+            logger.warning("relay dial member mismatch expected=%s got=%s",
+                           member, reported_member)
+            ws.close(code=4001, reason="member mismatch")
+            return False
         persistent_credential = (hello_ok.get("relay") or {}).get("credential") or ""
         if persistent_credential:
             conn = db.get_connection()

@@ -73,7 +73,7 @@ def issue_pairing(*, member: str, advertise: str, port: int, fingerprint: str,
         }
         _save_state(state)
     pairing_url = (f"{scheme}://{advertise}:{port}?pairing_token={token}"
-                   f"&fingerprint={fingerprint}")
+                   f"&fingerprint={fingerprint}&member={member}")
     logger.info("bot-group relay pairing issued member=%s advertise=%s:%s",
                 member, advertise, port)
     return {
@@ -164,6 +164,30 @@ def pairing_metadata() -> dict:
             "expires_at": pairing.get("expires_at", 0),
             "redeemed": bool(pairing.get("redeemed")),
         }
+
+
+def save_register_credential(member: str, credential: str) -> None:
+    """req#175 邀请兑换后：引擎 hello_ok 下发的节点持久凭据落盘
+    （state/register.json），重连不再用一次性邀请。只存 hash 之外的
+    明文本地文件（0600 语义由目录权限继承），不落日志。"""
+    with _LOCK:
+        state = _load_state()
+        state["register"] = {
+            "member": member,
+            "credential": credential,
+            "saved_at": time.time(),
+        }
+        _save_state(state)
+    logger.info("bot-group relay register credential saved member=%s", member)
+
+
+def load_register_credential(member: str) -> str:
+    """读回邀请兑换后的持久凭据（member 匹配才返回）。"""
+    with _LOCK:
+        saved = _load_state().get("register") or {}
+        if saved.get("member") == member:
+            return saved.get("credential") or ""
+    return ""
 
 
 def write_link_file(pairing_url: str, *, path: str | None = None) -> str:

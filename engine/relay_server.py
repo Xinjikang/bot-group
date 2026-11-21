@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import queue
+import secrets
 import threading
 import time
 
@@ -348,21 +349,44 @@ async def relay_ws(websocket: WebSocket) -> None:
         hello = json.loads(raw)
         member = (hello.get("member") or "").strip()
         credential = hello.get("credential") or ""
+        invite_token = (hello.get("invite") or "").strip()
         code_version = hello.get("code_version") or ""
         plugin_version = hello.get("plugin_version") or code_version
         mcp_fingerprint = hello.get("mcp_fingerprint") or ""
         protocol_version = hello.get("protocol_version")
+        # req#171 第二层：凭据验证通过后核对 socket peer IP 属于该成员
+        # 绑定集合——B 成员凭据从 A 成员已绑定 IP 连接被拒（防交换来源
+        # 冒用）。回环恒放行。邀请路径（req#175）在兑换时把 peer 首绑进
+        # 该新成员来源集合，之后同口径核验。
+        from . import ip_allowlist
+        peer_raw = websocket.client.host if websocket.client else None
+        peer = ip_allowlist._normalize(peer_raw or "") or peer_raw
         conn = db.get_connection()
+        node_credential = ""
         try:
-            if not member or not relay.verify_credential(conn, member, credential):
+            if invite_token:
+                # req#175 一次性邀请兑换（方向 A=云端主动连电脑首次接入）：
+                # 按 hello 上报的远端成员建独立节点——不依赖本地名册；同名
+                # 冲突拒（不覆盖/不接管）；邀请单次、过期失效。
+                if not member:
+                    await websocket.close(code=CLOSE_BAD_CREDENTIAL)
+                    return
+                if relay.read_node(conn, member) is not None:
+                    logger.warning("relay invite name conflict member=%s", member)
+                    await websocket.close(code=CLOSE_BAD_CREDENTIAL)
+                    return
+                if not relay.redeem_invitation(conn, invite_token, member):
+                    logger.warning("relay invite invalid or expired member=%s", member)
+                    await websocket.close(code=CLOSE_BAD_CREDENTIAL)
+                    return
+                node_credential = secrets.token_urlsafe(32)
+                relay.register_remote_node(conn, member, node_credential,
+                                           direction="listen",
+                                           peer_ip=peer_raw or "")
+                logger.info("relay invite redeemed member=%s", member)
+            elif not member or not relay.verify_credential(conn, member, credential):
                 await websocket.close(code=CLOSE_BAD_CREDENTIAL)
                 return
-            # req#171 第二层：凭据验证通过后核对 socket peer IP 属于该成员
-            # 绑定集合——B 成员凭据从 A 成员已绑定 IP 连接被拒（防交换来源
-            # 冒用）。回环恒放行。
-            from . import ip_allowlist
-            peer_raw = websocket.client.host if websocket.client else None
-            peer = ip_allowlist._normalize(peer_raw or "") or peer_raw
             if not ip_allowlist.member_allowed(conn, member, peer_raw):
                 logger.warning("relay source not bound to member=%s peer=%s", member, peer)
                 await websocket.close(code=CLOSE_BAD_SOURCE)
@@ -429,10 +453,13 @@ async def relay_ws(websocket: WebSocket) -> None:
     if previous is not None and not previous.closed:
         previous.close()
     try:
-        await websocket.send_text(json.dumps(
-            {"relay": {"kind": "hello_ok", "generation": generation},
-             "engine_url": _engine_url()},
-            ensure_ascii=False))
+        hello_ok = {"relay": {"kind": "hello_ok", "generation": generation},
+                    "engine_url": _engine_url()}
+        if node_credential:
+            # req#175 邀请兑换：首接下发节点持久凭据（插件保存供重连，
+            # 一次性邀请不再重复使用）
+            hello_ok["relay"]["credential"] = node_credential
+        await websocket.send_text(json.dumps(hello_ok, ensure_ascii=False))
         logger.info("relay link up member=%s generation=%d", member, generation)
         if switching:
             # manager node2073：link 已注册且 hello_ok 已发（能收发帧），

@@ -230,8 +230,11 @@ class ListenServer:
                 except Exception:  # noqa: BLE001
                     pass
             # hello_ok 下发帧代 + 持久身份凭据（首次配对成功才下发新凭据，
-            # 引擎侧轮换进 dial_endpoint；重连认证不再下发）
-            hello_ok = {"relay": {"kind": "hello_ok", "generation": generation}}
+            # 引擎侧轮换进 dial_endpoint；重连认证不再下发）。member=本插件
+            # 宿主实际成员（HERMES_PROFILE）主动上报（req#175 验收 5/6）：
+            # 引擎核验与 dial_endpoint 归属一致（防旧连接冒名点亮新节点）。
+            hello_ok = {"relay": {"kind": "hello_ok", "generation": generation,
+                                  "member": member}}
             if persistent:
                 hello_ok["relay"]["credential"] = persistent
             conn.send(json.dumps(hello_ok, ensure_ascii=False))

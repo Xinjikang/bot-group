@@ -41,6 +41,7 @@ class RelayConfig:
     credential: str          # 节点连接凭据
     mcp_python: str          # 随包 MCP 解释器绝对路径（可空，自动探测）
     home: str                # 本机 gateway 控制 home（取票目标）
+    invite: str = ""         # req#175 一次性邀请（云端连本机首次接入；兑换后换持久凭据）
 
 
 def _env(name: str) -> str:
@@ -64,15 +65,17 @@ def load(config=None) -> RelayConfig | None:
     member = (extra.get("member") or _env("BOT_GROUP_RELAY_MEMBER")
               or _env("HERMES_PROFILE"))
     credential = extra.get("credential") or _env("BOT_GROUP_RELAY_CREDENTIAL")
+    invite = extra.get("invite") or _env("BOT_GROUP_RELAY_INVITE")
     mcp_python = platform_mcp_python(config)
     home = extra.get("home") or _env("HERMES_HOME") or str(Path.home() / ".hermes")
-    if not engine_url or not member or not credential:
+    if not engine_url or not member or not (credential or invite):
         return None
     parsed = urlsplit(engine_url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.path not in ("", "/"):
         return None
     return RelayConfig(engine_url=engine_url.rstrip("/"), member=member,
-                       credential=credential, mcp_python=mcp_python, home=home)
+                       credential=credential, invite=invite, mcp_python=mcp_python,
+                       home=home)
 
 
 def ws_url(engine_url: str) -> str:

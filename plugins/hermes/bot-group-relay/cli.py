@@ -90,6 +90,7 @@ def register_cli(parser) -> None:
     p_register.add_argument("--engine-url", default="", help="引擎地址（缺省 BOT_GROUP_ENGINE_URL）")
     p_register.add_argument("--member", default="", help="成员名")
     p_register.add_argument("--credential", default="", help="节点凭据")
+    p_register.add_argument("--invite", default="", help="一次性邀请（req#175 首次接入，兑换后换持久凭据）")
     sub.add_parser("status", help="当前监听/配对状态（脱敏）")
 
 
@@ -166,14 +167,16 @@ def dispatch(args) -> int:
         engine_url = args.engine_url or os.environ.get("BOT_GROUP_ENGINE_URL") or ""
         member = args.member or os.environ.get("BOT_GROUP_RELAY_MEMBER") or ""
         credential = args.credential or os.environ.get("BOT_GROUP_RELAY_CREDENTIAL") or ""
-        if not engine_url or not member or not credential:
-            print("bot-group relay register: 需要 engine-url/member/credential",
-                  file=sys.stderr)
+        invite = args.invite or os.environ.get("BOT_GROUP_RELAY_INVITE") or ""
+        if not engine_url or not member or not (credential or invite):
+            print("bot-group relay register: 需要 engine-url/member 与 "
+                  "credential 或 invite", file=sys.stderr)
             return 1
         from . import config as relay_config
         from . import relay as relay_mod
         cfg = relay_config.RelayConfig(engine_url=engine_url, member=member,
-                                       credential=credential, mcp_python="",
+                                       credential=credential, invite=invite,
+                                       mcp_python="",
                                        home=os.environ.get("HERMES_HOME") or
                                        str(Path.home() / ".hermes"))
         client = relay_mod.RelayClient(cfg)

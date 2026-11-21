@@ -1538,3 +1538,341 @@ class EngineTunnelIdentityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FirstJoinTests(unittest.TestCase):
+    """req#175 task#328 首次接入：配对导入（方向 B）与一次性邀请（方向 A）
+    建独立节点——远端成员不在本地名册；同名冲突不覆盖；邀请单次/过期；
+    hello 成员上报核验。隔离：临时 SQLite + 本机回环真实 WS/监听。"""
+
+    def setUp(self):
+        self._ctx = isolated_database()
+        self._ctx.__enter__()
+        self.addCleanup(self._ctx.__exit__, None, None, None)
+        conn = db.get_connection()
+        try:
+            # 本地名册只有 alpha 项目；远端成员 remoteA/remoteB 不注册、
+            # 不进名册——零个远程节点起步（req#175 验收 1）
+            enable_members(conn, ("alpha",), profiles=[])
+        finally:
+            conn.close()
+        self.plg = _plugin()
+        self._tmpdir = tempfile.TemporaryDirectory(prefix="first-join-")
+        self.addCleanup(self._tmpdir.cleanup)
+        self._state_patch = patch.object(
+            self.plg["pairing"], "_state_path",
+            return_value=Path(self._tmpdir.name) /
+            f"first-join-{threading.get_ident()}.json")
+        self._state_patch.start()
+        self.addCleanup(self._state_patch.stop)
+        self.addCleanup(relay_server.close_all)
+        for member in ("remoteA", "remoteB", REMOTE):
+            self.addCleanup(relay_dialer.stop_dial, member)
+        self._client = None
+        self._engine = None
+
+    def _api_client(self):
+        """懒起真实 uvicorn 隔离引擎（API 路由 + /relay/ws）——邀请方向
+        需要真实 WS 端点供插件 RelayClient 连接。"""
+        if self._client is None:
+            import socket
+            import uvicorn
+            from fastapi import FastAPI, WebSocket
+            from engine import api
+            app = FastAPI()
+            app.include_router(api.router_api)
+
+            @app.websocket("/relay/ws")
+            async def endpoint(websocket: WebSocket):
+                await relay_server.relay_ws(websocket)
+            self._sock = socket.socket()
+            self._sock.bind(("127.0.0.1", 0))
+            self.addCleanup(self._sock.close)
+            self._api_port = self._sock.getsockname()[1]
+            self._server = uvicorn.Server(uvicorn.Config(
+                app, lifespan="off", log_level="error"))
+            self._worker = threading.Thread(
+                target=self._server.run, kwargs={"sockets": [self._sock]},
+                daemon=True)
+            self._worker.start()
+
+            def _stop():
+                self._server.should_exit = True
+                self._worker.join(8)
+
+            self.addCleanup(_stop)
+            deadline = time.monotonic() + 8
+            while not self._server.started:
+                self.assertTrue(self._worker.is_alive()
+                                and time.monotonic() < deadline)
+                time.sleep(0.02)
+            self._client = self._api_port
+        return self._client
+
+    def _admin_post(self, path, body=None):
+        import urllib.request
+        import urllib.error
+        port = self._api_client()
+        data = json.dumps(body or {}).encode() if body is not None else b"{}"
+        req = urllib.request.Request(f"http://127.0.0.1:{port}{path}",
+                                     data=data, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read() or b"{}")
+
+    def _wait_dial_connected(self, member, timeout=15.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if relay_dialer._task_state(member) == "connected":
+                return True
+            time.sleep(0.05)
+        return False
+
+    # ---------------- 方向 B：配对导入建独立节点（不选本地成员） ----------------
+
+    def test_pairing_import_creates_independent_node(self):
+        """req#175 验收 1/6：云端插件 listen（远端成员 remoteA，本地名册
+        不存在）→ 配对链接携带成员 → preview 展示身份 → import 建独立节点
+        → 拨号认证；hello_ok 上报成员与节点归属一致。同名再导入 409 且
+        不覆盖。"""
+        plg_listen = self.plg["listen"]
+        with tempfile.TemporaryDirectory(prefix="bgrelay-join-") as tmp_dir:
+            with patch.object(plg_listen, "STATE_DIR", Path(tmp_dir)), \
+                    patch.object(plg_listen, "validate_bind_address",
+                                 return_value="127.0.0.1"):
+                result = plg_listen.listen_serve(
+                    address="127.0.0.1", port=0, advertise="127.0.0.1",
+                    member="remoteA", home=os.environ.get("TMPDIR", "."),
+                    tls=True, mcp_entry="")
+            self.addCleanup(result["_server"].stop)
+            pairing_url = result["pairing_url"]
+        self.assertIn("member=remoteA", pairing_url,
+                      "配对链接必须携带远端实际成员（req#175 验收 6）")
+        status, preview = self._admin_post("/relay/pairings/preview",
+                                           {"pairing_url": pairing_url})
+        self.assertEqual(status, 200)
+        self.assertEqual(preview["member"], "remoteA")
+        self.assertEqual(preview["fingerprint_short"],
+                         result["fingerprint_short"])
+        self.assertFalse(preview["name_conflict"], "零节点起步无冲突")
+        status, imported = self._admin_post("/relay/pairings/import",
+                                           {"pairing_url": pairing_url})
+        self.assertEqual(status, 200, f"导入失败: {imported}")
+        self.assertTrue(imported["imported"])
+        conn = db.get_connection()
+        try:
+            row = relay.read_node(conn, "remoteA")
+            self.assertIsNotNone(row, "导入必须按远端上报成员建独立节点")
+            self.assertEqual(row["direction"], "dial")
+            endpoint = relay.read_dial_endpoint(conn, "remoteA")
+            self.assertEqual(endpoint["host"], "127.0.0.1")
+            self.assertEqual(endpoint["port"], result["port"])
+        finally:
+            conn.close()
+        self.assertTrue(self._wait_dial_connected("remoteA"),
+                        "导入后拨号必须认证连通（hello_ok 成员上报一致）")
+        conn = db.get_connection()
+        try:
+            self.assertEqual(relay.read_node(conn, "remoteA")["state"], "online")
+        finally:
+            conn.close()
+        # 同名再导入：409 不覆盖
+        status, again = self._admin_post("/relay/pairings/import",
+                                         {"pairing_url": pairing_url})
+        self.assertEqual(status, 409)
+        status, preview2 = self._admin_post("/relay/pairings/preview",
+                                            {"pairing_url": pairing_url})
+        self.assertTrue(preview2["name_conflict"], "已登记成员 preview 标冲突")
+
+    def test_pairing_url_missing_member_rejected(self):
+        """配对链接缺 member/凭据/指纹 → 400（远端身份必须取自配对过程）。"""
+        status, body = self._admin_post(
+            "/relay/pairings/preview",
+            {"pairing_url": "wss://127.0.0.1:8443?pairing_token=x&fingerprint=aa"})
+        self.assertEqual(status, 400)
+        status, body = self._admin_post(
+            "/relay/pairings/import",
+            {"pairing_url": "not-a-url"})
+        self.assertEqual(status, 400)
+
+    # ---------------- 方向 A：一次性邀请兑换建节点 ----------------
+
+    def test_invitation_issue_redeem_single_use(self):
+        """邀请兑换原子单次；过期失效；同名冲突不消耗邀请。"""
+        from unittest.mock import patch as _patch
+        conn = db.get_connection()
+        try:
+            issued = relay.issue_invitation(conn, ttl_seconds=5)
+        finally:
+            conn.close()
+        token = issued["invite_token"]
+        conn = db.get_connection()
+        try:
+            self.assertTrue(relay.redeem_invitation(conn, token, "remoteB"))
+            self.assertFalse(relay.redeem_invitation(conn, token, "remoteB"),
+                             "一次性邀请二次兑换必须失败")
+            self.assertFalse(relay.redeem_invitation(conn, "nope", "remoteB"))
+            expired = relay.issue_invitation(conn, ttl_seconds=0.01)
+        finally:
+            conn.close()
+        time.sleep(0.02)
+        conn = db.get_connection()
+        try:
+            self.assertFalse(relay.redeem_invitation(conn, expired["invite_token"],
+                                                     "remoteB"), "过期失效")
+        finally:
+            conn.close()
+
+    def test_register_remote_node_name_conflict(self):
+        """同名冲突：member 已存在返回 None，不覆盖不接管。"""
+        conn = db.get_connection()
+        try:
+            relay.register_node(conn, "taken", "old-credential")
+            self.assertIsNone(relay.register_remote_node(
+                conn, "taken", "new-credential", direction="listen"))
+            self.assertTrue(relay.verify_credential(conn, "taken", "old-credential"),
+                            "旧身份必须保持不变")
+            self.assertFalse(relay.verify_credential(conn, "taken", "new-credential"))
+            row = relay.register_remote_node(conn, "fresh", "c1",
+                                             direction="dial")
+            self.assertEqual(row["direction"], "dial")
+        finally:
+            conn.close()
+
+    def test_invitation_ws_first_join_full_chain(self):
+        """方向 A 真实全链：引擎签发邀请 → 插件 RelayClient(invite) 出站
+        连真实 /relay/ws → 兑换建节点（remoteB，名册外）→ hello_ok 下发
+        持久凭据 → 插件落盘；节点 online。重连不再用邀请（凭据认证）。"""
+        plg_relay = self._load_relay_module()
+        status, issued = self._admin_post("/relay/invitations")
+        self.assertEqual(status, 200)
+        token = issued["invite_token"]
+        self.assertTrue(issued["engine_url"].startswith("wss://"))
+        engine_url = f"http://127.0.0.1:{self._api_client()}"
+        relay_config = self.plg["config"]
+        # 合成包无版本文件：plugin_version 对齐引擎（同 tag 配套契约）
+        engine_version = relay_server._engine_release_version() or ""
+        self._version_patch = patch.object(
+            relay_config, "plugin_version", return_value=engine_version)
+        self._version_patch.start()
+        self.addCleanup(self._version_patch.stop)
+        client = plg_relay.RelayClient(relay_config.RelayConfig(
+            engine_url=engine_url, member="remoteB", credential="",
+            invite=token, mcp_python="",
+            home=os.environ.get("TMPDIR", ".")))
+        client.start()
+        self.addCleanup(client.stop)
+        deadline = time.monotonic() + 15
+        node_ok = False
+        while time.monotonic() < deadline:
+            conn = db.get_connection()
+            try:
+                row = relay.read_node(conn, "remoteB")
+                node_ok = row is not None and row["state"] == "online"
+            finally:
+                conn.close()
+            if node_ok:
+                break
+            time.sleep(0.1)
+        self.assertTrue(node_ok, "邀请兑换后节点必须建行并在线")
+        conn = db.get_connection()
+        try:
+            row = relay.read_node(conn, "remoteB")
+            self.assertEqual(row["direction"], "listen")
+        finally:
+            conn.close()
+        saved = self.plg["pairing"].load_register_credential("remoteB")
+        self.assertTrue(saved, "hello_ok 下发的持久凭据必须落盘")
+        # 用持久凭据重连：断开现连接后新客户端认证通过（不再依赖邀请）
+        client.stop()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and \
+                relay_server.active_link("remoteB") is not None:
+            time.sleep(0.05)
+        client3 = plg_relay.RelayClient(relay_config.RelayConfig(
+            engine_url=engine_url, member="remoteB", credential=saved,
+            mcp_python="", home=os.environ.get("TMPDIR", ".")))
+        client3.start()
+        self.addCleanup(client3.stop)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and \
+                relay_server.active_link("remoteB") is None:
+            time.sleep(0.05)
+        self.assertIsNotNone(relay_server.active_link("remoteB"),
+                             "持久凭据重连必须认证通过")
+
+    def _load_relay_module(self):
+        """加载插件 relay 模块（合成包内）。"""
+        import importlib.util
+        import types as _types
+        import sys as _sys
+        name = "hermes_plugins.bot_group_relay_test.relay"
+        if name in _sys.modules:
+            return _sys.modules[name]
+        pkg = _sys.modules["hermes_plugins.bot_group_relay_test"]
+        spec = importlib.util.spec_from_file_location(name, PLUGIN_DIR / "relay.py")
+        mod = importlib.util.module_from_spec(spec)
+        mod.__name__ = name
+        mod.__package__ = "hermes_plugins.bot_group_relay_test"
+        _sys.modules[name] = mod
+        setattr(pkg, "relay", mod)
+        spec.loader.exec_module(mod)
+        return mod
+
+    # ---------------- 成员上报核验 ----------------
+
+    def test_dial_member_report_mismatch_rejected(self):
+        """req#175 验收 6：插件 hello_ok 上报成员与 dial_endpoint 归属
+        不一致 → 拨号失败、不轮换凭据、不建 link（防旧连接冒名点亮）。"""
+        import socket
+        import ssl
+        import websockets.sync.server as ws_server
+        import shutil
+        plg_listen = self.plg["listen"]
+        tmp_dir = Path(tempfile.mkdtemp(prefix="bgrelay-mm-"))
+        self.addCleanup(shutil.rmtree, tmp_dir, True)
+        self._mm_state_patch = patch.object(plg_listen, "STATE_DIR", tmp_dir)
+        self._mm_state_patch.start()
+        self.addCleanup(self._mm_state_patch.stop)
+        with patch.object(plg_listen, "validate_bind_address",
+                          return_value="127.0.0.1"):
+            cert, key = plg_listen._ensure_cert("", "")
+            fingerprint = plg_listen.certificate_fingerprint(cert)
+
+        def handler(conn):
+            conn.recv()
+            # 回 hello_ok 上报错误成员（与 dial_endpoint 归属不符）
+            conn.send(json.dumps(
+                {"relay": {"kind": "hello_ok", "generation": 7,
+                           "member": "somebody-else"}}))
+
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cert, key)
+        server = ws_server.serve(handler, "127.0.0.1", 0,
+                                 ssl_context=ctx)
+        port = server.socket.getsockname()[1]
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(worker.join, 2)
+        conn = db.get_connection()
+        try:
+            relay.register_node(conn, REMOTE, CREDENTIAL)
+            relay.set_dial_endpoint(conn, REMOTE,
+                                    {"host": "127.0.0.1", "port": port,
+                                     "tls": True, "fingerprint": fingerprint,
+                                     "pairing_token": ""})
+            relay.set_direction(conn, REMOTE, "dial")
+        finally:
+            conn.close()
+        relay_dialer.start_dial(REMOTE)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and \
+                relay_dialer._task_state(REMOTE) not in ("failed", "abandoned"):
+            time.sleep(0.05)
+        self.assertNotEqual(relay_dialer._task_state(REMOTE), "connected",
+                            "成员上报不一致不得建立连接")
+        self.assertIsNone(relay_server.active_link(REMOTE))

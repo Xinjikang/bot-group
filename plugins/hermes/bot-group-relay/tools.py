@@ -131,14 +131,16 @@ def bot_group_register(args: dict, **kwargs) -> str:
     engine_url = str(args.get("engine_url") or os.environ.get("BOT_GROUP_ENGINE_URL") or "")
     member = str(args.get("member") or os.environ.get("BOT_GROUP_RELAY_MEMBER") or "")
     credential = str(args.get("credential") or os.environ.get("BOT_GROUP_RELAY_CREDENTIAL") or "")
-    if not engine_url or not member or not credential:
-        return _tool_result(False, "需要 engine_url/member/credential")
+    invite = str(args.get("invite") or os.environ.get("BOT_GROUP_RELAY_INVITE") or "")
+    if not engine_url or not member or not (credential or invite):
+        return _tool_result(False, "需要 engine_url/member 与 credential 或 invite")
     from pathlib import Path
     from . import config as relay_config
     from . import relay as relay_mod
     cfg = relay_config.RelayConfig(
         engine_url=engine_url, member=member, credential=credential,
-        mcp_python="", home=os.environ.get("HERMES_HOME") or
+        invite=invite, mcp_python="",
+        home=os.environ.get("HERMES_HOME") or
         str(Path.home() / ".hermes"))
     client = relay_mod.RelayClient(cfg)
     try:
