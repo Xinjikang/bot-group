@@ -80,6 +80,12 @@ class RelayLease:
         self.closed = True
         self.client.close()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
 
 def connection(profile, *, home=None, command=None, read_only=False, on_event=None, history=False):
     from . import bot_identity

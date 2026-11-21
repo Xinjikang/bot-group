@@ -1017,6 +1017,39 @@ class RelayMcpTests(RelayBase):
 
 
 class RelayConnectionSplitTests(RelayBase):
+    def test_project_members_refresh_queries_remote_work_session(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        from engine import api, hermes_gateway, wake
+        from scripts.project_test_support import enable_members
+
+        conn = self.conn()
+        try:
+            enable_members(conn, ('remote-project',), profiles=[REMOTE])
+            conn.commit()
+        finally:
+            conn.close()
+        app = FastAPI()
+        app.include_router(api.router_api)
+        app.dependency_overrides[api._resolve_identity] = lambda: ('user', 'user')
+        with self._connect() as ws, TestClient(app) as http, ThreadPoolExecutor(1) as pool, \
+                patch.object(hermes_gateway, 'enabled', return_value=True):
+            self._hello(ws)
+            for sessions in ([], [{'session_id': 'work-session'}]):
+                request = pool.submit(http.get, '/projects/remote-project/workspaces')
+                envelope = json.loads(ws.recv(timeout=5))
+                frame = envelope['frame']
+                self.assertEqual(frame['method'], 'session.list')
+                self.assertEqual(frame['params']['title'], wake.session_name(REMOTE, 'work', None, 'remote-project'))
+                ws.send(json.dumps({'relay': envelope['relay'], 'frame': {
+                    'jsonrpc': '2.0', 'id': frame['id'], 'result': {'sessions': sessions}}}))
+                response = request.result(timeout=5)
+                self.assertEqual(response.status_code, 200)
+                member, = response.json()['members']
+                self.assertEqual(member['profile'], REMOTE)
+                self.assertEqual(member['work_session_exists'], bool(sessions))
+
     def test_connection_relay_when_node_registered(self):
         from engine import hermes_gateway
         ws = self._connect()
@@ -1025,6 +1058,11 @@ class RelayConnectionSplitTests(RelayBase):
             lease, home, command = hermes_gateway.connection(REMOTE)
             self.assertEqual(home, REMOTE)
             self.assertEqual(command, [])
+            with self.assertRaisesRegex(RuntimeError, 'cancelled'):
+                with lease as client:
+                    self.assertIs(client, lease)
+                    raise RuntimeError('cancelled')
+            self.assertTrue(lease.client.closed)
             lease.close()
         finally:
             ws.close()
