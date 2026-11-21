@@ -197,6 +197,25 @@ class ResumeRecoveryTests(unittest.TestCase):
             ledger.apply_receipt(self.conn, self.execution, late)
         self.assertEqual(self.current()['admission_id'], 'recovery-admission')
 
+    def test_fast_followup_is_not_lost_in_epoch_float_rounding(self):
+        cue = self.reserve()
+        client = Mock()
+        terminal = {**self.receipt('terminal'), 'outcome': 'completed'}
+        client.rpc.side_effect = [self.snapshot(), self.receipt('queued'),
+                                  self.snapshot([self.receipt('started', input_id=cue['request_id'])], running=True),
+                                  terminal]
+        # An epoch-sized time plus 0.2 rounds differently than a delta of 0.2.
+        # A cached OS wall-clock tick can be the same before and after the commit.
+        with patch.object(gateway.time, 'time', return_value=1795246400.0), \
+                patch.object(gateway.time, 'sleep'), \
+                patch.object(gateway, 'connection', return_value=(client, self.row['home'], [])), \
+                patch.object(gateway, '_finish', return_value=True):
+            gateway._watch(self.execution)
+        self.assertEqual(self.cue()['state'], 'started')
+        self.assertEqual(self.current()['state'], 'terminal')
+        self.assertEqual([call.args[0] for call in client.rpc.call_args_list],
+                         ['session.resume', 'prompt.submit', 'session.resume', 'prompt.receipt'])
+
     def test_task_claim_uses_the_adopted_task_not_the_first_pending_task(self):
         self.conn.execute("UPDATE tasks SET status='pending',next_bot='default',claimed_by='',"
                           "description='fixture',design_basis='fixture',acceptance_criteria='fixture',"

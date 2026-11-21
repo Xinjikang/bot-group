@@ -176,7 +176,18 @@ def exercise(args, *, blocked):
             started = transport.claim()
             assert started['status'] == 'started' and started['request_id'] == cue['request_id']
             assert started['payload']['text'] == cue['text'] and '任务 #991' in started['payload']['text']
-            until(lambda: fixture.cue()['state'] == 'started', 'Engine did not confirm the actual native start')
+            def observe_started():
+                if fixture.cue()['state'] == 'started':
+                    return True
+                if not workers:
+                    # The real queue keeps consuming due work after a bounded fast probe.
+                    queue.process_one(fixture.conn)
+                return False
+
+            try:
+                until(observe_started, 'Engine did not confirm the actual native start')
+            except TimeoutError as exc:
+                raise TimeoutError(f'{exc}: state={fixture.cue()["state"]}; RPCs={transport.calls}') from exc
             assert task_tool(api, fixture.fixture, 'task_get')['task']['id'] == 991
             role = fixture.conn.execute("SELECT role_id FROM project_members WHERE project='alpha' AND profile='architect'").fetchone()[0]
             task_tool(api, fixture.fixture, 'task_log', type='dev', result='B consumed the original task recovery input',

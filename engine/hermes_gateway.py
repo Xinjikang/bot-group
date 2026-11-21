@@ -589,10 +589,10 @@ def _watch(execution_id, *, retry_manual=False):
                             continue
                         pending = hermes_task_recovery.pending(conn, row)
                         if pending is not None and pending['request_id'] == cue['request_id']:
-                            delay = pending['next_check_at'] - time.time()
-                            if (-0.1 <= delay <= hermes_task_recovery.START_CHECK_INTERVAL
+                            now = time.time()
+                            if (pending['next_check_at'] <= now + hermes_task_recovery.START_CHECK_INTERVAL
                                     and time.monotonic() - recovery_started_at < 3):
-                                time.sleep(max(0, delay))
+                                time.sleep(max(0, pending['next_check_at'] - now))
                                 continue  # Observe a quick native start without waiting for the next scan.
                     except Exception:
                         logger.exception('Hermes task recovery probe failed execution=%s', execution_id)
