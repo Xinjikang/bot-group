@@ -6,6 +6,8 @@
 
 首次接入后端联网验证（req#175 task#328，供 #329 联验）：`env -u PYTHONPATH .venv/Scripts/python.exe -X utf8 -B -m scripts.verify_relay_first_join_network --port <隔离后端端口> --lan <本机非回环私网IPv4> --hermes-source <Hermes源码目录> --evidence <报告绝对目录>`。`TMPDIR`、`TMP`、`TEMP` 指向分配测试数据目录。隔离库与两个不同远端宿主，从零节点、零绑定开始；本机监听关闭时导入拨出节点，启用指定网卡后验证入站待确认不建节点/不绑来源，管理员确认后同时在线。用实际 `/msg`、话题与 wake 消费、两独立受控网关真实 WS 实收及引擎下发的 MCP 配置逐条对账三次点名：消息 ID→job→submission→原话题唯一回复。切换 A 后 B 保留原通道。确认/取消、过期、回执中断、Bot 拒绝、并发同名和快照代次见 `scripts.test_plugin_listen_pairing`、`scripts.test_ip_allowlist`、`scripts.test_relay_gateway`；另跑 `scripts.test_listen_control scripts.test_relay_dialer scripts.test_relay_plugin scripts.test_relay_register_contract`。不启动生产网关或模型；失败写 JSON 并返回非零。旧 `verify_relay_first_join_live.py` 仅做回环冒烟。
 
+首次邀请网关启动回归使用 `python -m unittest scripts.test_relay_plugin.GatewayInvitationConfigTests`，验证仅配置邀请的 profile 被网关启用，缺少邀请和凭据时保持禁用。
+
 首次接入页面联验（#328、#329）：在上述联网命令追加 `--browser`，安装 Playwright 及 Chrome。另传 `--plugin-dir <分包解压目录>` 可直接验证归档中的版本和 MCP 入口，并在真实派发会话中验证云端读取项目名单。两个独立 Hermes 插件从自己的测试宿主上报身份，Chrome 从空列表按两种方向完成核验和确认，经项目入组接口启用成员，再通过真实队列和受控网关核对三次点名的唯一回帖。浏览器还验证取消后复用有效链接、证书失败、监听弹窗取消与保存后续办、单节点切换、390px 主子弹窗深浅主题。截图遮蔽配对材料，报告使用独立绝对目录。
 
 首次接入接口契约（req#175）：`env -u PYTHONPATH .venv/Scripts/python.exe -X utf8 -B -m unittest -v scripts.test_plugin_listen_pairing.FirstJoinTests scripts.test_ip_allowlist`。`TMPDIR`、`TMP`、`TEMP` 设为分配的隔离目录；真实回环 HTTP/WS/TLS + 独立临时 SQLite。确认前验证出站实际宿主而非仅解析链接；坏指纹/坏票据/改成员拒绝，旧直接导入拒绝，同一已确认 ID 可重试，取消/过期/取消在途/换链接失败不启用任何凭据，入站同名在握手、确认两个阶段均可脱敏回读。非管理员拒绝；互联网与模型均不访问。全链脚本同时验证两方向经真实管理员确认，旧回环脚本只作冒烟。

@@ -21,6 +21,7 @@ curl -O <资产URL>/bot-group-relay-<version>.tar.gz
 tar -xzf bot-group-relay-<version>.tar.gz -C bot-group-relay   # 解到插件目录
 cd bot-group-relay
 ./install.sh    # 建独立 venv（python3 -m venv venv）并按 requirements.lock 装依赖
+hermes plugins enable bot-group-relay
 ```
 
 安装脚本只建 venv + 按锁文件安装随包 MCP 依赖——不 clone 仓库、不手动 pip。
