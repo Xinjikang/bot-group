@@ -504,11 +504,14 @@ def _finish(conn, row, client):
         if isinstance(receipt, dict):
             row = ledger.apply_receipt(conn, row['execution_id'], receipt)
     code = 0 if row['outcome'] == 'completed' else 1
-    recovery = code and startup.eligible(conn, row)
+    from . import hermes_task_recovery
+    cue = hermes_task_recovery.active_cue(conn, row)
+    unaccepted = cue is not None and cue['state'] == 'unaccepted'
+    recovery = code and not unaccepted and startup.eligible(conn, row)
     conn.execute('UPDATE wake_runs SET ended_at=?,exit_code=? WHERE session=? AND started_at=?',
                  (row['ended_at'], code, row['session'], row['started_at']))
     conn.commit()
-    if not recovery:
+    if not recovery and not unaccepted:
         _notify_exit(row, code)
     browser_resources.finish_run(row['session'], row['started_at'])
     steer_ledger.reconcile_targets(conn)
@@ -559,6 +562,7 @@ def _watch(execution_id, *, retry_manual=False):
     from . import hermes_task_recovery, wake
     client = None
     recovery_started_at = time.monotonic()
+    leaving_recovery_probe = False
     conn = db.get_connection()
     try:
         while True:
@@ -596,8 +600,10 @@ def _watch(execution_id, *, retry_manual=False):
                                 continue  # Observe a quick native start without waiting for the next scan.
                     except Exception:
                         logger.exception('Hermes task recovery probe failed execution=%s', execution_id)
+                    leaving_recovery_probe = True
                     return  # Retain the durable input and the queued wake for the next check.
             if row['state'] == 'manual' and not retry_manual:
+                leaving_recovery_probe = True
                 return
             manual_attempt = retry_manual and row['state'] == 'manual'
             retry_manual = False
@@ -697,9 +703,16 @@ def _watch(execution_id, *, retry_manual=False):
     finally:
         if client:
             client.close()
-        conn.close()
         with _lock:
             _workers.discard(execution_id)
+        try:
+            if leaving_recovery_probe and not wake._shutting_down.is_set():
+                # HTTP can adopt while this worker is leaving. Check after unregistering.
+                current = ledger.read(conn, execution_id)
+                if current is not None and current['state'] == 'running' and hermes_task_recovery.current_admission(conn, current):
+                    _start_worker(execution_id)
+        finally:
+            conn.close()
 
 
 def _start_worker(execution_id, *, retry_cleanup=False, retry_manual=False):

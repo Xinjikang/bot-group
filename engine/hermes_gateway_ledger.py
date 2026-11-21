@@ -167,14 +167,17 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
         if row['authority_epoch'] is not None and epoch < row['authority_epoch']:
             raise ValueError('Stale receipt epoch')
         from . import hermes_task_recovery
-        recovered_input = hermes_task_recovery.current_admission(conn, row)
+        recovery = hermes_task_recovery.active_cue(conn, row)
+        recovered_input = recovery is not None
         if status == 'terminal':
             if not isinstance(receipt.get('outcome'), str) or not receipt['outcome']:
                 raise ValueError('Terminal receipt has no outcome')
             from . import hermes_delegations
-            # Settle a recovered turn after handoff without holding the task
-            # for unrelated outstanding callbacks.
-            can_wait = not (recovered_input and not hermes_delegations.owned(conn, row))
+            # A native receipt alone does not acknowledge the task wake.
+            if recovery is not None and recovery['state'] == 'started':
+                hermes_task_recovery.mark_unaccepted(conn, recovery)
+            # Settle a recovered turn without holding the task for unrelated callbacks.
+            can_wait = not recovered_input or (recovery['state'] == 'accepted' and hermes_delegations.owned(conn, row))
             if can_wait and hermes_delegations.capture(conn, row, receipt):
                 conn.execute("UPDATE hermes_executions SET admission_id=?,generation=?,authority_epoch=?,"
                              "state='waiting_delegation',outcome=NULL,ended_at=NULL,cleanup_pending=0,"

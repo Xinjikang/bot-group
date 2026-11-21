@@ -1183,6 +1183,8 @@ def task_log(project: str, role: str, task_id: int, type: str, meta=None,
             (project, task_id, role, type, meta, result, comment, ts),
         )
         node_id = cur.lastrowid
+        from .task_access import record_recovery_progress
+        record_recovery_progress(conn, task_id)
         conn.execute(
             "UPDATE tasks SET status=?, next_bot=?, claimed_by='' WHERE id=?",
             (PENDING, next_bot, task_id),
@@ -1245,6 +1247,8 @@ def task_complete(project: str, role: str, task_id: int, type: str = "accept",
             (project, task_id, role, type, meta, result, comment, ts),
         )
         node_id = cur.lastrowid
+        from .task_access import record_recovery_progress
+        record_recovery_progress(conn, task_id)
         conn.execute(
             "UPDATE tasks SET status=?, done_at=?, claimed_by='' WHERE id=?",
             (DONE, ts, task_id),

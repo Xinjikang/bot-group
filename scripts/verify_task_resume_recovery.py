@@ -17,6 +17,7 @@ import threading
 import time
 from unittest.mock import patch
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx
 
@@ -76,7 +77,8 @@ class LedgerTransport:
 
 
 def task_tool(api, fixture, operation, **args):
-    result = api.post('/task-tools/' + operation, headers=fixture.headers, json={
+    headers = {**fixture.headers, 'X-Group-Operation-Id': uuid4().hex}
+    result = api.post('/task-tools/' + operation, headers=headers, json={
         'arguments': {'project': 'alpha', 'task_id': 991, **args},
         'execution': {**fixture.context, 'credential_type': 'session'},
     })
@@ -121,7 +123,7 @@ def browser_notice(args, url, notice):
             browser.close()
 
 
-def exercise(args, *, blocked):
+def exercise(args, *, blocked=False, early_exit=False):
     from hermes_state import SessionDB
     import hermes_state_runtime as runtime
 
@@ -153,7 +155,13 @@ def exercise(args, *, blocked):
         assert urlsplit(url).hostname == '127.0.0.1' and urlsplit(url).port == args.port
         api = stack.enter_context(httpx.Client(base_url=url, trust_env=False, timeout=8))
         try:
-            assert queue.process_one(fixture.conn)
+            if blocked:
+                assert queue.process_one(fixture.conn)
+            else:
+                # Park the worker after the real queue reservation and one submit.
+                # Native B will claim before any subsequent engine observation.
+                cue = fixture.reserve()
+                assert not fixture.poll(transport)
             cue = fixture.cue()
             assert cue['job_id'] == fixture.job_id and cue['execution_id'] == fixture.execution
             if blocked:
@@ -176,22 +184,33 @@ def exercise(args, *, blocked):
             started = transport.claim()
             assert started['status'] == 'started' and started['request_id'] == cue['request_id']
             assert started['payload']['text'] == cue['text'] and '任务 #991' in started['payload']['text']
-            def observe_started():
-                if fixture.cue()['state'] == 'started':
-                    return True
-                if not workers:
-                    # The real queue keeps consuming due work after a bounded fast probe.
-                    queue.process_one(fixture.conn)
-                return False
-
-            try:
-                until(observe_started, 'Engine did not confirm the actual native start')
-            except TimeoutError as exc:
-                raise TimeoutError(f'{exc}: state={fixture.cue()["state"]}; RPCs={transport.calls}') from exc
+            before_state, before_calls = fixture.current()['state'], list(transport.calls)
+            assert before_state == 'manual' and not workers
+            if early_exit:
+                runtime.settle_session_input(native, epoch=transport.epoch, admission_id=started['admission_id'],
+                                             generation=started['generation'], outcome='completed')
+                assert not fixture.poll(transport)
+                db.recover_on_startup(fixture.conn)
+                assert not queue.process_one(fixture.conn)
+                response = api.post('/task-tools/task_get', headers=fixture.fixture.headers,
+                    json={'arguments': {'project': 'alpha', 'task_id': 991}})
+                job = fixture.conn.execute('SELECT status, detail FROM wake_jobs WHERE id=?', (fixture.job_id,)).fetchone()
+                nodes = fixture.conn.execute('SELECT COUNT(*) FROM nodes WHERE task_id=991').fetchone()[0]
+                task_status = fixture.conn.execute('SELECT status FROM tasks WHERE id=991').fetchone()[0]
+                assert response.status_code == 409 and fixture.cue()['state'] == 'unaccepted' and nodes == 0
+                assert job['status'] == 'queued' and 'without a task node' in job['detail'] and task_status == 'in_progress'
+                assert sum(method == 'prompt.submit' for method, _ in transport.calls) == 1
+                return {'task_nodes': nodes, 'task_status': task_status, 'wake': dict(job),
+                        'cue_state': fixture.cue()['state'], 'task_get_status': response.status_code,
+                        'native_admission_id': started['admission_id'], 'rpc_calls': transport.calls}
             assert task_tool(api, fixture.fixture, 'task_get')['task']['id'] == 991
+            assert fixture.cue()['state'] == 'started'
+            assert fixture.conn.execute('SELECT status FROM wake_jobs WHERE id=?', (fixture.job_id,)).fetchone()[0] == 'queued'
             role = fixture.conn.execute("SELECT role_id FROM project_members WHERE project='alpha' AND profile='architect'").fetchone()[0]
             task_tool(api, fixture.fixture, 'task_log', type='dev', result='B consumed the original task recovery input',
                       next_bot='architect', expected_role_id=role)
+            assert fixture.cue()['state'] == 'accepted'
+            assert fixture.conn.execute('SELECT status FROM wake_jobs WHERE id=?', (fixture.job_id,)).fetchone()[0] == 'done'
             nodes = fixture.conn.execute('SELECT id,task_id,actor,result FROM nodes WHERE task_id=991').fetchall()
             assert len(nodes) == 1 and nodes[0]['actor'] == 'default' and 'B consumed' in nodes[0]['result']
             runtime.settle_session_input(native, epoch=transport.epoch, admission_id=started['admission_id'],
@@ -206,8 +225,9 @@ def exercise(args, *, blocked):
             assert fixture.conn.execute('SELECT COUNT(*) FROM hermes_executions').fetchone()[0] == 1
             return {'execution_id': fixture.execution, 'native_admission_id': started['admission_id'],
                     'current_session_b': transport.sid, 'received_text': started['payload']['text'],
-                    'recovery_id': cue['request_id'], 'job_id': cue['job_id'], 'task_node': dict(nodes[0]),
-                    'rpc_calls': transport.calls}
+                    'recovery_id': cue['request_id'], 'job_id': fixture.job_id, 'task_node': dict(nodes[0]),
+                    'engine_state_before_first_task_get': before_state, 'rpc_calls_before_first_task_get': before_calls,
+                    'first_task_get_status': 200, 'wake_after_node': 'done', 'rpc_calls': transport.calls}
         finally:
             if workers:
                 fixture.conn.execute("UPDATE hermes_task_recoveries SET state='abandoned' WHERE state='pending'")
@@ -239,6 +259,9 @@ def main():
     try:
         result['current_work_session'] = exercise(args, blocked=False)
         (args.evidence / 'current-session.json').write_text(json.dumps(result['current_work_session'],
+             ensure_ascii=False, indent=2), encoding='utf-8')
+        result['early_exit'] = exercise(args, early_exit=True)
+        (args.evidence / 'early-exit.json').write_text(json.dumps(result['early_exit'],
              ensure_ascii=False, indent=2), encoding='utf-8')
         result['user_notice'] = exercise(args, blocked=True)
         (args.evidence / 'user-notice.json').write_text(json.dumps(result['user_notice'],

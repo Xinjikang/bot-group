@@ -101,15 +101,77 @@ class ResumeRecoveryTests(unittest.TestCase):
         self.assertEqual(sent[0], {'session_id': 'sid', 'submission_id': cue['request_id'], 'text': cue['text'], 'timeout': 5})
         self.assertIn('任务 #991', sent[0]['text'])
         self.assertEqual(self.current()['task_id'], 991)
-        self.assertEqual(self.conn.execute('SELECT status FROM wake_jobs WHERE id=?', (self.job_id,)).fetchone()[0], 'done')
+        self.assertEqual(self.conn.execute('SELECT status FROM wake_jobs WHERE id=?', (self.job_id,)).fetchone()[0], 'queued')
         self.assertEqual(self.task_tool('task_get').json()['task']['id'], 991)
         role = self.conn.execute("SELECT role_id FROM project_members WHERE project='alpha' AND profile='architect'").fetchone()[0]
         response = self.task_tool('task_log', type='dev', result='current B accepted recovery',
                                   next_bot='architect', expected_role_id=role)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertNotIn('error', response.json(), response.text)
+        self.assertEqual(self.cue()['state'], 'accepted')
+        self.assertEqual(self.conn.execute('SELECT status FROM wake_jobs WHERE id=?', (self.job_id,)).fetchone()[0], 'done')
         self.assertEqual(tuple(self.conn.execute('SELECT task_id,actor,result FROM nodes WHERE task_id=991').fetchone()),
                          (991, 'default', 'current B accepted recovery'))
+
+    def test_first_task_get_observes_the_native_start_without_a_worker_poll(self):
+        cue = self.reserve()
+        client = Mock()
+        client.rpc.side_effect = [self.snapshot(), self.receipt('queued')]
+        self.assertFalse(self.poll(client))
+        # This is the first task request from B, while the worker is still parked.
+        client.rpc.side_effect = [self.snapshot([self.receipt('started', input_id=cue['request_id'])], running=True)]
+        with patch.object(gateway, 'connection', return_value=(client, self.row['home'], [])), \
+                patch.object(gateway, '_start_worker') as worker:
+            response = self.task_tool('task_get')
+        worker.assert_called_once_with(self.execution)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['task']['id'], 991)
+        self.assertEqual(self.current()['task_id'], 991)
+        self.assertEqual([call.args[0] for call in client.rpc.call_args_list],
+                         ['session.resume', 'prompt.submit', 'session.resume'])
+
+    def test_first_read_cannot_adopt_an_old_receipt_or_a_task_that_changed_owner(self):
+        cue = self.reserve()
+        client = Mock()
+        client.rpc.side_effect = [self.snapshot(), self.receipt('queued')]
+        self.assertFalse(self.poll(client))
+        old = self.receipt('started', aid='older-admission')
+        ready = self.receipt('started', input_id=cue['request_id'])
+
+        def move(*args, **kwargs):
+            with closing(db.get_connection()) as other:
+                other.execute('PRAGMA busy_timeout=0')
+                other.execute('BEGIN IMMEDIATE')
+                other.execute("UPDATE tasks SET claimed_by='architect' WHERE id=991")
+                other.commit()
+            return self.snapshot([ready], running=True)
+
+        # Run the owner change precisely while the second HTTP request queries Hermes.
+        client.rpc.side_effect = [self.snapshot([old], running=True)]
+        with patch.object(gateway, 'connection', return_value=(client, self.row['home'], [])), \
+                patch.object(gateway, '_start_worker') as worker:
+            self.assertEqual(self.task_tool('task_get').status_code, 409)
+            self.assertEqual(self.cue()['state'], 'pending')
+            client.rpc.side_effect = move
+            self.assertEqual(self.task_tool('task_get').status_code, 409)
+            worker.assert_not_called()
+        self.assertEqual(self.current()['state'], 'manual')
+        self.assertEqual(self.cue()['state'], 'abandoned')
+
+    def test_terminal_before_first_observation_keeps_the_wake_unaccepted(self):
+        self.reserve()
+        client = Mock()
+        terminal = {**self.receipt('terminal'), 'outcome': 'completed'}
+        client.rpc.side_effect = [self.snapshot(), self.receipt('queued'), self.snapshot(), terminal]
+        self.assertFalse(self.poll(client))
+        self.poll(client)
+        db.recover_on_startup(self.conn)
+        self.assertFalse(queue.process_one(self.conn))
+        self.assertEqual(self.cue()['state'], 'unaccepted')
+        self.assertEqual(self.task_tool('task_get').status_code, 409)
+        self.assertEqual(self.conn.execute('SELECT status FROM wake_jobs WHERE id=?', (self.job_id,)).fetchone()[0], 'queued')
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM nodes WHERE task_id=991').fetchone()[0], 0)
+        self.assertEqual(sum(call.args == ('prompt.submit',) for call in client.rpc.call_args_list), 1)
 
     def test_unknown_preserves_wake_and_notifies_user_once_across_restart(self):
         cue = self.reserve()
@@ -211,10 +273,15 @@ class ResumeRecoveryTests(unittest.TestCase):
                 patch.object(gateway, 'connection', return_value=(client, self.row['home'], [])), \
                 patch.object(gateway, '_finish', return_value=True):
             gateway._watch(self.execution)
-        self.assertEqual(self.cue()['state'], 'started')
+        self.assertEqual(self.cue()['state'], 'unaccepted')
         self.assertEqual(self.current()['state'], 'terminal')
         self.assertEqual([call.args[0] for call in client.rpc.call_args_list],
                          ['session.resume', 'prompt.submit', 'session.resume', 'prompt.receipt'])
+        ledger.apply_receipt(self.conn, self.execution, terminal)
+        db.recover_on_startup(self.conn)
+        self.assertEqual(self.cue()['state'], 'unaccepted')
+        self.assertFalse(queue.process_one(self.conn))
+        self.assertEqual(self.conn.execute('SELECT status FROM wake_jobs WHERE id=?', (self.job_id,)).fetchone()[0], 'queued')
 
     def test_task_claim_uses_the_adopted_task_not_the_first_pending_task(self):
         self.conn.execute("UPDATE tasks SET status='pending',next_bot='default',claimed_by='',"
@@ -245,10 +312,9 @@ class ResumeRecoveryTests(unittest.TestCase):
         self.assertTrue(self.poll(client))
         self.conn.execute("UPDATE hermes_executions SET state='manual' WHERE execution_id=?", (self.execution,))
         self.conn.commit()
-        self.assertTrue(wake.enqueue(self.conn, 'default', 'work', 'scan:task', project='alpha'))
         second = self.reserve()
         self.assertNotEqual(first['request_id'], second['request_id'])
-        self.assertNotEqual(first['job_id'], second['job_id'])
+        self.assertEqual(first['job_id'], second['job_id'])
         self.assertEqual(first['execution_id'], second['execution_id'])
 
 

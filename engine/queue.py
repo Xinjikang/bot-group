@@ -137,9 +137,11 @@ def process_one(conn) -> bool:
                     _discard_queued(conn, candidate["id"], "superseded topic recovery")
                     continue
         from . import hermes_delegations, hermes_gateway, hermes_task_recovery
+        if hermes_task_recovery.holds_wake(conn, candidate):
+            continue
         recovery = hermes_task_recovery.candidate(conn, candidate)
         if recovery is not None:
-            # Reuse the queued wake until the recovery input actually starts.
+            # Keep the original wake until the session appends a task node.
             # A blocked B session is skipped without occupying other members' jobs.
             if hermes_task_recovery.reserve(conn, candidate, recovery):
                 hermes_gateway._start_worker(recovery[0]['execution_id'])

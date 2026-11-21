@@ -172,7 +172,10 @@ def _authorize_member(request, profile, route, body, *, connection=None):
             from . import hermes_session_auth
             hermes_session_auth.validate(conn, session_scope)
             scope = session_scope
-            if route in WRITE_ROUTES:
+            # task_get has its own execution check after the bounded recovery probe.
+            # All other write routes still resolve the active execution here.
+            recovery_read = path == '/task-tools/{operation}' and request.path_params.get('operation') == 'task_get'
+            if route in WRITE_ROUTES and not recovery_read:
                 scope = hermes_session_auth.resolve(conn, scope)
             request.state.execution_scope = scope
             requested_project = request.query_params.get('project')

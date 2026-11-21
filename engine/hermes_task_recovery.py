@@ -25,8 +25,10 @@ CREATE TABLE IF NOT EXISTS hermes_task_recoveries (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS hermes_task_recovery_pending
 ON hermes_task_recoveries(execution_id) WHERE state='pending';
-CREATE INDEX IF NOT EXISTS hermes_task_recovery_started
-ON hermes_task_recoveries(execution_id,admission_id) WHERE state='started';
+CREATE INDEX IF NOT EXISTS hermes_task_recovery_admission
+ON hermes_task_recoveries(execution_id,admission_id) WHERE state IN ('started','accepted','unaccepted');
+CREATE INDEX IF NOT EXISTS hermes_task_recovery_held
+ON hermes_task_recoveries(job_id) WHERE state='unaccepted';
 """
 
 
@@ -109,7 +111,7 @@ def reserve(conn, job, selected):
     try:
         current = conn.execute("SELECT * FROM wake_jobs WHERE id=? AND status='queued'",
                                (job['id'],)).fetchone()
-        choice = candidate(conn, current, now=now) if current else None
+        choice = candidate(conn, current, now=now) if current and not holds_wake(conn, current) else None
         if choice is None or choice[3] != selected[3]:
             return False
         row, tid, generation, request = choice
@@ -136,10 +138,38 @@ def pending(conn, row):
                         (row['execution_id'],)).fetchone()
 
 
+def active_cue(conn, row):
+    return conn.execute("SELECT * FROM hermes_task_recoveries WHERE execution_id=? "
+                        "AND admission_id=? AND state IN ('started','accepted','unaccepted')",
+                        (row['execution_id'], row['admission_id'])).fetchone()
+
+
 def current_admission(conn, row):
-    return bool(conn.execute("SELECT 1 FROM hermes_task_recoveries WHERE execution_id=? "
-                             "AND admission_id=? AND state='started' LIMIT 1",
-                             (row['execution_id'], row['admission_id'])).fetchone())
+    return active_cue(conn, row) is not None
+
+
+def mark_accepted(conn, cue):
+    """A successful task node and the wake acknowledgement commit together."""
+    from . import db
+    if conn.execute("UPDATE hermes_task_recoveries SET state='accepted' WHERE request_id=? AND state='started'",
+                    (cue['request_id'],)).rowcount:
+        conn.execute("UPDATE wake_jobs SET status='done',ended_at=?,detail='Hermes task recovery accepted' "
+                     "WHERE id=? AND status='queued'", (db.now_iso(), cue['job_id']))
+
+
+def mark_unaccepted(conn, cue):
+    conn.execute("UPDATE hermes_task_recoveries SET state='unaccepted' WHERE request_id=? "
+                 "AND state IN ('pending','started')", (cue['request_id'],))
+    conn.execute("UPDATE wake_jobs SET detail='Hermes recovery ended without a task node; review before retry' "
+                 "WHERE id=? AND status='queued'", (cue['job_id'],))
+
+
+def holds_wake(conn, job):
+    """A confirmed native exit does not make the same unresolved task safe to replay."""
+    from . import task_retry
+    cue = conn.execute("SELECT task_id FROM hermes_task_recoveries WHERE job_id=? AND state='unaccepted' LIMIT 1",
+                       (job['id'],)).fetchone()
+    return cue is not None and task_retry.select_task(conn, job['profile'], job['project'], cue['task_id']) is not None
 
 
 def _owned(conn, row, cue):
@@ -150,7 +180,7 @@ def _owned(conn, row, cue):
 
 def _record(conn, row, cue, *, unknown=False, receipt=None, adopt=False):
     """Fence ownership and persist the notice or admission in one SQLite write transaction."""
-    from . import db, events, hermes_gateway_ledger as ledger
+    from . import db, events
     mid = None
     conn.execute('BEGIN IMMEDIATE')
     try:
@@ -171,9 +201,13 @@ def _record(conn, row, cue, *, unknown=False, receipt=None, adopt=False):
             conn.execute("INSERT INTO inbox(message_id,profile,status) VALUES(?,'user','pending')", (mid,))
             conn.execute('UPDATE hermes_task_recoveries SET notice_message_id=? WHERE request_id=?', (mid, request))
         if receipt is not None:
+            if not _matches(row, current, receipt):
+                return False
             conn.execute('UPDATE hermes_task_recoveries SET admission_id=? WHERE request_id=?',
                          (receipt['admission_id'], request))
-        if adopt:
+        if receipt is not None and receipt['status'] == 'terminal':
+            mark_unaccepted(conn, current)
+        elif adopt:
             conn.execute('INSERT OR IGNORE INTO hermes_delegation_cycles VALUES(?,?)',
                          (row['execution_id'], cue['binding_generation']))
             conn.execute('INSERT OR IGNORE INTO hermes_native_turns(execution_id,admission_id,request_id) VALUES(?,?,?)',
@@ -184,8 +218,6 @@ def _record(conn, row, cue, *, unknown=False, receipt=None, adopt=False):
                          (receipt['admission_id'], receipt['execution_generation'], receipt['authority_epoch'],
                           cue['task_id'], cue['job_id'], floor, time.time() + 3600, row['execution_id']))
             conn.execute("UPDATE hermes_task_recoveries SET state='started' WHERE request_id=?", (request,))
-            conn.execute("UPDATE wake_jobs SET status='done',ended_at=?,detail='Hermes task recovery started' WHERE id=?",
-                         (db.now_iso(), cue['job_id']))
         else:
             delay = (START_CHECK_INTERVAL if receipt and receipt['status'] == 'queued' else CHECK_INTERVAL)
             conn.execute('UPDATE hermes_task_recoveries SET next_check_at=? WHERE request_id=?',
@@ -197,9 +229,59 @@ def _record(conn, row, cue, *, unknown=False, receipt=None, adopt=False):
     if mid is not None:
         events.bus.publish('message.new', {'message_id': mid, 'sender': 'engine', 'thread_id': None,
                                            'project': row['project']})
-    if adopt and receipt['status'] == 'terminal':
-        ledger.apply_receipt(conn, row['execution_id'], receipt)
-    return adopt
+    return adopt and receipt['status'] == 'started'
+
+
+def _matches(row, cue, receipt):
+    return (receipt.get('ref') == {'session_id': row['session_id'], 'profile_id': row['profile_id']}
+            and isinstance(receipt.get('admission_id'), str) and bool(receipt['admission_id'])
+            and receipt['admission_id'] != row['admission_id']
+            and (not cue['admission_id'] or cue['admission_id'] == receipt['admission_id'])
+            and receipt.get('input_id') in (None, cue['request_id'])
+            and type(receipt.get('authority_epoch')) is int
+            and (row['authority_epoch'] is None or receipt['authority_epoch'] >= row['authority_epoch']))
+
+
+def _native_snapshot(client, sid):
+    snapshot = client.rpc('session.resume', session_id=sid, omit_messages=True, timeout=5)
+    if snapshot['session_id'] != sid or not isinstance(snapshot['pending'], list):
+        raise ValueError('Recovery snapshot does not match the current session')
+    return snapshot
+
+
+def ensure_ready(scope, task_id):
+    """Let the first read confirm this B admission without waiting for a worker tick."""
+    from contextlib import closing
+    from . import db, hermes_gateway, hermes_session_auth
+    with closing(db.get_connection()) as conn:
+        row = conn.execute("SELECT * FROM hermes_executions WHERE session=? AND session_id=? "
+                           "AND project=? AND profile=? AND kind='work' AND thread_id IS NULL "
+                           "AND state IN ('manual','waiting_delegation') AND cancel_reason IS NULL",
+                           (scope['session'], scope['session_id'], scope['project'], scope['profile'])).fetchone()
+        cue = pending(conn, row) if row else None
+        if not cue or cue['task_id'] != task_id or cue['binding_generation'] != scope['generation']:
+            return
+        hermes_session_auth.validate(conn, scope)
+        if not _owned(conn, row, cue):
+            return
+        # No write lock, no submission and no gateway startup on the HTTP path.
+        try:
+            sid = row['session_id']
+            client, _, _ = hermes_gateway.connection(row['profile'], home=row['home'], read_only=True)
+            with closing(client):
+                snapshot = _native_snapshot(client, sid)
+        except (KeyError, ValueError, OSError, TimeoutError, hermes_gateway.GatewayTransportError,
+                hermes_gateway.GatewayUnavailable, hermes_gateway.GatewayRefusal):
+            logger.warning('Could not verify Hermes recovery readiness execution=%s', row['execution_id'])
+            return  # The normal authorization still fails closed.
+        active = [r for r in snapshot['pending'] if r.get('status') in ('started', 'unknown')]
+        if snapshot['running'] and len(active) == 1:
+            receipt = active[0]
+            if (receipt.get('status') == 'started' and _matches(row, cue, receipt)
+                    and (cue['admission_id'] or receipt.get('input_id') == cue['request_id'])
+                    and type(receipt.get('execution_generation')) is int):
+                if _record(conn, row, cue, receipt=receipt, adopt=True):
+                    hermes_gateway._start_worker(row['execution_id'])
 
 
 def poll(conn, row, client, cue):
@@ -207,9 +289,7 @@ def poll(conn, row, client, cue):
     if not _owned(conn, row, cue):
         return _record(conn, row, cue)
     sid = row['session_id']
-    snapshot = client.rpc('session.resume', session_id=sid, omit_messages=True, timeout=5)
-    if snapshot['session_id'] != sid or not isinstance(snapshot['pending'], list):
-        raise ValueError('Recovery snapshot does not match the current session')
+    snapshot = _native_snapshot(client, sid)
     items = snapshot['pending']
     own = next((item for item in items if item.get('input_id') == cue['request_id']
                 or (cue['admission_id'] and cue['admission_id'] == item['admission_id'])), None)

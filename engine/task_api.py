@@ -48,9 +48,8 @@ def _validated_function(operation):
 def create_router(identity_dependency):
     router = APIRouter(prefix="/task-tools", tags=["Task tools"])
 
-    @router.post("/{operation}")
     @mcp_operations.recorded
-    def call(operation: str, body: ToolRequest, request: Request, identity=Depends(identity_dependency)):
+    def call_recorded(operation: str, body: ToolRequest, request: Request, identity):
         actor, kind = identity
         if kind != "bot" or not actor:
             raise HTTPException(401, "A registered bot identity is required")
@@ -94,5 +93,18 @@ def create_router(identity_dependency):
                 return task_access.public_result(_validated_function(operation)(**arguments))
         except ValidationError as exc:
             raise HTTPException(422, detail=exc.errors(include_context=False, include_url=False)) from exc
+
+    @router.post("/{operation}")
+    def call(operation: str, body: ToolRequest, request: Request, identity=Depends(identity_dependency)):
+        # Recovery readiness can contact the current native session. It must run
+        # before the operation receipt wrapper opens its SQLite write transaction.
+        if operation == 'task_get' and identity[1] == 'bot' and set(body.arguments) == {'project', 'task_id'}:
+            scope = task_access.execution_for(request, body.execution)
+            if (scope and scope.get('credential_type') == 'session' and scope.get('thread_id') is None
+                    and (scope['profile'], scope['project']) == (identity[0], body.arguments['project'])
+                    and type(body.arguments['task_id']) is int):
+                from . import hermes_task_recovery
+                hermes_task_recovery.ensure_ready(scope, body.arguments['task_id'])
+        return call_recorded(operation, body, request, identity)
 
     return router
