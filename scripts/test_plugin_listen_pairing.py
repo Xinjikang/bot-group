@@ -1804,6 +1804,94 @@ class FirstJoinTests(unittest.TestCase):
         self.assertIsNotNone(relay_server.active_link("remoteB"),
                              "持久凭据重连必须认证通过")
 
+    # ---------------- req#175 验收 4：双节点同时在线，切换 A 后 B 不受影响 ----------------
+
+    def test_dual_online_and_switch_a_keeps_b(self):
+        """req#175 验收 2/4：同一空列表接入两个独立远端——A（remoteA）
+        主动连电脑（邀请兑换，direction=listen）、电脑主动连 B（remoteB，
+        配对导入，direction=dial）同时在线；切换 A 方向后 B 的方向/连接/
+        在线状态不受影响。"""
+        plg_relay = self._load_relay_module()
+        relay_config = self.plg["config"]
+        # --- A：邀请方向 ---
+        status, issued = self._admin_post("/relay/invitations")
+        self.assertEqual(status, 200)
+        engine_version = relay_server._engine_release_version() or ""
+        self._version_patch = patch.object(
+            relay_config, "plugin_version", return_value=engine_version)
+        self._version_patch.start()
+        self.addCleanup(self._version_patch.stop)
+        client_a = plg_relay.RelayClient(relay_config.RelayConfig(
+            engine_url=f"http://127.0.0.1:{self._api_client()}",
+            member="remoteA", credential="", invite=issued["invite_token"],
+            mcp_python="", home=os.environ.get("TMPDIR", ".")))
+        client_a.start()
+        self.addCleanup(client_a.stop)
+        # --- B：配对导入方向 ---
+        plg_listen = self.plg["listen"]
+        with tempfile.TemporaryDirectory(prefix="bgrelay-dual-") as tmp_dir:
+            with patch.object(plg_listen, "STATE_DIR", Path(tmp_dir)), \
+                    patch.object(plg_listen, "validate_bind_address",
+                                 return_value="127.0.0.1"):
+                result = plg_listen.listen_serve(
+                    address="127.0.0.1", port=0, advertise="127.0.0.1",
+                    member="remoteB", home=os.environ.get("TMPDIR", "."),
+                    tls=True, mcp_entry="")
+            self.addCleanup(result["_server"].stop)
+            status, imported = self._admin_post(
+                "/relay/pairings/import",
+                {"pairing_url": result["pairing_url"]})
+            self.assertEqual(status, 200, f"B 导入失败: {imported}")
+        # --- 双在线 ---
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            conn = db.get_connection()
+            try:
+                row_a = relay.read_node(conn, "remoteA")
+                row_b = relay.read_node(conn, "remoteB")
+                both = (row_a and row_a["state"] == "online"
+                        and row_b and row_b["state"] == "online")
+            finally:
+                conn.close()
+            if both:
+                break
+            time.sleep(0.1)
+        self.assertTrue(both, "A、B 必须同时在线")
+        self.assertIsNotNone(relay_server.active_link("remoteA"))
+        self.assertIsNotNone(relay_server.active_link("remoteB"))
+        # --- 切换 A 到 dial（给 A 一个不可达端点→进入切换态）--- 
+        conn = db.get_connection()
+        try:
+            relay.set_dial_endpoint(conn, "remoteA",
+                                    {"host": "127.0.0.1", "port": 1,
+                                     "tls": True, "fingerprint": "aa" * 32,
+                                     "pairing_token": ""})
+        finally:
+            conn.close()
+        status, switched = self._admin_post(
+            "/relay/nodes/remoteA/switch",
+            {"direction": "dial"})
+        self.assertEqual(status, 200, f"A 切换失败: {switched}")
+        # --- B 不受影响 ---
+        time.sleep(0.5)
+        conn = db.get_connection()
+        try:
+            row_b = relay.read_node(conn, "remoteB")
+            self.assertEqual(row_b["direction"], "dial", "B 方向不被 A 的切换改变")
+            self.assertEqual(row_b["state"], "online", "B 在线状态不被 A 的切换改变")
+            self.assertEqual(row_b["switch_state"], "", "B 不得进入切换态")
+        finally:
+            conn.close()
+        self.assertIsNotNone(relay_server.active_link("remoteB"),
+                             "B 的连接不被 A 的切换断开")
+        conn = db.get_connection()
+        try:
+            row_a = relay.read_node(conn, "remoteA")
+            self.assertEqual(row_a["switch_target"], "dial",
+                             "A 自身进入目标切换态（先断后建）")
+        finally:
+            conn.close()
+
     def _load_relay_module(self):
         """加载插件 relay 模块（合成包内）。"""
         import importlib.util
