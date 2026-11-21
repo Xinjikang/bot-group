@@ -135,6 +135,19 @@ def uncertain(conn, execution_id, detail, *, now=None):
     conn.commit()
 
 
+def record_terminal(conn, row, receipt, now):
+    """Record a validated native terminal receipt inside the caller's transaction."""
+    if not isinstance(receipt.get('outcome'), str) or not receipt['outcome']:
+        raise ValueError('Terminal receipt has no outcome')
+    from .hermes_startup import failure_detail
+    detail = failure_detail(conn, row, receipt)
+    conn.execute("UPDATE hermes_executions SET admission_id=?,generation=?,authority_epoch=?,"
+                 "state='terminal',outcome=?,ended_at=?,cleanup_pending=1,cleanup_deadline=?,detail=? "
+                 "WHERE execution_id=?",
+                 (receipt['admission_id'], receipt.get('execution_generation'), receipt['authority_epoch'],
+                  receipt['outcome'], now, now + CLEANUP_BUDGET_SECONDS, detail, row['execution_id']))
+
+
 def apply_receipt(conn, execution_id, receipt, *, now=None):
     """Only the matching admission's authoritative terminal receipt releases it."""
     now = time.time() if now is None else now
@@ -167,6 +180,7 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
         if row['authority_epoch'] is not None and epoch < row['authority_epoch']:
             raise ValueError('Stale receipt epoch')
         from . import hermes_task_recovery
+        mid = None
         recovery = hermes_task_recovery.active_cue(conn, row)
         recovered_input = recovery is not None
         if status == 'terminal':
@@ -175,7 +189,7 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
             from . import hermes_delegations
             # A native receipt alone does not acknowledge the task wake.
             if recovery is not None and recovery['state'] == 'started':
-                hermes_task_recovery.mark_unaccepted(conn, recovery)
+                mid = hermes_task_recovery.mark_unaccepted(conn, row, recovery)
             # Settle a recovered turn without holding the task for unrelated callbacks.
             can_wait = not recovered_input or (recovery['state'] == 'accepted' and hermes_delegations.owned(conn, row))
             if can_wait and hermes_delegations.capture(conn, row, receipt):
@@ -184,12 +198,7 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
                              "execution_deadline=?,detail='' WHERE execution_id=?",
                              (aid, gen, epoch, now + 3600, execution_id))
             else:
-                from .hermes_startup import failure_detail
-                detail = failure_detail(conn, row, receipt)
-                conn.execute("UPDATE hermes_executions SET admission_id=?,generation=?,authority_epoch=?,"
-                             "state='terminal',outcome=?,ended_at=?,cleanup_pending=1,cleanup_deadline=?,detail=? "
-                             "WHERE execution_id=?",
-                             (aid, gen, epoch, receipt['outcome'], now, now + CLEANUP_BUDGET_SECONDS, detail, execution_id))
+                record_terminal(conn, row, receipt, now)
         else:
             state = 'running' if status == 'started' else 'submitting' if status == 'queued' else 'unknown'
             deadline = (row['reconcile_deadline'] if row['cancel_reason'] or row['admission_id'] is None
@@ -219,6 +228,7 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
                 relay.settle_by_submission(conn, member=row['profile'],
                                            submission_id=row['submission_id'])
         conn.commit()
+        hermes_task_recovery.publish_notice(row['project'], mid)
         if read(conn, execution_id)['state'] == 'terminal':
             from . import signing_keys
             signing_keys.retire(conn)

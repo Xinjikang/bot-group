@@ -173,6 +173,56 @@ class ResumeRecoveryTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM nodes WHERE task_id=991').fetchone()[0], 0)
         self.assertEqual(sum(call.args == ('prompt.submit',) for call in client.rpc.call_args_list), 1)
 
+    def test_unaccepted_exit_reminds_once_and_can_be_released_by_user(self):
+        self.reserve()
+        client = Mock()
+        terminal = {**self.receipt('terminal'), 'outcome': 'completed'}
+        client.rpc.side_effect = [self.snapshot(), self.receipt('queued'), self.snapshot(), terminal]
+        self.assertFalse(self.poll(client))
+        self.poll(client)
+        notice = self.cue()['notice_message_id']
+        self.assertIsNotNone(notice)
+        self.assertEqual(self.current()['state'], 'terminal')
+        row = self.conn.execute('SELECT content FROM messages WHERE id=?', (notice,)).fetchone()
+        self.assertIn(f'/release-recovery {notice}', row['content'])
+        ledger.apply_receipt(self.conn, self.execution, terminal)
+        db.recover_on_startup(self.conn)
+        self.assertEqual(self.cue()['notice_message_id'], notice)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM messages WHERE sender='engine' AND content LIKE '%#991 自动续办受阻%'").fetchone()[0], 1)
+        self.assertFalse(wake.enqueue(self.conn, 'default', 'work', '@msg', project='alpha'))
+        self.conn.rollback()
+        body = {'project': 'alpha', 'sender': 'user', 'text': f'/release-recovery {notice}'}
+        with patch.object(session_fixture.auth, 'configured', return_value=False):
+            premature = self.fixture.client.post('/msg', json=body)
+            self.assertEqual(premature.status_code, 400, premature.text)
+            self.assertEqual(self.cue()['state'], 'unaccepted')
+            self.assertTrue(gateway._finish(self.conn, self.current(), client))
+            denied = self.fixture.client.post('/msg', headers=self.fixture.headers, json=body)
+            self.assertNotEqual(denied.status_code, 200)
+            wrong_project = self.fixture.client.post('/msg', json={**body, 'project': 'xjk'})
+            self.assertEqual(wrong_project.status_code, 400)
+            res = self.fixture.client.post('/msg', json=body)
+            self.assertTrue(res.json().get('ok'), res.text)
+            self.assertTrue(self.fixture.client.post('/msg', json=body).json().get('ok'))
+        self.assertEqual(self.cue()['state'], 'released')
+        self.assertEqual(self.conn.execute('SELECT status FROM wake_jobs WHERE id=?', (self.job_id,)).fetchone()[0], 'cancelled')
+        self.assertEqual(self.conn.execute('SELECT status FROM tasks WHERE id=991').fetchone()[0], 'blocked')
+        self.assertEqual(sum(call.args == ('prompt.submit',) for call in client.rpc.call_args_list), 1)
+
+    def test_terminal_after_handoff_does_not_notify_or_replay_the_old_wake(self):
+        self.reserve()
+        client = Mock()
+        client.rpc.side_effect = [self.snapshot(), self.receipt('started')]
+        self.assertTrue(self.poll(client))
+        self.conn.execute("UPDATE tasks SET status='pending',next_bot='architect',claimed_by='' WHERE id=991")
+        self.conn.commit()
+        receipt = {**self.receipt('terminal'), 'outcome': 'completed'}
+        ledger.apply_receipt(self.conn, self.execution, receipt)
+        self.assertIsNone(self.cue()['notice_message_id'])
+        self.assertEqual(self.cue()['state'], 'unaccepted')
+        self.assertEqual(self.conn.execute('SELECT status FROM wake_jobs WHERE id=?', (self.job_id,)).fetchone()[0], 'cancelled')
+        self.assertEqual(self.conn.execute('SELECT next_bot FROM tasks WHERE id=991').fetchone()[0], 'architect')
+
     def test_unknown_preserves_wake_and_notifies_user_once_across_restart(self):
         cue = self.reserve()
         client = Mock()
@@ -260,7 +310,12 @@ class ResumeRecoveryTests(unittest.TestCase):
         self.assertEqual(self.current()['admission_id'], 'recovery-admission')
 
     def test_fast_followup_is_not_lost_in_epoch_float_rounding(self):
-        cue = self.reserve()
+        fixed_epoch = 1795246400.0
+        claimed = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(fixed_epoch - 10800))
+        self.conn.execute('UPDATE tasks SET claimed_at=? WHERE id=991', (claimed,))
+        self.conn.commit()
+        with patch.object(gateway.time, 'time', return_value=fixed_epoch):
+            cue = self.reserve()
         client = Mock()
         terminal = {**self.receipt('terminal'), 'outcome': 'completed'}
         client.rpc.side_effect = [self.snapshot(), self.receipt('queued'),

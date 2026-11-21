@@ -157,19 +157,103 @@ def mark_accepted(conn, cue):
                      "WHERE id=? AND status='queued'", (db.now_iso(), cue['job_id']))
 
 
-def mark_unaccepted(conn, cue):
-    conn.execute("UPDATE hermes_task_recoveries SET state='unaccepted' WHERE request_id=? "
-                 "AND state IN ('pending','started')", (cue['request_id'],))
-    conn.execute("UPDATE wake_jobs SET detail='Hermes recovery ended without a task node; review before retry' "
-                 "WHERE id=? AND status='queued'", (cue['job_id'],))
+def _notice(conn, row, cue, *, ended):
+    """Maintain one actionable user inbox item for this recovery round."""
+    from . import db
+    mid = cue['notice_message_id']
+    if mid is not None and not ended:
+        return None
+    text = f"任务 #{cue['task_id']} 自动续办受阻："
+    if not ended:
+        text += ('Hermes 无法确认旧执行的结果（unknown）。'
+                 '请先在 Hermes 中核对旧执行结果和后台进程，再处理该执行；不要重跑原命令。')
+    if mid is None:
+        mid = conn.execute("INSERT INTO messages(project,ts,sender,sender_type,content,mentions,need_reply) "
+                           "VALUES(?,?,'engine','engine',?,'[\"user\"]',0)",
+                           (row['project'], db.now_iso(), text)).lastrowid
+        conn.execute("INSERT INTO inbox(message_id,profile,status) VALUES(?,'user','pending')", (mid,))
+        conn.execute('UPDATE hermes_task_recoveries SET notice_message_id=? WHERE request_id=?',
+                     (mid, cue['request_id']))
+    if ended:
+        text += ('本轮已结束，但未在原任务追加节点。请先核对 Hermes 结果和后台进程；'
+                 f'然后在本项目主消息框发送 /release-recovery {mid} 暂挂原任务并解除占用。'
+                 '需要续办时可从任务侧栏恢复；不要重跑原命令。')
+        conn.execute('UPDATE messages SET content=? WHERE id=?', (text, mid))
+    return mid
+
+
+def publish_notice(project, mid):
+    if mid is not None:
+        from . import events
+        events.bus.publish('message.new', {'message_id': mid, 'sender': 'engine', 'thread_id': None,
+                                           'project': project})
+
+
+def mark_unaccepted(conn, row, cue):
+    from . import db, task_retry
+    if not conn.execute("UPDATE hermes_task_recoveries SET state='unaccepted' WHERE request_id=? "
+                        "AND state IN ('pending','started')", (cue['request_id'],)).rowcount:
+        return None
+    if task_retry.select_task(conn, row['profile'], row['project'], cue['task_id']) is None:
+        conn.execute("UPDATE wake_jobs SET status='cancelled',ended_at=?,detail='Unaccepted recovery no longer owns task' "
+                     "WHERE id=? AND status='queued'", (db.now_iso(), cue['job_id']))
+        return None
+    if conn.execute("UPDATE wake_jobs SET detail='Hermes recovery ended without a task node; review before retry' "
+                    "WHERE id=? AND status='queued'", (cue['job_id'],)).rowcount:
+        return _notice(conn, row, cue, ended=True)
+    return None
 
 
 def holds_wake(conn, job):
-    """A confirmed native exit does not make the same unresolved task safe to replay."""
-    from . import task_retry
-    cue = conn.execute("SELECT task_id FROM hermes_task_recoveries WHERE job_id=? AND state='unaccepted' LIMIT 1",
-                       (job['id'],)).fetchone()
-    return cue is not None and task_retry.select_task(conn, job['profile'], job['project'], cue['task_id']) is not None
+    """Only an explicit release retires a notified recovery's exact queue record."""
+    return conn.execute("SELECT 1 FROM hermes_task_recoveries WHERE job_id=? AND state='unaccepted' LIMIT 1",
+                        (job['id'],)).fetchone() is not None
+
+
+def release(conn, project, notice_id):
+    """A user acknowledges exactly one confirmed exit, not a session or all its jobs."""
+    from . import db, task_retry, taskpool
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        cue = conn.execute('SELECT r.*, e.profile, e.state AS execution_state, e.cleanup_pending, '
+                           'e.admission_id AS latest_admission, e.event_floor FROM hermes_task_recoveries r '
+                           'JOIN hermes_executions e ON e.execution_id=r.execution_id '
+                           'WHERE r.notice_message_id=? AND e.project=? AND e.kind=\'work\' AND e.thread_id IS NULL',
+                           (notice_id, project)).fetchone()
+        if cue is None or cue['state'] not in ('unaccepted', 'released'):
+            raise ValueError('本项目不存在此待解除的续办提醒')
+        tid = cue['task_id']
+        if cue['state'] == 'released':
+            return {'task_id': tid, 'notice_message_id': notice_id, 'detail': f'任务 #{tid} 的待核对催办已解除。'}
+        if (cue['execution_state'] != 'terminal' or cue['cleanup_pending'] or not cue['admission_id']
+                or cue['admission_id'] != cue['latest_admission']):
+            raise ValueError('本次执行结束或清理尚未确认，暂不能解除；请核对 Hermes 后重试')
+        changed = conn.execute("UPDATE wake_jobs SET status='cancelled',ended_at=?,detail='Unaccepted recovery released by user' "
+                               "WHERE id=? AND profile=? AND project=? AND kind='work' AND status='queued'",
+                               (db.now_iso(), cue['job_id'], cue['profile'], project)).rowcount
+        if not changed:
+            raise ValueError('原催办已不处于待核对状态')
+        task = conn.execute('SELECT * FROM tasks WHERE id=? AND project=?', (tid, project)).fetchone()
+        progressed = conn.execute("SELECT 1 FROM events WHERE project=? AND task_id=? AND id>? "
+                                  "AND event_type IN ('node','resume') LIMIT 1",
+                                  (project, tid, cue['event_floor'] or 0)).fetchone()
+        paused = not progressed and task_retry.select_task(conn, cue['profile'], project, tid) is not None
+        if paused:
+            next_bot = cue['profile'] if task['status'] == 'in_progress' else task['next_bot']
+            conn.execute("UPDATE tasks SET status='blocked',block_kind='manual',next_bot=?,claimed_by='' "
+                         "WHERE id=? AND project=?", (next_bot, tid, project))
+            taskpool._log_event(conn, 'user', 'block', project, requirement_id=task['requirement_id'],
+                                task_id=tid, detail=f'manual: release unaccepted recovery notice {notice_id}')
+            taskpool._set_requirement_updated(conn, task['requirement_id'])
+        conn.execute("UPDATE hermes_task_recoveries SET state='released' WHERE request_id=?", (cue['request_id'],))
+        conn.commit()
+        detail = f'任务 #{tid} 的待核对催办已解除，未重投。'
+        if paused:
+            detail += '原任务已暂挂；需要续办时，可在任务侧栏恢复。'
+        return {'task_id': tid, 'notice_message_id': notice_id, 'job_id': cue['job_id'], 'detail': detail}
+    finally:
+        if conn.in_transaction:
+            conn.rollback()
 
 
 def _owned(conn, row, cue):
@@ -180,7 +264,7 @@ def _owned(conn, row, cue):
 
 def _record(conn, row, cue, *, unknown=False, receipt=None, adopt=False):
     """Fence ownership and persist the notice or admission in one SQLite write transaction."""
-    from . import db, events
+    from . import hermes_gateway_ledger as ledger
     mid = None
     conn.execute('BEGIN IMMEDIATE')
     try:
@@ -192,21 +276,24 @@ def _record(conn, row, cue, *, unknown=False, receipt=None, adopt=False):
             conn.execute("UPDATE hermes_task_recoveries SET state='abandoned' WHERE request_id=?", (request,))
             conn.commit()
             return False
-        if unknown and current['notice_message_id'] is None:
-            text = (f"任务 #{cue['task_id']} 自动续办受阻：Hermes 无法确认旧执行的结果（unknown）。"
-                    '请先在 Hermes 中核对旧执行结果和后台进程，再处理该执行；不要重跑原命令。')
-            mid = conn.execute("INSERT INTO messages(project,ts,sender,sender_type,content,mentions,need_reply) "
-                               "VALUES(?,?,'engine','engine',?,'[\"user\"]',0)",
-                               (row['project'], db.now_iso(), text)).lastrowid
-            conn.execute("INSERT INTO inbox(message_id,profile,status) VALUES(?,'user','pending')", (mid,))
-            conn.execute('UPDATE hermes_task_recoveries SET notice_message_id=? WHERE request_id=?', (mid, request))
         if receipt is not None:
             if not _matches(row, current, receipt):
                 return False
             conn.execute('UPDATE hermes_task_recoveries SET admission_id=? WHERE request_id=?',
                          (receipt['admission_id'], request))
-        if receipt is not None and receipt['status'] == 'terminal':
-            mark_unaccepted(conn, current)
+        ended = receipt is not None and receipt['status'] == 'terminal' and type(receipt.get('execution_generation')) is int
+        if ended:
+            conn.execute('INSERT OR IGNORE INTO hermes_native_turns(execution_id,admission_id,request_id) VALUES(?,?,?)',
+                         (row['execution_id'], receipt['admission_id'], request))
+            floor = conn.execute('SELECT COALESCE(MAX(id),0) FROM events').fetchone()[0]
+            conn.execute('UPDATE hermes_executions SET event_floor=? WHERE execution_id=?',
+                         (floor, row['execution_id']))
+            ledger.record_terminal(conn, row, receipt, time.time())
+            mid = mark_unaccepted(conn, row, current)
+        elif unknown:
+            mid = _notice(conn, row, current, ended=False)
+            conn.execute('UPDATE hermes_task_recoveries SET next_check_at=? WHERE request_id=?',
+                         (time.time() + CHECK_INTERVAL, request))
         elif adopt:
             conn.execute('INSERT OR IGNORE INTO hermes_delegation_cycles VALUES(?,?)',
                          (row['execution_id'], cue['binding_generation']))
@@ -226,10 +313,8 @@ def _record(conn, row, cue, *, unknown=False, receipt=None, adopt=False):
     finally:
         if conn.in_transaction:
             conn.rollback()
-    if mid is not None:
-        events.bus.publish('message.new', {'message_id': mid, 'sender': 'engine', 'thread_id': None,
-                                           'project': row['project']})
-    return adopt and receipt['status'] == 'started'
+    publish_notice(row['project'], mid)
+    return ended or (adopt and receipt['status'] == 'started')
 
 
 def _matches(row, cue, receipt):
