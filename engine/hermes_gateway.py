@@ -556,8 +556,9 @@ def _record_uncertain(conn, execution_id, detail):
 
 
 def _watch(execution_id, *, retry_manual=False):
-    from . import wake
+    from . import hermes_task_recovery, wake
     client = None
+    recovery_started_at = time.monotonic()
     conn = db.get_connection()
     try:
         while True:
@@ -575,6 +576,27 @@ def _watch(execution_id, *, retry_manual=False):
                     continue
                 row = ledger.read(conn, execution_id)
             _sync_run_state(row)
+            if row['state'] in ('manual', 'waiting_delegation') and not row['cancel_reason']:
+                cue = hermes_task_recovery.pending(conn, row)
+                if cue is not None:
+                    try:
+                        if client is None:
+                            client, _, _ = connection(row['profile'], home=row['home'],
+                                                      command=json.loads(row['python']))
+                        from . import hermes_delegations
+                        if hermes_delegations.poll(conn, row, client, task_cue=cue):
+                            _sync_delegation_state(conn, ledger.read(conn, execution_id))
+                            continue
+                        pending = hermes_task_recovery.pending(conn, row)
+                        if pending is not None and pending['request_id'] == cue['request_id']:
+                            delay = pending['next_check_at'] - time.time()
+                            if (-0.1 <= delay <= hermes_task_recovery.START_CHECK_INTERVAL
+                                    and time.monotonic() - recovery_started_at < 3):
+                                time.sleep(max(0, delay))
+                                continue  # Observe a quick native start without waiting for the next scan.
+                    except Exception:
+                        logger.exception('Hermes task recovery probe failed execution=%s', execution_id)
+                    return  # Retain the durable input and the queued wake for the next check.
             if row['state'] == 'manual' and not retry_manual:
                 return
             manual_attempt = retry_manual and row['state'] == 'manual'
@@ -607,7 +629,8 @@ def _watch(execution_id, *, retry_manual=False):
                 from . import hermes_delegations
                 if (hermes_delegations.waiting(conn, row) or
                         (hermes_delegations.cycle(conn, row) and
-                         (row['cancel_reason'] or not hermes_delegations.owned(conn, row)))):
+                         (row['cancel_reason'] or (not hermes_delegations.owned(conn, row)
+                          and not hermes_task_recovery.current_admission(conn, row))))):
                     changed = hermes_delegations.poll(conn, row, client)
                     row = ledger.read(conn, execution_id)
                     _sync_delegation_state(conn, row)

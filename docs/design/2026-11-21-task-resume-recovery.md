@@ -40,7 +40,7 @@
 
 修复：停滞执行（manual / 等待超时）且任务未完成且仍归该成员时，会话判「可接续」而非「忙」，已排队的唤醒正常投递；投递落地复用原 execution 的接续路径（注入 task_id + 后台进程句柄 + 待核对结果），不重跑已发出的命令。
 
-manual 接续的落点（现缺口）：`hermes_delegations.direct_wait` 只匹配 `state='waiting_delegation'`、`enqueue_direct` 也只接受 `waiting_delegation`，manual 会在此被拒。恢复信号进入 B 会话的路径 = 扩展接续入口接受 manual：恢复信号作为新的 delegation_input 注入原 execution，worker 以 manual 接续模式重启，在 poll 里把恢复信号 submit 到 B 会话（session_id 不变），bot 醒来读任务节点继续；追回执（discover_turns）的失败不得阻塞恢复信号的 submit（恢复与回执核对解耦）。不重发原命令——恢复信号只带 task_id + 后台进程句柄 + 待核对结果。
+manual 接续由现有 wake 消费者在普通忙碌判断前处理，不把 manual 全局视为空闲。接续检查任务状态、当前绑定与停滞轮次后，使用 `hermes_task_recoveries` 存放原 execution 的任务型委派输入（不是普通 inbox 消息，不伪造 message_id）；重启仍由原 execution 的 worker 在 `hermes_delegations.poll` 提交。只向绑定的 B 会话发送原任务 ID、节点读取提示、已知后台进程句柄和待核对状态，不重发原命令，不读 A。回执追查与恢复投递分开。
 
 ### 防并发接手（同一任务单点推进）
 
@@ -51,12 +51,11 @@ manual 接续的落点（现缺口）：`hermes_delegations.direct_wait` 只匹�
 ### 重启后的投递去重
 
 - `recover_on_startup` 已把 running 的 job 重置回 queued。
-- 接续投递按 execution 记录幂等：`hermes_delegation_inputs` 的 `UNIQUE(execution_id, message_id)` 防同一消息重复注入。
-- 恢复信号随附本次恢复标识（幂等键 = execution_id + 停滞轮次，持久化到执行记录），重启前后使用同一标识：重启后重扫命中同一标识即不重复投递同一恢复；后续出现新的停滞（新轮次）仍可再次催办。
+普通委派输入按 `(execution_id, message_id)` 去重。任务恢复输入的标识由原 execution、当前 admission、领取时点、最新节点及绑定代次派生；同一停滞轮次复用原标识、原唤醒与同一负载。当前 B 已有旧 `unknown` 时不提交、不自动丢弃旧执行；只有自己的恢复 admission 实际开始才开放当前会话写入并结算催办，`queued` 不算成功。新执行或新任务进度以后再次停滞可产生下一轮。
 
 ### 用户可见提醒
 
-自动续办受阻（任务已易主 / 已完成 / 无法接续）且确需用户处理时，引擎发一条可见消息给用户，写清任务 ID、卡在哪、需要用户做什么，并记录该消息投递结果（message_id）供查询。
+自动续办确需人工处理时（例如 B 内原生执行为 `unknown`），保留原执行和催办。同一停滞轮次只写一条用户通知，包含任务 ID、卡点和核对旧结果／后台进程的动作；消息、用户入箱和恢复记录中的 `notice_message_id` 在同一 `BEGIN IMMEDIATE` 事务提交。任务已完结或易主、会话只是忙碌时不发送这类提醒。
 
 ## 验收场景
 

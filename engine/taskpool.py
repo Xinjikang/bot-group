@@ -1092,6 +1092,10 @@ def task_claim(project: str, role: str) -> dict:
                     conn, conn.execute('SELECT * FROM tasks WHERE id=? AND project=?', (h['id'], project)).fetchone()) for h in held],
             }
         claimable = _claimable_tasks(conn, project, role)
+        from .task_access import claim_recovery_task
+        recovery_task = claim_recovery_task(conn)
+        if recovery_task is not None:
+            claimable = [candidate for candidate in claimable if candidate['id'] == recovery_task]
         if not claimable:
             return {"claimed": False, "reason": "nothing_claimable",
                     "message": "No task is eligible. Use task_get to inspect briefing_status and dependency_blockers; publish a complete brief and wait for prerequisites to be done."}

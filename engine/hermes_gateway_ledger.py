@@ -166,11 +166,16 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
             raise ValueError('Stale receipt generation')
         if row['authority_epoch'] is not None and epoch < row['authority_epoch']:
             raise ValueError('Stale receipt epoch')
+        from . import hermes_task_recovery
+        recovered_input = hermes_task_recovery.current_admission(conn, row)
         if status == 'terminal':
             if not isinstance(receipt.get('outcome'), str) or not receipt['outcome']:
                 raise ValueError('Terminal receipt has no outcome')
             from . import hermes_delegations
-            if hermes_delegations.capture(conn, row, receipt):
+            # Settle a recovered turn after handoff without holding the task
+            # for unrelated outstanding callbacks.
+            can_wait = not (recovered_input and not hermes_delegations.owned(conn, row))
+            if can_wait and hermes_delegations.capture(conn, row, receipt):
                 conn.execute("UPDATE hermes_executions SET admission_id=?,generation=?,authority_epoch=?,"
                              "state='waiting_delegation',outcome=NULL,ended_at=NULL,cleanup_pending=0,"
                              "execution_deadline=?,detail='' WHERE execution_id=?",
@@ -192,7 +197,8 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
                 state = 'cancelling'
             conn.execute('UPDATE hermes_executions SET admission_id=?,generation=?,authority_epoch=?,'
                          'state=? WHERE execution_id=?', (aid, gen, epoch, state, execution_id))
-        if status in ('queued', 'started', 'terminal'):
+        # A recovery task input did not carry the old submission's rules or mentions.
+        if status in ('queued', 'started', 'terminal') and not recovered_input:
             from . import hermes_prompt_state
             if status == 'terminal' and receipt['outcome'] == 'cancelled' and gen is None and row['generation'] is None:
                 hermes_prompt_state.withdraw(conn, execution_id, 'cancelled')

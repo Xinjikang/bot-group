@@ -68,7 +68,7 @@ def server_parameters(path, url):
 
 
 @contextmanager
-def isolated_api(*, frontend=False):
+def isolated_api(*, frontend=False, port=0):
     """Only API routes: no queue/scanner workers and no real bot spawning."""
     from fastapi import FastAPI
     import uvicorn
@@ -79,7 +79,7 @@ def isolated_api(*, frontend=False):
         from fastapi.staticfiles import StaticFiles
         app.mount("/app", StaticFiles(directory=str(ROOT / "frontend"), html=True))
     sock = socket.socket()
-    sock.bind(('127.0.0.1', 0))
+    sock.bind(('127.0.0.1', port))
     server = uvicorn.Server(uvicorn.Config(app, log_level='error'))
     thread = threading.Thread(target=server.run, kwargs={'sockets': [sock]}, daemon=True)
     thread.start()
