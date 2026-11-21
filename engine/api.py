@@ -1481,8 +1481,9 @@ def post_register_bot(body: dict[str, Any], identity=Depends(_resolve_identity))
     if 'role' in body or 'grants' in body or 'permissions' in body:
         raise HTTPException(400, '角色与权限请在加入后通过项目成员设置配置')
     project = (body.get("project") or "").strip()
-    conn = _conn()
-    try:
+    from contextlib import closing, nullcontext
+    from . import profile_config
+    with (profile_config._LOCK if host_type == 'hermes' else nullcontext()), closing(_conn()) as conn:
         try:
             reg = discovery.register_bot(conn, host_type, profile, config_root, display_name,
                                          (body.get("entry") or "").strip() or None)
@@ -1495,15 +1496,14 @@ def post_register_bot(body: dict[str, Any], identity=Depends(_resolve_identity))
             member = bot_identity.enroll(conn, reg['bot_id'], project)
         else:
             member = None
-        if project:
-            from .codex_project_access import commit_enrollment
-            commit_enrollment(conn, project, [member])
-        else:
-            conn.commit()
+        with profile_config.registration_defaults(reg, host_type, config_root, profile):
+            if project:
+                from .codex_project_access import commit_enrollment
+                commit_enrollment(conn, project, [member])
+            else:
+                conn.commit()
         return {"bot_id": reg["bot_id"], "created": reg["created"],
                 "profile": profile, "member_profile": member, "project": project or None}
-    finally:
-        conn.close()
 
 
 @router_api.post("/bots/validate-dsh")

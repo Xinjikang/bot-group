@@ -26,7 +26,8 @@ class ProjectModelTests(unittest.TestCase):
                         running=False, pending=False, info=dict(source='acp', cwd='/workspace',
                         edit_approval_policy='workspace_session', model='old-flash'))
         client = Mock()
-        client.rpc.return_value = snapshot
+        from scripts.test_hermes_gateway_sessions import _success
+        client.rpc.side_effect = lambda method, **kw: _success(snapshot, method, **kw)
         result = hermes_gateway_sessions.configure(client, snapshot, workdir='/workspace',
             model_args=args, server={'command': 'python', 'args': [], 'env': {}})
         changes = [call.kwargs for call in client.rpc.call_args_list if call.args[0] == 'session.mutate']
@@ -61,7 +62,7 @@ class ProjectModelTests(unittest.TestCase):
     def test_unsaved_named_hermes_profile_uses_its_physical_config(self):
         member = self.join(host='hermes', profile='review')
         folder = self.root / 'hermes' / 'profiles' / 'review'
-        folder.mkdir(parents=True)
+        folder.mkdir(parents=True, exist_ok=True)
         (folder / 'config.yaml').write_text('model:\n  default: named-model\n  provider: named-cloud\nagent:\n  reasoning_effort: low\n', encoding='utf-8')
         (self.root / 'hermes' / 'config.yaml').write_text('model: root-model\n', encoding='utf-8')
         self.assertEqual(project_models.arguments(self.conn, 'p', member),

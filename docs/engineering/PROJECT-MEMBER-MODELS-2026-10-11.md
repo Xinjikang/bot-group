@@ -15,6 +15,22 @@ Every chat/work wake reads these settings. Codex receives `--model` and TOML
 `--provider`, and `--reasoning`. Changes affect subsequent wakes; in-flight runs
 retain their arguments and existing conversation bindings remain intact.
 
+For a resumed Hermes gateway session, the engine sends the selected model and
+provider through `session.mutate` before submitting the prompt. It caches the
+selection after a committed model receipt. A confirmation request or a model
+resolution failure leaves the project selection pending and the turn proceeds
+on the session's current model. The engine sends one project message addressed
+to the user for consecutive failures of the same target in the same session.
+The next wake retries. A successful switch clears the notification marker.
+Legacy cache entries are rechecked on first wake after upgrade.
+
+First registration of a local Hermes Bot sets
+`model.switch_context_confirm_tokens: 0` and `display.busy_input_mode: steer`
+in its bound profile, including an existing profile selected during registration.
+Re-enrolling a registered Bot preserves the profile's settings. The context
+threshold controls the long-context warning. Cost and data-policy warnings
+retain their own confirmation rules.
+
 Hermes restores historical session policy on resume unless the desired fields
 are explicit. On every registered Hermes chat/work wake, the engine resolves
 each empty project field from the current physical profile's `config.yaml`,

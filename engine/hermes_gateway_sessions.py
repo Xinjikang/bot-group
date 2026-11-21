@@ -50,7 +50,7 @@ def new(client, *, title, workdir, system_prompt, model_args, request_id=None, l
 
 def configure(client, snapshot, *, workdir, model_args, server,
               reset_reasoning=False, reasoning_applied=None, edit_approval_policy='workspace_session',
-              previous=None, force_mcp=False):
+              previous=None, force_mcp=False, model_failed=None, refresh_model=True):
     """Apply changed policy and restore an unchanged private MCP transport on resume."""
     previous = previous or {}
     sid = snapshot['session_id']
@@ -66,12 +66,23 @@ def configure(client, snapshot, *, workdir, model_args, server,
         snapshot = attach(client, sid)
     options = dict(zip(model_args[::2], model_args[1::2]))
     model = {k: options[k] for k in ('--model', '--provider') if k in options}
-    if '--model' in options and model != previous.get('model'):
+    if refresh_model and '--model' in options and model != previous.get('applied_model'):
         payload = {'model': options['--model']}
         if '--provider' in options:
             payload['provider'] = options['--provider']
-        mutate(client, snapshot, 'model', payload)
+        try:
+            receipt = mutate(client, snapshot, 'model', payload)
+        except GatewayRefusal as exc:
+            if exc.reason != 'model_resolution_failed':
+                raise
+            receipt = {'status': exc.reason}
         snapshot = attach(client, sid)
+        if not (receipt.get('operation') == 'model' and receipt.get('session_id') == sid
+                and receipt.get('model') and isinstance(receipt.get('revision'), int)
+                and not receipt.get('status')):
+            if model_failed is None:
+                raise GatewayRefusal(receipt.get('status') or 'model_switch_unconfirmed')
+            model_failed(receipt)
     if '--reasoning' in options and options['--reasoning'] != previous.get('reasoning'):
         mutate(client, snapshot, 'reasoning', {'effort': options['--reasoning']})
         if reasoning_applied:
@@ -100,7 +111,8 @@ def configure(client, snapshot, *, workdir, model_args, server,
     return snapshot
 
 
-def configure_tracked(conn, project, client, snapshot, *, workdir, model_args, server, force_mcp=False):
+def configure_tracked(conn, project, client, snapshot, *, workdir, model_args, server, force_mcp=False,
+                      member=None, refresh_model=True):
     """Reset removed engine overrides while preserving native session choices."""
     from . import db, edit_policy
     identity = json.dumps([client.endpoint['profile_id'], snapshot['session_id']])
@@ -119,20 +131,64 @@ def configure_tracked(conn, project, client, snapshot, *, workdir, model_args, s
     config_key = 'hermes_config:' + hashlib.sha256(identity.encode()).hexdigest()
     saved = conn.execute('SELECT value FROM settings WHERE project=? AND key=?', (project, config_key)).fetchone()
     prior = json.loads(saved['value']) if saved else {}
+    failures = []
     result = configure(client, snapshot, workdir=workdir, model_args=model_args, server=server,
                        reset_reasoning=previous is not None, reasoning_applied=applied,
-                       edit_approval_policy=edit_policy.read(conn), previous=prior, force_mcp=force_mcp)
+                       edit_approval_policy=edit_policy.read(conn), previous=prior, force_mcp=force_mcp,
+                       model_failed=failures.append, refresh_model=refresh_model)
     options = dict(zip(model_args[::2], model_args[1::2]))
     spec = {'name': 'task_queue', 'command': server['command'], 'args': server['args'],
             'env': [{'name': k, 'value': v} for k, v in sorted(server['env'].items())]}
-    state = dict(model={k: options[k] for k in ('--model', '--provider') if k in options},
-                 reasoning=options.get('--reasoning'),
+    target = {k: options[k] for k in ('--model', '--provider') if k in options}
+    state = dict(reasoning=options.get('--reasoning'),
                  mcp=hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest())
+    notice_id = None
+    if not refresh_model:
+        for key_name in ('applied_model', 'failed_target'):
+            if key_name in prior:
+                state[key_name] = prior[key_name]
+    elif failures:
+        state['applied_model'] = prior.get('applied_model')
+        if member is not None:
+            state['failed_target'] = target
+            if prior.get('failed_target') != target:
+                notice_id = _model_notice(conn, project, member, target, result['info'], failures[0])
+    else:
+        state['applied_model'] = target
     conn.execute('INSERT INTO settings(project,key,value,updated_at) VALUES(?,?,?,?) '
                  'ON CONFLICT(key,project) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',
                  (project, config_key, json.dumps(state), db.now_iso()))
     conn.commit()
+    if notice_id is not None:
+        from . import events
+        events.bus.publish('message.new', dict(project=project, message_id=notice_id, sender='engine', thread_id=None))
     return result
+
+
+def _model_notice(conn, project, member, target, info, receipt):
+    from . import db
+    warnings = {w.get('kind') for w in receipt.get('warnings', []) if isinstance(w, dict)}
+    labels = {'context_cache': '长上下文', 'cost': '模型费用', 'data_policy': '数据使用政策'}
+    if receipt.get('status') == 'confirmation_required':
+        guards = '、'.join(label for kind, label in labels.items() if kind in warnings)
+        reason = f'Hermes 要求确认{guards}'
+    elif receipt.get('status') == 'model_resolution_failed':
+        reason = 'Hermes 无法解析目标模型或供应商'
+    else:
+        reason = 'Hermes 尚未确认应用目标模型'
+    def route(model, provider):
+        return f'{model}（{provider}）' if provider else model
+    wanted = route(target['--model'], target.get('--provider'))
+    active = route(info.get('model') or '原模型', info.get('provider'))
+    help_text = f'若要切换模型，请输入 /new @{member}'
+    if warnings == {'context_cache'}:
+        help_text += '，或修改配置 model.switch_context_confirm_tokens=0'
+    text = f'@user 切换到 {wanted} 失败，本轮继续使用 {active}。{reason}。{help_text}。'
+    mid = conn.execute("INSERT INTO messages(project,ts,sender,sender_type,content,mentions,need_reply) "
+                       """VALUES(?,?,'engine','engine',?,'["user"]',0)""",
+                       (project, db.now_iso(), text)).lastrowid
+    conn.execute("INSERT INTO inbox(message_id,profile,status) VALUES(?,'user','pending')", (mid,))
+    return mid
 
 
 def migrate_legacy(client, snapshot, *, workdir):
