@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import queue
@@ -73,8 +74,13 @@ class RelayClient:
                                      proxy=None, open_timeout=10, close_timeout=2,
                                      ping_interval=20, ping_timeout=5,
                                      max_size=8 * 1024 * 1024) as ws:
-                    if not self._handshake(ws):
-                        return  # 凭据/版本/摘要不匹配：引擎拒绝，重试无意义
+                    handshake = self._handshake(ws)
+                    if handshake is None:  # Pending or approved; reconnect without opening any streams.
+                        if self._stop.wait(1.0):
+                            return
+                        continue
+                    if not handshake:
+                        return  # Explicit refusal; no automatic re-registration.
                     backoff = RECONNECT_BASE
                     self._on_status("online")
                     self._recv_loop(ws)
@@ -90,14 +96,13 @@ class RelayClient:
                 return
             backoff = min(backoff * 2, RECONNECT_CAP)
 
-    def _handshake(self, ws) -> bool:
+    def _handshake(self, ws) -> bool | None:
         snapshot = mcp_digest.snapshot(self.cfg.mcp_python,
                                        code_version=relay_config.plugin_version())
-        # 认证材料（req#175）：持久凭据优先（含邀请兑换后落盘的），
-        # 无凭据才带一次性邀请——邀请只用于首次接入。
         from . import pairing
-        credential = (self.cfg.credential
-                      or pairing.load_register_credential(self.cfg.member))
+        scope = {'engine_url': self.cfg.engine_url, 'invite': self.cfg.invite}
+        credential = self._credential or pairing.load_register_credential(self.cfg.member, **scope)
+        candidate = None
         hello = {"relay": {"kind": "hello"},
                  "member": self.cfg.member,
                  "credential": credential,
@@ -108,10 +113,12 @@ class RelayClient:
                  "mcp_python": snapshot["mcp_python"],
                  "mcp_entry": snapshot["mcp_entry"]}
         if not credential and self.cfg.invite:
-            hello["invite"] = self.cfg.invite
+            proof, candidate = pairing.register_offer(self.cfg.member, **scope)
+            hello.update(invite=self.cfg.invite, join_proof=proof,
+                         credential_commitment=hashlib.sha256(candidate.encode()).hexdigest())
         try:
             ws.send(json.dumps(hello, ensure_ascii=False))
-            reply = json.loads(ws.recv())
+            reply = json.loads(ws.recv(timeout=10))
         except Exception as exc:  # noqa: BLE001 关闭码经异常可见
             code = getattr(getattr(exc, "rcvd", None), "code", None)
             # 引擎按版本/凭据/摘要拒绝：重试无意义，结束出站循环
@@ -120,14 +127,16 @@ class RelayClient:
                                self.cfg.member, code)
                 return False
             raise
-        if reply.get("relay", {}).get("kind") != "hello_ok":
+        kind = reply.get('relay', {}).get('kind')
+        if candidate and kind == 'hello_pending':
+            self._on_status('pending_confirmation')
+            return None
+        if candidate and kind == 'hello_confirmed':
+            pairing.save_register_credential(self.cfg.member, candidate, **scope)
+            self._credential = candidate
+            return None
+        if candidate or kind != 'hello_ok':
             return False
-        # req#175 邀请兑换：hello_ok 下发节点持久凭据 → 落盘供重连
-        issued_credential = reply.get("relay", {}).get("credential") or ""
-        if issued_credential:
-            from . import pairing
-            pairing.save_register_credential(self.cfg.member, issued_credential)
-            self._credential = issued_credential
         self._generation = int(reply["relay"].get("generation") or 0)
         self._engine_url = reply.get("engine_url") or ""
         logger.info("bot-group relay link up member=%s generation=%d",

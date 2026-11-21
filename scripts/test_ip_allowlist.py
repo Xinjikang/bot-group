@@ -157,13 +157,22 @@ class MemberSourceBindingTests(unittest.TestCase):
             conn.close()
         with self.remote(IP_C).websocket_connect("/relay/ws") as ws:
             hello = self.relay_hello("remoteX", "")
-            hello["invite"] = issued["invite_token"]
+            hello.update(invite=issued['invite_token'], join_proof='bc' * 32,
+                         credential_commitment=relay.hash_credential('isolated-source-test'))
             ws.send_json(hello)
             reply = ws.receive_json()
-            self.assertEqual(reply["relay"]["kind"], "hello_ok",
-                             "有效邀请兑换应从零建立首接并完成握手")
-            persistent = reply["relay"].get("credential")
-            self.assertTrue(persistent, "首接必须下发持久凭据")
+            self.assertEqual(reply['relay']['kind'], 'hello_pending')
+            with closing(db.get_connection()) as observer:
+                self.assertFalse(ip_allowlist.source_allowed(observer, IP_C))
+        self.assertEqual(self.remote(IP_C).get('/health').status_code, 403)
+        path = f"/relay/invitations/{issued['pairing_id']}"
+        denied = self.loop.post(path + '/confirm', headers=self.bot_headers('architect'))
+        self.assertEqual(denied.status_code, 403)
+        pending = self.loop.get(path).json()
+        self.assertEqual((pending['state'], pending['member'], pending['peer_ip']),
+                         ('pending_confirmation', 'remoteX', IP_C))
+        self.assertEqual(self.loop.post(path + '/confirm').json()['state'], 'confirmed')
+        persistent = 'isolated-source-test'
         conn = db.get_connection()
         try:
             self.assertTrue(ip_allowlist.member_allowed(conn, "remoteX", IP_C),

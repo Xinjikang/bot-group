@@ -367,6 +367,16 @@ class SwitchStateMachineTests(DialerBase):
         finally:
             conn.close()
 
+    def _wait_switched(self, target, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        with closing(db.get_connection()) as conn:
+            while time.monotonic() < deadline:
+                row = relay.read_node(conn, REMOTE)
+                if (row['direction'], row['switch_state'], row['state']) == (target, '', 'online'):
+                    return True
+                time.sleep(0.05)
+        return False
+
     def test_switch_to_dial_full_chain(self):
         plugin = FakePlugin(tls=True)
         self.addCleanup(plugin.stop)
@@ -388,7 +398,7 @@ class SwitchStateMachineTests(DialerBase):
             self.assertEqual(relay.read_node(c, REMOTE)["switch_state"], "switching")
         # 断旧（此时无旧连接）→ 建新
         relay_dialer.start_dial(REMOTE)
-        self.assertTrue(self._wait_connected(), "拨号成功应完成切换")
+        self.assertTrue(self._wait_switched('dial'), "在途核对完成后才算切换成功")
         with closing(db.get_connection()) as c:
             row = relay.read_node(c, REMOTE)
             self.assertEqual(row["switch_state"], "", "认证成功清切换态")
@@ -464,7 +474,7 @@ class SwitchStateMachineTests(DialerBase):
         # 模拟重启：清运行时（连接全断），调恢复
         relay_server.close_all()
         relay_dialer.restore_on_startup()
-        self.assertTrue(self._wait_connected(), "重启后应恢复切换流程并拨通")
+        self.assertTrue(self._wait_switched('dial'), "重启后应完成在途核对与换向")
         with closing(db.get_connection()) as c:
             row = relay.read_node(c, REMOTE)
             self.assertEqual(row["switch_state"], "")

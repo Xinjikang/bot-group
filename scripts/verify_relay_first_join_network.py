@@ -21,8 +21,9 @@ import uvicorn
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from engine import auth, config, db, hermes_session_auth, ip_allowlist, listen_control
-from engine import relay, relay_dialer, relay_server, signing_keys, topic_dispatch
+from engine import auth, config, db, hermes_gateway, ip_allowlist, listen_control, project_models, queue
+from engine import relay, relay_dialer, relay_server, signing_keys, topic_dispatch, wake
+from scripts.relay_dispatch_fixture import DispatchGateway
 from scripts.test_plugin_listen_pairing import _plugin_modules
 from scripts.unified_test_support import isolated_database
 
@@ -50,47 +51,30 @@ def host_env(member, home):
 
 def listener(plg, home, lan, stack, proxy):
     stack.enter_context(patch.object(plg['listen'], 'STATE_DIR', home))
-    obj = plg['listen'].listen_serve(address=lan, port=0, no_proxy=not proxy)
+    obj = plg['listen'].listen_serve(address=lan, port=0, no_proxy=not proxy, mcp_python=sys.executable)
     if proxy:
         stack.callback(plg['mcpproxy'].stop_proxy)
     stack.callback(obj['_server'].stop)
     return obj
 
 
-def fixture_scope(member, tid, home):
-    start = time.time()
-    session = f'{member}-alpha-chat-{tid}'
-    sid = f'fixture-{tid}'
-    with closing(db.get_connection()) as conn, conn:
-        assert conn.execute('SELECT turn_profile FROM threads WHERE id=?', (tid,)).fetchone()[0] == member
-        bot = conn.execute('SELECT bot_id FROM members WHERE profile=?', (member,)).fetchone()[0]
-        conn.execute("INSERT INTO session_bindings(project,bot_id,profile,kind,thread_id,session_id,runtime,generation,title,updated_at) VALUES('alpha',?,?,'chat',?,?,'hermes',0,?,?)",
-                     (bot, member, tid, sid, session, db.now_iso()))
-        grant = hermes_session_auth.grant(conn, project='alpha', profile=member, bot_id=bot, kind='chat',
-                                         thread_id=tid, session=session, home=str(home), command=[sys.executable],
-                                         workdir=str(home), model_args=[])
-        conn.execute("INSERT INTO hermes_executions(execution_id,session,started_at,project,profile,kind,thread_id,session_id,profile_id,submission_id,state,source,python,home,workdir,submit_deadline,reconcile_deadline) VALUES(?,?,?,'alpha',?,'chat',?,?,?,?,'running','fixture',?,?,?,?,?)",
-                     (session, session, start, member, tid, sid, member, session, sys.executable,
-                      str(home), str(home), start + 60, start + 120))
-        conn.execute("INSERT INTO wake_runs(session,profile,thread_id,runtime_session_id,bot_id,runtime,started_at,project) VALUES(?,?,?,?,?,'hermes',?,'alpha')",
-                     (session, member, tid, sid, bot, start))
-    return dict(hermes_session_auth.context(grant), credential_type='session')
-
-
-async def send_mcp(member, uri, home, scope, text):
+async def send_mcp(gateway, received, expected_url, text):
+    spec = gateway.sessions[received['session_id']]['mcp']
+    configured = {entry['name']: entry['value'] for entry in spec['env']}
+    assert configured['GROUP_ENGINE_URL'] == expected_url
+    assert Path(spec['command']).samefile(sys.executable) and Path(spec['args'][0]).samefile(ROOT / 'mcp/server.py')
     env = {k: os.environ[k] for k in ('PATH', 'SYSTEMROOT', 'TEMP', 'TMP') if k in os.environ}
-    env.update(GROUP_ENGINE_URL=uri, XDG_GROUP_ENGINE_URL='', HERMES_HOME=str(home), HERMES_PROFILE=member,
-               GROUP_ENGINE_TOKEN=auth.session_token(member, scope), XDG_GROUP_ENGINE_EXECUTION=json.dumps(scope),
-               NO_PROXY='*', PYTHONUTF8='1')
-    params = StdioServerParameters(command=sys.executable, args=['-B', str(ROOT / 'mcp/server.py')], cwd=str(home), env=env)
+    env.update(configured, NO_PROXY='*', PYTHONUTF8='1', HERMES_HOME=str(gateway.home))
+    params = StdioServerParameters(command=spec['command'], args=['-B', *spec['args']], cwd=str(gateway.home), env=env)
     async with stdio_client(params) as (read, write), ClientSession(read, write) as client:
         await client.initialize()
         sent = await client.call_tool('group_send', {'text': text, 'need_reply': False})
-        assert not sent.isError, sent
+        assert not sent.isError, 'configured MCP did not send the reply'
         return json.loads(sent.content[0].text)['message_id']
 
 
-def mention(api, member, home, uri, label):
+def mention(api, gateway, other, uri, label):
+    member = gateway.member
     opening, reply = f'@{member} check {label}', f'@user reply {label}'
     tid = result(api.post('/thread', json={'creator': 'user', 'project': 'alpha', 'title': label,
                                            'opening': 'Isolated relay check', 'members': []}))['thread_id']
@@ -113,8 +97,37 @@ def mention(api, member, home, uri, label):
             assert topic_dispatch.process_one(conn), (tid, member, tuple(turn))
         else:
             raise AssertionError('mention did not assign the reply turn')
-    scope = fixture_scope(member, tid, home)
-    mid = asyncio.run(asyncio.wait_for(send_mcp(member, uri, home, scope, reply), 35))
+    before, before_other = len(gateway.submit_requests), len(other.submit_requests)
+    with closing(db.get_connection()) as conn:
+        job = conn.execute('SELECT * FROM wake_jobs WHERE trigger_msg_id=?', (named['message_id'],)).fetchone()
+        assert job and (job['profile'], job['status']) == (member, 'queued')
+        for _ in range(10):
+            if not queue.process_one(conn):
+                break
+            status = conn.execute('SELECT status, detail FROM wake_jobs WHERE id=?', (job['id'],)).fetchone()
+            if status['status'] != 'queued':
+                break
+        status = conn.execute('SELECT status, detail FROM wake_jobs WHERE id=?', (job['id'],)).fetchone()
+        assert status['status'] == 'done', (member, dict(status), gateway.errors)
+        execution = conn.execute('SELECT * FROM hermes_executions WHERE job_id=?', (job['id'],)).fetchone()
+        assert execution and execution['state'] == 'running', (member, gateway.errors)
+    assert len(gateway.submit_requests) == before + 1 and len(other.submit_requests) == before_other
+    received = gateway.submissions[-1]
+    assert tuple(received[k] for k in ('session_id', 'submission_id', 'admission_id')) == tuple(
+        execution[k] for k in ('session_id', 'submission_id', 'admission_id'))
+    assert opening in received['text'] and execution['parent_id'] == named['message_id']
+    mid = asyncio.run(asyncio.wait_for(send_mcp(gateway, received, uri, reply), 35))
+    # This is a one-answer experiment. The administrator closes the topic after
+    # the reply, before releasing the runner to schedule ordinary discussion.
+    assert result(api.post(f'/thread/{tid}/close', json={'conclusion': 'Isolated reply observed'}))['closed']
+    gateway.settled(received)
+
+    def settled():
+        with closing(db.get_connection()) as conn:
+            row = conn.execute('SELECT state,cleanup_pending FROM hermes_executions WHERE job_id=?', (job['id'],)).fetchone()
+            return tuple(row) == ('terminal', 0)
+
+    wait(settled)
     with closing(db.get_connection()) as conn:
         row = conn.execute("SELECT id,mentions FROM messages WHERE thread_id=? AND sender='user' AND content=?",
                            (tid, opening)).fetchone()
@@ -122,7 +135,11 @@ def mention(api, member, home, uri, label):
         replies = conn.execute("SELECT id,sender,content,parent_id FROM messages WHERE thread_id=? AND sender_type='bot'",
                                (tid,)).fetchall()
         assert [tuple(r) for r in replies] == [(mid, member, reply, row['id'])], [dict(r) for r in replies]
-    return {'thread_id': tid, 'member': member, 'mention_id': row['id'], 'reply_id': mid}
+    assert len(gateway.submit_requests) == before + 1 and len(other.submit_requests) == before_other
+    return {'thread_id': tid, 'member': member, 'mention_id': row['id'], 'reply_id': mid,
+            'job_id': job['id'], 'job_status': status['status'], 'session_id': received['session_id'],
+            'submission_id': received['submission_id'], 'remote_admission_id': received['admission_id'],
+            'target_receives': 1, 'non_target_receives': 0}
 
 
 def exercise(args, evidence):
@@ -152,8 +169,16 @@ def exercise(args, evidence):
         a, b = 'fixture-cloud-a', 'fixture-cloud-b'
         pa, pb = _plugin_modules('first_join_a'), _plugin_modules('first_join_b')
         ha, hb = Path(path).parent / 'host-a', Path(path).parent / 'host-b'
-        for plg, home in ((pa, ha), (pb, hb)):
+        gateway_a = stack.enter_context(DispatchGateway(a, ha).listen())
+        gateway_b = stack.enter_context(DispatchGateway(b, hb).listen())
+        stack.enter_context(patch.object(hermes_gateway, 'enabled', return_value=True))
+        stack.enter_context(patch.object(project_models, 'arguments', return_value=[]))
+        (Path(path).parent / 'alpha').mkdir()
+        for plg, home, gateway in ((pa, ha, gateway_a), (pb, hb, gateway_b)):
             home.mkdir()
+            tickets = importlib.import_module(plg['config'].__package__ + '.tickets')
+            stack.enter_context(patch.object(tickets, 'fetch_ticket', side_effect=gateway.fetch_ticket))
+            stack.enter_context(patch.object(plg['mcp_digest'], 'MCP_DIR', ROOT / 'mcp'))
             stack.enter_context(patch.object(plg['pairing'], '_state_path', return_value=home / 'pairing.json'))
         with closing(db.get_connection()) as conn:
             assert not relay.list_nodes(conn) and not ip_allowlist.list_bindings(conn)
@@ -179,12 +204,33 @@ def exercise(args, evidence):
         issued = result(api.post('/relay/invitations'))
         assert issued['listen_configured'] and issued['engine_url'] == str(remote.base_url).rstrip('/')
         with host_env(a, ha):
-            cfg = pa['config'].load(SimpleNamespace(extra={'engine_url': issued['engine_url'], 'invite': issued['invite_token']}))
+            cfg = pa['config'].load(SimpleNamespace(extra={'engine_url': issued['engine_url'], 'invite': issued['invite_token'],
+                                                           'mcp_python': sys.executable}))
         assert cfg and cfg.member == a and Path(cfg.home) == ha
         stack.enter_context(patch.object(pa['config'], 'plugin_version', return_value=relay_server._engine_release_version() or ''))
         out = importlib.import_module(pa['config'].__package__ + '.relay').RelayClient(cfg)
         out.start()
         stack.callback(out.stop)
+
+        invitation = f"/relay/invitations/{issued['pairing_id']}"
+
+        def awaiting_confirmation():
+            view = result(api.get(invitation))
+            return view if view['state'] == 'pending_confirmation' else None
+
+        pending = wait(awaiting_confirmation)
+        assert (pending['member'], pending['peer_ip']) == (a, args.lan)
+        assert set(pending) == {'pairing_id', 'state', 'direction', 'member', 'peer_ip', 'expires_at'}
+        assert {node['member'] for node in result(api.get('/relay/nodes'))} == {b}
+        assert relay_server.active_link(a) is None and not out.generation
+        with closing(db.get_connection()) as conn:
+            assert not ip_allowlist.list_bindings(conn)
+        assert remote.get('/health').status_code == 403
+        confirmed = result(api.post(invitation + '/confirm'))
+        assert confirmed['state'] == 'confirmed' and confirmed['member'] == a
+        assert result(api.post(invitation + '/confirm'))['state'] == 'confirmed'
+        assert api.post(invitation + '/cancel').status_code == 409
+        evidence['pending_confirmation'] = pending
 
         def online():
             nodes = {n['member']: n for n in result(api.get('/relay/nodes'))}
@@ -205,9 +251,21 @@ def exercise(args, evidence):
                 bot = db._ensure_hermes_bot(conn, member)
                 conn.execute('INSERT INTO members(profile,display_name,bot_id) VALUES(?,?,?)', (member, member, bot))
                 conn.execute("INSERT INTO project_members(project,profile,active,bot_id) VALUES('alpha',?,1,?)", (member, bot))
+        stopping = threading.Event()
+        stack.enter_context(patch.object(wake, '_shutting_down', stopping))
+        known_threads = set(threading.enumerate())
+
+        def stop_workers():
+            stopping.set()
+            for worker in set(threading.enumerate()) - known_threads:
+                if worker.name == 'hermes-reconcile':
+                    worker.join(timeout=10)
+                    assert not worker.is_alive(), 'isolated engine worker did not stop'
+
+        stack.callback(stop_workers)
         evidence['replies'] = []
-        evidence['replies'].append(mention(api, a, ha, issued['engine_url'], 'before-a'))
-        evidence['replies'].append(mention(api, b, hb, lb['proxy_url'], 'before-b'))
+        evidence['replies'].append(mention(api, gateway_a, gateway_b, issued['engine_url'], 'before-a'))
+        evidence['replies'].append(mention(api, gateway_b, gateway_a, lb['proxy_url'], 'before-b'))
         orig = relay_server.active_link(b)
         assert orig is not None
         with host_env(a, ha):
@@ -226,8 +284,11 @@ def exercise(args, evidence):
         after = wait(switched)
         assert after[b]['direction'] == 'dial' and relay_server.active_link(b) is orig
         evidence['switch'] = {m: {k: after[m][k] for k in ('direction', 'state', 'generation')} for m in (a, b)}
-        evidence['replies'].append(mention(api, b, hb, lb['proxy_url'], 'after-b'))
+        evidence['replies'].append(mention(api, gateway_b, gateway_a, lb['proxy_url'], 'after-b'))
         assert relay_server.active_link(b) is orig
+        evidence['actual_submissions'] = {a: len(gateway_a.submit_requests), b: len(gateway_b.submit_requests)}
+        assert evidence['actual_submissions'] == {a: 1, b: 2}
+        assert not gateway_a.errors and not gateway_b.errors, (gateway_a.errors, gateway_b.errors)
 
 
 def main():

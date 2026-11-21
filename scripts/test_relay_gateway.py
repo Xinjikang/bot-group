@@ -561,6 +561,25 @@ class RelayFrameTests(RelayBase):
         finally:
             conn.close()
 
+    def test_first_join_mcp_uses_current_authenticated_snapshot_only(self):
+        from engine.hermes_gateway_client import GatewayRefusal
+        conn = self.conn()
+        try:
+            row = relay.register_remote_node(conn, 'fresh-remote', 'fixture-node-key', direction='dial')
+            relay.mark_online(conn, row['member'], code_version=RELEASE_VERSION,
+                              mcp_fingerprint='fresh-sha', generation=row['generation'])
+            report = {'mcp_fingerprint': 'fresh-sha', 'generation': row['generation'], 'proxy_port': 12345,
+                      'mcp_python': '/isolated/bin/python', 'mcp_entry': '/isolated/mcp/server.py'}
+            spec = {'command': '/local/python', 'env': {'GROUP_ENGINE_URL': 'http://ignored'}}
+            configured = relay.merge_mcp_spec(conn, row['member'], spec, fetch_report=lambda: report)
+            self.assertEqual(configured, {'command': report['mcp_python'], 'args': [report['mcp_entry']],
+                                          'env': {'GROUP_ENGINE_URL': 'http://127.0.0.1:12345'}})
+            for update in ({'generation': row['generation'] - 1}, {'proxy_port': 0}, {'mcp_entry': 'server.py'}):
+                with self.subTest(update=update), self.assertRaises(GatewayRefusal):
+                    relay.merge_mcp_spec(conn, row['member'], spec, fetch_report=lambda: {**report, **update})
+        finally:
+            conn.close()
+
     def test_merge_mcp_spec_fetch_failure_refused(self):
         # reviewer 返修②：问询超时/无响应（fetch_report 返回 None）必须拒绝，
         # 不得清空库内摘要后按旧缓存放行。

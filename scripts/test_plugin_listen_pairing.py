@@ -1633,6 +1633,22 @@ class FirstJoinTests(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read() or b"{}")
 
+    def _confirm_invite(self, issued, member):
+        import urllib.request
+        path = f"/relay/invitations/{issued['pairing_id']}"
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            with urllib.request.urlopen(f'http://127.0.0.1:{self._api_client()}{path}', timeout=5) as resp:
+                view = json.load(resp)
+            if view['state'] == 'pending_confirmation':
+                self.assertEqual(view['member'], member)
+                break
+            time.sleep(0.05)
+        else:
+            self.fail('verified pairing offer did not become visible')
+        status, confirmed = self._admin_post(path + '/confirm')
+        self.assertEqual((status, confirmed['state']), (200, 'confirmed'))
+
     def _wait_dial_connected(self, member, timeout=15.0) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -1767,6 +1783,102 @@ class FirstJoinTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_invitation_hello_cannot_register_until_admin_confirms(self):
+        from websockets.sync.client import connect
+        status, issued = self._admin_post('/relay/invitations')
+        self.assertEqual(status, 200)
+        version = relay_server._engine_release_version() or ''
+        credential = 'isolated-specific-credential'
+        with connect(f'ws://127.0.0.1:{self._api_client()}/relay/ws', proxy=None) as ws:
+            ws.send(json.dumps({'relay': {'kind': 'hello'}, 'member': 'remoteA',
+                                'invite': issued['invite_token'], 'protocol_version': 1,
+                                'plugin_version': version, 'join_proof': 'ab' * 32,
+                                'credential_commitment': relay.hash_credential(credential)}))
+            self.assertEqual(json.loads(ws.recv(timeout=5))['relay']['kind'], 'hello_pending')
+        with closing(db.get_connection()) as conn:
+            self.assertIsNone(relay.read_node(conn, 'remoteA'))
+        self.assertIsNone(relay_server.active_link('remoteA'))
+        path = f"/relay/invitations/{issued['pairing_id']}"
+        status, confirmed = self._admin_post(path + '/confirm')
+        self.assertEqual((status, confirmed['state'], confirmed['member']), (200, 'confirmed', 'remoteA'))
+        self.assertNotIn('credential', confirmed)
+        with closing(db.get_connection()) as conn:
+            self.assertTrue(relay.verify_credential(conn, 'remoteA', credential))
+            self.assertEqual(relay.read_node(conn, 'remoteA')['state'], 'offline')
+
+    def test_confirmed_offer_survives_lost_receipt_and_plugin_restart(self):
+        from websockets.sync.client import connect
+        status, issued = self._admin_post('/relay/invitations')
+        self.assertEqual(status, 200)
+        base = f'http://127.0.0.1:{self._api_client()}'
+        member = 'remoteA'
+        version = relay_server._engine_release_version() or ''
+        proof, candidate = self.plg['pairing'].register_offer(member, base, issued['invite_token'])
+        hello = {'relay': {'kind': 'hello'}, 'member': member, 'invite': issued['invite_token'],
+                 'join_proof': proof, 'credential_commitment': relay.hash_credential(candidate),
+                 'protocol_version': 1, 'plugin_version': version}
+        uri = base.replace('http:', 'ws:') + '/relay/ws'
+        with connect(uri, proxy=None) as ws:
+            ws.send(json.dumps(hello))
+            self.assertEqual(json.loads(ws.recv(timeout=5))['relay']['kind'], 'hello_pending')
+        self._confirm_invite(issued, member)
+        # Confirmation commits, but the first response is never read by the plugin.
+        with connect(uri, proxy=None) as lost:
+            lost.send(json.dumps(hello))
+        self.assertFalse(self.plg['pairing'].load_register_credential(member))
+        from websockets.exceptions import ConnectionClosed
+        with connect(uri, proxy=None) as replay:
+            replay.send(json.dumps({**hello, 'join_proof': 'de' * 32}))
+            with self.assertRaises(ConnectionClosed) as error:
+                replay.recv(timeout=5)
+            self.assertEqual(error.exception.rcvd.code, 4001)
+        cfg = self.plg['config'].RelayConfig(engine_url=base, member=member, credential='',
+            invite=issued['invite_token'], mcp_python='', home=self._tmpdir.name)
+        with patch.object(self.plg['config'], 'plugin_version', return_value=version):
+            client = self._load_relay_module().RelayClient(cfg)
+            client.start()
+            try:
+                deadline = time.monotonic() + 10
+                while not client.generation and time.monotonic() < deadline:
+                    time.sleep(.05)
+                self.assertTrue(client.generation)
+                self.assertTrue(self.plg['pairing'].load_register_credential(member) == candidate)
+            finally:
+                client.stop()
+                client._thread.join(timeout=5)
+                self.assertFalse(client._thread.is_alive())
+        with closing(db.get_connection()) as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM relay_nodes').fetchone()[0], 1)
+            self.assertFalse(relay.redeem_invitation(conn, issued['invite_token'], member))
+
+    def test_cancel_expiry_and_parallel_confirm_cannot_leave_extra_nodes(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from engine import ip_allowlist
+        proof, commitment = 'cd' * 32, relay.hash_credential('isolated-driven-key')
+        with closing(db.get_connection()) as conn:
+            cancelled = relay.issue_invitation(conn)
+            expired = relay.issue_invitation(conn, ttl_seconds=60)
+            live = [relay.issue_invitation(conn) for _ in range(2)]
+            for issued, member in zip((cancelled, *live, expired), ('remoteCancel', 'remoteA', 'remoteA', 'remoteExpired')):
+                offer = relay.offer_invitation(conn, issued['invite_token'], member, '192.0.2.27', proof, commitment)
+                self.assertEqual(offer['state'], 'pending_confirmation')
+                self.assertIsNone(relay.offer_invitation(conn, issued['invite_token'], member, '192.0.2.28', proof, commitment))
+        path = lambda issued: f"/relay/invitations/{issued['pairing_id']}"
+        self.assertEqual(self._admin_post(path(cancelled) + '/cancel')[1]['state'], 'cancelled')
+        self.assertEqual(self._admin_post(path(cancelled) + '/cancel')[0], 200)
+        self.assertEqual(self._admin_post(path(cancelled) + '/confirm')[0], 409)
+        with patch.object(relay, '_now', return_value=expired['expires_at'] + 1):
+            self.assertEqual(self._admin_post(path(expired) + '/confirm')[0], 409)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            replies = list(pool.map(lambda issued: self._admin_post(path(issued) + '/confirm'), live))
+        self.assertEqual(sorted(status for status, _ in replies), [200, 409])
+        confirmed = next(body for status, body in replies if status == 200)
+        self.assertEqual(self._admin_post(path(confirmed) + '/confirm')[0], 200)
+        with closing(db.get_connection()) as conn:
+            self.assertEqual([node['member'] for node in relay.list_nodes(conn)], ['remoteA'])
+            self.assertEqual(ip_allowlist.list_bindings(conn), [{'member': 'remoteA', 'ips': ['192.0.2.27']}])
+            self.assertEqual(conn.execute('SELECT SUM(redeemed) FROM relay_invitations').fetchone()[0], 1)
+
     def test_invitation_ws_first_join_full_chain(self):
         """方向 A 真实全链：引擎签发邀请 → 插件 RelayClient(invite) 出站
         连真实 /relay/ws → 兑换建节点（remoteB，名册外）→ hello_ok 下发
@@ -1790,6 +1902,7 @@ class FirstJoinTests(unittest.TestCase):
             home=os.environ.get("TMPDIR", ".")))
         client.start()
         self.addCleanup(client.stop)
+        self._confirm_invite(issued, 'remoteB')
         deadline = time.monotonic() + 15
         node_ok = False
         while time.monotonic() < deadline:
@@ -1941,6 +2054,7 @@ class FirstJoinTests(unittest.TestCase):
             mcp_python="", home=os.environ.get("TMPDIR", ".")))
         client_a.start()
         self.addCleanup(client_a.stop)
+        self._confirm_invite(issued, 'remoteA')
         # --- B：配对导入方向 ---
         plg_listen = self.plg["listen"]
         with tempfile.TemporaryDirectory(prefix="bgrelay-dual-") as tmp_dir:

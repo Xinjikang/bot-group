@@ -15,7 +15,6 @@ import asyncio
 import json
 import logging
 import queue
-import secrets
 import threading
 import time
 
@@ -299,6 +298,7 @@ def _route_inbound(link: NodeLink, envelope: dict) -> bool:
                 "mcp_fingerprint": fingerprint,
                 "code_version": envelope.get("code_version") or "",
                 "proxy_port": proxy_port,
+                **{key: envelope[key] for key in ('mcp_python', 'mcp_entry') if key in envelope},
             })
             return True
         conn = db.get_connection()
@@ -362,10 +362,9 @@ async def relay_ws(websocket: WebSocket) -> None:
         peer_raw = websocket.client.host if websocket.client else None
         peer = ip_allowlist._normalize(peer_raw or "") or peer_raw
         conn = db.get_connection()
-        node_credential = ""
         try:
             if invite_token:
-                if not member or not ip_allowlist._normalize(peer_raw or ""):
+                if credential or not member or not ip_allowlist._normalize(peer_raw or ''):
                     await websocket.close(code=CLOSE_BAD_CREDENTIAL)
                     return
                 engine_version = _engine_release_version()
@@ -373,22 +372,17 @@ async def relay_ws(websocket: WebSocket) -> None:
                         or (engine_version and plugin_version != engine_version)):
                     await websocket.close(code=CLOSE_BAD_PROTOCOL)
                     return
-                # One transaction covers redemption, the independent node, and
-                # its exact socket-source binding. No writes survive a conflict.
-                if not relay.redeem_invitation(conn, invite_token, member, commit=False):
-                    conn.rollback()
+                offer = relay.offer_invitation(conn, invite_token, member, peer,
+                                               hello.get('join_proof', ''), hello.get('credential_commitment', ''))
+                if offer is None:
                     await websocket.close(code=CLOSE_BAD_CREDENTIAL)
                     return
-                node_credential = secrets.token_urlsafe(32)
-                if relay.register_remote_node(conn, member, node_credential,
-                                              direction="listen", peer_ip=peer_raw,
-                                              commit=False) is None:
-                    conn.rollback()
-                    await websocket.close(code=CLOSE_BAD_CREDENTIAL)
-                    return
-                conn.commit()
-                logger.info("relay invite redeemed member=%s", member)
-            elif not member or not relay.verify_credential(conn, member, credential):
+                # No relay link is registered on a bootstrap connection, even after approval.
+                await websocket.send_json({'relay': {'kind': 'hello_confirmed' if offer['state'] == 'confirmed'
+                                                           else 'hello_pending'}})
+                await websocket.close()
+                return
+            if not member or not relay.verify_credential(conn, member, credential):
                 await websocket.close(code=CLOSE_BAD_CREDENTIAL)
                 return
             if not ip_allowlist.member_allowed(conn, member, peer_raw):
@@ -459,10 +453,6 @@ async def relay_ws(websocket: WebSocket) -> None:
     try:
         hello_ok = {"relay": {"kind": "hello_ok", "generation": generation},
                     "engine_url": _engine_url()}
-        if node_credential:
-            # req#175 邀请兑换：首接下发节点持久凭据（插件保存供重连，
-            # 一次性邀请不再重复使用）
-            hello_ok["relay"]["credential"] = node_credential
         await websocket.send_text(json.dumps(hello_ok, ensure_ascii=False))
         logger.info("relay link up member=%s generation=%d", member, generation)
         if switching:

@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 import time
 
@@ -79,6 +80,16 @@ CREATE TABLE IF NOT EXISTS relay_invitations (
     created_at   REAL NOT NULL,
     redeemed_at  REAL
 );
+CREATE TABLE IF NOT EXISTS relay_invitation_attempts (
+    pairing_id TEXT PRIMARY KEY,
+    token_hash TEXT NOT NULL UNIQUE REFERENCES relay_invitations(token_hash),
+    member TEXT,
+    peer_ip TEXT,
+    proof_hash TEXT,
+    credential_commitment TEXT,
+    cancelled INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS relay_invitation_expiry ON relay_invitations(expires_at);
 """
 
 
@@ -104,20 +115,28 @@ def issue_invitation(conn, *, ttl_seconds: float = INVITATION_TTL_SECONDS,
     """引擎签发一次性邀请（管理员动作）：返回
     {invite_token, engine_url_scheme_placeholder? 不含}——调用方组装展示。
     只存 token hash；兑换原子单次、过期失效。"""
-    token = secrets.token_urlsafe(32)
+    token, pairing_id = secrets.token_urlsafe(32), secrets.token_hex(16)
     now = _now() if now is None else now
-    conn.execute(
-        "INSERT INTO relay_invitations (token_hash, expires_at, redeemed, "
-        "created_at) VALUES (?,?,0,?)",
-        (hash_credential(token), now + ttl_seconds, now))
-    conn.commit()
-    return {"invite_token": token, "expires_at": now + ttl_seconds}
+    token_hash = hash_credential(token)
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        # Retain recent terminal results for retries without growing the bootstrap ledger indefinitely.
+        cutoff = now - INVITATION_TTL_SECONDS
+        conn.execute("DELETE FROM relay_invitation_attempts WHERE token_hash IN "
+                     "(SELECT token_hash FROM relay_invitations WHERE expires_at<?)", (cutoff,))
+        conn.execute("DELETE FROM relay_invitations WHERE expires_at<?", (cutoff,))
+        conn.execute("INSERT INTO relay_invitations (token_hash,expires_at,created_at) VALUES (?,?,?)",
+                     (token_hash, now + ttl_seconds, now))
+        conn.execute("INSERT INTO relay_invitation_attempts (pairing_id,token_hash) VALUES (?,?)",
+                     (pairing_id, token_hash))
+    return {"invite_token": token, "pairing_id": pairing_id, "expires_at": now + ttl_seconds}
 
 
 def invitation_open(conn) -> bool:
-    """Whether the administrator has issued a currently redeemable invitation."""
+    """Only live, unconsumed invitations open the unbound WS bootstrap path."""
     return conn.execute(
-        "SELECT 1 FROM relay_invitations WHERE redeemed=0 AND expires_at>=? LIMIT 1",
+        "SELECT 1 FROM relay_invitations i JOIN relay_invitation_attempts a USING(token_hash) "
+        "WHERE i.redeemed=0 AND a.cancelled=0 AND i.expires_at>=? LIMIT 1",
         (_now(),)).fetchone() is not None
 
 
@@ -127,13 +146,108 @@ def redeem_invitation(conn, token: str, member: str, *, now=None,
     if not token:
         return False
     now = _now() if now is None else now
-    cursor = conn.execute(
-        "UPDATE relay_invitations SET redeemed=1,redeemed_by=?,redeemed_at=? "
-        "WHERE token_hash=? AND redeemed=0 AND expires_at>=?",
-        (member, now, hash_credential(token), now))
+    changed = _redeem_invitation_hash(conn, hash_credential(token), member, now)
     if commit:
         conn.commit()
-    return cursor.rowcount == 1
+    return changed
+
+
+def _redeem_invitation_hash(conn, token_hash, member, now):
+    return conn.execute(
+        "UPDATE relay_invitations SET redeemed=1,redeemed_by=?,redeemed_at=? "
+        "WHERE token_hash=? AND redeemed=0 AND expires_at>=? AND NOT EXISTS "
+        "(SELECT 1 FROM relay_invitation_attempts a WHERE a.token_hash=? AND a.cancelled=1)",
+        (member, now, token_hash, now, token_hash)).rowcount == 1
+
+
+_INVITATION = ("SELECT a.*, i.expires_at, i.redeemed FROM relay_invitation_attempts a "
+               "JOIN relay_invitations i USING(token_hash) WHERE ")
+
+
+class InvitationConflict(ValueError):
+    pass
+
+
+def _invitation_view(row, now):
+    if row is None:
+        return None
+    state = ('cancelled' if row['cancelled'] else 'confirmed' if row['redeemed'] else
+             'expired' if row['expires_at'] < now else 'pending_confirmation' if row['member'] else 'waiting')
+    visible = state in ('pending_confirmation', 'confirmed')
+    return {'pairing_id': row['pairing_id'], 'state': state, 'direction': 'listen',
+            'expires_at': row['expires_at'], 'member': row['member'] if visible else None,
+            'peer_ip': row['peer_ip'] if visible else None}
+
+
+def read_invitation(conn, pairing_id):
+    row = conn.execute(_INVITATION + 'a.pairing_id=?', (pairing_id,)).fetchone()
+    view = _invitation_view(row, _now())
+    if view is not None and view['state'] == 'confirmed':
+        node = read_node(conn, view['member'])
+        view['connected'] = bool(node and node['state'] == 'online' and not node['credential_revoked'])
+    return view
+
+
+def offer_invitation(conn, token, member, peer_ip, proof, commitment):
+    """Record immutable handshake identity; the verifier grants no access until confirmation."""
+    hex64 = r'[0-9a-f]{64}'
+    if not (re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', member)
+            and re.fullmatch(hex64, proof) and re.fullmatch(hex64, commitment)):
+        return None
+    token_hash, proof_hash = hash_credential(token), hash_credential(proof)
+    with conn:
+        conn.execute('BEGIN IMMEDIATE')
+        now = _now()
+        row = conn.execute(_INVITATION + 'a.token_hash=?', (token_hash,)).fetchone()
+        if row is None or row['cancelled'] or row['expires_at'] < now:
+            return None
+        if row['member'] is not None:
+            if (row['member'] != member or row['peer_ip'] != peer_ip
+                    or not hmac.compare_digest(row['proof_hash'], proof_hash)
+                    or not hmac.compare_digest(row['credential_commitment'], commitment)):
+                return None
+            if row['redeemed']:
+                node = read_node(conn, member)
+                if not node or node['credential_revoked'] or not hmac.compare_digest(node['credential_hash'], commitment):
+                    return None
+            return _invitation_view(row, now)
+        if row['redeemed'] or remote_member_conflict(conn, member):
+            return None
+        conn.execute('UPDATE relay_invitation_attempts SET member=?,peer_ip=?,proof_hash=?,credential_commitment=? '
+                     'WHERE pairing_id=?', (member, peer_ip, proof_hash, commitment, row['pairing_id']))
+        return _invitation_view(conn.execute(_INVITATION + 'a.token_hash=?', (token_hash,)).fetchone(), now)
+
+
+def decide_invitation(conn, pairing_id, *, confirm):
+    """Serialize admin decisions and promote exactly one verified offer."""
+    with conn:
+        conn.execute('BEGIN IMMEDIATE')
+        now = _now()
+        row = conn.execute(_INVITATION + 'a.pairing_id=?', (pairing_id,)).fetchone()
+        view = _invitation_view(row, now)
+        if view is None:
+            return None
+        state = view['state']
+        if confirm:
+            if state == 'confirmed':
+                return view
+            if state != 'pending_confirmation':
+                raise InvitationConflict('邀请未到达待确认状态或已失效')
+            if remote_member_conflict(conn, row['member']):
+                raise InvitationConflict('同名成员已存在：不得覆盖或接管已有身份')
+            if not _redeem_invitation_hash(conn, row['token_hash'], row['member'], now):
+                raise InvitationConflict('邀请已使用或已失效')
+            if _register_remote_node_hash(conn, row['member'], row['credential_commitment'], direction='listen',
+                                          peer_ip=row['peer_ip'], commit=False, now=now) is None:
+                raise InvitationConflict('同名成员已存在：不得覆盖或接管已有身份')
+        else:
+            if state in ('cancelled', 'expired'):
+                return view
+            if state == 'confirmed':
+                raise InvitationConflict('节点已登记，不能取消邀请；请在节点列表管理凭据')
+            conn.execute('UPDATE relay_invitation_attempts SET cancelled=1,member=NULL,peer_ip=NULL,proof_hash=NULL, '
+                         'credential_commitment=NULL WHERE pairing_id=?', (pairing_id,))
+        return _invitation_view(conn.execute(_INVITATION + 'a.pairing_id=?', (pairing_id,)).fetchone(), now)
 
 
 def remote_member_conflict(conn, member: str) -> bool:
@@ -152,6 +266,12 @@ def register_remote_node(conn, member: str, credential: str, *, direction: str,
     """Register after authentication. The caller may include invitation redemption
     in the same transaction. A name conflict never updates an existing identity.
     """
+    return _register_remote_node_hash(conn, member, hash_credential(credential), direction=direction,
+                                      peer_ip=peer_ip, endpoint=endpoint, commit=commit, now=now)
+
+
+def _register_remote_node_hash(conn, member, credential_hash, *, direction, peer_ip='', endpoint=None,
+                               commit=True, now=None):
     if not conn.in_transaction:
         conn.execute("BEGIN IMMEDIATE")
     if remote_member_conflict(conn, member):
@@ -160,10 +280,10 @@ def register_remote_node(conn, member: str, credential: str, *, direction: str,
         return None
     now = _now() if now is None else now
     conn.execute(
-        "INSERT INTO relay_nodes (member, credential_hash, direction, dial_endpoint, "
-        "created_at, updated_at) VALUES (?,?,?,?,?,?)",
-        (member, hash_credential(credential), direction,
-         json.dumps(endpoint) if endpoint else "", now, now))
+        "INSERT INTO relay_nodes (member, credential_hash, direction, dial_endpoint, mcp_config, "
+        "created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+        (member, credential_hash, direction, json.dumps(endpoint) if endpoint else "",
+         '{"_auto_from_snapshot":true}', now, now))
     if peer_ip:
         from . import ip_allowlist
         if not ip_allowlist._is_loopback(peer_ip):
@@ -600,6 +720,36 @@ def reconcile_switch_resume(conn, member: str, *, now=None, client=None) -> dict
     return {"applied": applied, "kept": kept, "reconciled": reconciled}
 
 
+def _reported_mcp_config(conn, node, report, engine_url):
+    """Use an authenticated first-join snapshot only on that remote runtime."""
+    from pathlib import PurePosixPath, PureWindowsPath
+    from urllib.parse import urlsplit
+    from . import config, ip_allowlist, listen_control
+    from .hermes_gateway_client import GatewayRefusal
+
+    if (node['state'] != 'online' or node['credential_revoked'] or not report
+            or report.get('generation') != node['generation']):
+        raise GatewayRefusal('mcp_snapshot_unavailable')
+    command, entry = report.get('mcp_python'), report.get('mcp_entry')
+    for path in (command, entry):
+        if (not isinstance(path, str) or not 0 < len(path) <= 4096 or any(ord(c) < 32 for c in path)
+                or not (PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute())):
+            raise GatewayRefusal('mcp_config_missing')
+    if node['direction'] == 'dial':
+        port = report.get('proxy_port')
+        if type(port) is not int or not 0 < port < 65536:
+            raise GatewayRefusal('mcp_config_missing')
+        url = f'http://127.0.0.1:{port}'
+    else:
+        url = engine_url
+        host = urlsplit(url).hostname
+        address = listen_control.read_config(conn) if host and (host == 'localhost' or ip_allowlist._is_loopback(host)) else None
+        if address:
+            host = f'[{address}]' if ':' in address else address
+            url = f'http://{host}:{config.port()}'
+    return {'command': command, 'args': [entry], 'env': {'GROUP_ENGINE_URL': url}}
+
+
 def merge_mcp_spec(conn, member: str, spec: dict, *, engine_url: str = "",
                    fetch_report=None) -> dict:
     """远程节点的随包 MCP 配置合并（manager node1977 ③ + node1981 ③）：
@@ -618,6 +768,7 @@ def merge_mcp_spec(conn, member: str, spec: dict, *, engine_url: str = "",
     row = read_node(conn, member)
     if row is None:
         return spec
+    report = None
     if fetch_report is not None:
         report = fetch_report()
         if not report or not report.get("mcp_fingerprint"):
@@ -646,8 +797,15 @@ def merge_mcp_spec(conn, member: str, spec: dict, *, engine_url: str = "",
     node = read_node(conn, member)
     if node["expected_mcp_sha"] and node["mcp_fingerprint"] != node["expected_mcp_sha"]:
         raise GatewayRefusal("mcp_package_mismatch")
-    if not remote.get("command"):
-        raise GatewayRefusal("mcp_config_missing")
+    if not remote.get('command'):
+        try:
+            stored = json.loads(node['mcp_config'] or '{}')
+        except (TypeError, ValueError):
+            stored = None
+        if isinstance(stored, dict) and stored.get('_auto_from_snapshot') is True:
+            remote = _reported_mcp_config(conn, node, report, engine_url)
+        else:
+            raise GatewayRefusal('mcp_config_missing')
     merged = {**spec, **{key: value for key, value in remote.items()
                         if key in ("command", "args")}}
     merged_env = dict(remote.get("env") or {})

@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import secrets
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -43,11 +44,22 @@ def _load_state() -> dict:
 
 
 def _save_state(state: dict) -> None:
-    _state_dir().mkdir(parents=True, exist_ok=True)
     path = _state_path()
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, encoding='utf-8', mode='w', delete=False) as handle:
+        tmp = Path(handle.name)
+        try:
+            json.dump(state, handle, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        except BaseException:
+            handle.close()
+            tmp.unlink(missing_ok=True)
+            raise
+    try:
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def issue_pairing(*, member: str, advertise: str, port: int, fingerprint: str,
@@ -166,27 +178,43 @@ def pairing_metadata() -> dict:
         }
 
 
-def save_register_credential(member: str, credential: str) -> None:
-    """req#175 邀请兑换后：引擎 hello_ok 下发的节点持久凭据落盘
-    （state/register.json），重连不再用一次性邀请。只存 hash 之外的
-    明文本地文件（0600 语义由目录权限继承），不落日志。"""
+def register_offer(member: str, engine_url: str, invite: str) -> tuple[str, str]:
+    """Derive separate proof and credential from a local seed scoped to one invitation."""
+    scope = [member, engine_url, hashlib.sha256(invite.encode()).hexdigest()]
     with _LOCK:
         state = _load_state()
-        state["register"] = {
-            "member": member,
-            "credential": credential,
-            "saved_at": time.time(),
-        }
+        pending = state.get('register_offer') or {}
+        if pending.get('scope') != scope:
+            pending = {'scope': scope, 'seed': secrets.token_hex(32)}
+            state['register_offer'] = pending
+            _save_state(state)
+        seed = bytes.fromhex(pending['seed'])
+    return (hmac.new(seed, b'relay-join-proof-v1', 'sha256').hexdigest(),
+            hmac.new(seed, b'relay-node-key-v1', 'sha256').hexdigest())
+
+
+def save_register_credential(member: str, credential: str, *, engine_url: str = '', invite: str = '') -> None:
+    """Persist confirmed credentials before opening a normal authenticated link."""
+    with _LOCK:
+        state = _load_state()
+        state['register'] = {'member': member, 'credential': credential, 'saved_at': time.time()}
+        if invite:
+            scope = [member, engine_url, hashlib.sha256(invite.encode()).hexdigest()]
+            state['register']['scope'] = scope
+            if (state.get('register_offer') or {}).get('scope') == scope:
+                state.pop('register_offer')
         _save_state(state)
     logger.info("bot-group relay register credential saved member=%s", member)
 
 
-def load_register_credential(member: str) -> str:
-    """读回邀请兑换后的持久凭据（member 匹配才返回）。"""
+def load_register_credential(member: str, *, engine_url: str = '', invite: str = '') -> str:
+    """A new invitation cannot silently reuse credentials for an earlier one."""
     with _LOCK:
         saved = _load_state().get("register") or {}
         if saved.get("member") == member:
-            return saved.get("credential") or ""
+            scope = [member, engine_url, hashlib.sha256(invite.encode()).hexdigest()]
+            if not invite or saved.get('scope') == scope:
+                return saved.get("credential") or ""
     return ""
 
 

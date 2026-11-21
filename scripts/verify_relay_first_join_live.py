@@ -159,6 +159,19 @@ def _run_first_join_inner(base: str, evidence: Path, findings: dict,
             home=os.environ.get("TMPDIR", "."))
         client_a = relay_mod.RelayClient(cfg)
         client_a.start()
+        pairing_path = f"/relay/invitations/{issued['pairing_id']}"
+        def pending():
+            with closing(db.get_connection()) as conn:
+                return relay.read_invitation(conn, issued['pairing_id'])['state'] == 'pending_confirmation'
+        if not _wait(pending, timeout=10):
+            client_a.stop()
+            findings['failures'].append('远端核验后未进入待确认')
+            return
+        status, _ = _admin_post(base, pairing_path + '/confirm', client=None)
+        if status != 200:
+            client_a.stop()
+            findings['failures'].append(f'管理员确认失败: {status}')
+            return
         online_a = _wait(lambda: _node_online("remoteA"), timeout=20)
     if not online_a:
         client_a.stop()

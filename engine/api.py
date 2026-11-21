@@ -366,10 +366,51 @@ def relay_invitation_issue(identity=Depends(_resolve_identity)):
         conn.close()
     address = listen_address or "127.0.0.1"
     host = f'[{address}]' if ':' in address else address
-    return {'invite_token': issued['invite_token'],
-            'expires_at': issued['expires_at'],
-            'engine_url': f"http://{host}:{config.port()}",
-            'listen_configured': bool(listen_address)}
+    return JSONResponse({'invite_token': issued['invite_token'], 'pairing_id': issued['pairing_id'],
+                         'expires_at': issued['expires_at'], 'engine_url': f"http://{host}:{config.port()}",
+                         'listen_configured': bool(listen_address)}, headers={'Cache-Control': 'no-store'})
+
+
+@router_api.get('/relay/invitations/{pairing_id}')
+def relay_invitation_status(pairing_id: str, identity=Depends(_resolve_identity)):
+    """Read a verified pairing attempt, not its authentication material."""
+    _admin_only(identity, 'relay 邀请状态仅限管理员')
+    from . import relay
+    conn = db.get_connection()
+    try:
+        result = relay.read_invitation(conn, pairing_id)
+    finally:
+        conn.close()
+    if result is None:
+        raise HTTPException(404, '邀请不存在')
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
+def _relay_invitation_decision(pairing_id, identity, *, confirm):
+    _admin_only(identity, 'relay 邀请操作仅限管理员')
+    from . import relay
+    conn = db.get_connection()
+    try:
+        result = relay.decide_invitation(conn, pairing_id, confirm=confirm)
+    except relay.InvitationConflict as exc:
+        raise HTTPException(409, str(exc)) from None
+    finally:
+        conn.close()
+    if result is None:
+        raise HTTPException(404, '邀请不存在')
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
+@router_api.post('/relay/invitations/{pairing_id}/confirm')
+def relay_invitation_confirm(pairing_id: str, identity=Depends(_resolve_identity)):
+    """Register the immutable verified offer selected by the administrator."""
+    return _relay_invitation_decision(pairing_id, identity, confirm=True)
+
+
+@router_api.post('/relay/invitations/{pairing_id}/cancel')
+def relay_invitation_cancel(pairing_id: str, identity=Depends(_resolve_identity)):
+    """Cancel only an unconfirmed offer; never remove an established node."""
+    return _relay_invitation_decision(pairing_id, identity, confirm=False)
 
 
 class _PairingImportBody(BaseModel):
