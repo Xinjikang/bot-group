@@ -1,32 +1,30 @@
-# ECS 安装 bot-group relay 插件（req#168）
+# 在 ECS 安装并接入远程 Hermes
 
-ECS 上的 Hermes gateway 通过 bot-group relay 插件接入 bot-group 引擎：插件随 gateway
-加载，持一条主动出站 WSS 连引擎 relay 入口，把引擎的 JSON-RPC 帧转发到本机
-gateway `/api/ws`，并把本机事件帧回传引擎。插件职责收窄为「传令」——不解析会话语义、
-不复制引擎逻辑。
+在目标 Hermes profile 安装 relay 插件后，管理员可从办公机的「设置 → 远程节点」配对。按两台机器之间可达的网络方向选择由哪一端发起连接。远端成员名由插件从当前 profile 读取。
 
 ## 1. 前置
 
-- ECS 上 Hermes gateway 已安装且常驻运行（systemd 托管），`$HERMES_HOME` 已确定；
-- 办公机引擎与云端插件均支持首次配对，管理员可打开引擎设置中的“远程节点”。
-- 分发包 `bot-group-relay-<version>.tar.gz` 与主包同 tag 构建（`engine/maintenance/make_release.py`
-  产出，SHA256 见同目录 `SHA256SUMS`）。
+- ECS 已安装 Hermes gateway 和支持 `venv` 的 Python 3。确认当前 Hermes CLI 和待重启的网关使用同一 profile，并将 `HERMES_HOME` 指向该 profile 的目录。
+- 办公机引擎和插件都需要包含首次接入功能。办公机更新源码后由管理员重启引擎、刷新页面。
+- 将交付的插件归档和配套的 `SHA256SUMS` 放在同一目录。开发构建与正式发布包可能使用同一版本号，选择制品时同时核对来源提交和校验值。
 
 ## 2. 安装
 
-```bash
-mkdir -p "$HERMES_HOME/plugins/bot-group-relay"
-cd "$HERMES_HOME/plugins"
-curl -O <资产URL>/bot-group-relay-<version>.tar.gz
-tar -xzf bot-group-relay-<version>.tar.gz -C bot-group-relay   # 解到插件目录
-cd bot-group-relay
-./install.sh    # 建独立 venv（python3 -m venv venv）并按 requirements.lock 装依赖
-hermes plugins enable bot-group-relay
-```
+在 ECS 的制品目录运行以下命令，将 `archive` 设为实际交付的文件名。校验通过后再解包、安装随包 MCP 的依赖并启用插件。
 
-安装脚本只建 venv + 按锁文件安装随包 MCP 依赖——不 clone 仓库、不手动 pip。
-插件本体（转发代码）跑在 gateway 进程内，只用标准库与 gateway 已带的 `websockets`，
-无额外安装。不用 Hermes 自带 venv（Hermes venv 无 mcp 包）。
+```bash
+(
+  set -eu
+  archive=bot-group-relay-v0.2.16.tar.gz
+  plugin_dir="${HERMES_HOME:?请设置目标 profile 的 HERMES_HOME}/plugins/bot-group-relay"
+  expected=$(awk -v file="$archive" '$2 == file {print $1}' SHA256SUMS)
+  printf '%s  %s\n' "$expected" "$archive" | sha256sum --check -
+  mkdir -p "$plugin_dir"
+  tar -xzf "$archive" -C "$plugin_dir"
+  "$plugin_dir/install.sh"
+  hermes plugins enable bot-group-relay
+)
+```
 
 ## 3. 配置
 
@@ -37,11 +35,14 @@ hermes plugins enable bot-group-relay
 
 CLI 的连接随前台命令运行。常驻 gateway 插件使用该 profile 的配置，首次主动连接办公机可配置 `BOT_GROUP_ENGINE_URL` 和一次性 `BOT_GROUP_RELAY_INVITE`。项目成员资格单独管理，节点卡中的在线状态表示连接已建立。
 
-使用已有节点连接凭据的部署可保留以下配置：
+**配对后验证。** 在节点卡片中检查当前方向和在线状态。需要切换时，打开该卡片的“切换方向”，依次检查“已监听”“双方已认证”“MCP 已连通”。最后一项通过当前连接实际读取项目成员。要验证群内派发，先将成员加入目标项目，再在话题点名，核对回复人和回复话题。
+
+常驻网关的连接配置如下。
 
 | 配置项 | 说明 |
 | --- | --- |
 | `BOT_GROUP_ENGINE_URL` | 引擎地址（`http(s)://host:port`，不带路径） |
+| `BOT_GROUP_RELAY_INVITE` | 首次由云端连本机时使用的一次性邀请，与引擎地址一同配置后即可启动配对 |
 | `BOT_GROUP_RELAY_MEMBER` | 引擎节点注册的成员名（通常即 profile 名） |
 | `BOT_GROUP_RELAY_CREDENTIAL` | 节点连接凭据（引擎注册时下发，只存本机） |
 | `BOT_GROUP_MCP_PYTHON` | 可选：随包 MCP 解释器绝对路径（默认自动探测 `插件目录/venv/bin/python`） |
@@ -95,6 +96,8 @@ bot-group-relay/
 
 | 现象 | 处置 |
 | --- | --- |
+| 页面提示成员名已被使用 | 对照已有节点和 ECS 当前 profile。已有节点在原卡片管理；新增独立节点使用另一个 profile 名。 |
+| 页面提示证书核验失败或配对过期 | 证书失败时，从目标 profile 重新取得配对链接并核对指纹。过期时重新核验仍有效的链接，或在“云端连本机”重新生成邀请。 |
 | 握手被拒 4001 | 凭据错或已吊销：引擎 `POST /relay/nodes/{member}` 重新注册/下发 |
 | 握手被拒 4002 | 随包 MCP 摘要与引擎节点配置 `_package_sha` 不符：升级插件包或更新节点配置 |
 | 握手被拒 4003 | 插件包版本与引擎不配套：使用与引擎同 tag 的分发包 |

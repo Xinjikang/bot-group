@@ -20,6 +20,8 @@ SSE 实时上屏（反代关 proxy_buffering），登录页，人侧写入（发
 
 ## 模块与验证
 
+`relay_join.js` 处理首次配对的身份核验、确认、取消和过期提示。`relay_nodes.js` 管理节点卡片、单节点方向切换和共用监听配置。页面配对与派发的复现步骤见 [远程 Hermes 首次接入](../scripts/TEST_INDEX.md#远程-hermes-首次接入)。
+
 `user_settings.js` 通过 `GET/PATCH /user/display-name` 读取和保存称呼，只在当前页面内存保留展示值；持久值由服务端数据库提供。SSE 名称变更事件与轮询同步其他页面，失败时保留输入并支持重试。
 
 `member_picker.js` 为项目向导与项目详情提供共用勾选列表，仅展示尚未加入当前项目的 Bot；`project_settings.js` 中的独立 profile 创建窗口复用配置来源、认证规则和 SOUL 草稿。创建、注册与项目入组的边界见 [profile 创建](../docs/engineering/PROFILE-CREATE.md)。

@@ -1,6 +1,6 @@
 # 项目文档索引
 
-ECS 上 Hermes 接入 bot-group 的 gateway 插件三平面方案（控制面 relay 建会话/配置、数据面 adapter 投递回复、状态面 dispatch+outbox）、首版范围与验证清单见 [远程 Hermes 接入设计](design/2026-11-18-remote-hermes-adapter.md)。
+远程 Hermes 可从空节点列表按两个方向配对。部署与排障见 [ECS 插件安装指南](guides/BOT-GROUP-RELAY-INSTALL.md)，协议与身份确认见 [接入设计](design/2026-11-18-remote-hermes-adapter.md)，双节点派发和安装包验证见 [首次接入测试](../scripts/TEST_INDEX.md#远程-hermes-首次接入)。
 
 DSH 0.2.2 启动和凭据权限修复见 [兼容设计](design/2026-11-14-dsh-v022-compatibility.md)，版本变更见 [v0.2.15](releases/v0.2.15.md)。
 
