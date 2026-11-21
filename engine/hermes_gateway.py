@@ -529,6 +529,8 @@ def _finish(conn, row, client):
             retried = startup.requeue(conn, row)
         wake._intentional_stops.discard(row['session'])
     events.bus.publish('wake.finished', {'session': row['session'], 'wake_started_at': row['started_at'], 'ended_at': row['ended_at']})
+    if unaccepted and cue['notice_message_id'] is not None:
+        hermes_task_recovery.publish_notice(row['project'], (cue['notice_message_id'], False))
     advance = (row['cancel_reason'] != 'superseded' and hermes_delegations.owned(conn, row)
                and startup.same_turn(conn, row))
     if not recovery:

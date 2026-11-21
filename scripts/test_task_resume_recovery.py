@@ -184,7 +184,8 @@ class ResumeRecoveryTests(unittest.TestCase):
         self.assertIsNotNone(notice)
         self.assertEqual(self.current()['state'], 'terminal')
         row = self.conn.execute('SELECT content FROM messages WHERE id=?', (notice,)).fetchone()
-        self.assertIn(f'/release-recovery {notice}', row['content'])
+        self.assertIn('未在原任务追加节点', row['content'])
+        self.assertNotIn('/release-recovery', row['content'])
         ledger.apply_receipt(self.conn, self.execution, terminal)
         db.recover_on_startup(self.conn)
         self.assertEqual(self.cue()['notice_message_id'], notice)
@@ -222,6 +223,50 @@ class ResumeRecoveryTests(unittest.TestCase):
         self.assertEqual(self.cue()['state'], 'unaccepted')
         self.assertEqual(self.conn.execute('SELECT status FROM wake_jobs WHERE id=?', (self.job_id,)).fetchone()[0], 'cancelled')
         self.assertEqual(self.conn.execute('SELECT next_bot FROM tasks WHERE id=991').fetchone()[0], 'architect')
+
+    def test_notice_transition_keeps_original_message_and_syncs_state_after_watermark(self):
+        from engine import events
+        self.reserve()
+        client = Mock()
+        unknown = self.receipt('unknown')
+        terminal = {**self.receipt('terminal'), 'outcome': 'completed'}
+        client.rpc.side_effect = [self.snapshot(), self.receipt('queued'), self.snapshot([unknown]),
+                                  self.snapshot(), terminal]
+        with patch.object(events.bus, 'publish') as publish, \
+                patch.object(session_fixture.auth, 'configured', return_value=False):
+            self.assertFalse(self.poll(client))
+            self.assertFalse(self.poll(client))
+            mid = self.cue()['notice_message_id']
+            api = self.fixture.client
+            original = api.get('/messages', params={'project': 'alpha'}).json()['messages'][-1]
+            release = {'project': 'alpha', 'sender': 'user', 'text': f'/release-recovery {mid}'}
+            self.assertEqual(api.post('/msg', json=release).status_code, 400)
+            publish.reset_mock()
+            self.assertTrue(self.poll(client))
+            self.assertEqual(api.get('/messages', params={'project': 'alpha'}).json()['messages'][-1], original)
+            params = {'project': 'alpha', 'since_id': mid, 'recovery_notices': True}
+            delta = api.get('/messages', params=params).json()
+            self.assertEqual(delta['messages'], [])
+            self.assertEqual(delta['recovery_notices'], {str(mid): 'cleaning'})
+            publish.assert_any_call('recovery.notice.changed', {'project': 'alpha', 'message_id': mid})
+            self.assertFalse(any(c.args[0] == 'message.new' for c in publish.call_args_list))
+            self.assertEqual(api.post('/msg', json=release).status_code, 400)
+            self.assertTrue(gateway._finish(self.conn, self.current(), client))
+            self.assertEqual(api.get('/messages', params=params).json()['recovery_notices'], {str(mid): 'releasable'})
+            self.assertEqual(api.get('/messages', params={**params, 'project': 'beta'}).json()['recovery_notices'], {})
+            publish.reset_mock()
+            ledger.apply_receipt(self.conn, self.execution, terminal)
+            ledger.apply_receipt(self.conn, self.execution, unknown)
+            db.recover_on_startup(self.conn)
+            publish.assert_not_called()
+            self.assertEqual(api.get('/messages', params=params).json()['recovery_notices'], {str(mid): 'releasable'})
+            self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM inbox WHERE message_id=? AND profile='user' AND status='pending'", (mid,)).fetchone()[0], 1)
+            self.assertTrue(api.post('/msg', json=release).json().get('ok'))
+            self.assertTrue(api.post('/msg', json=release).json().get('ok'))
+            self.assertEqual(api.get('/messages', params=params).json()['recovery_notices'], {str(mid): 'released'})
+            self.assertEqual(api.get('/messages', params={'project': 'alpha'}).json()['messages'][-1], original)
+            self.assertEqual(self.conn.execute("SELECT status FROM inbox WHERE message_id=? AND profile='user'", (mid,)).fetchone()[0], 'seen')
+        self.assertEqual(sum(c.args == ('prompt.submit',) for c in client.rpc.call_args_list), 1)
 
     def test_unknown_preserves_wake_and_notifies_user_once_across_restart(self):
         cue = self.reserve()

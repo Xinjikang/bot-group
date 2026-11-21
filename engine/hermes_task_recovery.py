@@ -29,6 +29,8 @@ CREATE INDEX IF NOT EXISTS hermes_task_recovery_admission
 ON hermes_task_recoveries(execution_id,admission_id) WHERE state IN ('started','accepted','unaccepted');
 CREATE INDEX IF NOT EXISTS hermes_task_recovery_held
 ON hermes_task_recoveries(job_id) WHERE state='unaccepted';
+CREATE INDEX IF NOT EXISTS hermes_task_recovery_notice
+ON hermes_task_recoveries(notice_message_id) WHERE notice_message_id IS NOT NULL;
 """
 
 
@@ -158,35 +160,53 @@ def mark_accepted(conn, cue):
 
 
 def _notice(conn, row, cue, *, ended):
-    """Maintain one actionable user inbox item for this recovery round."""
+    """Append a notice once; subsequent actions belong to the recovery state."""
     from . import db
     mid = cue['notice_message_id']
-    if mid is not None and not ended:
-        return None
-    text = f"任务 #{cue['task_id']} 自动续办受阻："
-    if not ended:
-        text += ('Hermes 无法确认旧执行的结果（unknown）。'
-                 '请先在 Hermes 中核对旧执行结果和后台进程，再处理该执行；不要重跑原命令。')
-    if mid is None:
-        mid = conn.execute("INSERT INTO messages(project,ts,sender,sender_type,content,mentions,need_reply) "
-                           "VALUES(?,?,'engine','engine',?,'[\"user\"]',0)",
-                           (row['project'], db.now_iso(), text)).lastrowid
-        conn.execute("INSERT INTO inbox(message_id,profile,status) VALUES(?,'user','pending')", (mid,))
-        conn.execute('UPDATE hermes_task_recoveries SET notice_message_id=? WHERE request_id=?',
-                     (mid, cue['request_id']))
-    if ended:
-        text += ('本轮已结束，但未在原任务追加节点。请先核对 Hermes 结果和后台进程；'
-                 f'然后在本项目主消息框发送 /release-recovery {mid} 暂挂原任务并解除占用。'
-                 '需要续办时可从任务侧栏恢复；不要重跑原命令。')
-        conn.execute('UPDATE messages SET content=? WHERE id=?', (text, mid))
-    return mid
-
-
-def publish_notice(project, mid):
     if mid is not None:
-        from . import events
-        events.bus.publish('message.new', {'message_id': mid, 'sender': 'engine', 'thread_id': None,
-                                           'project': project})
+        return (mid, False) if ended else None
+    reason = ('本轮已结束，但未在原任务追加节点。' if ended
+              else 'Hermes 无法确认旧执行的结果（unknown）。')
+    text = (f"任务 #{cue['task_id']} 自动续办受阻：{reason}"
+            '请先在 Hermes 中核对旧执行结果和后台进程；不要重跑原命令。')
+    mid = conn.execute("INSERT INTO messages(project,ts,sender,sender_type,content,mentions,need_reply) "
+                       "VALUES(?,?,'engine','engine',?,'[\"user\"]',0)",
+                       (row['project'], db.now_iso(), text)).lastrowid
+    conn.execute("INSERT INTO inbox(message_id,profile,status) VALUES(?,'user','pending')", (mid,))
+    conn.execute('UPDATE hermes_task_recoveries SET notice_message_id=? WHERE request_id=?',
+                 (mid, cue['request_id']))
+    return mid, True
+
+
+def publish_notice(project, notice):
+    if notice is None:
+        return
+    from . import events
+    mid, added = notice
+    data = {'project': project, 'message_id': mid}
+    if added:
+        events.bus.publish('message.new', {**data, 'sender': 'engine', 'thread_id': None})
+    else:
+        # Invalidate only: a delayed event must never carry stale state into the UI.
+        events.bus.publish('recovery.notice.changed', data)
+
+
+def _release_ready(cue):
+    return (cue['execution_state'] == 'terminal' and not cue['cleanup_pending']
+            and cue['admission_id'] and cue['admission_id'] == cue['latest_admission'])
+
+
+def notice_states(conn, project):
+    """Current state of notified rounds, keyed by immutable message ID, not the timeline cursor."""
+    rows = conn.execute("SELECT r.notice_message_id, r.state, r.admission_id, e.state AS execution_state, "
+                        "e.cleanup_pending, e.admission_id AS latest_admission FROM hermes_task_recoveries r "
+                        "JOIN hermes_executions e ON e.execution_id=r.execution_id "
+                        "JOIN wake_jobs j ON j.id=r.job_id "
+                        "WHERE r.notice_message_id IS NOT NULL AND e.kind='work' AND e.thread_id IS NULL "
+                        "AND (r.state='released' OR (r.state='unaccepted' AND j.status='queued')) "
+                        "AND (? IS NULL OR e.project=?)", (project, project))
+    return {r['notice_message_id']: ('released' if r['state'] == 'released' else
+                                     'releasable' if _release_ready(r) else 'cleaning') for r in rows}
 
 
 def mark_unaccepted(conn, row, cue):
@@ -225,8 +245,7 @@ def release(conn, project, notice_id):
         tid = cue['task_id']
         if cue['state'] == 'released':
             return {'task_id': tid, 'notice_message_id': notice_id, 'detail': f'任务 #{tid} 的待核对催办已解除。'}
-        if (cue['execution_state'] != 'terminal' or cue['cleanup_pending'] or not cue['admission_id']
-                or cue['admission_id'] != cue['latest_admission']):
+        if not _release_ready(cue):
             raise ValueError('本次执行结束或清理尚未确认，暂不能解除；请核对 Hermes 后重试')
         changed = conn.execute("UPDATE wake_jobs SET status='cancelled',ended_at=?,detail='Unaccepted recovery released by user' "
                                "WHERE id=? AND profile=? AND project=? AND kind='work' AND status='queued'",
@@ -246,7 +265,10 @@ def release(conn, project, notice_id):
                                 task_id=tid, detail=f'manual: release unaccepted recovery notice {notice_id}')
             taskpool._set_requirement_updated(conn, task['requirement_id'])
         conn.execute("UPDATE hermes_task_recoveries SET state='released' WHERE request_id=?", (cue['request_id'],))
+        conn.execute("UPDATE inbox SET status='seen',seen_at=? WHERE message_id=? AND profile='user' AND status='pending'",
+                     (db.now_iso(), notice_id))
         conn.commit()
+        publish_notice(project, (notice_id, False))
         detail = f'任务 #{tid} 的待核对催办已解除，未重投。'
         if paused:
             detail += '原任务已暂挂；需要续办时，可在任务侧栏恢复。'

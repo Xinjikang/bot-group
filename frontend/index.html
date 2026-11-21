@@ -260,6 +260,7 @@ body::before{
 .msg-content .mention{color:var(--cyan);font-weight:600}
 .msg-closed-hl .msg-content{border-left:3px solid var(--ok);background:rgba(75,200,138,.07)}
 /* req#41 task#78：撤回态样式 */
+.recovery-notice-state{margin:4px 0 0;padding:4px 8px;border-left:2px solid var(--border);font-size:12px;color:var(--fg-2);overflow-wrap:anywhere}
 .msg-retracted .msg-content{opacity:.55;font-style:italic;border-left:3px solid var(--fg-3)}
 .tag-retract{
   font-size:10px;color:var(--fg-3);border:1px solid var(--border);
@@ -1533,6 +1534,7 @@ const S = {
   showHidden: false,      // 需求1.3：隐藏话题是否展开显示
   showArchived: false,    // req#76：任务面板「显示已归档」开关（开后拉全部需求含已归档）
   msgs: [],               // 当前视图消息
+  recoveryNotices: {},    // 独立于消息水位的续办提醒状态
   msgCache: {},           // thread_id -> messages（增量用）
   lastMsgId: 0,
   messageView: 0,
@@ -1625,7 +1627,10 @@ async function connectSSE() {
   if (S.restarting || !S.isUserIdentity || S.sseAttempt !== attempt) return;
   const es = new EventSource("/events");
   S.es = es;
-  es.onopen = () => { setConn("connected"); loadThinking(); };
+  es.onopen = () => {
+    setConn("connected"); loadThinking();
+    if (!S.currentThread) refreshAfterMessageChange();
+  };
   es.onerror = () => setConn(es.readyState === EventSource.CLOSED ? "disconnected" : "connecting", "引擎断线重连中…");
   es.onmessage = (ev) => {
     let evt; try { evt = JSON.parse(ev.data); } catch { return; }
@@ -1670,6 +1675,11 @@ function handleEvent(evt) {
       }
       break;
     }
+    case "recovery.notice.changed":
+      if (!S.currentThread && (!S.currentProject || S.currentProject === evt.data?.project)) {
+        refreshAfterMessageChange(); loadInboxSummary();
+      }
+      break;
     case "thread.created":
     case "thread.closed":
     case "thread.updated": loadThreads(); break;
@@ -2343,9 +2353,11 @@ async function refreshMessages() {
     ? `/messages?thread_id=${S.currentThread}&since_id=0`
     : initial ? '/messages?limit=100' : `/messages?since_id=${S.lastMsgId}`;
   try {
-    const r = await api(messageProjectUrl(url));
+    const recovery = !S.currentThread && S.isUserIdentity;
+    const r = await api(messageProjectUrl(recovery ? `${url}&recovery_notices=1` : url));
     if (view !== S.messageView) return;
     const incoming = r.messages || [];
+    if (recovery) S.recoveryNotices = r.recovery_notices || {};
     if (S.currentThread) {
       S.msgs = incoming;
     } else {
@@ -2397,6 +2409,7 @@ async function markVisibleThreadRead(threadId, messages, view) {
 function resetMessageWindow() {
   globalThis.messageNavigation?.reset();
   S.messageView++;
+  S.recoveryNotices = {};
   S.messageRefreshPending = null;
   S.messagesReady = false;
   S.hasOlderMessages = false;
@@ -2572,7 +2585,7 @@ function renderSignature() {
     S.userDisplayName,
     S.hasOlderMessages, S.historyRequest === S.messageView, S.historyError,
     // Message fields can change without changing their stable DOM identity.
-    JSON.stringify(S.msgs),
+    JSON.stringify(S.msgs), JSON.stringify(S.recoveryNotices),
     // 话题可见性/状态（隐藏/收口/关闭影响分组与结论行）
     S.threads.filter(t => !t.hidden || S.showHidden)
       .map(t => [t.id, t.status, t.first_message_id ?? "", t.title,
@@ -3057,6 +3070,17 @@ function renderMsg(m, thinking = []) {
   const meta = div.querySelector(".msg-meta");
   const messageBody = div.querySelector(".msg-body");
   const contentNode = div.querySelector(".msg-content");
+  const state = S.recoveryNotices?.[m.id];
+  if (state) {
+    const action = document.createElement('div');
+    action.className = 'recovery-notice-state';
+    action.setAttribute('role', 'status');
+    action.textContent = state === 'released' ? '恢复状态：已解除占用，未重投原输入。'
+      : state === 'releasable'
+        ? `恢复状态：本轮已结束，未在原任务追加节点。核对结果和后台进程后，在本项目主消息框发送 /release-recovery ${m.id} 解除占用。需要续办时，可从任务侧栏恢复。`
+        : '恢复状态：本轮已结束，未在原任务追加节点。清理尚未确认，暂不能解除。';
+    contentNode.after(action);
+  }
   contentNode.messageContentSignature = JSON.stringify([m.content, m.attachments || [], mentions.map(NAME_OF)]);
   const retractBtn = div.querySelector(".msg-retract-btn");
   if (retractBtn) retractBtn.addEventListener("click", () => retractMessage(m.id, retractBtn));

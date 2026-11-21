@@ -2647,9 +2647,14 @@ def post_message_retract(message_id: int, body: dict[str, Any],
 def get_messages(since_id: int = 0, thread_id: Optional[int] = None,
                  before_id: Optional[int] = None,
                  limit: Optional[int] = Query(default=None, ge=1, le=500),
-                 project: Optional[str] = None):
+                 project: Optional[str] = None, recovery_notices: bool = False):
     conn = _conn()
     try:
+        # Notice state is separate from the append-only timeline and its cursor.
+        projection = {}
+        if recovery_notices and thread_id is None:
+            from . import hermes_task_recovery
+            projection['recovery_notices'] = hermes_task_recovery.notice_states(conn, project)
         if limit is not None or project is not None:
             clauses, params = ["id > ?"], [since_id]
             if project is not None:
@@ -2674,7 +2679,7 @@ def get_messages(since_id: int = 0, thread_id: Optional[int] = None,
             if descending:
                 rows.reverse()
             return {"messages": attachments.enrich(conn, rows), "count": len(rows),
-                    "has_more": has_more}
+                    "has_more": has_more, **projection}
         if thread_id is not None:
             rows = conn.execute(
                 "SELECT * FROM messages WHERE thread_id = ? AND id > ? ORDER BY id ASC",
@@ -2684,7 +2689,7 @@ def get_messages(since_id: int = 0, thread_id: Optional[int] = None,
             rows = conn.execute(
                 "SELECT * FROM messages WHERE id > ? ORDER BY id ASC", (since_id,)
             ).fetchall()
-        return {"messages": attachments.enrich(conn, rows), "count": len(rows)}
+        return {"messages": attachments.enrich(conn, rows), "count": len(rows), **projection}
     finally:
         conn.close()
 

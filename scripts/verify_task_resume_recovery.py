@@ -122,7 +122,11 @@ def browser_notice(args, url, notice, *, release=None):
                       'messages_status': response.value.status}
             if release:
                 command = f'/release-recovery {notice}'
-                assert all(part in text for part in ('#991', '未在原任务追加节点', command)), text
+                state = page.locator(f'[data-message-id="{notice}"] .recovery-notice-state')
+                state.wait_for(state='visible')
+                assert all(part in text for part in ('#991', '未在原任务追加节点')), text
+                assert command in state.inner_text(), state.inner_text()
+                result['ui_recovery_state'] = state.inner_text()
                 page.screenshot(path=str(args.evidence / f'early-{release}-notice.png'))
                 composer = page.locator('#composer-text')
                 composer.fill(command)

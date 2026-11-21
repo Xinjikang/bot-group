@@ -68,12 +68,24 @@ def server_parameters(path, url):
 
 
 @contextmanager
-def isolated_api(*, frontend=False, port=0):
+def isolated_api(*, frontend=False, port=0, sse=False):
     """Only API routes: no queue/scanner workers and no real bot spawning."""
+    import asyncio
+    from contextlib import asynccontextmanager
     from fastapi import FastAPI
     import uvicorn
-    from engine import api
-    app = FastAPI()
+    from engine import api, events
+
+    @asynccontextmanager
+    async def lifespan(app):
+        previous = events._loop
+        events.set_loop(asyncio.get_running_loop())
+        try:
+            yield
+        finally:
+            events.set_loop(previous)
+
+    app = FastAPI(lifespan=lifespan if sse else None)
     app.include_router(api.router_api)
     if frontend:
         from fastapi.staticfiles import StaticFiles
