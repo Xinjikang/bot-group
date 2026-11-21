@@ -2152,6 +2152,36 @@ class FirstJoinTests(unittest.TestCase):
             self.assertEqual(ip_allowlist.list_bindings(conn), [{'member': 'remoteA', 'ips': ['192.0.2.27']}])
             self.assertEqual(conn.execute('SELECT SUM(redeemed) FROM relay_invitations').fetchone()[0], 1)
 
+    def test_new_invitation_with_stale_environment_credential(self):
+        from websockets.sync.client import connect
+
+        status, issued = self._admin_post('/relay/invitations')
+        self.assertEqual(status, 200)
+        config = self.plg['config']
+        pairing = self.plg['pairing']
+        base = f'http://127.0.0.1:{self._api_client()}'
+        member = 'remoteB'
+        pairing.save_register_credential(member, 'previous-saved-key',
+                                         engine_url=base, invite='previous-invite')
+        with patch.dict(os.environ, {
+            'BOT_GROUP_ENGINE_URL': base,
+            'BOT_GROUP_RELAY_CREDENTIAL': 'previous-env-key',
+            'BOT_GROUP_RELAY_INVITE': issued['invite_token'],
+            'HERMES_HOME': self._tmpdir.name,
+        }), patch.object(config, 'host_member', return_value=member):
+            cfg = config.load()
+
+        client_type = self._load_relay_module().RelayClient
+        client = client_type(cfg)
+        with connect(config.ws_url(base), proxy=None) as ws:
+            self.assertIsNone(client._handshake(ws))
+        self.assertEqual(pairing.load_register_credential(member), 'previous-saved-key')
+        self._confirm_invite(issued, member)
+        with connect(config.ws_url(base), proxy=None) as ws:
+            self.assertIsNone(client._handshake(ws))
+        with connect(config.ws_url(base), proxy=None) as ws:
+            self.assertTrue(client_type(cfg)._handshake(ws))
+
     def test_invitation_ws_first_join_full_chain(self):
         """方向 A 真实全链：引擎签发邀请 → 插件 RelayClient(invite) 出站
         连真实 /relay/ws → 兑换建节点（remoteB，名册外）→ hello_ok 下发

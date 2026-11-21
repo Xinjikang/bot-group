@@ -38,7 +38,8 @@ class RelayClient:
         self.cfg = cfg
         self._on_status = on_status or (lambda state: None)
         self._generation = 0
-        self._credential = cfg.credential   # req#175：邀请兑换后更新为持久凭据
+        # 携带邀请时，重连只使用为本次邀请确认的凭据。
+        self._credential = "" if cfg.invite else cfg.credential
         self._engine_url = ""
         self._streams = streams_mod.StreamRegistry(cfg.home, on_event=self._on_local_event)
         self._send_queue: queue.Queue = queue.Queue()

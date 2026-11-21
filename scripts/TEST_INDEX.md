@@ -24,6 +24,8 @@ Hermes 项目换模回执、定向提醒与注册默认值覆盖在 `scripts.tes
 
 首次接入接口契约（req#175）：`env -u PYTHONPATH .venv/Scripts/python.exe -X utf8 -B -m unittest -v scripts.test_plugin_listen_pairing.FirstJoinTests scripts.test_ip_allowlist`。`TMPDIR`、`TMP`、`TEMP` 设为分配的隔离目录；真实回环 HTTP/WS/TLS + 独立临时 SQLite。确认前验证出站实际宿主而非仅解析链接；坏指纹/坏票据/改成员拒绝，旧直接导入拒绝，同一已确认 ID 可重试，取消/过期/取消在途/换链接失败不启用任何凭据，入站同名在握手、确认两个阶段均可脱敏回读。非管理员拒绝；互联网与模型均不访问。全链脚本同时验证两方向经真实管理员确认，旧回环脚本只作冒烟。
 
+旧凭据下重新配对可单独运行 `python -X utf8 -B -m unittest scripts.test_plugin_listen_pairing.FirstJoinTests.test_new_invitation_with_stale_environment_credential`，沿用首次接入的隔离目录。用例同时保留环境中的旧凭据和上次邀请保存的凭据，验证新邀请进入待确认、确认前保留原凭据，以及客户端重启后使用本次确认的凭据连接。
+
 出站确认跨截止和并发取消：继续使用 `scripts.test_plugin_listen_pairing.FirstJoinTests`。在固定证书指纹的真实 WSS 核验返回处推进引擎受控时钟或挂起确认，回执后、任何重新预览或状态查询前分别检查 SQLite 和远端状态；验证确认前/确认期间过期、核验途中取消、扫描器无人操作清理以及同一有效链接立即重试。另验证确认后认证回执丢失、已生效凭据重连不再兑换、一次性材料不回显。
 
 出站拨号与成员级切换（req#173 task#323）回归在 `scripts.test_relay_dialer`：单模块运行 `python -X utf8 -B -m unittest scripts.test_relay_dialer`（**必须纯 unittest 跑，勿经 run_isolated_tests**——拨号器自建替身端点监听本机端口，隔离审计钩子会拦；临时 SQLite + 本机回环 fake 插件 WS 服务器，动态自签证书测 TLS/指纹，不动主引擎 8180）。覆盖方向 B 实连（hello 协议/帧路由/应答回传）、TLS 指纹匹配与拒绝、单活动通道接替、重连退避与耗尽 abandoned、切换全链 A→B→A（begin_switch 持久化→断旧→建新→complete_switch）、offline switch/unexpected 区分、切换中闸门 hold 不投递不告警、重启恢复。坑：websockets 客户端默认读环境代理——拨号必须显式 proxy=None；Windows 拒连约 2s，退避轮询窗口留余量；stop_dial 要 join 任务线程防残留旧任务被下一个操作误复用；_task_state 把残留 DialLink 当 connected，接替断言要等 active_link is not 旧 link。
