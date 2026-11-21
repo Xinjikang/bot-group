@@ -20,6 +20,42 @@
 6. 去重：按每次恢复去重，同次恢复只接手一次；后续发生新的停滞仍可催办。
 7. 受阻提醒：自动续办受阻且确需人工处理时，向用户发可见提醒（任务 ID、卡点、需要执行的动作），并记录投递结果供查询。
 
+## 关键设计点
+
+### 识别停滞（事实源 = 任务队列，不是执行记录）
+
+停滞判据 = 任务未完成 + 仍归该成员 + 该成员已停止推进，三者同时成立：
+
+- 任务侧：`status='in_progress' AND claimed_by=<成员>`（或 `pending AND next_bot=<成员>`），且 claim 后超过 `CLAIM_STALE_SECONDS`（2h）无新节点。
+- 执行侧：该成员当前 work 会话存在停滞执行——`hermes_executions.state='manual'`（回执缺失、自动核对已停），或 `state='waiting_delegation'` 且存在 consumed=0 的委托/进程等待超过执行期限。
+
+任务已完成或已易主则不续办。
+
+### 复用已排队唤醒（解开会话占用症结）
+
+症结两层，都让已排队的催办 job 无法投递：
+
+1. 内存层：manual 执行未走 `_finish`，其 session 残留在 `_running_sessions`，`session_busy` 第一道检查即判忙。
+2. 数据库层：`hermes_gateway.process_state` 对 `state!='terminal'`（含 manual）返回 None，`find_bot_processes` 透传 None，`session_busy` 的 `None != []` 恒 True；队列 worker 每个周期跳过该 job，直到执行被人工清理。
+
+修复：停滞执行（manual / 等待超时）且任务未完成且仍归该成员时，会话判「可接续」而非「忙」，已排队的唤醒正常投递；投递落地复用原 execution 的接续路径（注入 task_id + 后台进程句柄 + 待核对结果），不重跑已发出的命令。
+
+### 防并发接手（同一任务单点推进）
+
+- 归属校验：投递与接手都复核 task 的 claimed_by/next_bot 仍指向该成员（复用 `hermes_delegations.owned` 的归属语义），易主即放弃。
+- 单点推进：execution 级「本轮恢复已投递」标记，同次恢复只投递一次。
+- 队列兜底：`wake_jobs` 的 partial unique index（work 按 profile+project）保证同成员同项目同一时刻只有一个 queued/running job。
+
+### 重启后的投递去重
+
+- `recover_on_startup` 已把 running 的 job 重置回 queued。
+- 接续投递按 execution 记录幂等：`hermes_delegation_inputs` 的 `UNIQUE(execution_id, message_id)` 防同一消息重复注入。
+- 恢复信号随附本次恢复标记，重启后重扫不重复投递同一恢复；后续出现新的停滞仍可再次催办。
+
+### 用户可见提醒
+
+自动续办受阻（任务已易主 / 已完成 / 无法接续）且确需用户处理时，引擎发一条可见消息给用户，写清任务 ID、卡在哪、需要用户做什么，并记录该消息投递结果（message_id）供查询。
+
 ## 验收场景
 
 在隔离环境复现「旧执行占用、回执缺失、催办已排队」：
