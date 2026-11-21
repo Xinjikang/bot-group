@@ -1,4 +1,5 @@
 """Unified editor in real Chrome with synthetic HTTP, no production writes."""
+import argparse
 import mimetypes
 from pathlib import Path
 from urllib.parse import urlparse
@@ -8,6 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--screenshot', type=Path, default=ROOT / 'cache' / 'unified-model-editor.png')
+    screenshot = parser.parse_args().screenshot
     writes, errors = [], []
     state = {'conflict': False, 'runtime': 'codex'}
     global_values = dict(description='description', soul='instructions', env='', model='global-old',
@@ -93,6 +97,11 @@ def main():
         state['runtime'] = 'hermes'
         open_editor()
         assert model.input_value() == 'global-new' and not checkbox.is_checked()
+        hint = page.locator('#profile-model-scope')
+        for width in (1280, 390):
+            page.set_viewport_size({'width': width, 'height': 844})
+            assert hint.is_visible() and '下次唤醒该成员时应用' in hint.inner_text()
+            assert hint.evaluate('(el) => el.scrollWidth <= el.clientWidth')
         model.fill('hermes-project')
         page.locator('#profile-tab-description').click()
         page.locator('#profile-description').fill('new description')
@@ -115,8 +124,8 @@ def main():
             assert checkbox.evaluate('(el) => getComputedStyle(el, "::after").content') == '""'
             checkbox.uncheck()
         page.evaluate("applyTheme('dark')")
-        (ROOT / 'cache').mkdir(exist_ok=True)
-        page.screenshot(path=str(ROOT / 'cache' / 'unified-model-editor.png'))
+        screenshot.parent.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(screenshot))
         page.locator('#profile-cancel').click()
         assert not errors, errors
         browser.close()

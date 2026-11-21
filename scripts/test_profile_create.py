@@ -261,6 +261,8 @@ class ProfileCreateTests(unittest.TestCase):
         home = Path(result['home'])
         _, config = profile_create.files._yaml((home / 'config.yaml').read_bytes())
         self.assertEqual(config['model']['default'], 'base-model')
+        self.assertEqual(config['model']['switch_context_confirm_tokens'], 0)
+        self.assertEqual(config['display']['busy_input_mode'], 'steer')
         self.assertNotIn('platforms', config)
         self.assertNotIn('mcp_servers', config)
         self.assertIn('OPENAI_API_KEY=', (home / '.env').read_text())

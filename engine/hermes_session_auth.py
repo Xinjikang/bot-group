@@ -171,7 +171,7 @@ def server(row, generation):
     return spec
 
 
-def configure(conn, row, client, snapshot, *, force_mcp=False):
+def configure(conn, row, client, snapshot, *, force_mcp=False, refresh_model=True):
     from . import hermes_gateway_sessions as sessions, signing_keys, relay, wake
     current = _signing_generation()
     if snapshot['running'] or snapshot['pending']:
@@ -190,7 +190,8 @@ def configure(conn, row, client, snapshot, *, force_mcp=False):
     spec = relay.merge_mcp_spec(conn, row["profile"], spec, engine_url=wake._engine_url(),
                                 fetch_report=fetch)
     result = sessions.configure_tracked(conn, row['project'], client, snapshot, workdir=row['workdir'],
-        model_args=json.loads(row['model_args']), server=spec, force_mcp=force_mcp)
+        model_args=json.loads(row['model_args']), server=spec, force_mcp=force_mcp,
+        member=row['profile'], refresh_model=refresh_model)
     validate(conn, {**context(row), 'signing_generation': current})
     conn.execute('UPDATE hermes_session_grants SET signing_generation=?,pending_generation=NULL WHERE ' + WHERE,
                  (current, *key(row)))
@@ -263,7 +264,7 @@ def maintain():
                     phase = 'resume'
                     snapshot = client.rpc('session.resume', session_id=row['session_id'])
                     phase = 'configure'
-                    configure(conn, row, client, snapshot)
+                    configure(conn, row, client, snapshot, refresh_model=False)
             except Exception as exc:
                 log_deferred(row, phase, exc)
                 conn.rollback()

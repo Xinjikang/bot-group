@@ -39,6 +39,11 @@ class ProjectRoleTests(unittest.TestCase):
         self.addCleanup(self.client.close)
 
     def join(self, project='p', profile='default', host='codex'):
+        if host == 'hermes':
+            home = self.root / host
+            if profile != 'default':
+                home = home / 'profiles' / profile
+            home.mkdir(parents=True, exist_ok=True)
         response = self.client.post('/bots/register', json={'project': project,
             'host_type': host, 'profile': profile, 'config_root': str(self.root / host), 'display_name': '知夏'})
         self.assertEqual(response.status_code, 200, response.text)

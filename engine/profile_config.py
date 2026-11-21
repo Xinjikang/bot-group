@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
+from copy import copy
 from datetime import datetime, timezone
 import io
 import json
@@ -121,6 +123,65 @@ def _stage(folder: Path, content: bytes) -> Path:
         path.unlink(missing_ok=True)
         raise
     return path
+
+
+@contextmanager
+def registration_defaults(registration, host, config_root, profile):
+    """Install first-registration defaults together with the caller's database commit."""
+    if host != 'hermes' or not registration['created']:
+        yield
+        return
+    from .bot_identity import hermes_profile_home
+    folder = hermes_profile_home({'config_root': Path(config_root).resolve(), 'profile': profile})
+    if folder.resolve() != folder or not folder.is_dir():
+        raise HTTPException(400, 'Hermes profile 目录不存在或路径无效')
+    name = 'config.yaml'
+    before = _snapshot(folder, (name,))[name]
+    try:
+        parser, config = _yaml(before)
+    except (UnicodeError, YAMLError):
+        raise HTTPException(400, 'Hermes config.yaml 格式无效') from None
+    model = config.get('model')
+    if isinstance(model, str):
+        config['model'] = {'default': model}
+    changed = False
+    for section, key, value in (('model', 'switch_context_confirm_tokens', 0),
+                                ('display', 'busy_input_mode', 'steer')):
+        block = config.get(section)
+        if block is None:
+            block = {}
+        if not isinstance(block, dict):
+            raise HTTPException(400, f'Hermes config.yaml 的 {section} 必须是键值映射')
+        if block.get(key) != value or isinstance(block.get(key), bool):
+            # A YAML alias may share this mapping with unrelated profile settings.
+            config[section] = copy(block)
+            config[section][key] = value
+            changed = True
+    if not changed:
+        yield
+        return
+    after = _dump(parser, config, before)
+    path = folder / name
+    staged = _stage(folder, after)
+    try:
+        if _snapshot(folder, (name,))[name] != before:
+            raise HTTPException(409, 'Hermes 配置已更改，请重新添加 Bot')
+        os.replace(staged, path)
+        try:
+            yield
+        except Exception:
+            if _snapshot(folder, (name,))[name] == after:
+                if before is None:
+                    path.unlink()
+                else:
+                    restored = _stage(folder, before)
+                    try:
+                        os.replace(restored, path)
+                    finally:
+                        restored.unlink(missing_ok=True)
+            raise
+    finally:
+        staged.unlink(missing_ok=True)
 
 
 def _update_model(original: bytes | None, values: dict) -> bytes:

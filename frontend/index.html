@@ -3677,11 +3677,11 @@ function updateProfileModelScope() {
       : (dsh ? '保存到该成员的全局 cordis.patch.yml，各项目的独立覆盖保留。'
         : '保存到该成员的全局配置，各项目的独立覆盖保留。'))
     : (dsh ? '仅模型、供应商和推理强度保存到当前项目；人格与描述保存到该成员的 profile。'
-      : '仅用于当前项目。留空沿用成员全局配置。');
+      : '仅用于当前项目。留空沿用成员全局配置。保存后，下次唤醒该成员时应用。');
   const help = $('#profile-panel-model .profile-help');
   if (editor?.globalModelHelp) help.textContent = global ? editor.globalModelHelp
     : (dsh ? '模型、供应商和推理强度保存到当前项目，下一次启动生效。'
-      : '模型、供应商和推理强度保存到当前项目，下一次唤醒生效。');
+      : '供应商填写该成员已配置的供应商标识。');
 }
 $('#profile-apply-global').addEventListener('change', updateProfileModelScope);
 function pluginUnavailable(state) {
