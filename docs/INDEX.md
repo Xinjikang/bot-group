@@ -170,7 +170,7 @@ Hermes/DSH 成对填写模型与供应商、来源带入和 Codex 界面规则�
 | [项目移除](engineering/PROJECT-REMOVAL-2026-10-14.md) | 逻辑移除、占用检查和重新导入 |
 | [目录选择](engineering/DIRECTORY-PICKER.md) | 网页目录导航及权限 |
 | [Profile 编辑](engineering/PROFILE-EDITOR.md) / [Profile 创建](engineering/PROFILE-CREATE.md) | 双宿主配置、备份、冲突与入组 |
-| [统一模型编辑](engineering/UNIFIED-MODEL-EDITOR.md) / [项目模型](engineering/PROJECT-MEMBER-MODELS-2026-10-11.md) | 项目覆盖与全局配置 |
+| [统一模型编辑](engineering/UNIFIED-MODEL-EDITOR.md) / [项目模型](engineering/PROJECT-MEMBER-MODELS-2026-10-11.md) | 项目覆盖与全局配置、Hermes 下次唤醒换模、失败提醒与重试。[四轮原生回归](../scripts/TEST_INDEX.md#hermes-项目成员换模) |
 
 ## 前端交互与内容
 

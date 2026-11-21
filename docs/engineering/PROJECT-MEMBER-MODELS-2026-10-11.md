@@ -1,9 +1,9 @@
 # Project member model settings
 
-Project settings → Members → Project model stores `model`, `provider`, and
+Project details → Members → Edit profile → Model and provider stores `model`, `provider`, and
 `reasoning_effort` by project and stable Bot ID in `group.db` settings under
-`member_model:<bot_id>`. The separate Global configuration action retains the
-existing host configuration editor. Project model saves never write host files.
+`member_model:<bot_id>`. Selecting **Apply globally** writes the fields to
+the member's profile and clears their overrides in the current project.
 
 Administrator GET/PUT `/projects/{project}/members/{profile}/model` verifies
 project membership and runtime, validates fields, and uses a revision hash with
@@ -55,6 +55,6 @@ the new API and launch behavior.
 
 The optional native Codex probe `python -B scripts/verify_project_model_resume.py`
 uses a disposable home and loopback fake Responses provider to inspect the
-requested Codex model on creation and resume. Hermes gateway mutation payloads
-are covered by the isolated project-model and session-policy regressions.
-Record native probe results in reports/tests/.
+requested Codex model on creation and resume. The native Hermes probe captures
+the first outgoing model request and counts user notifications across four wakes
+of the same session. See the [model switch test commands](../../scripts/TEST_INDEX.md#hermes-项目成员换模).

@@ -1,8 +1,12 @@
 # 测试脚本索引
 
+### Hermes 项目成员换模
+
 Hermes 项目换模回执、定向提醒与注册默认值覆盖在 `scripts.test_hermes_gateway_sessions`、`scripts.test_discovery` 和 `scripts.test_profile_create`，使用项目 Python 运行 `-m scripts.run_isolated_tests --report <报告绝对目录> <模块...>`。界面用 `python -B scripts/test_project_models_browser.py`（Playwright 和 Chrome）检查桌面和 390px 宽度的项目范围提示。
 
 原生换模回归使用 Hermes 环境的 Python 执行 `-X utf8 -B scripts/verify_hermes_session_reuse_native.py --model-switch --hermes-source <Hermes源码> --mcp-python <项目Python> --evidence <新报告目录>`。测试在独立 home 和 SQLite 中运行真实网关和本机回环模型端点。首轮请求在途时通过项目设置保存 B，连续两次触发长上下文确认，再关闭隔离 profile 的该项确认。四轮共用一个会话，端点依次收到 A、A、A、B，用户提醒数依次为 0、1、1、1。
+
+结果保存在报告目录的 `result.json`。`session` 应在四轮中一致，`models` 是回环端点实收的请求模型，`notices` 是截至该轮发给用户的提醒。桌面与窄屏截图可通过 `test_project_models_browser.py --screenshot <报告目录>/editor.png` 保存。
 
 指定网卡监听动态配置（req#172 task#321）回归在 `scripts.test_listen_control`：单模块运行 `python -X utf8 -B -m unittest scripts.test_listen_control`（临时 SQLite；远程监听用独立高位端口 TEST_PORT=18820 真实 socket 验证，不动主引擎 8180）。覆盖：枚举不含通配/回环/链路本地/组播、校验拒绝 0.0.0.0/::/回环/非本机地址、无来源绑定时允许启用，未绑定来源仅可在有效邀请期间进入首次 WebSocket 握手、真实 TCP 连远程监听地址（绑定来源 200/移除绑定后 403/停用后拒绝连接）、端口占用失败如实报错并回滚配置、模拟进程退出后 restore_on_startup 恢复上次监听配置；API 层 bot 403 与通配 400。注意：本机无 LAN 单播地址（只有回环）的机器上真实监听用例自动 skipTest；远程 Server 与回环同端口不同地址在 Windows 可共存（实测），第二 Server lifespan='off' 不跑第二份后台线程；listen_control 线程退出路径不抢 _lock（_stop_locked 持锁 join 时死锁陷阱）。
 
