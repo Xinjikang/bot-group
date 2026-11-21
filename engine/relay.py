@@ -91,6 +91,13 @@ CREATE TABLE IF NOT EXISTS relay_invitation_attempts (
     failure_stage TEXT
 );
 CREATE INDEX IF NOT EXISTS relay_invitation_expiry ON relay_invitations(expires_at);
+CREATE TABLE IF NOT EXISTS relay_node_identities (
+    member TEXT PRIMARY KEY REFERENCES relay_nodes(member),
+    host_profile TEXT NOT NULL,
+    pairing_id TEXT NOT NULL UNIQUE,
+    device_key TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS relay_host_profile ON relay_node_identities(host_profile);
 """
 
 
@@ -169,8 +176,8 @@ def _redeem_invitation_hash(conn, token_hash, member, now):
         (member, now, token_hash, now, token_hash)).rowcount == 1
 
 
-_INVITATION = ("SELECT a.*, i.expires_at, i.redeemed FROM relay_invitation_attempts a "
-               "JOIN relay_invitations i USING(token_hash) WHERE ")
+_INVITATION = ("SELECT a.*, i.expires_at, i.redeemed, n.member AS node_member FROM relay_invitation_attempts a "
+               "JOIN relay_invitations i USING(token_hash) LEFT JOIN relay_node_identities n USING(pairing_id) WHERE ")
 
 
 class InvitationConflict(ValueError):
@@ -189,6 +196,8 @@ def _invitation_view(row, now):
             'peer_ip': row['peer_ip'] if visible else None}
     if state == 'failed':
         view.update(stage=row['failure_stage'], reason='name_conflict')
+    if state == 'confirmed':
+        view['node_member'] = row['node_member'] or row['member']
     return view
 
 
@@ -202,7 +211,7 @@ def read_invitation(conn, pairing_id):
     row = conn.execute(_INVITATION + 'a.pairing_id=?', (pairing_id,)).fetchone()
     view = _invitation_view(row, _now())
     if view is not None and view['state'] == 'confirmed':
-        node = read_node(conn, view['member'])
+        node = read_node(conn, view['node_member'])
         view['connected'] = bool(node and node['state'] == 'online' and not node['credential_revoked'])
     return view
 
@@ -226,13 +235,13 @@ def offer_invitation(conn, token, member, peer_ip, proof, commitment):
                     or not hmac.compare_digest(row['credential_commitment'], commitment)):
                 return None
             if row['redeemed']:
-                node = read_node(conn, member)
+                node = read_node(conn, row['node_member'] or member)
                 if not node or node['credential_revoked'] or not hmac.compare_digest(node['credential_hash'], commitment):
                     return None
             return _invitation_view(row, now)
         if row['redeemed']:
             return None
-        if remote_member_conflict(conn, member):
+        if db.is_builtin_user(member) or paired_device(conn, commitment):
             _refuse_invitation(conn, row['pairing_id'], member, peer_ip, 'identity')
             return None
         conn.execute('UPDATE relay_invitation_attempts SET member=?,peer_ip=?,proof_hash=?,credential_commitment=? '
@@ -255,14 +264,13 @@ def decide_invitation(conn, pairing_id, *, confirm):
                 return view
             if state != 'pending_confirmation':
                 raise InvitationConflict('邀请未到达待确认状态或已失效')
-            if remote_member_conflict(conn, row['member']):
+            if db.is_builtin_user(row['member']) or paired_device(conn, row['credential_commitment']):
                 _refuse_invitation(conn, pairing_id, row['member'], row['peer_ip'], 'confirmation')
                 return _invitation_view(conn.execute(_INVITATION + 'a.pairing_id=?', (pairing_id,)).fetchone(), now)
             if not _redeem_invitation_hash(conn, row['token_hash'], row['member'], now):
                 raise InvitationConflict('邀请已使用或已失效')
-            if _register_remote_node_hash(conn, row['member'], row['credential_commitment'], direction='listen',
-                                          peer_ip=row['peer_ip'], commit=False, now=now) is None:
-                raise InvitationConflict('同名成员已存在：不得覆盖或接管已有身份')
+            register_paired_node(conn, pairing_id, row['member'], row['credential_commitment'],
+                                 device_key=row['credential_commitment'], direction='listen', peer_ip=row['peer_ip'])
         else:
             if state in ('cancelled', 'expired'):
                 return view
@@ -281,6 +289,42 @@ def remote_member_conflict(conn, member: str) -> bool:
         "UNION ALL SELECT 1 FROM bots WHERE profile=? "
         "UNION ALL SELECT 1 FROM project_members WHERE profile=? LIMIT 1",
         (member, member, member, member)).fetchone() is not None
+
+
+def paired_device(conn, device_key):
+    return conn.execute('SELECT 1 FROM relay_node_identities WHERE device_key=? '
+                        'UNION ALL SELECT 1 FROM relay_nodes WHERE credential_hash=? LIMIT 1',
+                        (device_key, device_key)).fetchone() is not None
+
+
+def register_paired_node(conn, pairing_id, profile, credential_hash, *, device_key, direction, peer_ip='', endpoint=None):
+    """Allocate the member handle inside the same write transaction as confirmation."""
+    from . import discovery
+    base = 'remote-' + profile[:48]
+    member = base
+    number = 1
+    while remote_member_conflict(conn, member):
+        number += 1
+        member = f'{base}-{number}'
+    label = f'{profile}（远程）' if number == 1 else f'{profile}（远程 {number}）'
+    _register_remote_node_hash(conn, member, credential_hash, direction=direction, peer_ip=peer_ip,
+                               endpoint=endpoint, commit=False)
+    conn.execute('UPDATE relay_nodes SET display_name=? WHERE member=?', (label, member))
+    conn.execute('INSERT INTO relay_node_identities(member,host_profile,pairing_id,device_key) VALUES(?,?,?,?)',
+                 (member, profile, pairing_id, device_key))
+    bot = discovery.insert_bot(conn, 'relay', profile, member, 'hermes', label)
+    conn.execute("INSERT INTO members(profile,display_name,bot_id,source,created_at) VALUES(?,?,?,'api',?)",
+                 (member, label, bot['bot_id'], db.now_iso()))
+
+
+def authenticated_member(conn, profile, credential):
+    """Resolve a wire profile only in combination with its active credential."""
+    if not profile or not credential:
+        return None
+    rows = conn.execute('SELECT n.member FROM relay_nodes n LEFT JOIN relay_node_identities i USING(member) '
+                        'WHERE (i.host_profile=? OR n.member=?) AND n.credential_revoked=0 AND n.credential_hash=?',
+                        (profile, profile, hash_credential(credential))).fetchall()
+    return rows[0][0] if len(rows) == 1 else None
 
 
 def register_remote_node(conn, member: str, credential: str, *, direction: str,
@@ -385,12 +429,16 @@ def verify_credential(conn, member: str, credential: str) -> bool:
     return hmac.compare_digest(row["credential_hash"], hash_credential(credential))
 
 
+_NODE_SELECT = ('SELECT n.*, COALESCE(i.host_profile,n.member) AS host_profile FROM relay_nodes n '
+                'LEFT JOIN relay_node_identities i USING(member)')
+
+
 def read_node(conn, member: str):
-    return conn.execute("SELECT * FROM relay_nodes WHERE member=?", (member,)).fetchone()
+    return conn.execute(_NODE_SELECT + ' WHERE n.member=?', (member,)).fetchone()
 
 
 def list_nodes(conn):
-    return conn.execute("SELECT * FROM relay_nodes ORDER BY member").fetchall()
+    return conn.execute(_NODE_SELECT + ' ORDER BY n.member').fetchall()
 
 
 def set_mcp_verify(conn, member: str, *, state: str, error: str = "",

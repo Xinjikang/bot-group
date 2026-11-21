@@ -1042,7 +1042,7 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         conn.close()
     if runtime == 'hermes':
         from . import hermes_gateway
-        if hermes_gateway.enabled():
+        if (bot and bot['host_type'] == 'relay') or hermes_gateway.enabled():
             return hermes_gateway.spawn(profile, kind, signal, thread_id, project,
                 bot=bot, workdir=workdir, model_args=model_args, bound_task=bound_task,
                 job_id=job_id, trigger_msg_id=trigger_msg_id)

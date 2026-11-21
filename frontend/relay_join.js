@@ -63,7 +63,7 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
   function failure(view) {
     const device = view.host || view.member || '云端 Hermes';
     if (view.state === 'expired') return '本次配对已过期。请重新核验有效链接，或重新生成邀请。';
-    if (view.reason === 'name_conflict') return `${device} 的成员名已被使用。请核对已有节点，或更改云端成员名后重试。`;
+    if (view.reason === 'name_conflict') return `${device} 的配对记录已存在，请核对已有远程节点或重新生成邀请。`;
     const guidance = {dns: '地址解析失败，请检查云端域名。', tcp: '连接失败，请检查云端监听地址和端口。',
       tls: '证书核验失败，请从云端 Hermes 重新复制配对链接。', identity: '成员身份不匹配，请核对云端 Hermes。',
       auth: '配对认证失败，请核对插件版本并重新获取链接。', confirmation: '确认失败，请重新核验配对链接。'};
@@ -72,7 +72,7 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
   async function display(view, token) {
     if (!current(token)) return;
     if (view.state === 'confirmed') {
-      const member = view.member;
+      const member = view.node_member || view.member;
       dismiss();
       await registered(member);
       return;
@@ -89,7 +89,7 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
       $('invite').hidden = true;
       $('command').value = '';
       const endpoint = view.peer_ip || `${view.host}:${view.port} · 指纹 ${view.fingerprint_short}`;
-      $('identity').textContent = `已核验成员　${view.member}　·　${endpoint}`;
+      $('identity').textContent = `已核验成员　${view.member}（远程）　·　${endpoint}`;
       status('请核对远端身份后确认添加。');
     } else {
       status('等待云端 Hermes 连接。');

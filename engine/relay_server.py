@@ -382,7 +382,8 @@ async def relay_ws(websocket: WebSocket) -> None:
                                                            else 'hello_pending'}})
                 await websocket.close()
                 return
-            if not member or not relay.verify_credential(conn, member, credential):
+            member = relay.authenticated_member(conn, member, credential)
+            if member is None:
                 await websocket.close(code=CLOSE_BAD_CREDENTIAL)
                 return
             if not ip_allowlist.member_allowed(conn, member, peer_raw):

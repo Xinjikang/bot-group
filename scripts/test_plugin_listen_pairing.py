@@ -1580,7 +1580,7 @@ class FirstJoinTests(unittest.TestCase):
         self._state_patch.start()
         self.addCleanup(self._state_patch.stop)
         self.addCleanup(relay_server.close_all)
-        for member in ("remoteA", "remoteB", REMOTE):
+        for member in ("remote-remoteA", "remote-remoteB", REMOTE):
             self.addCleanup(relay_dialer.stop_dial, member)
         self._client = None
         self._engine = None
@@ -1702,24 +1702,24 @@ class FirstJoinTests(unittest.TestCase):
         self.assertEqual(imported['state'], 'confirmed')
         conn = db.get_connection()
         try:
-            row = relay.read_node(conn, "remoteA")
+            row = relay.read_node(conn, "remote-remoteA")
             self.assertIsNotNone(row, "导入必须按远端上报成员建独立节点")
             self.assertEqual(row["direction"], "dial")
-            endpoint = relay.read_dial_endpoint(conn, "remoteA")
+            endpoint = relay.read_dial_endpoint(conn, "remote-remoteA")
             self.assertEqual(endpoint["host"], "127.0.0.1")
             self.assertEqual(endpoint["port"], result["port"])
         finally:
             conn.close()
-        self.assertTrue(self._wait_dial_connected("remoteA"),
+        self.assertTrue(self._wait_dial_connected("remote-remoteA"),
                         "导入后拨号必须认证连通（hello_ok 成员上报一致）")
         self.assertEqual(self._admin_post(path + '/confirm', {'pairing_url': pairing_url}), (200, imported))
         self.assertEqual(self._admin_post(path + '/cancel')[0], 409)
-        relay_dialer.stop_dial('remoteA')
-        relay_dialer.start_dial('remoteA')
-        self.assertTrue(self._wait_dial_connected('remoteA'), '同一凭据必须能重新连接，不二次消费配对链接')
+        relay_dialer.stop_dial('remote-remoteA')
+        relay_dialer.start_dial('remote-remoteA')
+        self.assertTrue(self._wait_dial_connected('remote-remoteA'), '同一凭据必须能重新连接，不二次消费配对链接')
         conn = db.get_connection()
         try:
-            self.assertEqual(relay.read_node(conn, "remoteA")["state"], "online")
+            self.assertEqual(relay.read_node(conn, "remote-remoteA")["state"], "online")
         finally:
             conn.close()
         # 同名再导入：409 不覆盖
@@ -1819,7 +1819,7 @@ class FirstJoinTests(unittest.TestCase):
             retry_path, _ = prepare()
             code, verified = self._admin_post(retry_path + '/confirm', body)
             self.assertEqual((code, verified.get('state')), (200, 'confirmed'), verified)
-            self.assertTrue(self._wait_dial_connected('remoteB'))
+            self.assertTrue(self._wait_dial_connected('remote-remoteB'))
 
     def test_outbound_confirm_losing_local_race_leaves_no_effective_remote_key(self):
         from concurrent.futures import ThreadPoolExecutor
@@ -1867,7 +1867,7 @@ class FirstJoinTests(unittest.TestCase):
         self.assertEqual((code, fresh.get('state')), (200, 'pending_confirmation'), fresh)
         code, confirmed = self._admin_post(f"/relay/pairings/{fresh['pairing_id']}/confirm", body)
         self.assertEqual((code, confirmed.get('state')), (200, 'confirmed'), confirmed)
-        self.assertTrue(self._wait_dial_connected('remoteB'))
+        self.assertTrue(self._wait_dial_connected('remote-remoteB'))
 
     def test_outbound_idle_expiration_and_expired_cancel_clear_old_material(self):
         from engine import relay_pairing, scanner
@@ -1903,11 +1903,11 @@ class FirstJoinTests(unittest.TestCase):
         with closing(db.get_connection()) as conn:
             attempt = relay_pairing.create(conn, 'remoteB', endpoint, now + 60)
             relay_pairing.decide(conn, attempt['pairing_id'], verified=('remoteB', endpoint, now + 60))
-            initial = relay.read_dial_endpoint(conn, 'remoteB')
+            initial = relay.read_dial_endpoint(conn, 'remote-remoteB')
             self.assertEqual(initial['activation_ticket'], 'fixture-ticket')
             with patch.object(relay, '_now', return_value=now + 61):
                 relay_pairing.expire_stale(conn)
-                clean = relay.read_dial_endpoint(conn, 'remoteB')
+                clean = relay.read_dial_endpoint(conn, 'remote-remoteB')
                 self.assertNotIn('activation_ticket', clean)
                 self.assertNotIn('activation_expires_at', clean)
                 self.assertEqual(clean['pairing_token'], initial['pairing_token'])
@@ -1937,22 +1937,22 @@ class FirstJoinTests(unittest.TestCase):
         with patch.object(relay_dialer, '_authenticate_dial', side_effect=lose_first_ack):
             code, confirmed = self._admin_post(confirm, body)
             self.assertEqual((code, confirmed['state']), (200, 'confirmed'))
-            self.assertTrue(self._wait_dial_connected('remoteB'))
+            self.assertTrue(self._wait_dial_connected('remote-remoteB'))
         self.assertEqual(redeemed, [pairing._load_state()['pairing']['redeemed_at']])
         with closing(db.get_connection()) as conn:
-            endpoint = relay.read_dial_endpoint(conn, 'remoteB')
+            endpoint = relay.read_dial_endpoint(conn, 'remote-remoteB')
             self.assertFalse('activation_ticket' in endpoint or 'activation_expires_at' in endpoint)
             self.assertEqual(len(relay.list_nodes(conn)), 1)
         self.assertEqual(self._admin_post(confirm, body), (200, confirmed))
 
-    def test_local_roster_conflict_prevents_pairing(self):
-        """An existing local route is not a first-join identity."""
+    def test_unreachable_same_named_host_still_requires_verification(self):
+        """An existing local profile cannot satisfy remote host verification."""
         with closing(db.get_connection()) as conn, conn:
             conn.execute("INSERT INTO members(profile,display_name) VALUES('local-taken','Local')")
         body = {"pairing_url": "wss://127.0.0.1:1?pairing_token=fixture"
                                "&fingerprint=" + "ab" * 32 + "&member=local-taken"}
         status, preview = self._admin_post("/relay/pairings/preview", body)
-        self.assertEqual((status, preview['reason']), (409, 'name_conflict'))
+        self.assertEqual((status, preview['reason']), (502, 'unreachable'))
         self.assertEqual(self._admin_post("/relay/pairings/import", body)[0], 409)
         with closing(db.get_connection()) as conn:
             self.assertIsNone(relay.read_node(conn, "local-taken"))
@@ -2014,7 +2014,7 @@ class FirstJoinTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_valid_invitation_reports_same_name_refusal_without_consuming(self):
+    def test_duplicate_credential_refused_without_consuming(self):
         import urllib.request
         from websockets.sync.client import connect
         from websockets.exceptions import ConnectionClosed
@@ -2031,7 +2031,7 @@ class FirstJoinTests(unittest.TestCase):
         hello = {'relay': {'kind': 'hello'}, 'member': 'remoteA',
                  'invite': issued['invite_token'], 'protocol_version': 1,
                  'plugin_version': version, 'join_proof': 'ab' * 32,
-                 'credential_commitment': 'cd' * 32}
+                 'credential_commitment': relay.hash_credential('existing-isolated-credential')}
         for token in ('invalid-fixture-ticket', issued['invite_token']):
             with connect(base.replace('http:', 'ws:') + '/relay/ws', proxy=None) as ws:
                 ws.send(json.dumps({**hello, 'invite': token}))
@@ -2051,7 +2051,7 @@ class FirstJoinTests(unittest.TestCase):
             self.assertTrue(relay.verify_credential(conn, 'remoteA', 'existing-isolated-credential'))
             self.assertEqual(len(relay.list_nodes(conn)), 1)
             self.assertFalse(ip_allowlist.list_bindings(conn))
-        self.assertIsNone(relay_server.active_link('remoteA'))
+        self.assertIsNone(relay_server.active_link('remote-remoteA'))
 
     def test_invitation_hello_cannot_register_until_admin_confirms(self):
         from websockets.sync.client import connect
@@ -2066,15 +2066,15 @@ class FirstJoinTests(unittest.TestCase):
                                 'credential_commitment': relay.hash_credential(credential)}))
             self.assertEqual(json.loads(ws.recv(timeout=5))['relay']['kind'], 'hello_pending')
         with closing(db.get_connection()) as conn:
-            self.assertIsNone(relay.read_node(conn, 'remoteA'))
-        self.assertIsNone(relay_server.active_link('remoteA'))
+            self.assertIsNone(relay.read_node(conn, 'remote-remoteA'))
+        self.assertIsNone(relay_server.active_link('remote-remoteA'))
         path = f"/relay/invitations/{issued['pairing_id']}"
         status, confirmed = self._admin_post(path + '/confirm')
         self.assertEqual((status, confirmed['state'], confirmed['member']), (200, 'confirmed', 'remoteA'))
         self.assertNotIn('credential', confirmed)
         with closing(db.get_connection()) as conn:
-            self.assertTrue(relay.verify_credential(conn, 'remoteA', credential))
-            self.assertEqual(relay.read_node(conn, 'remoteA')['state'], 'offline')
+            self.assertTrue(relay.verify_credential(conn, 'remote-remoteA', credential))
+            self.assertEqual(relay.read_node(conn, 'remote-remoteA')['state'], 'offline')
 
     def test_confirmed_offer_survives_lost_receipt_and_plugin_restart(self):
         from websockets.sync.client import connect
@@ -2148,8 +2148,8 @@ class FirstJoinTests(unittest.TestCase):
         confirmed = next(body for status, body in replies if status == 200)
         self.assertEqual(self._admin_post(path(confirmed) + '/confirm')[0], 200)
         with closing(db.get_connection()) as conn:
-            self.assertEqual([node['member'] for node in relay.list_nodes(conn)], ['remoteA'])
-            self.assertEqual(ip_allowlist.list_bindings(conn), [{'member': 'remoteA', 'ips': ['192.0.2.27']}])
+            self.assertEqual([node['member'] for node in relay.list_nodes(conn)], ['remote-remoteA'])
+            self.assertEqual(ip_allowlist.list_bindings(conn), [{'member': 'remote-remoteA', 'ips': ['192.0.2.27']}])
             self.assertEqual(conn.execute('SELECT SUM(redeemed) FROM relay_invitations').fetchone()[0], 1)
 
     def test_new_invitation_with_stale_environment_credential(self):
@@ -2211,7 +2211,7 @@ class FirstJoinTests(unittest.TestCase):
         while time.monotonic() < deadline:
             conn = db.get_connection()
             try:
-                row = relay.read_node(conn, "remoteB")
+                row = relay.read_node(conn, "remote-remoteB")
                 node_ok = row is not None and row["state"] == "online"
             finally:
                 conn.close()
@@ -2221,7 +2221,7 @@ class FirstJoinTests(unittest.TestCase):
         self.assertTrue(node_ok, "邀请兑换后节点必须建行并在线")
         conn = db.get_connection()
         try:
-            row = relay.read_node(conn, "remoteB")
+            row = relay.read_node(conn, "remote-remoteB")
             self.assertEqual(row["direction"], "listen")
         finally:
             conn.close()
@@ -2231,7 +2231,7 @@ class FirstJoinTests(unittest.TestCase):
         client.stop()
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline and \
-                relay_server.active_link("remoteB") is not None:
+                relay_server.active_link("remote-remoteB") is not None:
             time.sleep(0.05)
         client3 = plg_relay.RelayClient(relay_config.RelayConfig(
             engine_url=engine_url, member="remoteB", credential=saved,
@@ -2240,9 +2240,9 @@ class FirstJoinTests(unittest.TestCase):
         self.addCleanup(client3.stop)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline and \
-                relay_server.active_link("remoteB") is None:
+                relay_server.active_link("remote-remoteB") is None:
             time.sleep(0.05)
-        self.assertIsNotNone(relay_server.active_link("remoteB"),
+        self.assertIsNotNone(relay_server.active_link("remote-remoteB"),
                              "持久凭据重连必须认证通过")
 
     # ---------------- req#175 node2118 ③：登记提交时点=验证成功之后 ----------------
@@ -2379,8 +2379,8 @@ class FirstJoinTests(unittest.TestCase):
         while time.monotonic() < deadline:
             conn = db.get_connection()
             try:
-                row_a = relay.read_node(conn, "remoteA")
-                row_b = relay.read_node(conn, "remoteB")
+                row_a = relay.read_node(conn, "remote-remoteA")
+                row_b = relay.read_node(conn, "remote-remoteB")
                 both = (row_a and row_a["state"] == "online"
                         and row_b and row_b["state"] == "online")
             finally:
@@ -2389,36 +2389,36 @@ class FirstJoinTests(unittest.TestCase):
                 break
             time.sleep(0.1)
         self.assertTrue(both, "A、B 必须同时在线")
-        self.assertIsNotNone(relay_server.active_link("remoteA"))
-        self.assertIsNotNone(relay_server.active_link("remoteB"))
+        self.assertIsNotNone(relay_server.active_link("remote-remoteA"))
+        self.assertIsNotNone(relay_server.active_link("remote-remoteB"))
         # --- 切换 A 到 dial（给 A 一个不可达端点→进入切换态）--- 
         conn = db.get_connection()
         try:
-            relay.set_dial_endpoint(conn, "remoteA",
+            relay.set_dial_endpoint(conn, "remote-remoteA",
                                     {"host": "127.0.0.1", "port": 1,
                                      "tls": True, "fingerprint": "aa" * 32,
                                      "pairing_token": ""})
         finally:
             conn.close()
         status, switched = self._admin_post(
-            "/relay/nodes/remoteA/switch",
+            "/relay/nodes/remote-remoteA/switch",
             {"direction": "dial"})
         self.assertEqual(status, 200, f"A 切换失败: {switched}")
         # --- B 不受影响 ---
         time.sleep(0.5)
         conn = db.get_connection()
         try:
-            row_b = relay.read_node(conn, "remoteB")
+            row_b = relay.read_node(conn, "remote-remoteB")
             self.assertEqual(row_b["direction"], "dial", "B 方向不被 A 的切换改变")
             self.assertEqual(row_b["state"], "online", "B 在线状态不被 A 的切换改变")
             self.assertEqual(row_b["switch_state"], "", "B 不得进入切换态")
         finally:
             conn.close()
-        self.assertIsNotNone(relay_server.active_link("remoteB"),
+        self.assertIsNotNone(relay_server.active_link("remote-remoteB"),
                              "B 的连接不被 A 的切换断开")
         conn = db.get_connection()
         try:
-            row_a = relay.read_node(conn, "remoteA")
+            row_a = relay.read_node(conn, "remote-remoteA")
             self.assertEqual(row_a["switch_target"], "dial",
                              "A 自身进入目标切换态（先断后建）")
         finally:

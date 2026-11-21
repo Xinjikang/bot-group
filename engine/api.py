@@ -234,7 +234,8 @@ def relay_nodes_list(identity=Depends(_resolve_identity)):
     try:
         rows = relay.list_nodes(conn)
         return JSONResponse([{
-            'member': r['member'], 'display_name': r['display_name'],
+            'member': r['member'], 'host_profile': r['host_profile'],
+            'display_name': r['display_name'],
             'credential_revoked': bool(r['credential_revoked']),
             'generation': r['generation'], 'state': r['state'],
             'code_version': r['code_version'], 'last_heartbeat': r['last_heartbeat'],
@@ -456,7 +457,7 @@ def relay_pairing_preview(body: _PairingImportBody, identity=Depends(_resolve_id
     from . import relay, relay_dialer, relay_pairing
     member, endpoint = _pairing_link(body)
     with closing(db.get_connection()) as conn:
-        conflict = relay.remote_member_conflict(conn, member)
+        conflict = relay_pairing.unavailable(conn, member, endpoint)
     if not conflict:
         try:
             member, expires_at = relay_dialer.verify_first_pairing(member, endpoint)
@@ -492,7 +493,7 @@ def relay_pairing_status(pairing_id: str, identity=Depends(_resolve_identity)):
             raise HTTPException(404, '配对不存在')
         result = relay_pairing.view(row)
         if result['state'] == 'confirmed':
-            node = relay.read_node(conn, row['member'])
+            node = relay.read_node(conn, result['node_member'])
             result['connected'] = bool(node and node['state'] == 'online' and not node['credential_revoked'])
     return _pairing_response(result)
 
@@ -513,7 +514,7 @@ def relay_pairing_confirm(pairing_id: str, body: _PairingImportBody, identity=De
         result = relay_pairing.view(row, now=checked_at)
         if result['state'] != 'pending_confirmation':
             return _pairing_response(result, 200 if result['state'] == 'confirmed' else 409)
-        conflict = relay.remote_member_conflict(conn, member)
+        conflict = relay_pairing.unavailable(conn, member, endpoint)
     failure = ('confirmation', 'name_conflict') if conflict else None
     verified = None
     if not failure:
@@ -527,7 +528,7 @@ def relay_pairing_confirm(pairing_id: str, body: _PairingImportBody, identity=De
     if result is None:
         raise HTTPException(404, '配对不存在')
     if created:
-        relay_dialer.start_dial(member)
+        relay_dialer.start_dial(result['node_member'])
     status = 200 if result['state'] == 'confirmed' else 409
     if result['state'] == 'failed' and result['reason'] != 'name_conflict':
         status = 502
@@ -1578,7 +1579,7 @@ def get_profile_candidates(project: str = '', identity=Depends(_resolve_identity
         for row in conn.execute("SELECT b.*, m.profile AS member_profile FROM bots b LEFT JOIN members m ON m.bot_id=b.id WHERE b.profile!='user' ORDER BY b.id"):
             if row['id'] in found or not discovery.candidate_available(row):
                 continue
-            candidates.append({'bot_id': row['id'], 'host_type': row['host_type'], 'profile': row['profile'],
+            candidates.append({'bot_id': row['id'], 'host_type': row['host_type'], 'runtime': row['runtime'], 'profile': row['profile'],
                                'config_root': row['config_root'], 'display_name': row['display_name'],
                                'member_profile': row['member_profile'], 'bound': True,
                                'already_project_member': row['id'] in enrolled})

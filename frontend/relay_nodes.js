@@ -197,6 +197,10 @@
   function bindingFor(member) {
     return bindings.get(member) || [];
   }
+  function remoteName(node) {
+    if (node.host_profile && node.host_profile !== node.member) return node.display_name;
+    return `${node.display_name || node.member}（远程）`;
+  }
   function addLocalBinding(member, ip) {
     if (!bindingFor(member).includes(ip)) bindings.set(member, [...bindingFor(member), ip]);
   }
@@ -448,7 +452,7 @@
     pairingConfirm.disabled = busy || loading || directionBusy || pairingBusy || !pendingPairing;
     pairingPreview.hidden = !pendingPairing;
     if (pendingPairing) {
-      pairingIdentity.textContent = `${selected.display_name || selected.member}（${selected.member}）`;
+      pairingIdentity.textContent = remoteName(selected);
       pairingAddress.textContent = `wss://${pendingPairing.displayHost}:${pendingPairing.port}`;
       pairingFingerprint.textContent = `${pendingPairing.fingerprint.slice(0, 8)}…`;
     }
@@ -665,7 +669,7 @@
       head.className = 'relay-node-head';
       const name = document.createElement('strong');
       name.className = 'relay-node-name';
-      name.textContent = node.display_name || node.member;
+      name.textContent = remoteName(node);
       const badge = document.createElement('span');
       const revoked = !!node.credential_revoked;
       const online = node.state === 'online' && !revoked;
@@ -1132,8 +1136,8 @@
     if (!/^[0-9a-f]{64}$/.test(fingerprint)) throw new Error('配对链接的证书指纹格式不正确。');
     const member = params.get('member') || '';
     const selected = selectedDirectionNode();
-    if (member && selected && member !== selected.member) {
-      throw new Error(`链接属于成员 ${member}，与当前节点 ${selected.member} 不一致。`);
+    if (member && selected && member !== (selected.host_profile || selected.member)) {
+      throw new Error(`链接属于成员 ${member}，与当前节点 ${selected.display_name || selected.member} 不一致。`);
     }
     const displayHost = host.includes(':') ? `[${host}]` : host;
     return {host, displayHost, port, fingerprint, token, member};
@@ -1151,7 +1155,7 @@
       const selected = selectedDirectionNode();
       if (!selected) throw new Error('请先选择节点。');
       pairingPreview.hidden = false;
-      pairingIdentity.textContent = `${selected.display_name || selected.member}（${selected.member}）`;
+      pairingIdentity.textContent = remoteName(selected);
       pairingAddress.textContent = `wss://${pendingPairing.displayHost}:${pendingPairing.port}`;
       pairingFingerprint.textContent = `${pendingPairing.fingerprint.slice(0, 8)}…`;
       report(pairingStatus, '链接有效。请核对设备身份与短指纹，确认后先做可达性和证书预检。');
@@ -1388,7 +1392,8 @@
     },
     async registered(member) {
       await reload(true);
-      if (dialog.open && allowed() && nodesReady) report(nodesStatus, '已添加 ' + member + '。');
+      const node = nodes.find(item => item.member === member);
+      if (dialog.open && allowed() && node) report(nodesStatus, '已添加 ' + remoteName(node) + '。');
     },
     copy,
   });

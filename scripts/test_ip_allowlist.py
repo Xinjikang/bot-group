@@ -180,13 +180,16 @@ class MemberSourceBindingTests(unittest.TestCase):
         pending = self.loop.get(path).json()
         self.assertEqual((pending['state'], pending['member'], pending['peer_ip']),
                          ('pending_confirmation', 'remoteX', IP_C))
-        self.assertEqual(self.loop.post(path + '/confirm').json()['state'], 'confirmed')
+        confirmed = self.loop.post(path + '/confirm').json()
+        self.assertEqual(confirmed['state'], 'confirmed')
+        member = confirmed['node_member']
         persistent = 'isolated-source-test'
         conn = db.get_connection()
         try:
-            self.assertTrue(ip_allowlist.member_allowed(conn, "remoteX", IP_C),
+            self.assertFalse(ip_allowlist.member_allowed(conn, "remoteX", IP_C))
+            self.assertTrue(ip_allowlist.member_allowed(conn, member, IP_C),
                             "兑换后 peer 已登记为该成员来源绑定")
-            row = relay.read_node(conn, "remoteX")
+            row = relay.read_node(conn, member)
             self.assertEqual(row["direction"], "listen")
             self.assertNotEqual(row["state"], "pending", "验证成功后正式登记")
         finally:

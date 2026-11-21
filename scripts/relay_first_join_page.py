@@ -69,7 +69,8 @@ class FirstJoinPage:
     def confirm(self, path, member):
         expect(self.el('relay-join-identity')).to_contain_text(member, timeout=15000)
         view = self.post(path + '/confirm', lambda: self.click('relay-join-confirm')).json()
-        expect(self.page.locator(f'article[data-relay-member="{member}"]')).to_be_visible()
+        route = view['node_member']
+        expect(self.page.locator(f'article[data-relay-member="{route}"]')).to_be_visible()
         return view
 
     def invite(self, lan):
@@ -86,14 +87,16 @@ class FirstJoinPage:
         assert issued['invite_token'] in command and issued['engine_url'] in command
         return issued
 
-    def cards_online(self, *members):
+    def cards_online(self, *members, capture=False):
         self.click('relay-refresh')
         seen = []
         for member in members:
             card = self.page.locator(f'article[data-relay-member="{member}"]')
             expect(card.locator('.relay-badge').first).to_have_text('在线')
             seen.append(card.locator('.relay-node-name').inner_text())
-        assert seen == list(members)
+            if capture:
+                card.locator('.relay-node-head').screenshot(path=self.evidence / f'{member}-label.png')
+        assert set(seen) == {'default（远程）', 'default（远程 2）'}
         self.shot('online')
         return seen
 

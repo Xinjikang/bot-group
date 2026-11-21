@@ -111,8 +111,8 @@ def main() -> int:
                 worker.join(8)
     finally:
         relay_server.close_all()
-        relay_dialer.stop_dial("remoteA")
-        relay_dialer.stop_dial("remoteB")
+        relay_dialer.stop_dial("remote-remoteA")
+        relay_dialer.stop_dial("remote-remoteB")
         ctx.__exit__(None, None, None)
 
     report = evidence / "first-join-evidence.json"
@@ -171,12 +171,13 @@ def _run_first_join_inner(base: str, evidence: Path, findings: dict,
             client_a.stop()
             findings['failures'].append('远端核验后未进入待确认')
             return
-        status, _ = _admin_post(base, pairing_path + '/confirm', client=None)
+        status, confirmed = _admin_post(base, pairing_path + '/confirm', client=None)
         if status != 200:
             client_a.stop()
             findings['failures'].append(f'管理员确认失败: {status}')
             return
-        online_a = _wait(lambda: _node_online("remoteA"), timeout=20)
+        member_a = confirmed['node_member']
+        online_a = _wait(lambda: _node_online(member_a), timeout=20)
     if not online_a:
         client_a.stop()
         findings["failures"].append("方向 A 邀请兑换未建立在线节点")
@@ -184,7 +185,7 @@ def _run_first_join_inner(base: str, evidence: Path, findings: dict,
     # A 保持在线（验收要求 A、B 同时在线取证）
     conn = db.get_connection()
     try:
-        row_a = relay.read_node(conn, "remoteA")
+        row_a = relay.read_node(conn, member_a)
         direction_a = row_a["direction"]
     finally:
         conn.close()
@@ -219,8 +220,9 @@ def _run_first_join_inner(base: str, evidence: Path, findings: dict,
         client_a.stop()
         return
     # The registry can install DialLink just before its database state becomes online.
-    online_b = _wait(lambda: relay_dialer._task_state('remoteB') == 'connected'
-                     and _node_online('remoteB'), timeout=20)
+    member_b = imported['node_member']
+    online_b = _wait(lambda: relay_dialer._task_state(member_b) == 'connected'
+                     and _node_online(member_b), timeout=20)
     if not online_b:
         result["_server"].stop()
         findings["failures"].append("方向 B 拨号未连通（hello_ok 成员上报核验）")
@@ -232,8 +234,8 @@ def _run_first_join_inner(base: str, evidence: Path, findings: dict,
     # --- 三处一致（req#175 验收 5/6）+ 双在线 ---
     conn = db.get_connection()
     try:
-        row_a = relay.read_node(conn, "remoteA")
-        row_b = relay.read_node(conn, "remoteB")
+        row_a = relay.read_node(conn, member_a)
+        row_b = relay.read_node(conn, member_b)
         nodes = relay.list_nodes(conn)
         both_online = (row_a["state"] == "online"
                        and row_b["state"] == "online")
@@ -244,7 +246,7 @@ def _run_first_join_inner(base: str, evidence: Path, findings: dict,
         findings["failures"].append("两节点未同时在线")
         return
     member_names = sorted(r["member"] for r in nodes)
-    if member_names != ["remoteA", "remoteB"]:
+    if member_names != sorted((member_a, member_b)):
         result["_server"].stop()
         findings["failures"].append(f"节点记录不符: {member_names}")
         return
@@ -255,7 +257,7 @@ def _run_first_join_inner(base: str, evidence: Path, findings: dict,
         "engine_nodes": member_names,
         "local_roster_contains_remote": False,
     }
-    findings["steps"].append("三处一致核对通过：上报=引擎接收=节点记录；"
+    findings["steps"].append("宿主上报与引擎登记的独立成员标识已核对；"
                              "本地名册不含远端成员；双节点同时在线")
     # cleanup：双在线+三处一致取证完成后才允许停 remoteB 的 listen
     result["_server"].stop()

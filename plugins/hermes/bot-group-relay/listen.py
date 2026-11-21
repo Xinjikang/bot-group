@@ -428,7 +428,8 @@ class ListenServer:
             "XDG_GROUP_ENGINE_EXECUTION":
                 json.dumps(envelope.get("execution") or {}, ensure_ascii=False),
             "NO_PROXY": "127.0.0.1",
-            "HERMES_PROFILE": self.member,
+            # The session grant names the engine member for this MCP process.
+            "HERMES_PROFILE": (envelope.get("execution") or {}).get("profile") or self.member,
         }
         python = self._mcp_python()
         # 二进制管道（text 模式 universal newlines 会把 '\n' 转 '\r\n'，

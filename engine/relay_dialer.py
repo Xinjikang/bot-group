@@ -333,7 +333,7 @@ def _hello_payload(conn, member: str) -> dict | None:
         activation.update(pairing_ticket=ticket, fingerprint=endpoint['fingerprint'])
     return {
         "relay": {"kind": "hello"},
-        "member": member,
+        "member": row['host_profile'],
         "credential": str(endpoint.get("pairing_token") or ""),
         **activation,
         "code_version": relay_server._engine_release_version() or "",
@@ -393,7 +393,7 @@ def _authenticate_dial(member: str, endpoint: dict, payload: dict, *, probe=Fals
         if meta.get("kind") != "hello_ok" or generation <= 0:
             raise ValueError("插件未返回有效认证回执")
         reported = meta.get("member")
-        if (reported or payload.get('activate_pairing')) and reported != member:
+        if (reported or payload.get('activate_pairing')) and reported != payload['member']:
             raise ValueError("成员上报与配对链接不一致")
         persistent = meta.get('credential') or ''
         if not isinstance(persistent, str) or (persistent and payload.get('activate_pairing')):

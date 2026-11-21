@@ -28,6 +28,15 @@ def _link_hash(member, endpoint):
     return relay.hash_credential(json.dumps([member, endpoint], sort_keys=True))
 
 
+def device_key(member, endpoint):
+    return relay.hash_credential(json.dumps(['dial', member, endpoint['fingerprint']]))
+
+
+def unavailable(conn, member, endpoint):
+    from . import db
+    return db.is_builtin_user(member) or relay.paired_device(conn, device_key(member, endpoint))
+
+
 def _expire(conn, now, attempt=None):
     sql = "UPDATE relay_dial_attempts SET state='expired',candidate=NULL " \
           "WHERE state='pending_confirmation' AND expires_at<=?"
@@ -62,7 +71,7 @@ def create(conn, member, endpoint, remote_expiry):
         conn.execute('BEGIN IMMEDIATE')
         conn.execute('DELETE FROM relay_dial_attempts WHERE expires_at<?', (now - PREVIEW_TTL,))
         _expire(conn, now)
-        if expires <= relay._now() or relay.remote_member_conflict(conn, member):
+        if expires <= relay._now() or unavailable(conn, member, endpoint):
             return None
         attempt = secrets.token_hex(16)
         conn.execute('INSERT INTO relay_dial_attempts '
@@ -73,7 +82,8 @@ def create(conn, member, endpoint, remote_expiry):
 
 
 def read(conn, attempt):
-    return conn.execute('SELECT * FROM relay_dial_attempts WHERE pairing_id=?', (attempt,)).fetchone()
+    return conn.execute('SELECT a.*, n.member AS node_member FROM relay_dial_attempts a '
+                        'LEFT JOIN relay_node_identities n USING(pairing_id) WHERE pairing_id=?', (attempt,)).fetchone()
 
 
 def read_for_confirm(conn, attempt):
@@ -92,6 +102,8 @@ def view(row, *, now=None):
         state = 'expired'
     endpoint = json.loads(row['endpoint'])
     result = {k: row[k] for k in ('pairing_id', 'member', 'expires_at')}
+    if state == 'confirmed':
+        result['node_member'] = row['node_member'] or row['member']
     result.update(direction='dial', state=state, host=endpoint['host'], port=endpoint['port'],
                   tls=True, fingerprint_short=endpoint['fingerprint'][:8])
     if state == 'failed':
@@ -121,7 +133,7 @@ def decide(conn, attempt, *, cancel=False, failure=None, verified=None):
             state = 'failed'
         elif verified is None or not matches(row, verified[0], verified[1]):
             raise ValueError('approval requires verification of the original link')
-        elif relay.remote_member_conflict(conn, member):
+        elif unavailable(conn, member, verified[1]):
             state, stage, reason = 'failed', 'confirmation', 'name_conflict'
         elif min(row['expires_at'], verified[2]) <= relay._now():
             state = 'expired'
@@ -129,8 +141,8 @@ def decide(conn, attempt, *, cancel=False, failure=None, verified=None):
             key = secrets.token_urlsafe(32)
             endpoint = dict(json.loads(row['endpoint']), pairing_token=key, activate_pairing=True,
                             activation_ticket=verified[1]['pairing_token'], activation_expires_at=verified[2])
-            if relay.register_remote_node(conn, member, key, direction='dial', endpoint=endpoint, commit=False) is None:
-                raise RuntimeError('verified outbound identity changed inside the transaction')
+            relay.register_paired_node(conn, attempt, member, relay.hash_credential(key),
+                                       device_key=device_key(member, endpoint), direction='dial', endpoint=endpoint)
             state = 'confirmed'
         conn.execute('UPDATE relay_dial_attempts SET state=?,stage=?,reason=?,candidate=NULL WHERE pairing_id=?',
                      (state, stage, reason, attempt))
