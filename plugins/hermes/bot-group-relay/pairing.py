@@ -103,7 +103,7 @@ def redeem_pairing(*, member: str, token: str, fingerprint: str = "") -> bool:
     with _LOCK:
         state = _load_state()
         pairing = state.get("pairing") or {}
-        if not pairing or pairing.get("redeemed"):
+        if not pairing or pairing.get("redeemed") or (pairing.get('activation') or {}).get('until', 0) > time.time():
             return False
         if pairing.get("member") != member:
             return False
@@ -119,6 +119,50 @@ def redeem_pairing(*, member: str, token: str, fingerprint: str = "") -> bool:
         pairing["redeemed_at"] = time.time()
         _save_state(state)
     logger.info("bot-group relay pairing redeemed member=%s", member)
+    return True
+
+
+def verify_dial_offer(member: str, ticket: str, fingerprint: str, commitment: str = '') -> float | None:
+    """Verify without enabling access. Confirmation may reserve one short-lived activation."""
+    if not isinstance(ticket, str) or not ticket or not isinstance(fingerprint, str) or not fingerprint:
+        return None
+    if commitment and (not isinstance(commitment, str) or len(commitment) != 64
+                       or any(c not in '0123456789abcdef' for c in commitment)):
+        return None
+    with _LOCK:
+        state = _load_state()
+        offer = state.get('pairing') or {}
+        now = time.time()
+        if (offer.get('member') != member or offer.get('redeemed') or offer.get('expires_at', 0) <= now
+                or not hmac.compare_digest(offer.get('token_hash', ''), hashlib.sha256(ticket.encode()).hexdigest())
+                or not hmac.compare_digest(offer.get('fingerprint', ''), fingerprint)):
+            return None
+        if commitment:
+            reserved = offer.get('activation') or {}
+            if reserved.get('until', 0) > now and not hmac.compare_digest(reserved['commitment'], commitment):
+                return None
+            offer['activation'] = {'commitment': commitment, 'until': now + 90}
+            _save_state(state)
+        return offer['expires_at']
+
+
+def activate_dial_offer(member: str, key: str) -> bool:
+    """Consume the reserved offer and install the credential in one state write."""
+    if not isinstance(key, str) or not key:
+        return False
+    digest = hashlib.sha256(key.encode()).hexdigest()
+    with _LOCK:
+        state = _load_state()
+        offer = state.get('pairing') or {}
+        reserved = offer.get('activation') or {}
+        now = time.time()
+        if (offer.get('member') != member or offer.get('redeemed') or reserved.get('until', 0) <= now
+                or not hmac.compare_digest(reserved.get('commitment', ''), digest)):
+            return False
+        offer.update(redeemed=True, redeemed_at=now)
+        offer.pop('activation')
+        state['persistent'] = {'member': member, 'token_hash': digest, 'paired_at': now}
+        _save_state(state)
     return True
 
 

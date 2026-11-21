@@ -180,6 +180,8 @@ def exercise(args, evidence):
             stack.enter_context(patch.object(tickets, 'fetch_ticket', side_effect=gateway.fetch_ticket))
             stack.enter_context(patch.object(plg['mcp_digest'], 'MCP_DIR', ROOT / 'mcp'))
             stack.enter_context(patch.object(plg['pairing'], '_state_path', return_value=home / 'pairing.json'))
+            stack.enter_context(patch.object(plg['config'], 'plugin_version',
+                                             return_value=relay_server._engine_release_version() or ''))
         with closing(db.get_connection()) as conn:
             assert not relay.list_nodes(conn) and not ip_allowlist.list_bindings(conn)
             matches = {r[0] for r in conn.execute('SELECT profile FROM members UNION SELECT profile FROM bots')} & {a, b}
@@ -190,11 +192,17 @@ def exercise(args, evidence):
             lb = listener(pb, hb, args.lan, stack, True)
         url = lb['pairing_url']
         announced = parse_qs(urlsplit(url).query)['member'][0]
-        assert result(api.post('/relay/pairings/preview', json={'pairing_url': url}))['member'] == announced == host_b == b
-        assert result(api.get('/relay/nodes')) == []
-        imported = result(api.post('/relay/pairings/import', json={'pairing_url': url}))
+        preview = result(api.post('/relay/pairings/preview', json={'pairing_url': url}))
+        assert preview['state'] == 'pending_confirmation' and preview['member'] == announced == host_b == b
+        outbound = f"/relay/pairings/{preview['pairing_id']}"
+        assert result(api.get(outbound)) == preview
+        assert result(api.get('/relay/nodes')) == [] and relay_server.active_link(b) is None
+        assert not pb['pairing'].pairing_metadata()['redeemed'] and not pb['pairing']._load_state().get('persistent')
+        assert api.post('/relay/pairings/import', json={'pairing_url': url}).status_code == 409
+        imported = result(api.post(outbound + '/confirm', json={'pairing_url': url}))
         stack.callback(relay_dialer.stop_dial, b)
-        assert imported['member'] == b and imported['imported']
+        assert imported['member'] == b and imported['state'] == 'confirmed'
+        evidence['outbound_confirmation'] = {'preview': preview, 'confirmed': imported}
         assert not result(api.get('/admin/listen/status'))['remote_enabled']
 
         status = result(api.post('/admin/listen', json={'address': args.lan}))
@@ -239,6 +247,7 @@ def exercise(args, evidence):
         both = wait(online)
         wait(lambda: out.generation)
         assert both[a]['direction'] == 'listen' and both[b]['direction'] == 'dial'
+        assert result(api.get(outbound))['connected'] is True
         with closing(db.get_connection()) as conn, conn:
             assert ip_allowlist.list_bindings(conn) == [{'member': a, 'ips': [args.lan]}]
             redeemed = conn.execute('SELECT redeemed,redeemed_by FROM relay_invitations').fetchone()
@@ -251,6 +260,32 @@ def exercise(args, evidence):
                 bot = db._ensure_hermes_bot(conn, member)
                 conn.execute('INSERT INTO members(profile,display_name,bot_id) VALUES(?,?,?)', (member, member, bot))
                 conn.execute("INSERT INTO project_members(project,profile,active,bot_id) VALUES('alpha',?,1,?)", (member, bot))
+        displaced = result(api.post('/relay/invitations'))
+        displaced_path = f"/relay/invitations/{displaced['pairing_id']}"
+        assert result(api.get(displaced_path))['state'] == 'waiting'
+        from websockets.sync.client import connect as connect_ws
+        from websockets.exceptions import ConnectionClosed
+        ws_url = displaced['engine_url'].replace('http:', 'ws:', 1) + '/relay/ws'
+        with connect_ws(ws_url, proxy=None, open_timeout=5) as ws:
+            ws.send(json.dumps({'relay': {'kind': 'hello'}, 'member': a, 'invite': displaced['invite_token'],
+                                'protocol_version': relay_server.RELAY_PROTOCOL_VERSION,
+                                'plugin_version': relay_server._engine_release_version() or '',
+                                'join_proof': 'af' * 32, 'credential_commitment': 'de' * 32}))
+            try:
+                ws.recv(timeout=5)
+            except ConnectionClosed as denied:
+                assert denied.rcvd and denied.rcvd.code == relay_server.CLOSE_BAD_CREDENTIAL
+            else:
+                raise AssertionError('a same-name request was accepted')
+        refusal = result(api.get(displaced_path))
+        assert (refusal['state'], refusal['stage'], refusal['reason'], refusal['member'], refusal['peer_ip']) == (
+            'failed', 'identity', 'name_conflict', a, args.lan)
+        assert {node['member']: node['generation'] for node in result(api.get('/relay/nodes'))} == {
+            member: both[member]['generation'] for member in (a, b)}
+        with closing(db.get_connection()) as conn:
+            assert conn.execute('SELECT redeemed FROM relay_invitations JOIN relay_invitation_attempts '
+                                'USING(token_hash) WHERE pairing_id=?', (displaced['pairing_id'],)).fetchone()[0] == 0
+        evidence['inbound_name_conflict'] = refusal
         stopping = threading.Event()
         stack.enter_context(patch.object(wake, '_shutting_down', stopping))
         known_threads = set(threading.enumerate())

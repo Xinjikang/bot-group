@@ -208,13 +208,31 @@ class ListenServer:
             if protocol_version != relay_config.RELAY_PROTOCOL_VERSION:
                 conn.close(code=4003, reason="protocol mismatch")
                 return
-            # 认证顺序（manager node2057 ①）：一次性配对票（未兑换）→
-            # 持久身份凭据（首次配对成功后签发，重连/切回用，吊销才断）
-            if pairing.redeem_pairing(member=member, token=credential,
-                                      fingerprint=fingerprint):
+            kind = (hello.get('relay') or {}).get('kind')
+            if kind == 'pairing_probe':
+                version = relay_config.plugin_version()
+                if credential or (version and hello.get('code_version') != version):
+                    conn.close(code=4003, reason='version mismatch')
+                    return
+                expiry = pairing.verify_dial_offer(self.member, hello.get('pairing_ticket'), fingerprint,
+                                                   hello.get('commitment', ''))
+                if expiry is None:
+                    conn.close(code=4001, reason='pairing not available')
+                    return
+                conn.send(json.dumps({'relay': {'kind': 'pairing_verified', 'member': self.member,
+                                                 'expires_at': expiry}}))
+                return
+            # Only an approved first join may activate a reserved candidate. Ordinary
+            # reconnects and explicit switching on existing nodes keep their credential path.
+            if pairing.verify_persistent(member, credential):
+                persistent = ''
+            elif hello.get('activate_pairing') is True:
+                if not pairing.activate_dial_offer(member, credential):
+                    conn.close(code=4001, reason='activation unavailable')
+                    return
+                persistent = ''
+            elif pairing.redeem_pairing(member=member, token=credential, fingerprint=fingerprint):
                 persistent = pairing.issue_persistent(member)
-            elif pairing.verify_persistent(member, credential):
-                persistent = ""
             else:
                 conn.close(code=4001, reason="pairing token invalid")
                 return

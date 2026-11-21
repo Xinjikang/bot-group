@@ -398,7 +398,8 @@ def _relay_invitation_decision(pairing_id, identity, *, confirm):
         conn.close()
     if result is None:
         raise HTTPException(404, '邀请不存在')
-    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+    return JSONResponse(result, status_code=409 if confirm and result['state'] == 'failed' else 200,
+                        headers={'Cache-Control': 'no-store'})
 
 
 @router_api.post('/relay/invitations/{pairing_id}/confirm')
@@ -414,91 +415,133 @@ def relay_invitation_cancel(pairing_id: str, identity=Depends(_resolve_identity)
 
 
 class _PairingImportBody(BaseModel):
-    pairing_url: str
+    pairing_url: str = Field(repr=False, description='远端 Hermes 签发的原始 WSS 配对链接')
 
 
-def _parse_pairing_url(pairing_url: str) -> dict:
-    """配对链接解析：wss://advertise:port?pairing_token=...&fingerprint=...
-    &member=...（req#175 插件签发时带宿主实际成员）。格式非法抛 ValueError。"""
+def _parse_pairing_url(pairing_url: str) -> tuple[str, dict]:
+    import re
     from urllib.parse import urlsplit, parse_qs
-    parsed = urlsplit((pairing_url or '').strip())
-    if parsed.scheme not in ('wss', 'ws') or not parsed.hostname:
-        raise ValueError('配对链接格式非法：需要 wss://地址:端口')
+    parsed = urlsplit(pairing_url.strip())
+    if (parsed.scheme != 'wss' or not parsed.hostname or parsed.username is not None
+            or parsed.path not in ('', '/') or parsed.fragment or not parsed.port):
+        raise ValueError('首次配对需要使用 WSS 配对链接')
     query = parse_qs(parsed.query)
     member = (query.get('member') or [''])[0].strip()
     token = (query.get('pairing_token') or [''])[0].strip()
-    fingerprint = (query.get('fingerprint') or [''])[0].strip()
-    if not member or not token or not fingerprint or not parsed.port:
-        raise ValueError('配对链接缺少远端成员、一次性凭据或证书指纹')
-    return {'member': member, 'host': parsed.hostname, 'port': parsed.port,
-            'tls': parsed.scheme == 'wss', 'fingerprint': fingerprint,
-            'pairing_token': token}
+    fingerprint = (query.get('fingerprint') or [''])[0].strip().lower().replace(':', '')
+    if not (re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', member) and token
+            and re.fullmatch(r'[0-9a-f]{64}', fingerprint)):
+        raise ValueError('配对链接缺少有效的成员、一次性凭据或证书指纹')
+    return member, {'host': parsed.hostname, 'port': parsed.port, 'tls': True,
+                    'fingerprint': fingerprint, 'pairing_token': token}
+
+
+def _pairing_link(body):
+    try:
+        return _parse_pairing_url(body.pairing_url)
+    except ValueError:
+        # URL parsing errors may include part of the input. Never echo the link.
+        raise HTTPException(400, '配对链接无效，请从远端 Hermes 重新获取') from None
+
+
+def _pairing_response(data, status=200):
+    return JSONResponse(data, status_code=status, headers={'Cache-Control': 'no-store'})
 
 
 @router_api.post('/relay/pairings/preview')
-def relay_pairing_preview(body: _PairingImportBody,
-                          identity=Depends(_resolve_identity)):
-    """req#175：导入前只读解析配对链接——展示远端身份（配对过程携带的
-    宿主成员）与短指纹供确认；不落库、不建节点、不兑换凭据。"""
+def relay_pairing_preview(body: _PairingImportBody, identity=Depends(_resolve_identity)):
+    """Verify the actual host over pinned WSS without opening a relay channel."""
     _admin_only(identity, 'relay 配对预览仅限管理员')
-    try:
-        parsed = _parse_pairing_url(body.pairing_url)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from None
-    from . import relay
-    conn = db.get_connection()
-    try:
-        exists = relay.remote_member_conflict(conn, parsed['member'])
-    finally:
-        conn.close()
-    return {'member': parsed['member'],
-            'host': parsed['host'], 'port': parsed['port'],
-            'tls': parsed['tls'],
-            'fingerprint_short': parsed['fingerprint'][:8],
-            'name_conflict': exists}
+    from contextlib import closing
+    from . import relay, relay_dialer, relay_pairing
+    member, endpoint = _pairing_link(body)
+    with closing(db.get_connection()) as conn:
+        conflict = relay.remote_member_conflict(conn, member)
+    if not conflict:
+        try:
+            member, expires_at = relay_dialer.verify_first_pairing(member, endpoint)
+        except relay_dialer.PairingProbeError as exc:
+            return _pairing_response({'state': 'failed', 'stage': exc.stage, 'reason': exc.reason,
+                                      'host': endpoint['host'], 'port': endpoint['port']}, 502)
+        with closing(db.get_connection()) as conn:
+            result = relay_pairing.create(conn, member, endpoint, expires_at)
+        if result is not None:
+            return _pairing_response(result)
+        if expires_at <= relay._now():
+            return _pairing_response({'state': 'expired', 'stage': 'verification', 'reason': 'expired'}, 409)
+    return _pairing_response({'state': 'failed', 'member': member, 'stage': 'identity',
+                              'reason': 'name_conflict'}, 409)
 
 
 @router_api.post('/relay/pairings/import')
-def relay_pairing_import(body: _PairingImportBody,
-                         identity=Depends(_resolve_identity)):
-    """Confirm a pairing link. Write the node only after the peer proves identity."""
+def relay_pairing_import(body: _PairingImportBody, identity=Depends(_resolve_identity)):
+    """An unverified import must not bypass the explicit decision."""
     _admin_only(identity, 'relay 配对导入仅限管理员')
-    try:
-        parsed = _parse_pairing_url(body.pairing_url)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from None
-    from . import relay, relay_dialer
-    member = parsed.pop('member')
-    conn = db.get_connection()
-    try:
-        if relay.remote_member_conflict(conn, member):
-            raise HTTPException(409, '同名成员已存在：不得覆盖或接管已有身份')
-    finally:
-        conn.close()
-    if not parsed['tls']:
-        raise HTTPException(400, '首次配对需要使用 WSS 配对链接')
-    result = relay_dialer.verify_first_pairing(member, parsed)
-    if result is None:
-        failure = relay_dialer.dial_failure(member) or {}
-        raise HTTPException(502, f"{member} 配对验证失败（{failure.get('stage', 'auth')}），请检查地址或重新生成配对链接")
-    ws, generation, credential = result
-    handed_off = False
-    try:
-        conn = db.get_connection()
+    _pairing_link(body)
+    return _pairing_response({'state': 'failed', 'stage': 'confirmation', 'reason': 'preview_required'}, 409)
+
+
+@router_api.get('/relay/pairings/{pairing_id}')
+def relay_pairing_status(pairing_id: str, identity=Depends(_resolve_identity)):
+    _admin_only(identity, 'relay 配对状态仅限管理员')
+    from contextlib import closing
+    from . import relay, relay_pairing
+    with closing(db.get_connection()) as conn:
+        row = relay_pairing.read(conn, pairing_id)
+        if row is None:
+            raise HTTPException(404, '配对不存在')
+        result = relay_pairing.view(row)
+        if result['state'] == 'confirmed':
+            node = relay.read_node(conn, row['member'])
+            result['connected'] = bool(node and node['state'] == 'online' and not node['credential_revoked'])
+    return _pairing_response(result)
+
+
+@router_api.post('/relay/pairings/{pairing_id}/confirm')
+def relay_pairing_confirm(pairing_id: str, body: _PairingImportBody, identity=Depends(_resolve_identity)):
+    """Recheck the exact selected identity before atomically registering it."""
+    _admin_only(identity, 'relay 配对操作仅限管理员')
+    from contextlib import closing
+    from . import relay, relay_dialer, relay_pairing
+    member, endpoint = _pairing_link(body)
+    with closing(db.get_connection()) as conn:
+        row = relay_pairing.read(conn, pairing_id)
+        if row is None:
+            raise HTTPException(404, '配对不存在')
+        if not relay_pairing.matches(row, member, endpoint):
+            return _pairing_response({'state': 'failed', 'stage': 'confirmation', 'reason': 'preview_mismatch'}, 409)
+        result = relay_pairing.view(row)
+        if result['state'] != 'pending_confirmation':
+            return _pairing_response(result, 200 if result['state'] == 'confirmed' else 409)
+        conflict = relay.remote_member_conflict(conn, member)
+    failure = ('confirmation', 'name_conflict') if conflict else None
+    if not failure:
         try:
-            endpoint = dict(parsed, pairing_token=credential)
-            if relay.register_remote_node(conn, member, credential,
-                                          direction='dial', endpoint=endpoint) is None:
-                raise HTTPException(409, '同名成员已存在：不得覆盖或接管已有身份')
-        finally:
-            conn.close()
-        relay_dialer.start_dial(member, initial=(ws, generation))
-        handed_off = True
-    finally:
-        if not handed_off:
-            ws.close()
-    return {'member': member, 'direction': 'dial', 'imported': True,
-            'dial_state': relay_dialer._task_state(member)}
+            relay_dialer.verify_first_pairing(member, endpoint, commitment=relay.hash_credential(row['candidate']))
+        except relay_dialer.PairingProbeError as exc:
+            failure = (exc.stage, exc.reason)
+    with closing(db.get_connection()) as conn:
+        result, created = relay_pairing.decide(conn, pairing_id, failure=failure)
+    if result is None:
+        raise HTTPException(404, '配对不存在')
+    if created:
+        relay_dialer.start_dial(member)
+    status = 200 if result['state'] == 'confirmed' else 409
+    if result['state'] == 'failed' and result['reason'] != 'name_conflict':
+        status = 502
+    return _pairing_response(result, status)
+
+
+@router_api.post('/relay/pairings/{pairing_id}/cancel')
+def relay_pairing_cancel(pairing_id: str, identity=Depends(_resolve_identity)):
+    _admin_only(identity, 'relay 配对操作仅限管理员')
+    from contextlib import closing
+    from . import relay_pairing
+    with closing(db.get_connection()) as conn:
+        result, _ = relay_pairing.decide(conn, pairing_id, cancel=True)
+    if result is None:
+        raise HTTPException(404, '配对不存在')
+    return _pairing_response(result, 409 if result['state'] == 'confirmed' else 200)
 
 
 @router_api.post('/relay/nodes/{member}/dial-endpoint')

@@ -1567,6 +1567,10 @@ class FirstJoinTests(unittest.TestCase):
         finally:
             conn.close()
         self.plg = _plugin()
+        versions = patch.object(self.plg['config'], 'plugin_version',
+                                return_value=relay_server._engine_release_version() or '')
+        versions.start()
+        self.addCleanup(versions.stop)
         self._tmpdir = tempfile.TemporaryDirectory(prefix="first-join-")
         self.addCleanup(self._tmpdir.cleanup)
         self._state_patch = patch.object(
@@ -1652,8 +1656,11 @@ class FirstJoinTests(unittest.TestCase):
     def _wait_dial_connected(self, member, timeout=15.0) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if relay_dialer._task_state(member) == "connected":
-                return True
+            if relay_dialer._task_state(member) == 'connected':
+                with closing(db.get_connection()) as conn:
+                    node = relay.read_node(conn, member)
+                if node and node['state'] == 'online':
+                    return True
             time.sleep(0.05)
         return False
 
@@ -1681,13 +1688,18 @@ class FirstJoinTests(unittest.TestCase):
                                            {"pairing_url": pairing_url})
         self.assertEqual(status, 200)
         self.assertEqual(preview["member"], "remoteA")
+        self.assertEqual(preview.get('state'), 'pending_confirmation')
+        self.assertFalse(self.plg['pairing'].pairing_metadata()['redeemed'])
+        self.assertIsNone(result['_server']._active_ws)
+        with closing(db.get_connection()) as conn:
+            self.assertEqual(relay.list_nodes(conn), [])
+        path = f"/relay/pairings/{preview['pairing_id']}"
         self.assertEqual(preview["fingerprint_short"],
                          result["fingerprint_short"])
-        self.assertFalse(preview["name_conflict"], "零节点起步无冲突")
-        status, imported = self._admin_post("/relay/pairings/import",
-                                           {"pairing_url": pairing_url})
+        self.assertEqual(self._admin_post('/relay/pairings/import', {'pairing_url': pairing_url})[0], 409)
+        status, imported = self._admin_post(path + '/confirm', {'pairing_url': pairing_url})
         self.assertEqual(status, 200, f"导入失败: {imported}")
-        self.assertTrue(imported["imported"])
+        self.assertEqual(imported['state'], 'confirmed')
         conn = db.get_connection()
         try:
             row = relay.read_node(conn, "remoteA")
@@ -1700,6 +1712,11 @@ class FirstJoinTests(unittest.TestCase):
             conn.close()
         self.assertTrue(self._wait_dial_connected("remoteA"),
                         "导入后拨号必须认证连通（hello_ok 成员上报一致）")
+        self.assertEqual(self._admin_post(path + '/confirm', {'pairing_url': pairing_url}), (200, imported))
+        self.assertEqual(self._admin_post(path + '/cancel')[0], 409)
+        relay_dialer.stop_dial('remoteA')
+        relay_dialer.start_dial('remoteA')
+        self.assertTrue(self._wait_dial_connected('remoteA'), '同一凭据必须能重新连接，不二次消费配对链接')
         conn = db.get_connection()
         try:
             self.assertEqual(relay.read_node(conn, "remoteA")["state"], "online")
@@ -1711,7 +1728,88 @@ class FirstJoinTests(unittest.TestCase):
         self.assertEqual(status, 409)
         status, preview2 = self._admin_post("/relay/pairings/preview",
                                             {"pairing_url": pairing_url})
-        self.assertTrue(preview2["name_conflict"], "已登记成员 preview 标冲突")
+        self.assertEqual((status, preview2['reason']), (409, 'name_conflict'))
+
+    def test_outbound_rejects_stale_and_cancelled_previews_without_consuming(self):
+        from urllib.parse import urlsplit, parse_qs
+        from engine import relay_pairing
+        plg_listen = self.plg['listen']
+        with patch.object(plg_listen, 'STATE_DIR', Path(self._tmpdir.name)), \
+                patch.object(plg_listen, 'validate_bind_address', return_value='127.0.0.1'):
+            result = plg_listen.listen_serve(address='127.0.0.1', port=0, advertise='127.0.0.1',
+                member='remoteB', home=self._tmpdir.name, tls=True, mcp_entry='')
+        self.addCleanup(result['_server'].stop)
+        url = result['pairing_url']
+        token = parse_qs(urlsplit(url).query)['pairing_token'][0]
+        body = {'pairing_url': url}
+
+        def preview():
+            status, data = self._admin_post('/relay/pairings/preview', body)
+            self.assertEqual((status, data.get('state')), (200, 'pending_confirmation'), data)
+            self.assertNotIn(token, json.dumps(data))
+            return f"/relay/pairings/{data['pairing_id']}", data
+
+        for modified in (url.replace(result['fingerprint'], 'ab' * 32),
+                         url.replace(token, 'invalid-fixture-ticket'), url.replace('member=remoteB', 'member=remoteA')):
+            self.assertEqual(self._admin_post('/relay/pairings/preview', {'pairing_url': modified})[0], 502)
+        cancelled, _ = preview()
+        self.assertEqual(self._admin_post(cancelled + '/confirm', {'pairing_url': url.replace(token, 'other-ticket')})[1]['reason'],
+                         'preview_mismatch')
+        self.assertEqual(self._admin_post(cancelled + '/cancel')[1]['state'], 'cancelled')
+        self.assertEqual(self._admin_post(cancelled + '/confirm', body)[0], 409)
+        expired, e = preview()
+        with patch.object(relay, '_now', return_value=e['expires_at'] + 1):
+            code, stale = self._admin_post(expired + '/confirm', body)
+            self.assertEqual((code, stale['state']), (409, 'expired'))
+        conflicted, _ = preview()
+        self.plg['pairing'].issue_pairing(member='remoteB', advertise='127.0.0.1', port=result['port'],
+                                          fingerprint=result['fingerprint'])
+        status, failed = self._admin_post(conflicted + '/confirm', body)
+        self.assertEqual((status, failed['stage'], failed['reason']), (502, 'auth', 'pairing_refused'))
+        with closing(db.get_connection()) as conn:
+            self.assertFalse(relay.list_nodes(conn) or ip_allowlist.list_bindings(conn))
+            self.assertIsNone(relay_pairing.read(conn, cancelled.rsplit('/', 1)[1])['candidate'])
+        self.assertFalse(self.plg['pairing'].pairing_metadata()['redeemed'])
+        self.assertFalse(self.plg['pairing']._load_state().get('persistent'))
+        self.assertIsNone(result['_server']._active_ws)
+
+    def test_outbound_confirm_losing_local_race_leaves_no_effective_remote_key(self):
+        from concurrent.futures import ThreadPoolExecutor
+        plg_listen = self.plg['listen']
+        with patch.object(plg_listen, 'STATE_DIR', Path(self._tmpdir.name)), \
+                patch.object(plg_listen, 'validate_bind_address', return_value='127.0.0.1'):
+            result = plg_listen.listen_serve(address='127.0.0.1', port=0, advertise='127.0.0.1',
+                member='remoteB', home=self._tmpdir.name, tls=True, mcp_entry='')
+        self.addCleanup(result['_server'].stop)
+        body = {'pairing_url': result['pairing_url']}
+        status, data = self._admin_post('/relay/pairings/preview', body)
+        self.assertEqual(status, 200, data)
+        path = f"/relay/pairings/{data['pairing_id']}"
+        ready, resume = threading.Event(), threading.Event()
+        verify = relay_dialer.verify_first_pairing
+
+        def wait_after_prepare(*args, **kwargs):
+            checked = verify(*args, **kwargs)
+            ready.set()
+            if not resume.wait(8):
+                raise RuntimeError('test did not release the confirmation')
+            return checked
+
+        with patch.object(relay_dialer, 'verify_first_pairing', side_effect=wait_after_prepare), \
+                ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(self._admin_post, path + '/confirm', body)
+            try:
+                self.assertTrue(ready.wait(8))
+                self.assertEqual(self._admin_post(path + '/cancel')[1]['state'], 'cancelled')
+            finally:
+                resume.set()
+            status, cancelled = pending.result(timeout=8)
+        self.assertEqual((status, cancelled['state']), (409, 'cancelled'))
+        self.assertFalse(self.plg['pairing']._load_state().get('persistent'))
+        self.assertFalse(self.plg['pairing'].pairing_metadata()['redeemed'])
+        self.assertIsNone(result['_server']._active_ws)
+        with closing(db.get_connection()) as conn:
+            self.assertFalse(relay.list_nodes(conn) or ip_allowlist.list_bindings(conn))
 
     def test_local_roster_conflict_prevents_pairing(self):
         """An existing local route is not a first-join identity."""
@@ -1720,8 +1818,7 @@ class FirstJoinTests(unittest.TestCase):
         body = {"pairing_url": "wss://127.0.0.1:1?pairing_token=fixture"
                                "&fingerprint=" + "ab" * 32 + "&member=local-taken"}
         status, preview = self._admin_post("/relay/pairings/preview", body)
-        self.assertEqual(status, 200)
-        self.assertIs(preview["name_conflict"], True)
+        self.assertEqual((status, preview['reason']), (409, 'name_conflict'))
         self.assertEqual(self._admin_post("/relay/pairings/import", body)[0], 409)
         with closing(db.get_connection()) as conn:
             self.assertIsNone(relay.read_node(conn, "local-taken"))
@@ -1782,6 +1879,45 @@ class FirstJoinTests(unittest.TestCase):
             self.assertEqual(row["direction"], "dial")
         finally:
             conn.close()
+
+    def test_valid_invitation_reports_same_name_refusal_without_consuming(self):
+        import urllib.request
+        from websockets.sync.client import connect
+        from websockets.exceptions import ConnectionClosed
+        with closing(db.get_connection()) as conn:
+            relay.register_node(conn, 'remoteA', 'existing-isolated-credential')
+        _, issued = self._admin_post('/relay/invitations')
+        base = f'http://127.0.0.1:{self._api_client()}'
+        path = f"/relay/invitations/{issued['pairing_id']}"
+        def status():
+            with urllib.request.urlopen(base + path, timeout=5) as response:
+                return json.load(response)
+        self.assertEqual(status()['state'], 'waiting')
+        version = relay_server._engine_release_version() or ''
+        hello = {'relay': {'kind': 'hello'}, 'member': 'remoteA',
+                 'invite': issued['invite_token'], 'protocol_version': 1,
+                 'plugin_version': version, 'join_proof': 'ab' * 32,
+                 'credential_commitment': 'cd' * 32}
+        for token in ('invalid-fixture-ticket', issued['invite_token']):
+            with connect(base.replace('http:', 'ws:') + '/relay/ws', proxy=None) as ws:
+                ws.send(json.dumps({**hello, 'invite': token}))
+                with self.assertRaises(ConnectionClosed) as rejection:
+                    ws.recv(timeout=5)
+                self.assertEqual(rejection.exception.rcvd.code, 4001)
+            if token != issued['invite_token']:
+                self.assertEqual(status()['state'], 'waiting')
+        failed = status()
+        self.assertEqual((failed['state'], failed['stage'], failed['reason'], failed['member']),
+                         ('failed', 'identity', 'name_conflict', 'remoteA'))
+        self.assertFalse({'token_hash', 'proof_hash', 'credential_commitment', 'invite_token'} & failed.keys())
+        self.assertEqual(self._admin_post(path + '/confirm')[0], 409)
+        self.assertEqual(self._admin_post(path + '/cancel')[1]['state'], 'cancelled')
+        with closing(db.get_connection()) as conn:
+            self.assertEqual(conn.execute('SELECT redeemed FROM relay_invitations').fetchone()[0], 0)
+            self.assertTrue(relay.verify_credential(conn, 'remoteA', 'existing-isolated-credential'))
+            self.assertEqual(len(relay.list_nodes(conn)), 1)
+            self.assertFalse(ip_allowlist.list_bindings(conn))
+        self.assertIsNone(relay_server.active_link('remoteA'))
 
     def test_invitation_hello_cannot_register_until_admin_confirms(self):
         from websockets.sync.client import connect
@@ -1872,6 +2008,9 @@ class FirstJoinTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as pool:
             replies = list(pool.map(lambda issued: self._admin_post(path(issued) + '/confirm'), live))
         self.assertEqual(sorted(status for status, _ in replies), [200, 409])
+        refused = next(body for status, body in replies if status == 409)
+        self.assertEqual((refused['state'], refused['stage'], refused['reason']),
+                         ('failed', 'confirmation', 'name_conflict'))
         confirmed = next(body for status, body in replies if status == 200)
         self.assertEqual(self._admin_post(path(confirmed) + '/confirm')[0], 200)
         with closing(db.get_connection()) as conn:
@@ -1948,7 +2087,7 @@ class FirstJoinTests(unittest.TestCase):
         """不可达端点返回连接错误，不写入节点、凭据或来源绑定。"""
         # 不可达端点（未监听端口）——证书指纹用 64 位假值通过格式校验
         status, imported = self._admin_post(
-            "/relay/pairings/import",
+            "/relay/pairings/preview",
             {"pairing_url": "wss://127.0.0.1:1?pairing_token=deadbeef-"
                             + "a" * 24 + "&fingerprint=" + "ab" * 32
                             + "&member=remoteFail"})
@@ -2066,10 +2205,11 @@ class FirstJoinTests(unittest.TestCase):
                     member="remoteB", home=os.environ.get("TMPDIR", "."),
                     tls=True, mcp_entry="")
             self.addCleanup(result["_server"].stop)
-            status, imported = self._admin_post(
-                "/relay/pairings/import",
-                {"pairing_url": result["pairing_url"]})
-            self.assertEqual(status, 200, f"B 导入失败: {imported}")
+            body = {'pairing_url': result['pairing_url']}
+            status, preview = self._admin_post('/relay/pairings/preview', body)
+            self.assertEqual(status, 200, preview)
+            status, imported = self._admin_post(f"/relay/pairings/{preview['pairing_id']}/confirm", body)
+            self.assertEqual(status, 200, f"B 确认失败: {imported}")
         # --- 双在线 ---
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:

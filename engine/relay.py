@@ -87,14 +87,19 @@ CREATE TABLE IF NOT EXISTS relay_invitation_attempts (
     peer_ip TEXT,
     proof_hash TEXT,
     credential_commitment TEXT,
-    cancelled INTEGER NOT NULL DEFAULT 0
+    cancelled INTEGER NOT NULL DEFAULT 0,
+    failure_stage TEXT
 );
 CREATE INDEX IF NOT EXISTS relay_invitation_expiry ON relay_invitations(expires_at);
 """
 
 
 def initialize(conn) -> None:
-    conn.executescript(SCHEMA)
+    from . import relay_pairing
+    conn.executescript(SCHEMA + relay_pairing.SCHEMA)
+    if 'failure_stage' not in {row[1] for row in conn.execute('PRAGMA table_info(relay_invitation_attempts)')}:
+        conn.execute('ALTER TABLE relay_invitation_attempts ADD COLUMN failure_stage TEXT')
+        conn.commit()
 
 
 def _now() -> float:
@@ -136,7 +141,7 @@ def invitation_open(conn) -> bool:
     """Only live, unconsumed invitations open the unbound WS bootstrap path."""
     return conn.execute(
         "SELECT 1 FROM relay_invitations i JOIN relay_invitation_attempts a USING(token_hash) "
-        "WHERE i.redeemed=0 AND a.cancelled=0 AND i.expires_at>=? LIMIT 1",
+        "WHERE i.redeemed=0 AND a.cancelled=0 AND a.failure_stage IS NULL AND i.expires_at>=? LIMIT 1",
         (_now(),)).fetchone() is not None
 
 
@@ -156,7 +161,8 @@ def _redeem_invitation_hash(conn, token_hash, member, now):
     return conn.execute(
         "UPDATE relay_invitations SET redeemed=1,redeemed_by=?,redeemed_at=? "
         "WHERE token_hash=? AND redeemed=0 AND expires_at>=? AND NOT EXISTS "
-        "(SELECT 1 FROM relay_invitation_attempts a WHERE a.token_hash=? AND a.cancelled=1)",
+        "(SELECT 1 FROM relay_invitation_attempts a WHERE a.token_hash=? "
+        "AND (a.cancelled=1 OR a.failure_stage IS NOT NULL))",
         (member, now, token_hash, now, token_hash)).rowcount == 1
 
 
@@ -172,11 +178,21 @@ def _invitation_view(row, now):
     if row is None:
         return None
     state = ('cancelled' if row['cancelled'] else 'confirmed' if row['redeemed'] else
-             'expired' if row['expires_at'] < now else 'pending_confirmation' if row['member'] else 'waiting')
-    visible = state in ('pending_confirmation', 'confirmed')
-    return {'pairing_id': row['pairing_id'], 'state': state, 'direction': 'listen',
+             'expired' if row['expires_at'] < now else 'failed' if row['failure_stage'] else
+             'pending_confirmation' if row['member'] else 'waiting')
+    visible = state in ('pending_confirmation', 'confirmed', 'failed')
+    view = {'pairing_id': row['pairing_id'], 'state': state, 'direction': 'listen',
             'expires_at': row['expires_at'], 'member': row['member'] if visible else None,
             'peer_ip': row['peer_ip'] if visible else None}
+    if state == 'failed':
+        view.update(stage=row['failure_stage'], reason='name_conflict')
+    return view
+
+
+def _refuse_invitation(conn, pairing_id, member, peer_ip, stage):
+    conn.execute('UPDATE relay_invitation_attempts SET member=?,peer_ip=?,failure_stage=?, '
+                 'proof_hash=NULL,credential_commitment=NULL WHERE pairing_id=?',
+                 (member, peer_ip, stage, pairing_id))
 
 
 def read_invitation(conn, pairing_id):
@@ -199,7 +215,7 @@ def offer_invitation(conn, token, member, peer_ip, proof, commitment):
         conn.execute('BEGIN IMMEDIATE')
         now = _now()
         row = conn.execute(_INVITATION + 'a.token_hash=?', (token_hash,)).fetchone()
-        if row is None or row['cancelled'] or row['expires_at'] < now:
+        if row is None or row['cancelled'] or row['failure_stage'] or row['expires_at'] < now:
             return None
         if row['member'] is not None:
             if (row['member'] != member or row['peer_ip'] != peer_ip
@@ -211,7 +227,10 @@ def offer_invitation(conn, token, member, peer_ip, proof, commitment):
                 if not node or node['credential_revoked'] or not hmac.compare_digest(node['credential_hash'], commitment):
                     return None
             return _invitation_view(row, now)
-        if row['redeemed'] or remote_member_conflict(conn, member):
+        if row['redeemed']:
+            return None
+        if remote_member_conflict(conn, member):
+            _refuse_invitation(conn, row['pairing_id'], member, peer_ip, 'identity')
             return None
         conn.execute('UPDATE relay_invitation_attempts SET member=?,peer_ip=?,proof_hash=?,credential_commitment=? '
                      'WHERE pairing_id=?', (member, peer_ip, proof_hash, commitment, row['pairing_id']))
@@ -229,12 +248,13 @@ def decide_invitation(conn, pairing_id, *, confirm):
             return None
         state = view['state']
         if confirm:
-            if state == 'confirmed':
+            if state == 'confirmed' or state == 'failed':
                 return view
             if state != 'pending_confirmation':
                 raise InvitationConflict('邀请未到达待确认状态或已失效')
             if remote_member_conflict(conn, row['member']):
-                raise InvitationConflict('同名成员已存在：不得覆盖或接管已有身份')
+                _refuse_invitation(conn, pairing_id, row['member'], row['peer_ip'], 'confirmation')
+                return _invitation_view(conn.execute(_INVITATION + 'a.pairing_id=?', (pairing_id,)).fetchone(), now)
             if not _redeem_invitation_hash(conn, row['token_hash'], row['member'], now):
                 raise InvitationConflict('邀请已使用或已失效')
             if _register_remote_node_hash(conn, row['member'], row['credential_commitment'], direction='listen',

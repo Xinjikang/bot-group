@@ -145,6 +145,15 @@ class MemberSourceBindingTests(unittest.TestCase):
                              relay_server.CLOSE_BAD_SOURCE,
                              "未绑定来源且无邀请的成员握手必须被端点拒绝")
 
+    def test_outbound_pairing_decisions_are_admin_only(self):
+        head = self.bot_headers('architect')
+        path = '/relay/pairings/isolated-id'
+        body = {'pairing_url': 'wss://127.0.0.1:1'}
+        self.assertEqual(self.loop.get(path, headers=head).status_code, 403)
+        for endpoint in ('/relay/pairings/preview', '/relay/pairings/import', path + '/confirm', path + '/cancel'):
+            with self.subTest(endpoint=endpoint):
+                self.assertEqual(self.loop.post(endpoint, json=body, headers=head).status_code, 403)
+
     def test_relay_ws_unbound_source_invite_bootstrap_binds(self):
         # req#175 node2118 ①：从未绑定来源首接的唯一通道=管理员签发的一次
         # 性邀请——兑换成功把 peer 登记进该新成员绑定集合（来源 IP 从零

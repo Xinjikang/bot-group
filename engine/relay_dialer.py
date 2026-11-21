@@ -329,6 +329,7 @@ def _hello_payload(conn, member: str) -> dict | None:
         "relay": {"kind": "hello"},
         "member": member,
         "credential": str(endpoint.get("pairing_token") or ""),
+        **({'activate_pairing': True} if endpoint.get('activate_pairing') else {}),
         "code_version": relay_server._engine_release_version() or "",
         "protocol_version": relay_server.RELAY_PROTOCOL_VERSION,
         "direction": "dial",
@@ -343,7 +344,13 @@ def _verify_fingerprint(ws, expected: str, member: str) -> bool:
     return actual == expected
 
 
-def _authenticate_dial(member: str, endpoint: dict, payload: dict, *, first=False):
+class PairingProbeError(ValueError):
+    def __init__(self, stage, reason):
+        self.stage, self.reason = stage, reason
+        super().__init__(reason)
+
+
+def _authenticate_dial(member: str, endpoint: dict, payload: dict, *, probe=False):
     """Verify the pinned peer before sending a pairing ticket; close on failure."""
     from websockets.sync.client import connect as ws_connect
     scheme = "wss" if endpoint.get("tls") else "ws"
@@ -366,21 +373,36 @@ def _authenticate_dial(member: str, endpoint: dict, payload: dict, *, first=Fals
         stage = "auth"
         ws.send(json.dumps(payload, ensure_ascii=False))
         meta = json.loads(ws.recv(timeout=8))["relay"]
+        if probe:
+            import math
+            expiry = meta.get('expires_at')
+            if (meta.get('kind') != 'pairing_verified' or type(expiry) not in (int, float)
+                    or not math.isfinite(expiry)):
+                raise PairingProbeError('auth', 'invalid_receipt')
+            if meta.get('member') != member:
+                raise PairingProbeError('identity', 'member_mismatch')
+            ws.close()
+            return meta['member'], expiry
         generation = int(meta.get("generation") or 0)
         if meta.get("kind") != "hello_ok" or generation <= 0:
             raise ValueError("插件未返回有效认证回执")
         reported = meta.get("member")
-        if (first or reported) and reported != member:
+        if (reported or payload.get('activate_pairing')) and reported != member:
             raise ValueError("成员上报与配对链接不一致")
-        persistent = meta.get("credential") or ""
-        if first and (not isinstance(persistent, str) or not persistent.strip()):
-            raise ValueError("插件未返回持久凭据，请重新生成配对链接")
+        persistent = meta.get('credential') or ''
+        if not isinstance(persistent, str) or (persistent and payload.get('activate_pairing')):
+            raise ValueError('插件返回了非预期的连接凭据')
         return ws, generation, persistent
     except Exception as exc:  # network, protocol or authentication failure
         if ws is not None:
             ws.close()
         if stage == "tcp":
             stage = _classify_connect_error(exc)
+        if probe:
+            if isinstance(exc, PairingProbeError):
+                raise
+            reason = {'tls': 'fingerprint_mismatch', 'auth': 'pairing_refused'}.get(stage, 'unreachable')
+            raise PairingProbeError(stage, reason) from None
         detail = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
         _record_failure(member, stage, uri, detail)
         logger.warning("relay dial failed member=%s stage=%s error=%s",
@@ -388,14 +410,15 @@ def _authenticate_dial(member: str, endpoint: dict, payload: dict, *, first=Fals
         return None
 
 
-def verify_first_pairing(member: str, endpoint: dict):
-    """Run the initial, identity-bearing handshake without writing a node."""
+def verify_first_pairing(member: str, endpoint: dict, *, commitment=''):
+    """Ask the pinned plugin for its verified identity without a relay login."""
     return _authenticate_dial(member, endpoint, {
-        "relay": {"kind": "hello"}, "member": member,
-        "credential": endpoint["pairing_token"], "direction": "dial",
+        "relay": {"kind": "pairing_probe"}, "member": member,
+        "pairing_ticket": endpoint["pairing_token"], "fingerprint": endpoint['fingerprint'],
+        "commitment": commitment, "direction": "dial",
         "code_version": relay_server._engine_release_version() or "",
         "protocol_version": relay_server.RELAY_PROTOCOL_VERSION,
-    }, first=True)
+    }, probe=True)
 
 
 def dial_once(member: str, *, initial=None) -> bool:

@@ -22,6 +22,7 @@ import socket
 import sys
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 
 # 直跑（非 -m unittest）时把仓库根放进 sys.path，供 scripts.* 导入
@@ -101,7 +102,10 @@ def main() -> int:
                 time.sleep(0.02)
             base = f"http://{options.host}:{options.port}"
             try:
-                _run_first_join(base, evidence, findings)
+                from unittest.mock import patch
+                from engine import config
+                with patch.object(config, 'port', return_value=options.port):
+                    _run_first_join(base, evidence, findings)
             finally:
                 server.should_exit = True
                 worker.join(8)
@@ -199,20 +203,24 @@ def _run_first_join_inner(base: str, evidence: Path, findings: dict,
                 tls=True, mcp_entry="")
     pairing_url = result["pairing_url"]
     assert "member=remoteB" in pairing_url, "配对链接必须携带远端成员"
-    status, preview = _admin_post(base, "/relay/pairings/preview",
-                                  {"pairing_url": pairing_url}, client=None)
-    if status != 200 or preview["member"] != "remoteB":
-        findings["failures"].append(f"配对预览异常: {status} {preview}")
-        result["_server"].stop()
+    with _mock.patch.object(plg_config, 'plugin_version', return_value=engine_version):
+        status, preview = _admin_post(base, '/relay/pairings/preview',
+                                      {'pairing_url': pairing_url}, client=None)
+        if status != 200 or (preview['state'], preview['member']) != ('pending_confirmation', 'remoteB'):
+            findings['failures'].append(f'配对预览异常: {status} {preview}')
+            result['_server'].stop()
+            client_a.stop()
+            return
+        status, imported = _admin_post(base, f"/relay/pairings/{preview['pairing_id']}/confirm",
+                                       {'pairing_url': pairing_url}, client=None)
+    if status != 200 or imported['state'] != 'confirmed':
+        findings['failures'].append(f'配对确认失败: {status} {imported}')
+        result['_server'].stop()
+        client_a.stop()
         return
-    status, imported = _admin_post(base, "/relay/pairings/import",
-                                   {"pairing_url": pairing_url}, client=None)
-    if status != 200:
-        findings["failures"].append(f"配对导入失败: {status} {imported}")
-        result["_server"].stop()
-        return
-    online_b = _wait(lambda: relay_dialer._task_state("remoteB") == "connected",
-                     timeout=20)
+    # The registry can install DialLink just before its database state becomes online.
+    online_b = _wait(lambda: relay_dialer._task_state('remoteB') == 'connected'
+                     and _node_online('remoteB'), timeout=20)
     if not online_b:
         result["_server"].stop()
         findings["failures"].append("方向 B 拨号未连通（hello_ok 成员上报核验）")
