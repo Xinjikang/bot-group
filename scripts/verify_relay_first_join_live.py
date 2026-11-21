@@ -200,10 +200,12 @@ def _run_first_join_inner(base: str, evidence: Path, findings: dict,
         return
     online_b = _wait(lambda: relay_dialer._task_state("remoteB") == "connected",
                      timeout=20)
-    result["_server"].stop()
     if not online_b:
+        result["_server"].stop()
         findings["failures"].append("方向 B 拨号未连通（hello_ok 成员上报核验）")
         return
+    # 注意：remoteB 的 listen 必须保持在线直到双在线+三处一致断言完成
+    # （dial 依赖 listen；提前 stop 会让 remoteB 掉线，双在线断言误报）
     findings["steps"].append("方向 B 节点: member=remoteB direction=dial 在线")
 
     # --- 三处一致（req#175 验收 5/6）+ 双在线 ---
@@ -217,10 +219,12 @@ def _run_first_join_inner(base: str, evidence: Path, findings: dict,
     finally:
         conn.close()
     if not both_online:
+        result["_server"].stop()
         findings["failures"].append("两节点未同时在线")
         return
     member_names = sorted(r["member"] for r in nodes)
     if member_names != ["remoteA", "remoteB"]:
+        result["_server"].stop()
         findings["failures"].append(f"节点记录不符: {member_names}")
         return
     # 名册核验：本地名册不存在这两个成员（enable_members 只建 alpha 项目）
@@ -232,6 +236,8 @@ def _run_first_join_inner(base: str, evidence: Path, findings: dict,
     }
     findings["steps"].append("三处一致核对通过：上报=引擎接收=节点记录；"
                              "本地名册不含远端成员；双节点同时在线")
+    # cleanup：双在线+三处一致取证完成后才允许停 remoteB 的 listen
+    result["_server"].stop()
 
 
 def _node_online(member: str) -> bool:
