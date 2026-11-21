@@ -62,7 +62,8 @@ async def send_mcp(gateway, received, expected_url, text):
     spec = gateway.sessions[received['session_id']]['mcp']
     configured = {entry['name']: entry['value'] for entry in spec['env']}
     assert configured['GROUP_ENGINE_URL'] == expected_url
-    assert Path(spec['command']).samefile(sys.executable) and Path(spec['args'][0]).samefile(ROOT / 'mcp/server.py')
+    assert Path(spec['command']).samefile(sys.executable)
+    assert Path(spec['args'][0]).samefile(gateway.expected_mcp_entry)
     env = {k: os.environ[k] for k in ('PATH', 'SYSTEMROOT', 'TEMP', 'TMP') if k in os.environ}
     env.update(configured, NO_PROXY='*', PYTHONUTF8='1', HERMES_HOME=str(gateway.home))
     params = StdioServerParameters(command=spec['command'], args=['-B', *spec['args']], cwd=str(gateway.home), env=env)
@@ -116,6 +117,10 @@ def mention(api, gateway, other, uri, label):
     assert tuple(received[k] for k in ('session_id', 'submission_id', 'admission_id')) == tuple(
         execution[k] for k in ('session_id', 'submission_id', 'admission_id'))
     assert opening in received['text'] and execution['parent_id'] == named['message_id']
+    verification = None
+    if label == 'after-b':
+        verification = result(api.post(f'/relay/nodes/{member}/mcp-verify'))
+        assert verification['mcp_verify_state'] == 'ok', verification
     mid = asyncio.run(asyncio.wait_for(send_mcp(gateway, received, uri, reply), 35))
     # This is a one-answer experiment. The administrator closes the topic after
     # the reply, before releasing the runner to schedule ordinary discussion.
@@ -139,7 +144,8 @@ def mention(api, gateway, other, uri, label):
     return {'thread_id': tid, 'member': member, 'mention_id': row['id'], 'reply_id': mid,
             'job_id': job['id'], 'job_status': status['status'], 'session_id': received['session_id'],
             'submission_id': received['submission_id'], 'remote_admission_id': received['admission_id'],
-            'target_receives': 1, 'non_target_receives': 0}
+            'target_receives': 1, 'non_target_receives': 0,
+            **({'mcp_read': verification['mcp_verify_state']} if verification else {})}
 
 
 def exercise(args, evidence):
@@ -167,7 +173,8 @@ def exercise(args, evidence):
         api = stack.enter_context(httpx.Client(base_url=f'http://127.0.0.1:{args.port}', timeout=25, trust_env=False))
         remote = stack.enter_context(httpx.Client(base_url=f'http://{args.lan}:{args.port}', timeout=5, trust_env=False))
         a, b = 'fixture-cloud-a', 'fixture-cloud-b'
-        pa, pb = _plugin_modules('first_join_a'), _plugin_modules('first_join_b')
+        plugin_args = (args.plugin_dir,) if args.plugin_dir else ()
+        pa, pb = _plugin_modules('first_join_a', *plugin_args), _plugin_modules('first_join_b', *plugin_args)
         ha, hb = Path(path).parent / 'host-a', Path(path).parent / 'host-b'
         gateway_a = stack.enter_context(DispatchGateway(a, ha).listen())
         gateway_b = stack.enter_context(DispatchGateway(b, hb).listen())
@@ -178,10 +185,17 @@ def exercise(args, evidence):
             home.mkdir()
             tickets = importlib.import_module(plg['config'].__package__ + '.tickets')
             stack.enter_context(patch.object(tickets, 'fetch_ticket', side_effect=gateway.fetch_ticket))
-            stack.enter_context(patch.object(plg['mcp_digest'], 'MCP_DIR', ROOT / 'mcp'))
+            if args.plugin_dir:
+                gateway.expected_mcp_entry = args.plugin_dir / 'mcp' / 'server.py'
+                version = plg['config'].plugin_version()
+                assert version == relay_server._engine_release_version()
+                evidence['package_version'] = version
+            else:
+                gateway.expected_mcp_entry = ROOT / 'mcp' / 'server.py'
+                stack.enter_context(patch.object(plg['mcp_digest'], 'MCP_DIR', ROOT / 'mcp'))
+                stack.enter_context(patch.object(plg['config'], 'plugin_version',
+                                                 return_value=relay_server._engine_release_version() or ''))
             stack.enter_context(patch.object(plg['pairing'], '_state_path', return_value=home / 'pairing.json'))
-            stack.enter_context(patch.object(plg['config'], 'plugin_version',
-                                             return_value=relay_server._engine_release_version() or ''))
         with closing(db.get_connection()) as conn:
             assert not relay.list_nodes(conn) and not ip_allowlist.list_bindings(conn)
             matches = {r[0] for r in conn.execute('SELECT profile FROM members UNION SELECT profile FROM bots')} & {a, b}
@@ -190,32 +204,39 @@ def exercise(args, evidence):
         with host_env(b, hb):
             host_b = pb['config'].host_member()
             lb = listener(pb, hb, args.lan, stack, True)
+        ui = None
+        if args.browser:
+            from scripts.relay_first_join_page import FirstJoinPage
+            ui = FirstJoinPage(stack, str(api.base_url), args.evidence)
         url = lb['pairing_url']
         announced = parse_qs(urlsplit(url).query)['member'][0]
-        preview = result(api.post('/relay/pairings/preview', json={'pairing_url': url}))
+        preview = ui.preview(url) if ui else result(api.post('/relay/pairings/preview', json={'pairing_url': url}))
         assert preview['state'] == 'pending_confirmation' and preview['member'] == announced == host_b == b
         outbound = f"/relay/pairings/{preview['pairing_id']}"
         assert result(api.get(outbound)) == preview
         assert result(api.get('/relay/nodes')) == [] and relay_server.active_link(b) is None
         assert not pb['pairing'].pairing_metadata()['redeemed'] and not pb['pairing']._load_state().get('persistent')
         assert api.post('/relay/pairings/import', json={'pairing_url': url}).status_code == 409
-        imported = result(api.post(outbound + '/confirm', json={'pairing_url': url}))
+        imported = ui.confirm(outbound, b) if ui else result(api.post(outbound + '/confirm', json={'pairing_url': url}))
         stack.callback(relay_dialer.stop_dial, b)
         assert imported['member'] == b and imported['state'] == 'confirmed'
         evidence['outbound_confirmation'] = {'preview': preview, 'confirmed': imported}
         assert not result(api.get('/admin/listen/status'))['remote_enabled']
 
-        status = result(api.post('/admin/listen', json={'address': args.lan}))
+        if ui:
+            issued = ui.invite(args.lan)
+            status = result(api.get('/admin/listen/status'))
+        else:
+            status = result(api.post('/admin/listen', json={'address': args.lan}))
+            issued = result(api.post('/relay/invitations'))
         stack.callback(listen_control.ensure, None)
         assert status['remote_enabled'] and status['remote_address'] == args.lan, status
         assert remote.get('/health').status_code == 403
-        issued = result(api.post('/relay/invitations'))
         assert issued['listen_configured'] and issued['engine_url'] == str(remote.base_url).rstrip('/')
         with host_env(a, ha):
             cfg = pa['config'].load(SimpleNamespace(extra={'engine_url': issued['engine_url'], 'invite': issued['invite_token'],
                                                            'mcp_python': sys.executable}))
         assert cfg and cfg.member == a and Path(cfg.home) == ha
-        stack.enter_context(patch.object(pa['config'], 'plugin_version', return_value=relay_server._engine_release_version() or ''))
         out = importlib.import_module(pa['config'].__package__ + '.relay').RelayClient(cfg)
         out.start()
         stack.callback(out.stop)
@@ -234,7 +255,7 @@ def exercise(args, evidence):
         with closing(db.get_connection()) as conn:
             assert not ip_allowlist.list_bindings(conn)
         assert remote.get('/health').status_code == 403
-        confirmed = result(api.post(invitation + '/confirm'))
+        confirmed = ui.confirm(invitation, a) if ui else result(api.post(invitation + '/confirm'))
         assert confirmed['state'] == 'confirmed' and confirmed['member'] == a
         assert result(api.post(invitation + '/confirm'))['state'] == 'confirmed'
         assert api.post(invitation + '/cancel').status_code == 409
@@ -256,10 +277,11 @@ def exercise(args, evidence):
                                              'peer': both[a]['peer_ip']},
                                       'b': {'host': host_b, 'link': announced, 'authenticated': imported['member'],
                                             'node': both[b]['member']}}
-            for member in (a, b):
-                bot = db._ensure_hermes_bot(conn, member)
-                conn.execute('INSERT INTO members(profile,display_name,bot_id) VALUES(?,?,?)', (member, member, bot))
-                conn.execute("INSERT INTO project_members(project,profile,active,bot_id) VALUES('alpha',?,1,?)", (member, bot))
+        if ui:
+            evidence['page_members'] = ui.cards_online(a, b)
+        for member in (a, b):
+            enrolled = result(api.post('/members', json={'profile': member, 'project': 'alpha', 'active': True}))
+            assert enrolled['profile'] == member and enrolled['active'] == 1
         displaced = result(api.post('/relay/invitations'))
         displaced_path = f"/relay/invitations/{displaced['pairing_id']}"
         assert result(api.get(displaced_path))['state'] == 'waiting'
@@ -298,18 +320,28 @@ def exercise(args, evidence):
                     assert not worker.is_alive(), 'isolated engine worker did not stop'
 
         stack.callback(stop_workers)
+        dispatch = mention
+        if ui:
+            # Playwright owns the main thread's event loop. MCP stdio needs its own.
+            from concurrent.futures import ThreadPoolExecutor
+            worker = stack.enter_context(ThreadPoolExecutor(max_workers=1))
+            def dispatch(*args):
+                return worker.submit(mention, *args).result()
         evidence['replies'] = []
-        evidence['replies'].append(mention(api, gateway_a, gateway_b, issued['engine_url'], 'before-a'))
-        evidence['replies'].append(mention(api, gateway_b, gateway_a, lb['proxy_url'], 'before-b'))
+        evidence['replies'].append(dispatch(api, gateway_a, gateway_b, issued['engine_url'], 'before-a'))
+        evidence['replies'].append(dispatch(api, gateway_b, gateway_a, lb['proxy_url'], 'before-b'))
         orig = relay_server.active_link(b)
         assert orig is not None
         with host_env(a, ha):
             reverse = listener(pa, ha, args.lan, stack, False)
-        link = urlsplit(reverse['pairing_url'])
-        fields = parse_qs(link.query)
-        result(api.post(f'/relay/nodes/{a}/dial-endpoint', json={'host': link.hostname, 'port': link.port,
-               'tls': True, 'fingerprint': fields['fingerprint'][0], 'pairing_token': fields['pairing_token'][0]}))
-        result(api.post(f'/relay/nodes/{a}/switch', json={'direction': 'dial'}))
+        if ui:
+            ui.switch(a, reverse['pairing_url'])
+        else:
+            link = urlsplit(reverse['pairing_url'])
+            fields = parse_qs(link.query)
+            result(api.post(f'/relay/nodes/{a}/dial-endpoint', json={'host': link.hostname, 'port': link.port,
+                   'tls': True, 'fingerprint': fields['fingerprint'][0], 'pairing_token': fields['pairing_token'][0]}))
+            result(api.post(f'/relay/nodes/{a}/switch', json={'direction': 'dial'}))
         stack.callback(relay_dialer.stop_dial, a)
 
         def switched():
@@ -319,20 +351,28 @@ def exercise(args, evidence):
         after = wait(switched)
         assert after[b]['direction'] == 'dial' and relay_server.active_link(b) is orig
         evidence['switch'] = {m: {k: after[m][k] for k in ('direction', 'state', 'generation')} for m in (a, b)}
-        evidence['replies'].append(mention(api, gateway_b, gateway_a, lb['proxy_url'], 'after-b'))
+        evidence['replies'].append(dispatch(api, gateway_b, gateway_a, lb['proxy_url'], 'after-b'))
         assert relay_server.active_link(b) is orig
         evidence['actual_submissions'] = {a: len(gateway_a.submit_requests), b: len(gateway_b.submit_requests)}
         assert evidence['actual_submissions'] == {a: 1, b: 2}
+        if ui:
+            ui.finish(a, b)
         assert not gateway_a.errors and not gateway_b.errors, (gateway_a.errors, gateway_b.errors)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--plugin-dir', type=Path, help='Extracted distribution to verify with its bundled MCP')
+    parser.add_argument('--browser', action='store_true', help='Perform pairing and switching in Chrome')
     parser.add_argument('--lan', required=True)
     parser.add_argument('--port', required=True, type=int)
     parser.add_argument('--evidence', required=True, type=Path)
     parser.add_argument('--hermes-source', type=Path)
     args = parser.parse_args()
+    if args.plugin_dir:
+        args.plugin_dir = args.plugin_dir.resolve()
+        if not all((args.plugin_dir / path).is_file() for path in ('VERSION', 'manifest.json', 'mcp/server.py')):
+            parser.error('--plugin-dir requires an extracted relay distribution')
     address = ipaddress.IPv4Address(args.lan)
     if address.is_loopback or address.is_unspecified or not (address.is_private or address in ipaddress.ip_network('100.64.0.0/10')):
         parser.error('--lan requires a private non-loopback address')

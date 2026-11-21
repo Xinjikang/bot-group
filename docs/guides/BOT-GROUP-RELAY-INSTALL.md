@@ -8,19 +8,20 @@ gateway `/api/ws`，并把本机事件帧回传引擎。插件职责收窄为「
 ## 1. 前置
 
 - ECS 上 Hermes gateway 已安装且常驻运行（systemd 托管），`$HERMES_HOME` 已确定；
-- 引擎侧已完成该成员的节点注册（`POST /relay/nodes`），拿到**成员名**与**连接凭据**；
+- 办公机引擎与云端插件均支持首次配对，管理员可打开引擎设置中的“远程节点”。
 - 分发包 `bot-group-relay-<version>.tar.gz` 与主包同 tag 构建（`engine/maintenance/make_release.py`
   产出，SHA256 见同目录 `SHA256SUMS`）。
 
 ## 2. 安装
 
 ```bash
-mkdir -p "$HERMES_HOME/plugins"
+mkdir -p "$HERMES_HOME/plugins/bot-group-relay"
 cd "$HERMES_HOME/plugins"
 curl -O <资产URL>/bot-group-relay-<version>.tar.gz
 tar -xzf bot-group-relay-<version>.tar.gz -C bot-group-relay   # 解到插件目录
 cd bot-group-relay
 ./install.sh    # 建独立 venv（python3 -m venv venv）并按 requirements.lock 装依赖
+hermes plugins enable bot-group-relay
 ```
 
 安装脚本只建 venv + 按锁文件安装随包 MCP 依赖——不 clone 仓库、不手动 pip。
@@ -29,7 +30,14 @@ cd bot-group-relay
 
 ## 3. 配置
 
-在 gateway 的 profile 配置（`.env`）里填四项：
+首次接入在办公机设置中打开“远程节点”，选择“添加远程 Hermes”。
+
+- 云端主动连接办公机时，选择“云端连本机”。选取云端可达的办公机网卡并启用监听。使用 Tailscale 时选择办公机的 Tailscale 地址。在目标 Hermes profile 下运行页面生成的邀请命令，保持命令运行，回到页面核对成员和来源 IP，再点“确认添加”。插件读取该 profile 的实际身份。邀请只用于首次配对，后续连接使用插件在本机保存的凭据。
+- 办公机主动连接云端时，在目标 profile 运行 `hermes bot-group-relay listen --address <云端网卡地址> --port <监听端口>`。将输出的配对链接粘贴到“本机连云端”，核对经验证的成员与短证书指纹并确认。主窗口显示该节点的实际连接状态。
+
+CLI 的连接随前台命令运行。常驻 gateway 插件使用该 profile 的配置，首次主动连接办公机可配置 `BOT_GROUP_ENGINE_URL` 和一次性 `BOT_GROUP_RELAY_INVITE`。项目成员资格单独管理，节点卡中的在线状态表示连接已建立。
+
+使用已有节点连接凭据的部署可保留以下配置：
 
 | 配置项 | 说明 |
 | --- | --- |

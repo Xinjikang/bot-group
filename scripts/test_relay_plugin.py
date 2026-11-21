@@ -42,7 +42,7 @@ def _load_plugin(plugin_dir: Path | None = None,
     parent.__path__ = [str(plugin_dir.parent)]
     sys.modules[parent.__name__] = parent
     spec = importlib.util.spec_from_file_location(
-        f"{module_name}.__init__", plugin_dir / "__init__.py",
+        module_name, plugin_dir / "__init__.py",
         submodule_search_locations=[str(plugin_dir)])
     mod = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = mod
@@ -233,6 +233,17 @@ class FakeGateway:
 def make_cfg(engine_url: str, *, mcp_python: str = "", home: str = "/home/bot/.hermes") -> RelayConfig:
     return RelayConfig(engine_url=engine_url, member=MEMBER, credential=CREDENTIAL,
                        mcp_python=mcp_python, home=home)
+
+
+class GatewayInvitationConfigTests(unittest.TestCase):
+    def test_invite_only_profile_is_enabled_for_gateway_startup(self):
+        cfg = types.SimpleNamespace(extra={"invite": "test-invite", "engine_url": "http://fixture.invalid"})
+        with mock.patch.dict(os.environ, {"HERMES_HOME": str(_PLUGIN_DIR)}, clear=True), mock.patch.object(
+            _plugin.config, "host_member", return_value="remote"
+        ):
+            self.assertTrue(_plugin.is_connected(cfg))
+            cfg.extra.pop('invite')
+            self.assertFalse(_plugin.is_connected(cfg))
 
 
 class TicketTests(unittest.TestCase):

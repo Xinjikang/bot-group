@@ -33,7 +33,7 @@ def check_requirements() -> bool:
 
 
 def validate_config(config) -> bool:
-    """必须配置引擎地址、成员名与连接凭据才能出站。"""
+    """校验持久凭据或首次邀请所需的连接配置。"""
     from . import config as relay_config
     try:
         return bool(relay_config.load(config))
@@ -43,13 +43,8 @@ def validate_config(config) -> bool:
 
 
 def is_connected(config) -> bool:
-    """配置了引擎地址、成员名与连接凭据即视为启用（连接状态由出站线程实时维护）。"""
-    from . import config as relay_config
-    try:
-        loaded = relay_config.load(config)
-        return bool(loaded and loaded.engine_url and loaded.member and loaded.credential)
-    except Exception:
-        return False
+    """Include invite-only profiles when the gateway selects enabled platforms."""
+    return validate_config(config)
 
 
 def register(ctx) -> None:
