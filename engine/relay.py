@@ -114,45 +114,62 @@ def issue_invitation(conn, *, ttl_seconds: float = INVITATION_TTL_SECONDS,
     return {"invite_token": token, "expires_at": now + ttl_seconds}
 
 
-def redeem_invitation(conn, token: str, member: str, *, now=None) -> bool:
-    """邀请兑换：未过期、未兑换才通过；成功后置 redeemed 并记录兑换者。
-    同名冲突（member 已存在节点）由调用方先查再兑换——兑换只保证单次。"""
+def invitation_open(conn) -> bool:
+    """Whether the administrator has issued a currently redeemable invitation."""
+    return conn.execute(
+        "SELECT 1 FROM relay_invitations WHERE redeemed=0 AND expires_at>=? LIMIT 1",
+        (_now(),)).fetchone() is not None
+
+
+def redeem_invitation(conn, token: str, member: str, *, now=None,
+                      commit: bool = True) -> bool:
+    """Atomically consume an unexpired invitation; caller may defer commit."""
     if not token:
         return False
     now = _now() if now is None else now
-    row = conn.execute("SELECT * FROM relay_invitations WHERE token_hash=?",
-                       (hash_credential(token),)).fetchone()
-    if row is None or row["redeemed"] or now > row["expires_at"]:
-        return False
-    conn.execute(
+    cursor = conn.execute(
         "UPDATE relay_invitations SET redeemed=1,redeemed_by=?,redeemed_at=? "
-        "WHERE token_hash=? AND redeemed=0",
-        (member, now, hash_credential(token)))
-    conn.commit()
-    return conn.total_changes > 0
+        "WHERE token_hash=? AND redeemed=0 AND expires_at>=?",
+        (member, now, hash_credential(token), now))
+    if commit:
+        conn.commit()
+    return cursor.rowcount == 1
+
+
+def remote_member_conflict(conn, member: str) -> bool:
+    """Protect both engine routing identities and existing host profiles."""
+    return member == "user" or conn.execute(
+        "SELECT 1 FROM relay_nodes WHERE member=? "
+        "UNION ALL SELECT 1 FROM members WHERE profile=? "
+        "UNION ALL SELECT 1 FROM bots WHERE profile=? "
+        "UNION ALL SELECT 1 FROM project_members WHERE profile=? LIMIT 1",
+        (member, member, member, member)).fetchone() is not None
 
 
 def register_remote_node(conn, member: str, credential: str, *, direction: str,
-                         peer_ip: str = "", now=None) -> dict | None:
-    """req#175：按远端上报成员建独立节点——member 已存在（本地名册成员或
-    已登记节点）返回 None（同名冲突不覆盖、不接管），否则新建并返回节点。
-    direction：'dial'（本机连云端，导入配对链接）/'listen'（云端连本机，
-    邀请兑换）。peer_ip 给定时写入该成员首个来源绑定（首接自动绑定，
-    来源 IP 从零走通不需要管理员预知云端地址）。"""
-    if read_node(conn, member) is not None:
+                         peer_ip: str = "", endpoint: dict | None = None,
+                         commit: bool = True, now=None) -> dict | None:
+    """Register after authentication. The caller may include invitation redemption
+    in the same transaction. A name conflict never updates an existing identity.
+    """
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    if remote_member_conflict(conn, member):
+        if commit:
+            conn.rollback()
         return None
     now = _now() if now is None else now
     conn.execute(
-        "INSERT INTO relay_nodes (member, credential_hash, direction, "
-        "created_at, updated_at) VALUES (?,?,?,?,?)",
-        (member, hash_credential(credential), direction, now, now))
-    conn.commit()
+        "INSERT INTO relay_nodes (member, credential_hash, direction, dial_endpoint, "
+        "created_at, updated_at) VALUES (?,?,?,?,?,?)",
+        (member, hash_credential(credential), direction,
+         json.dumps(endpoint) if endpoint else "", now, now))
     if peer_ip:
         from . import ip_allowlist
-        # 回环恒放行无需登记（ip_allowlist.set_bindings 拒绝回环）；只有
-        # 非回环首接才自动首绑（req#175 来源 IP 从零走通）。
         if not ip_allowlist._is_loopback(peer_ip):
-            ip_allowlist.set_bindings(conn, member, [peer_ip])
+            ip_allowlist.add_binding(conn, member, peer_ip, commit=False)
+    if commit:
+        conn.commit()
     return read_node(conn, member)
 
 
@@ -765,9 +782,7 @@ def set_direction(conn, member: str, direction: str, *, now=None) -> None:
 
 
 def update_dial_pairing_token(conn, member: str, token: str) -> None:
-    """持久身份轮换（manager node2057 ①）：首次配对成功后插件下发持久
-    凭据，引擎把它轮换进 dial_endpoint.pairing_token——重连不再用一次性
-    配对票。吊销（插件 clear_persistent）后持久凭据失效才需重新配对。"""
+    """Persist the long-lived pairing credential for subsequent reconnects."""
     endpoint = read_dial_endpoint(conn, member)
     if endpoint is None:
         return

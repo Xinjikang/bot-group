@@ -14,7 +14,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from engine import auth, db, main, relay, relay_server, signing_keys
+from engine import auth, db, ip_allowlist, main, relay, relay_server, signing_keys
 from scripts.unified_test_support import isolated_database
 
 IP_A = "192.168.1.50"   # A 成员（architect）绑定来源
@@ -127,12 +127,60 @@ class MemberSourceBindingTests(unittest.TestCase):
             reply = ws.receive_json()
             self.assertEqual(reply["relay"]["kind"], "hello_ok", "绑定内来源正常握手")
 
-    def test_relay_ws_unbound_source_rejected_before_protocol(self):
-        # 未绑定来源：第一层 WS close 1008，不进 relay 协议层
-        with self.assertRaises(WebSocketDisconnect) as caught:
+    def test_relay_ws_unbound_source_requires_invite_bootstrap(self):
+        with self.assertRaises(WebSocketDisconnect) as blocked:
             with self.remote(IP_C).websocket_connect("/relay/ws"):
-                pass
-        self.assertEqual(caught.exception.code, 1008)
+                self.fail("无可用邀请时，未绑定来源不应进入握手")
+        self.assertEqual(blocked.exception.code, 1008)
+        conn = db.get_connection()
+        try:
+            relay.issue_invitation(conn)
+        finally:
+            conn.close()
+        with self.remote(IP_C).websocket_connect("/relay/ws") as ws:
+            ws.send_json(self.relay_hello("architect", CRED_A))
+            with self.assertRaises(WebSocketDisconnect) as caught:
+                ws.receive_text()
+            self.assertEqual(caught.exception.code,
+                             relay_server.CLOSE_BAD_SOURCE,
+                             "未绑定来源且无邀请的成员握手必须被端点拒绝")
+
+    def test_relay_ws_unbound_source_invite_bootstrap_binds(self):
+        # req#175 node2118 ①：从未绑定来源首接的唯一通道=管理员签发的一次
+        # 性邀请——兑换成功把 peer 登记进该新成员绑定集合（来源 IP 从零
+        # 走通），之后同成员同来源可用持久凭据重连；HTTP 仍被第一层拦
+        # （邀请只引导 /relay/ws 握手，不扩大 HTTP 面）。
+        conn = db.get_connection()
+        try:
+            issued = relay.issue_invitation(conn)
+        finally:
+            conn.close()
+        with self.remote(IP_C).websocket_connect("/relay/ws") as ws:
+            hello = self.relay_hello("remoteX", "")
+            hello["invite"] = issued["invite_token"]
+            ws.send_json(hello)
+            reply = ws.receive_json()
+            self.assertEqual(reply["relay"]["kind"], "hello_ok",
+                             "有效邀请兑换应从零建立首接并完成握手")
+            persistent = reply["relay"].get("credential")
+            self.assertTrue(persistent, "首接必须下发持久凭据")
+        conn = db.get_connection()
+        try:
+            self.assertTrue(ip_allowlist.member_allowed(conn, "remoteX", IP_C),
+                            "兑换后 peer 已登记为该成员来源绑定")
+            row = relay.read_node(conn, "remoteX")
+            self.assertEqual(row["direction"], "listen")
+            self.assertNotEqual(row["state"], "pending", "验证成功后正式登记")
+        finally:
+            conn.close()
+        # 重连：持久凭据 + 已绑定来源（不再用邀请）
+        with self.remote(IP_C).websocket_connect("/relay/ws") as ws:
+            ws.send_json(self.relay_hello("remoteX", persistent))
+            reply = ws.receive_json()
+            self.assertEqual(reply["relay"]["kind"], "hello_ok")
+        # HTTP 面：该来源已进入绑定并集，第一层放行到身份解析
+        # （绑定建立前的 HTTP 仍 403——见 test_unbound_source_rejected）
+        self.assertEqual(self.remote(IP_C).get("/health").status_code, 200)
 
     def test_relay_ws_loopback_accepted(self):
         # 回环恒放行：本机 hello 直接通过来源核对

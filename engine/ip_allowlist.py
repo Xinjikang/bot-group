@@ -117,7 +117,8 @@ def set_bindings(conn: sqlite3.Connection, member: str, ips: list[str]) -> dict:
     return {"member": member, "ips": normalized}
 
 
-def add_binding(conn: sqlite3.Connection, member: str, ip: str) -> dict:
+def add_binding(conn: sqlite3.Connection, member: str, ip: str,
+                *, commit: bool = True) -> dict:
     """按 (member, ip) 原子幂等添加单条绑定（#320 manager node2030）。
 
     与 set_bindings 同口径校验（归一化/回环拒绝/格式），但只插入、
@@ -135,7 +136,8 @@ def add_binding(conn: sqlite3.Connection, member: str, ip: str) -> dict:
     conn.execute(
         f"INSERT OR IGNORE INTO {_TABLE}(member, ip, created_at) VALUES(?,?,?)",
         (member, norm, db.now_iso()))
-    conn.commit()
+    if commit:
+        conn.commit()
     return {"member": member, "ip": norm}
 
 

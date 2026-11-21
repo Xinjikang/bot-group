@@ -365,9 +365,10 @@ def relay_invitation_issue(identity=Depends(_resolve_identity)):
     finally:
         conn.close()
     address = listen_address or "127.0.0.1"
+    host = f'[{address}]' if ':' in address else address
     return {'invite_token': issued['invite_token'],
             'expires_at': issued['expires_at'],
-            'engine_url': f"wss://{address}:{config.port()}/relay/ws",
+            'engine_url': f"http://{host}:{config.port()}",
             'listen_configured': bool(listen_address)}
 
 
@@ -406,7 +407,7 @@ def relay_pairing_preview(body: _PairingImportBody,
     from . import relay
     conn = db.get_connection()
     try:
-        exists = relay.read_node(conn, parsed['member']) is not None
+        exists = relay.remote_member_conflict(conn, parsed['member'])
     finally:
         conn.close()
     return {'member': parsed['member'],
@@ -419,33 +420,44 @@ def relay_pairing_preview(body: _PairingImportBody,
 @router_api.post('/relay/pairings/import')
 def relay_pairing_import(body: _PairingImportBody,
                          identity=Depends(_resolve_identity)):
-    """req#175 方向 B（电脑主动连云端）：导入插件生成的配对链接，按链接
-    携带的远端成员建独立节点（不依赖本地名册选择）。同名冲突 409 不覆盖、
-    不接管；成功后保存拨号端点并启动拨号。"""
+    """Confirm a pairing link. Write the node only after the peer proves identity."""
     _admin_only(identity, 'relay 配对导入仅限管理员')
     try:
         parsed = _parse_pairing_url(body.pairing_url)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     from . import relay, relay_dialer
+    member = parsed.pop('member')
     conn = db.get_connection()
     try:
-        if relay.read_node(conn, parsed['member']) is not None:
+        if relay.remote_member_conflict(conn, member):
             raise HTTPException(409, '同名成员已存在：不得覆盖或接管已有身份')
-        endpoint = {'host': parsed['host'], 'port': parsed['port'],
-                    'tls': parsed['tls'], 'fingerprint': parsed['fingerprint'],
-                    'pairing_token': parsed['pairing_token']}
-        node = relay.register_remote_node(conn, parsed['member'],
-                                          parsed['pairing_token'],
-                                          direction='dial')
-        if node is None:
-            raise HTTPException(409, '同名成员已存在：不得覆盖或接管已有身份')
-        relay.set_dial_endpoint(conn, parsed['member'], endpoint)
     finally:
         conn.close()
-    relay_dialer.start_dial(parsed['member'])
-    return {'member': parsed['member'], 'direction': 'dial',
-            'imported': True, 'dial_state': relay_dialer._task_state(parsed['member'])}
+    if not parsed['tls']:
+        raise HTTPException(400, '首次配对需要使用 WSS 配对链接')
+    result = relay_dialer.verify_first_pairing(member, parsed)
+    if result is None:
+        failure = relay_dialer.dial_failure(member) or {}
+        raise HTTPException(502, f"{member} 配对验证失败（{failure.get('stage', 'auth')}），请检查地址或重新生成配对链接")
+    ws, generation, credential = result
+    handed_off = False
+    try:
+        conn = db.get_connection()
+        try:
+            endpoint = dict(parsed, pairing_token=credential)
+            if relay.register_remote_node(conn, member, credential,
+                                          direction='dial', endpoint=endpoint) is None:
+                raise HTTPException(409, '同名成员已存在：不得覆盖或接管已有身份')
+        finally:
+            conn.close()
+        relay_dialer.start_dial(member, initial=(ws, generation))
+        handed_off = True
+    finally:
+        if not handed_off:
+            ws.close()
+    return {'member': member, 'direction': 'dial', 'imported': True,
+            'dial_state': relay_dialer._task_state(member)}
 
 
 @router_api.post('/relay/nodes/{member}/dial-endpoint')

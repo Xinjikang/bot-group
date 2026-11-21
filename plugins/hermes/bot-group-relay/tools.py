@@ -109,7 +109,6 @@ def bot_group_listen(args: dict, **kwargs) -> str:
             address=str(args.get("address") or ""),
             port=int(args.get("port") or 0),
             advertise=str(args.get("advertise") or ""),
-            member=str(args.get("member") or ""),
             tls=not bool(args.get("no_tls")),
             proxy_port=int(args.get("proxy_port") or 0),
             # 私聊上下文：链接绝不进入对话历史——写 0600 文件
@@ -129,19 +128,18 @@ def bot_group_register(args: dict, **kwargs) -> str:
     if not _check_authorized(kwargs):
         return _tool_result(False, "仅授权管理员可通过私聊操作（BOT_GROUP_RELAY_ADMIN）")
     engine_url = str(args.get("engine_url") or os.environ.get("BOT_GROUP_ENGINE_URL") or "")
-    member = str(args.get("member") or os.environ.get("BOT_GROUP_RELAY_MEMBER") or "")
+    from . import config as relay_config
     credential = str(args.get("credential") or os.environ.get("BOT_GROUP_RELAY_CREDENTIAL") or "")
     invite = str(args.get("invite") or os.environ.get("BOT_GROUP_RELAY_INVITE") or "")
+    member = (relay_config.host_member() if invite else args.get("member")
+              or os.environ.get("BOT_GROUP_RELAY_MEMBER") or relay_config.host_member())
     if not engine_url or not member or not (credential or invite):
         return _tool_result(False, "需要 engine_url/member 与 credential 或 invite")
-    from pathlib import Path
-    from . import config as relay_config
     from . import relay as relay_mod
     cfg = relay_config.RelayConfig(
         engine_url=engine_url, member=member, credential=credential,
         invite=invite, mcp_python="",
-        home=os.environ.get("HERMES_HOME") or
-        str(Path.home() / ".hermes"))
+        home=relay_config.host_home())
     client = relay_mod.RelayClient(cfg)
     try:
         client.start()
@@ -163,14 +161,14 @@ def register_tools(ctx) -> None:
          {"address": {"type": "string", "description": "绑定的本机网卡单播地址"},
           "port": {"type": "integer", "description": "监听端口"},
           "advertise": {"type": "string", "description": "对端可达地址/域名（可选）"},
-          "member": {"type": "string", "description": "成员名（可选，缺省 HERMES_PROFILE）"},
           "no_tls": {"type": "boolean", "description": "禁用 TLS（仅隔离测试）"}},
          ["address", "port"]),
         ("bot_group_register", bot_group_register,
          "bot-group 方向 A 注册：连引擎 WS 端点（复用 #316 出站链路）",
          {"engine_url": {"type": "string", "description": "引擎地址（可选）"},
           "member": {"type": "string", "description": "成员名（可选）"},
-          "credential": {"type": "string", "description": "节点凭据（可选）"}},
+          "credential": {"type": "string", "description": "已有节点凭据（可选）"},
+          "invite": {"type": "string", "description": "首次接入的一次性邀请（可选）"}},
          []),
         ("bot_group_relay_status", bot_group_relay_status,
          "查看 bot-group relay 监听/配对状态（脱敏）", {}, []),

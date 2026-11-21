@@ -343,109 +343,93 @@ def _verify_fingerprint(ws, expected: str, member: str) -> bool:
     return actual == expected
 
 
-def dial_once(member: str) -> bool:
-    """单次拨号：连接→TLS 指纹校验→握手→注册通道→帧循环。
-    返回 True=曾认证成功（此后断链）；False=未认证成功（按退避重试）。"""
+def _authenticate_dial(member: str, endpoint: dict, payload: dict, *, first=False):
+    """Verify the pinned peer before sending a pairing ticket; close on failure."""
     from websockets.sync.client import connect as ws_connect
-    conn = db.get_connection()
-    try:
-        endpoint = relay.read_dial_endpoint(conn, member)
-        row = relay.read_node(conn, member)
-    finally:
-        conn.close()
-    if endpoint is None or row is None or row["credential_revoked"]:
-        _record_failure(member, "auth", _endpoint_address(endpoint or {}),
-                        "未配置拨号端点或凭据已吊销")
-        return False
-    # 认证收紧（manager node2052 ①）：缺一次性配对凭据保持未认证，
-    # 不发起拨号（插件侧无凭据可兑换，连接必然被拒）。
-    if not str(endpoint.get("pairing_token") or ""):
-        _record_failure(member, "auth", _endpoint_address(endpoint),
-                        "缺少配对凭据，请重新导入配对链接")
-        logger.warning("relay dial skipped member=%s reason=no pairing token", member)
-        return False
     scheme = "wss" if endpoint.get("tls") else "ws"
+    host = endpoint["host"]
+    uri = f"{scheme}://{f'[{host}]' if ':' in host else host}:{endpoint['port']}"
+    fingerprint = str(endpoint.get("fingerprint") or "").strip().lower().replace(":", "")
     context = None
-    fingerprint = ""
     if scheme == "wss":
-        fingerprint = str(endpoint.get("fingerprint") or "").strip().lower().replace(":", "")
         context = ssl.create_default_context()
         if fingerprint:
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
-    uri = f"{scheme}://{endpoint['host']}:{endpoint['port']}"
+    stage = "tcp"
+    ws = None
     try:
-        # proxy=None：禁用环境代理（HTTP_PROXY 会让本机/局域网拨号走错路）
-        ws = ws_connect(uri, ssl=context, open_timeout=10, close_timeout=1,
-                        proxy=None)
-    except Exception as exc:  # noqa: BLE001 DNS/TCP/TLS/认证失败均重试
-        _record_failure(member, _classify_connect_error(exc), uri, str(exc))
-        logger.warning("relay dial connect failed member=%s err=%s", member, exc)
-        return False
-    try:
+        ws = ws_connect(uri, ssl=context, open_timeout=8, close_timeout=1, proxy=None)
+        stage = "tls"
         if fingerprint and not _verify_fingerprint(ws, fingerprint, member):
-            _record_failure(member, "tls", uri, "证书指纹不匹配")
-            logger.warning("relay dial fingerprint mismatch member=%s", member)
-            ws.close(code=4005, reason="fingerprint mismatch")
-            return False
-        conn = db.get_connection()
-        try:
-            payload = _hello_payload(conn, member)
-        finally:
-            conn.close()
-        if payload is None:
-            _record_failure(member, "auth", uri, "成员凭据不可用")
-            ws.close(code=4001, reason="no credential")
-            return False
+            raise ValueError("证书指纹不匹配")
+        stage = "auth"
         ws.send(json.dumps(payload, ensure_ascii=False))
-        raw = ws.recv(timeout=10)
-        hello_ok = json.loads(raw)
-        if (hello_ok.get("relay") or {}).get("kind") != "hello_ok":
-            _record_failure(member, "auth", uri, "插件未返回 hello_ok")
-            logger.warning("relay dial bad hello response member=%s", member)
-            ws.close(code=4003, reason="bad hello response")
+        meta = json.loads(ws.recv(timeout=8))["relay"]
+        generation = int(meta.get("generation") or 0)
+        if meta.get("kind") != "hello_ok" or generation <= 0:
+            raise ValueError("插件未返回有效认证回执")
+        reported = meta.get("member")
+        if (first or reported) and reported != member:
+            raise ValueError("成员上报与配对链接不一致")
+        persistent = meta.get("credential") or ""
+        if first and (not isinstance(persistent, str) or not persistent.strip()):
+            raise ValueError("插件未返回持久凭据，请重新生成配对链接")
+        return ws, generation, persistent
+    except Exception as exc:  # network, protocol or authentication failure
+        if ws is not None:
+            ws.close()
+        if stage == "tcp":
+            stage = _classify_connect_error(exc)
+        detail = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+        _record_failure(member, stage, uri, detail)
+        logger.warning("relay dial failed member=%s stage=%s error=%s",
+                       member, stage, type(exc).__name__)
+        return None
+
+
+def verify_first_pairing(member: str, endpoint: dict):
+    """Run the initial, identity-bearing handshake without writing a node."""
+    return _authenticate_dial(member, endpoint, {
+        "relay": {"kind": "hello"}, "member": member,
+        "credential": endpoint["pairing_token"], "direction": "dial",
+        "code_version": relay_server._engine_release_version() or "",
+        "protocol_version": relay_server.RELAY_PROTOCOL_VERSION,
+    }, first=True)
+
+
+def dial_once(member: str, *, initial=None) -> bool:
+    """Authenticate or reuse a first-join connection, then run the frame loop."""
+    conn = db.get_connection()
+    try:
+        endpoint = relay.read_dial_endpoint(conn, member)
+        row = relay.read_node(conn, member)
+        payload = _hello_payload(conn, member) if initial is None else None
+    finally:
+        conn.close()
+    if endpoint is None or row is None or row["credential_revoked"]:
+        if initial is not None:
+            initial[0].close()
+        _record_failure(member, "auth", _endpoint_address(endpoint or {}),
+                        "未配置拨号端点或凭据已吊销")
+        return False
+    if initial is None:
+        if not payload or not payload["credential"]:
+            _record_failure(member, "auth", _endpoint_address(endpoint),
+                            "缺少配对凭据，请重新导入配对链接")
             return False
-        # 帧代与状态代分离（方向 A 对称）：插件 hello_ok 下发的代是插件
-        # 自己的帧代（此后引擎↔插件帧都带它）；引擎本地代 generation_advance
-        # 只用于 DB 状态条件（manager node2052 ②：认证与本地代一致才发布）。
-        # 持久身份轮换（manager node2057 ①）：hello_ok 首次下发持久凭据，
-        # 引擎轮换进 dial_endpoint.pairing_token，重连不再用一次性配对票。
-        remote_generation = int((hello_ok.get("relay") or {}).get("generation") or 0)
-        if remote_generation <= 0:
-            _record_failure(member, "auth", uri, "插件握手缺少 generation")
-            logger.warning("relay dial hello_ok missing generation member=%s", member)
-            ws.close(code=4003, reason="bad generation")
+        authenticated = _authenticate_dial(member, endpoint, payload)
+        if authenticated is None:
             return False
-        # req#175 验收 5/6：插件 hello_ok 主动上报宿主实际成员——必须与
-        # dial_endpoint 归属一致（不一致=旧连接冒名点亮新节点/成员错配，
-        # 断链不接管、不轮换凭据）。
-        reported_member = (hello_ok.get("relay") or {}).get("member") or ""
-        if reported_member and reported_member != member:
-            _record_failure(member, "auth", uri,
-                            f"成员上报不一致：期望 {member}，上报 {reported_member}")
-            logger.warning("relay dial member mismatch expected=%s got=%s",
-                           member, reported_member)
-            ws.close(code=4001, reason="member mismatch")
-            return False
-        persistent_credential = (hello_ok.get("relay") or {}).get("credential") or ""
+        ws, remote_generation, persistent_credential = authenticated
         if persistent_credential:
             conn = db.get_connection()
             try:
                 relay.update_dial_pairing_token(conn, member, persistent_credential)
             finally:
                 conn.close()
-            logger.info("relay dial persistent identity rotated member=%s", member)
-    except Exception as exc:  # noqa: BLE001
-        stage = _classify_connect_error(exc)
-        if stage == "tcp":
-            stage = "auth"
-        _record_failure(member, stage, uri, str(exc))
-        logger.warning("relay dial handshake failed member=%s err=%s", member, exc)
-        try:
-            ws.close()
-        except Exception:  # noqa: BLE001
-            pass
-        return False
+    else:
+        ws, remote_generation = initial
 
     # 注册前复核（动作驱动，防切回竞态）：切换目标已不是 dial（用户切回
     # listen）或非切换时方向已回 listen → 本连接不再被需要，主动关闭不接管。
@@ -533,25 +517,29 @@ def dial_once(member: str) -> bool:
     return True
 
 
-def dial_loop(member: str, task: dict) -> None:
+def dial_loop(member: str, task: dict, initial=None) -> None:
     """拨号任务线程：认证成功后循环在 dial_once 内；失败按退避重试，
     耗尽 MAX_ATTEMPTS 后 abandoned（写切换错误，等管理员重试/切回）。
     manager node2102：退避等待可被 poke（管理员显式重试）提前唤醒。"""
     attempt = 0
     while not task["stop"].is_set():
         task["attempt"] = attempt
-        ok = dial_once(member)
+        if initial is not None:
+            ok = dial_once(member, initial=initial)
+            initial = None
+        else:
+            ok = dial_once(member)
         if ok:
             attempt = 0  # 曾认证成功：下次断链从最小退避重新开始
         else:
             attempt += 1
             if attempt > MAX_ATTEMPTS:
-                task["abandoned"] = True
                 conn = db.get_connection()
                 try:
                     relay.record_switch_error(conn, member, "拨号重连次数耗尽，等待重试或切回")
                 finally:
                     conn.close()
+                task["abandoned"] = True
                 logger.warning("relay dial abandoned member=%s", member)
                 return
             backoff = BACKOFF_SEQUENCE[min(attempt, len(BACKOFF_SEQUENCE)) - 1]
@@ -560,10 +548,12 @@ def dial_loop(member: str, task: dict) -> None:
             while not task["stop"].is_set() and time.monotonic() < deadline:
                 if task["poke"].wait(timeout=min(1.0, deadline - time.monotonic())):
                     break  # 管理员显式重试：跳过剩余退避立即再拨
+    if initial is not None:
+        initial[0].close()
     task["abandoned"] = False
 
 
-def start_dial(member: str) -> None:
+def start_dial(member: str, *, initial=None) -> None:
     """启动/重启该成员的拨号任务。幂等：已连接（active DialLink）不动；
     存活任务退避中→poke 唤醒立即再拨；abandoned/线程已死→新建任务线程。"""
     _clear_failure(member)
@@ -573,6 +563,8 @@ def start_dial(member: str) -> None:
             # 在线重复点击维持幂等（不打断已连接通道）；离线/退避中则
             # 唤醒立即重拨（manager node2102：同方向离线显式重试实际发起）。
             link = relay_server.active_link(member)
+            if initial is not None:
+                initial[0].close()
             if isinstance(link, DialLink):
                 task["abandoned"] = False
                 return
@@ -583,7 +575,7 @@ def start_dial(member: str) -> None:
         task = {"thread": None, "attempt": 0, "abandoned": False,
                 "stop": threading.Event(), "poke": threading.Event()}
         _TASKS[member] = task
-        thread = threading.Thread(target=dial_loop, args=(member, task),
+        thread = threading.Thread(target=dial_loop, args=(member, task, initial),
                                   name=f"relay-dial-{member}", daemon=True)
         task["thread"] = thread
         thread.start()

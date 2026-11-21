@@ -345,7 +345,7 @@ async def relay_ws(websocket: WebSocket) -> None:
     member = None
     peer = None
     try:
-        raw = await websocket.receive_text()
+        raw = await asyncio.wait_for(websocket.receive_text(), timeout=8)
         hello = json.loads(raw)
         member = (hello.get("member") or "").strip()
         credential = hello.get("credential") or ""
@@ -365,24 +365,28 @@ async def relay_ws(websocket: WebSocket) -> None:
         node_credential = ""
         try:
             if invite_token:
-                # req#175 一次性邀请兑换（方向 A=云端主动连电脑首次接入）：
-                # 按 hello 上报的远端成员建独立节点——不依赖本地名册；同名
-                # 冲突拒（不覆盖/不接管）；邀请单次、过期失效。
-                if not member:
+                if not member or not ip_allowlist._normalize(peer_raw or ""):
                     await websocket.close(code=CLOSE_BAD_CREDENTIAL)
                     return
-                if relay.read_node(conn, member) is not None:
-                    logger.warning("relay invite name conflict member=%s", member)
-                    await websocket.close(code=CLOSE_BAD_CREDENTIAL)
+                engine_version = _engine_release_version()
+                if (protocol_version != RELAY_PROTOCOL_VERSION
+                        or (engine_version and plugin_version != engine_version)):
+                    await websocket.close(code=CLOSE_BAD_PROTOCOL)
                     return
-                if not relay.redeem_invitation(conn, invite_token, member):
-                    logger.warning("relay invite invalid or expired member=%s", member)
+                # One transaction covers redemption, the independent node, and
+                # its exact socket-source binding. No writes survive a conflict.
+                if not relay.redeem_invitation(conn, invite_token, member, commit=False):
+                    conn.rollback()
                     await websocket.close(code=CLOSE_BAD_CREDENTIAL)
                     return
                 node_credential = secrets.token_urlsafe(32)
-                relay.register_remote_node(conn, member, node_credential,
-                                           direction="listen",
-                                           peer_ip=peer_raw or "")
+                if relay.register_remote_node(conn, member, node_credential,
+                                              direction="listen", peer_ip=peer_raw,
+                                              commit=False) is None:
+                    conn.rollback()
+                    await websocket.close(code=CLOSE_BAD_CREDENTIAL)
+                    return
+                conn.commit()
                 logger.info("relay invite redeemed member=%s", member)
             elif not member or not relay.verify_credential(conn, member, credential):
                 await websocket.close(code=CLOSE_BAD_CREDENTIAL)
@@ -435,7 +439,7 @@ async def relay_ws(websocket: WebSocket) -> None:
             switching = relay.read_node(conn, member)["switch_state"] == "switching"
         finally:
             conn.close()
-    except (ValueError, KeyError, TypeError):
+    except (ValueError, KeyError, TypeError, asyncio.TimeoutError):
         await websocket.close(code=CLOSE_BAD_CREDENTIAL)
         return
     except WebSocketDisconnect:

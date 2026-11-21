@@ -58,14 +58,31 @@ def platform_mcp_python(config=None) -> str:
     return value.strip() if value else ""
 
 
+def host_member() -> str:
+    """Use the active Hermes profile, including a routed gateway profile."""
+    try:
+        from hermes_cli.profiles import current_profile_name
+    except ImportError:
+        return _env("HERMES_PROFILE_NAME") or _env("HERMES_PROFILE")
+    return current_profile_name() or ""
+
+
+def host_home() -> str:
+    try:
+        from hermes_constants import get_hermes_home
+    except ImportError:
+        return _env("HERMES_HOME") or str(Path.home() / ".hermes")
+    return str(get_hermes_home())
+
+
 def load(config=None) -> RelayConfig | None:
     """从 PlatformConfig / 环境组装配置；缺必填项返回 None。"""
     extra = getattr(config, "extra", {}) or {}
     engine_url = (extra.get("engine_url") or _env("BOT_GROUP_ENGINE_URL"))
-    member = (extra.get("member") or _env("BOT_GROUP_RELAY_MEMBER")
-              or _env("HERMES_PROFILE"))
-    credential = extra.get("credential") or _env("BOT_GROUP_RELAY_CREDENTIAL")
     invite = extra.get("invite") or _env("BOT_GROUP_RELAY_INVITE")
+    member = (host_member() if invite else
+              extra.get("member") or _env("BOT_GROUP_RELAY_MEMBER") or host_member())
+    credential = extra.get("credential") or _env("BOT_GROUP_RELAY_CREDENTIAL")
     mcp_python = platform_mcp_python(config)
     home = extra.get("home") or _env("HERMES_HOME") or str(Path.home() / ".hermes")
     if not engine_url or not member or not (credential or invite):

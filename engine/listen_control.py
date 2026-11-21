@@ -7,9 +7,8 @@
   实测：不同本地地址同端口可同时监听）。
 - 监听状态从运行结果取得（server.started + sockets），不是配置值；
   绑定失败（端口占用/地址不可用）如实报错、回环保持可用、配置回滚。
-- 与成员级来源绑定联动（#319/#320）：非回环监听生效前 relay_source_bindings
-  必须已就绪；远程入口走同一 app（SourceBindingMiddleware 中间件已挂），
-  只对名单内来源+本机回环开放。
+- 与成员级来源绑定联动：未绑定来源只能在有有效管理员邀请时进入
+  `/relay/ws` 首次认证；HTTP 等其它入口仍按来源绑定准入。
 - 重启恢复上次监听配置：main() 启动时调 restore_on_startup()。
 """
 from __future__ import annotations
@@ -144,16 +143,11 @@ def _run_remote_server(address: str, port: int) -> None:
             _state['error'] = '远程监听启动失败（端口占用或地址不可用）'
 
 
-def _bindings_ready(conn) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM relay_source_bindings LIMIT 1").fetchone() is not None
-
-
 def ensure(address: str | None, port: int | None = None) -> dict:
     """启用/停用远程监听并返回实际状态。
 
     address=None/''：停用远程监听（回退回环）。
-    address=本机单播地址：校验→来源绑定先就绪→保存配置→起远程 Server。
+    address=本机单播地址：校验→保存配置→起远程 Server；来源准入由中间件和端点执行。
     启动失败：配置回滚、回环保持可用、状态含错误信息。
     """
     port = port or config.port(None)
@@ -173,10 +167,13 @@ def ensure(address: str | None, port: int | None = None) -> dict:
     if norm == running and _state['server'] is not None and \
             getattr(_state['server'], 'started', False):
         return status()  # 已在监听同一地址，幂等
+    # req#175 node2118 ①：不再要求「来源绑定预先就绪」——首次接入的
+    # 来源绑定随一次性邀请兑换从零建立（非回环未绑定来源在端点第二层
+    # 仅凭有效邀请可通过），不存在「先绑定再启用监听/先监听再首接」
+    # 两步互为前置。监听启用后来源控制依然生效：非回环未绑定来源
+    # 除有效邀请兑换外一律拒绝（SourceBindingMiddleware + relay 握手）。
     conn = db.get_connection()
     try:
-        if not _bindings_ready(conn):
-            raise ValueError('来源绑定未就绪：请先按成员登记来源 IP，再启用远程监听')
         save_config(conn, norm)
     finally:
         conn.close()

@@ -144,7 +144,7 @@ app.include_router(ui_presence_router)
 # 只能校「来源 IP 属于已绑定并集」或回环；member 级严格核对在第二层
 # （access.resolve_identity 与 relay 握手）。只读 scope["client"]（socket
 # peer），不读任何 X-Forwarded-For/X-Real-IP 转发头——伪造头不能获得
-# 绑定资格或本机权限。回环恒放行；未绑定来源全拒。
+# 绑定资格或本机权限。新邀请只对 /relay/ws 的握手开通临时准入。
 class SourceBindingMiddleware:
     def __init__(self, app):
         self.app = app
@@ -158,6 +158,13 @@ class SourceBindingMiddleware:
             conn = db.get_connection()
             try:
                 allowed = ip_allowlist.source_allowed(conn, host)
+                if (not allowed and ip_allowlist._normalize(host or "")
+                        and scope["type"] == "websocket"
+                        and scope.get("path") == "/relay/ws"):
+                    # Only an open administrator invitation lets an unbound peer
+                    # reach the hello exchange. The endpoint still verifies the token.
+                    from . import relay
+                    allowed = relay.invitation_open(conn)
             finally:
                 conn.close()
             if not allowed:

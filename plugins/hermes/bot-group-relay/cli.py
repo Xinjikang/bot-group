@@ -79,7 +79,6 @@ def register_cli(parser) -> None:
     p_listen.add_argument("--address", required=True, help="绑定的本机网卡单播地址")
     p_listen.add_argument("--port", type=int, required=True, help="监听端口")
     p_listen.add_argument("--advertise", default="", help="对端可达地址/域名（公网映射场景）")
-    p_listen.add_argument("--member", default="", help="成员名（缺省 HERMES_PROFILE）")
     p_listen.add_argument("--cert", default="", help="TLS 证书 PEM（缺省自动生成自签）")
     p_listen.add_argument("--key", default="", help="TLS 私钥 PEM")
     p_listen.add_argument("--no-tls", action="store_true", help="禁用 TLS（仅隔离测试）")
@@ -139,7 +138,6 @@ def dispatch(args) -> int:
         try:
             result = listen_mod.listen_serve(
                 address=args.address, port=args.port, advertise=args.advertise,
-                member=args.member,
                 cert_path=args.cert or None, key_path=args.key or None,
                 tls=not args.no_tls,
                 proxy_port=int(args.proxy_port or 0),
@@ -165,20 +163,20 @@ def dispatch(args) -> int:
         return _run_foreground(lambda: result["_server"].stop())
     if args.command == "register":
         engine_url = args.engine_url or os.environ.get("BOT_GROUP_ENGINE_URL") or ""
-        member = args.member or os.environ.get("BOT_GROUP_RELAY_MEMBER") or ""
+        from . import config as relay_config
         credential = args.credential or os.environ.get("BOT_GROUP_RELAY_CREDENTIAL") or ""
         invite = args.invite or os.environ.get("BOT_GROUP_RELAY_INVITE") or ""
+        member = (relay_config.host_member() if invite else args.member
+                  or os.environ.get("BOT_GROUP_RELAY_MEMBER") or relay_config.host_member())
         if not engine_url or not member or not (credential or invite):
             print("bot-group relay register: 需要 engine-url/member 与 "
                   "credential 或 invite", file=sys.stderr)
             return 1
-        from . import config as relay_config
         from . import relay as relay_mod
         cfg = relay_config.RelayConfig(engine_url=engine_url, member=member,
                                        credential=credential, invite=invite,
                                        mcp_python="",
-                                       home=os.environ.get("HERMES_HOME") or
-                                       str(Path.home() / ".hermes"))
+                                       home=relay_config.host_home())
         client = relay_mod.RelayClient(cfg)
         try:
             client.start()  # 复用 #316 出站链路；后台线程维护连接

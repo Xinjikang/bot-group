@@ -17,7 +17,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from engine import db, relay, relay_dialer, relay_server
+from engine import db, ip_allowlist, relay, relay_dialer, relay_server
 from scripts.unified_test_support import isolated_database
 from scripts.project_test_support import enable_members
 
@@ -25,14 +25,14 @@ from scripts.project_test_support import enable_members
 PLUGIN_DIR = Path(__file__).resolve().parents[1] / "plugins" / "hermes" / "bot-group-relay"
 
 
-def _plugin_modules():
+def _plugin_modules(slot="bot_group_relay_test"):
     """两遍法加载插件模块（相对导入与执行顺序解耦）。"""
     import importlib.util
     import sys as _sys
     import types
-    pkg_name = "hermes_plugins.bot_group_relay_test"
+    pkg_name = f"hermes_plugins.{slot}"
     parent_name = "hermes_plugins"
-    parent = types.ModuleType(parent_name)
+    parent = _sys.modules.setdefault(parent_name, types.ModuleType(parent_name))
     parent.__path__ = [str(PLUGIN_DIR)]
     parent.__package__ = parent_name
     _sys.modules[parent_name] = parent
@@ -41,7 +41,7 @@ def _plugin_modules():
     pkg.__path__ = [str(PLUGIN_DIR)]
     pkg.__package__ = pkg_name
     _sys.modules[pkg_name] = pkg
-    setattr(parent, "bot_group_relay_test", pkg)
+    setattr(parent, slot, pkg)
     modules = {}
     for sub in ("pairing", "config", "mcp_digest", "streams", "listen", "mcpproxy",
                 "cli", "tools"):
@@ -1064,6 +1064,16 @@ class EntryIdentityAndProxyTests(unittest.TestCase):
             result = json.loads(tools.bot_group_relay_status({}))
             self.assertFalse(result["ok"], "缺渠道拒绝")
 
+    def test_first_register_uses_host_profile_not_manual_override(self):
+        from types import SimpleNamespace
+        plg = _plugin()
+        extra = SimpleNamespace(extra={"engine_url": "http://127.0.0.1:1",
+                                       "member": "manual", "invite": "fixture"})
+        with patch.dict(os.environ, {"HERMES_PROFILE": "fixture-host",
+                                      "HERMES_PROFILE_NAME": "fixture-host",
+                                      "BOT_GROUP_RELAY_MEMBER": "old-setting"}):
+            self.assertEqual(plg["config"].load(extra).member, "fixture-host")
+
     def test_cli_interactive_outputs_pairing_material(self):
         """CLI 交互（TTY）：输出含 pairing_url（用户本人在场可取配对材料）；
         非交互：链接写 0600 文件、stdout 不含链接（manager node2060 ①）。"""
@@ -1687,6 +1697,21 @@ class FirstJoinTests(unittest.TestCase):
                                             {"pairing_url": pairing_url})
         self.assertTrue(preview2["name_conflict"], "已登记成员 preview 标冲突")
 
+    def test_local_roster_conflict_prevents_pairing(self):
+        """An existing local route is not a first-join identity."""
+        with closing(db.get_connection()) as conn, conn:
+            conn.execute("INSERT INTO members(profile,display_name) VALUES('local-taken','Local')")
+        body = {"pairing_url": "wss://127.0.0.1:1?pairing_token=fixture"
+                               "&fingerprint=" + "ab" * 32 + "&member=local-taken"}
+        status, preview = self._admin_post("/relay/pairings/preview", body)
+        self.assertEqual(status, 200)
+        self.assertIs(preview["name_conflict"], True)
+        self.assertEqual(self._admin_post("/relay/pairings/import", body)[0], 409)
+        with closing(db.get_connection()) as conn:
+            self.assertIsNone(relay.read_node(conn, "local-taken"))
+            self.assertEqual(conn.execute("SELECT display_name FROM members WHERE profile='local-taken'").fetchone()[0],
+                             "Local")
+
     def test_pairing_url_missing_member_rejected(self):
         """配对链接缺 member/凭据/指纹 → 400（远端身份必须取自配对过程）。"""
         status, body = self._admin_post(
@@ -1750,7 +1775,7 @@ class FirstJoinTests(unittest.TestCase):
         status, issued = self._admin_post("/relay/invitations")
         self.assertEqual(status, 200)
         token = issued["invite_token"]
-        self.assertTrue(issued["engine_url"].startswith("wss://"))
+        self.assertTrue(issued["engine_url"].startswith("http://"))
         engine_url = f"http://127.0.0.1:{self._api_client()}"
         relay_config = self.plg["config"]
         # 合成包无版本文件：plugin_version 对齐引擎（同 tag 配套契约）
@@ -1803,6 +1828,95 @@ class FirstJoinTests(unittest.TestCase):
             time.sleep(0.05)
         self.assertIsNotNone(relay_server.active_link("remoteB"),
                              "持久凭据重连必须认证通过")
+
+    # ---------------- req#175 node2118 ③：登记提交时点=验证成功之后 ----------------
+
+    def test_import_failure_leaves_no_registration_or_binding(self):
+        """不可达端点返回连接错误，不写入节点、凭据或来源绑定。"""
+        # 不可达端点（未监听端口）——证书指纹用 64 位假值通过格式校验
+        status, imported = self._admin_post(
+            "/relay/pairings/import",
+            {"pairing_url": "wss://127.0.0.1:1?pairing_token=deadbeef-"
+                            + "a" * 24 + "&fingerprint=" + "ab" * 32
+                            + "&member=remoteFail"})
+        self.assertEqual(status, 502, imported)
+        conn = db.get_connection()
+        try:
+            row = relay.read_node(conn, "remoteFail")
+            self.assertIsNone(row, "验证失败不能残留待接入节点或凭据")
+            bindings = ip_allowlist.list_bindings(conn)
+            self.assertFalse(any(b["member"] == "remoteFail" for b in bindings),
+                             "验证未成功不得建立来源绑定")
+        finally:
+            conn.close()
+
+    def test_invite_validation_failure_keeps_invite_unused(self):
+        """方向 A 登记提交时点：邀请握手带错误协议版本——兑换前校验失败，
+        邀请不消耗、无节点、无绑定（失败一致）；同一邀请随后用正确版本
+        兑换成功（邀请未被误消耗的证据）。"""
+        status, issued = self._admin_post("/relay/invitations")
+        self.assertEqual(status, 200)
+        token = issued["invite_token"]
+        import websockets.sync.client as ws_sync
+        engine_version = relay_server._engine_release_version() or ""
+        bad_hello = {"relay": {"kind": "hello"}, "member": "remoteFail2",
+                     "credential": "", "invite": token,
+                     "code_version": engine_version,
+                     "plugin_version": engine_version,
+                     "mcp_fingerprint": "",
+                     "protocol_version": 999}
+        from websockets.exceptions import ConnectionClosed as _WSClosed
+        with ws_sync.connect(
+                f"ws://127.0.0.1:{self._api_client()}/relay/ws",
+                proxy=None, open_timeout=5) as ws:
+            ws.send(json.dumps(bad_hello))
+            try:
+                ws.recv(timeout=5)
+                self.fail("错误协议版本必须被拒")
+            except _WSClosed as exc:
+                self.assertEqual(exc.rcvd.code, 4003)
+        conn = db.get_connection()
+        try:
+            self.assertIsNone(relay.read_node(conn, "remoteFail2"),
+                              "验证失败不得残留节点")
+            bindings = ip_allowlist.list_bindings(conn)
+            self.assertFalse(any(b["member"] == "remoteFail2" for b in bindings),
+                             "验证失败不得残留来源绑定")
+            # 邀请未被消耗：正确版本可再次兑换（条件更新行数语义）
+            self.assertTrue(relay.redeem_invitation(conn, token, "remoteFail2"),
+                            "验证失败不得消耗一次性邀请")
+        finally:
+            conn.close()
+
+    def test_invite_atomic_single_transaction(self):
+        """另一连接只能同时看到已兑换的邀请、节点及来源绑定。"""
+        conn = db.get_connection()
+        try:
+            issued = relay.issue_invitation(conn)
+            self.assertTrue(relay.redeem_invitation(conn, issued["invite_token"],
+                                                    "remoteTx", commit=False),
+                            "首次条件更新必须生效（rowcount>0）")
+            # 同事务内二次兑换：redeemed=0 条件不命中（行数=0）——单次语义
+            self.assertFalse(relay.redeem_invitation(conn, issued["invite_token"],
+                                                     "remoteTx", commit=False),
+                             "重复兑换条件更新行数必须为 0")
+            node = relay.register_remote_node(conn, "remoteTx", "cred-1",
+                                              direction="listen", peer_ip="192.0.2.2",
+                                              commit=False)
+            self.assertEqual(node["state"], "offline")
+            with closing(db.get_connection()) as observer:
+                self.assertIsNone(relay.read_node(observer, "remoteTx"))
+                self.assertFalse(ip_allowlist.member_allowed(observer, "remoteTx", "192.0.2.2"))
+                self.assertTrue(relay.invitation_open(observer))
+            conn.commit()
+            row = relay.read_node(conn, "remoteTx")
+            self.assertEqual(row["state"], "offline")
+            self.assertTrue(ip_allowlist.member_allowed(conn, "remoteTx", "192.0.2.2"))
+            self.assertFalse(relay.invitation_open(conn))
+            self.assertEqual(row["credential_hash"],
+                             relay.hash_credential("cred-1"))
+        finally:
+            conn.close()
 
     # ---------------- req#175 验收 4：双节点同时在线，切换 A 后 B 不受影响 ----------------
 

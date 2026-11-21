@@ -234,7 +234,7 @@ class ListenServer:
             # 宿主实际成员（HERMES_PROFILE）主动上报（req#175 验收 5/6）：
             # 引擎核验与 dial_endpoint 归属一致（防旧连接冒名点亮新节点）。
             hello_ok = {"relay": {"kind": "hello_ok", "generation": generation,
-                                  "member": member}}
+                                  "member": self.member}}
             if persistent:
                 hello_ok["relay"]["credential"] = persistent
             conn.send(json.dumps(hello_ok, ensure_ascii=False))
@@ -533,10 +533,10 @@ def listen_serve(*, address: str, port: int, advertise: str = "",
     if tls:
         cert, key = _ensure_cert(cert_path, key_path)
         fingerprint = certificate_fingerprint(cert)
-    member = member or os.environ.get("HERMES_PROFILE") or ""
+    member = member or relay_config.host_member()
     if not member:
-        raise ValueError("必须提供 member（本机成员名）")
-    home = home or os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+        raise ValueError("无法识别当前 Hermes 成员，请从对应的 Hermes 配置启动插件")
+    home = home or relay_config.host_home()
     server = ListenServer(address=bind, port=port, cert_path=cert, key_path=key,
                           advertise=advertise or bind, member=member, home=home,
                           mcp_python=mcp_python, scheme=scheme, mcp_entry=mcp_entry)

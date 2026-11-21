@@ -72,13 +72,18 @@ class ListenControlTests(unittest.TestCase):
 
     # ---- 联动：来源绑定先就绪 + 真实生效 + 名单外拒 ----
 
-    def test_enable_requires_bindings_first(self):
+    def test_enable_from_zero_bindings(self):
+        # req#175 node2118 ①：零绑定启用远程监听（首次接入从零走通——
+        # 来源绑定随一次性邀请兑换建立，不再要求预先登记）；启用后来源
+        # 控制仍生效：非回环未绑定来源 HTTP 403（第一层拦截不变）。
         if not self.lan:
             self.skipTest("本机无 LAN 单播地址")
-        with self.assertRaises(ValueError) as caught:
-            listen_control.ensure(self.lan, port=TEST_PORT)
-        self.assertIn("来源绑定", str(caught.exception))
-        self.assertFalse(listen_control.status()['remote_enabled'])
+        state = listen_control.ensure(self.lan, port=TEST_PORT)
+        self.assertTrue(state['remote_enabled'], state)
+        self.assertEqual(state['remote_address'], self.lan)
+        # 真实 TCP 全链：本机源即 LAN 地址，未绑定 → 403
+        status, _ = _http_get(self.lan, TEST_PORT)
+        self.assertEqual(status, 403, "零绑定启用后未绑定来源必须仍被拒")
 
     def test_real_listen_bindings_gate_and_disable(self):
         if not self.lan:
