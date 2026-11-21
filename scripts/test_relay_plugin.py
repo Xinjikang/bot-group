@@ -293,6 +293,7 @@ class TicketTests(unittest.TestCase):
             self.assertEqual(ticket, "tkt-1")
             self.assertEqual(ex.call_count, 2, "每次取票都是新的 identify+ticket 交换（不缓存）")
             self.assertIn(b"session-ticket", ex.call_args_list[1].args[1])
+            self.assertEqual(json.loads(ex.call_args_list[1].args[1])['params']['purpose'], 'interactive')
         # ticket 响应身份不一致（profile_id 被篡改）：拒绝
         tampered = [
             json.dumps({"ok": True, "protocol": 1, "id": 1, "result": payload}),
@@ -480,6 +481,9 @@ class RelayClientTests(unittest.TestCase):
         }
 
         def _exchange(home, data, timeout):
+            request = json.loads(data)
+            if request['verb'] == 'session-ticket':
+                self.assertEqual(request['params']['purpose'], 'interactive')
             for verb, response in responses.items():
                 if verb in data:
                     return response

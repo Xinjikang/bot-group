@@ -84,7 +84,13 @@ def load(config=None) -> RelayConfig | None:
               extra.get("member") or _env("BOT_GROUP_RELAY_MEMBER") or host_member())
     credential = extra.get("credential") or _env("BOT_GROUP_RELAY_CREDENTIAL")
     mcp_python = platform_mcp_python(config)
-    home = extra.get("home") or _env("HERMES_HOME") or str(Path.home() / ".hermes")
+    home = extra.get("home") or host_home()
+    if not invite:
+        from . import pairing
+        saved_url, saved_key = pairing.saved_register(member)
+        if saved_url and (not engine_url or saved_url == engine_url.rstrip('/')):
+            engine_url = saved_url
+            credential = saved_key or credential
     if not engine_url or not member or not (credential or invite):
         return None
     parsed = urlsplit(engine_url)

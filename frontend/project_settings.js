@@ -346,6 +346,47 @@ function markDshBindings(data, available) {
   }
 }
 
+const remoteSessionRequests = new Map();
+function remoteSessionLabel(member) {
+  if (member.remote_session_pending) return '正在查询远程工作会话…';
+  if (member.work_session_exists == null) return '远程工作会话状态未知，可刷新重试';
+  return member.work_session_exists ? '已有远程工作会话' : '暂无远程工作会话';
+}
+
+async function refreshRemoteSessions(project, members) {
+  const pending = members.filter(member => member.remote_session_pending);
+  const current = member => projectMembersCache.get(project)?.members.includes(member);
+  async function worker() {
+    while (pending.length) {
+      const member = pending.shift();
+      if (!current(member) || $('#pj-detail-form').dataset.origName !== project) continue;
+      const key = JSON.stringify([project, member.profile, member.bot_id]);
+      let request = remoteSessionRequests.get(key);
+      if (!request) {
+        request = api(`/projects/${encodeURIComponent(project)}/members/${encodeURIComponent(member.profile)}/remote-work-session`)
+          .then(data => data.work_session_exists ?? null, () => null)
+          .finally(() => remoteSessionRequests.delete(key));
+        remoteSessionRequests.set(key, request);
+      }
+      const exists = await request;
+      if (!current(member)) continue;
+      member.remote_session_pending = false;
+      member.work_session_exists = exists;
+      if ($('#pj-detail-form').dataset.origName !== project) continue;
+      const row = $('#pj-member-list').querySelector(`[data-profile="${CSS.escape(member.profile)}"]`);
+      const label = row?.querySelector('.remote-session-status');
+      if (!label) continue;
+      label.textContent = remoteSessionLabel(member);
+      const button = row.querySelector('.reset-session');
+      if (button && !resettingMemberSessions.has(JSON.stringify([project, member.profile]))) {
+        const reset = sessionResetButton(member);
+        Object.assign(button, {textContent: reset.label, title: reset.title, disabled: reset.disabled});
+      }
+    }
+  }
+  await Promise.all([worker(), worker()]);
+}
+
 async function loadProjectMembers(options = {}) {
   const project = $('#pj-detail-form').dataset.origName;
   if (!project) return;
@@ -359,7 +400,7 @@ async function loadProjectMembers(options = {}) {
   const request = (async () => {
     try {
       const suffix = options.profile && cached ? `?profile=${encodeURIComponent(options.profile)}` : '';
-      const data = await api(`/projects/${encodeURIComponent(project)}/workspaces${suffix}`);
+      const data = await api(`/projects/${encodeURIComponent(project)}/workspaces${suffix}${suffix ? '&' : '?'}defer_remote_sessions=true`);
       if (projectMembersVersions.get(project) !== version) return;
       const previous = projectMembersCache.get(project);
       const merged = suffix && previous ? {...data, members: previous.members.map(m => data.members.find(n => n.profile === m.profile) || m)} : data;
@@ -369,7 +410,8 @@ async function loadProjectMembers(options = {}) {
       projectMembersCache.set(project, merged);
       if ($('#pj-detail-form').dataset.origName !== project) return;
       renderProjectMembers(project, merged);
-      $('#pj-members-status').textContent = '状态已更新';
+      $('#pj-members-status').textContent = merged.members.some(m => m.remote_session_pending) ? '成员已加载' : '状态已更新';
+      void refreshRemoteSessions(project, merged.members);
     } catch (err) {
       if ($('#pj-detail-form').dataset.origName === project && projectMembersVersions.get(project) === version) {
         $('#pj-members-status').textContent = '刷新失败：' + err.message;
@@ -479,6 +521,7 @@ function renderProjectMembers(project, data) {
       <div class="project-member-workspace ${state.valid && !state.head ? 'compact-status' : ''}"><span class="project-member-caption">${independent ? '独立 worktree' : '项目主目录'}</span>
       <div class="project-member-path" title="${esc(path)}">${esc(path)}</div>
       <p class="project-member-state ${state.valid ? 'valid' : 'invalid'}">${state.valid ? esc(state.head ? `${state.detached ? 'detached' : state.branch} · ${state.head.slice(0, 12)}${state.dirty ? ' · 有未提交改动' : ' · 工作区干净'}` : '目录可用') : esc(state.error || '目录不可用')}</p></div>
+      ${member.remote_session_pending !== undefined ? `<p class="project-member-state remote-session-status" role="status">${remoteSessionLabel(member)}</p>` : ''}
       ${member.binding_invalid ? '<p class="project-member-state invalid" data-binding-invalid="true">宿主绑定失效：DSH HOME 目录或 profile 配置不可用；成员与历史保留。</p>' : ''}`;
     bindMemberNameEditor(row, member);
     row.querySelector('.edit').addEventListener('click', () => {

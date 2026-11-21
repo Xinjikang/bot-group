@@ -31,7 +31,7 @@ class DispatchGateway:
                 assert not worker.is_alive(), 'isolated gateway listener did not stop'
 
     def fetch_ticket(self, home, *, purpose):
-        assert purpose == 'relay' and home == str(self.home), (purpose, home)
+        assert purpose == 'interactive' and home == str(self.home), (purpose, home)
         return {'api_origin': f'http://127.0.0.1:{self.port}'}, 'isolated-fixture-ticket'
 
     def _receive(self, ws):

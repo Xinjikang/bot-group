@@ -1036,19 +1036,29 @@ class RelayConnectionSplitTests(RelayBase):
         with self._connect() as ws, TestClient(app) as http, ThreadPoolExecutor(1) as pool, \
                 patch.object(hermes_gateway, 'enabled', return_value=True):
             self._hello(ws)
+            roster_url = '/projects/remote-project/workspaces?defer_remote_sessions=true'
+            session_url = f'/projects/remote-project/members/{REMOTE}/remote-work-session'
+            self.assertEqual(http.get('/projects/beta/members/' + REMOTE + '/remote-work-session').status_code, 404)
+            self.assertEqual(http.get('/projects/alpha/members/default/remote-work-session').status_code, 404)
             for sessions in ([], [{'session_id': 'work-session'}]):
-                request = pool.submit(http.get, '/projects/remote-project/workspaces')
+                with patch.object(hermes_gateway, '_relay_lease', side_effect=AssertionError('inline relay query')):
+                    member, = http.get(roster_url).json()['members']
+                self.assertEqual(member['profile'], REMOTE)
+                self.assertTrue(member['remote_session_pending'])
+                self.assertIsNone(member['work_session_exists'])
+                request = pool.submit(http.get, session_url)
                 envelope = json.loads(ws.recv(timeout=5))
                 frame = envelope['frame']
                 self.assertEqual(frame['method'], 'session.list')
                 self.assertEqual(frame['params']['title'], wake.session_name(REMOTE, 'work', None, 'remote-project'))
+                self.assertTrue(http.get(roster_url).json()['members'][0]['remote_session_pending'])
                 ws.send(json.dumps({'relay': envelope['relay'], 'frame': {
                     'jsonrpc': '2.0', 'id': frame['id'], 'result': {'sessions': sessions}}}))
                 response = request.result(timeout=5)
                 self.assertEqual(response.status_code, 200)
-                member, = response.json()['members']
-                self.assertEqual(member['profile'], REMOTE)
-                self.assertEqual(member['work_session_exists'], bool(sessions))
+                self.assertEqual(response.json()['work_session_exists'], bool(sessions))
+            with patch.object(hermes_gateway, '_relay_lease', side_effect=hermes_gateway.GatewayUnavailable('offline')):
+                self.assertIsNone(http.get(session_url).json()['work_session_exists'])
 
     def test_connection_relay_when_node_registered(self):
         from engine import hermes_gateway

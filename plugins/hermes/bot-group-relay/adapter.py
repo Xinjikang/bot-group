@@ -15,19 +15,21 @@ from . import relay as relay_mod
 logger = logging.getLogger(__name__)
 
 
-class RelayAdapter:
-    """Hermes gateway 平台适配器（BasePlatformAdapter 兼容的最小子集）。
+def create_adapter(config):
+    from gateway.config import Platform
+    from gateway.platforms.base import BasePlatformAdapter
 
-    直接 import gateway.platforms.base 会绑定 Hermes 内部版本；插件按
-    「鸭子类型」实现 gateway 调用的接口面（connect/disconnect/send/
-    get_chat_info/name），避免源码级耦合——与设计「不修改 Hermes 源码、
-    全部经公开接口」一致。
-    """
+    class GatewayRelayAdapter(RelayAdapter, BasePlatformAdapter):
+        """Use gateway-owned handler registration and runtime state."""
+
+    return GatewayRelayAdapter(config, Platform("bot-group-relay"))
+
+
+class RelayAdapter:
+    """Relay transport lifecycle for the Hermes platform adapter."""
 
     def __init__(self, config: Any, platform: Any = None):
-        self.config = config
-        self.platform = platform
-        self.name = "bot-group-relay"
+        super().__init__(config, platform)
         self._client: relay_mod.RelayClient | None = None
         self._cfg = relay_config.load(config)
         if self._cfg is None:
@@ -41,12 +43,14 @@ class RelayAdapter:
         if self._client is None:
             self._client = relay_mod.RelayClient(self._cfg, on_status=self._on_status)
             self._client.start()
+        self._mark_connected()
         return True
 
     async def disconnect(self) -> None:
         if self._client is not None:
             self._client.stop()
             self._client = None
+        self._mark_disconnected()
 
     def _on_status(self, state: str) -> None:
         logger.info("bot-group relay member=%s status=%s",

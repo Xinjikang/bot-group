@@ -2182,6 +2182,38 @@ class FirstJoinTests(unittest.TestCase):
         with connect(config.ws_url(base), proxy=None) as ws:
             self.assertTrue(client_type(cfg)._handshake(ws))
 
+    def test_cli_exits_after_pairing_then_gateway_connects_from_disk(self):
+        from argparse import Namespace
+        from concurrent.futures import ThreadPoolExecutor
+        from websockets.sync.client import connect
+        config, cli = self.plg['config'], self.plg['cli']
+        client_type = self._load_relay_module().RelayClient
+        _, issued = self._admin_post('/relay/invitations')
+        url = f'http://127.0.0.1:{self._api_client()}'
+        args = Namespace(command='register', engine_url=url, member='', credential='', invite=issued['invite_token'])
+        with patch.object(cli, '_require_authorized'), patch.object(config, 'host_member', return_value='remoteB'), \
+                patch.dict(os.environ, {'BOT_GROUP_ENGINE_URL': '', 'BOT_GROUP_RELAY_INVITE': '',
+                                        'BOT_GROUP_RELAY_CREDENTIAL': '', 'BOT_GROUP_RELAY_MEMBER': ''}):
+            with ThreadPoolExecutor(1) as pool:
+                registration = pool.submit(cli.dispatch, args)
+                self._confirm_invite(issued, 'remoteB')
+                self.assertEqual(registration.result(timeout=8), 0)
+            self.assertIsNone(relay_server.active_link('remote-remoteB'))
+            cfg = config.load()
+            self.assertEqual((cfg.engine_url, cfg.member, cfg.invite), (url, 'remoteB', ''))
+            with connect(config.ws_url(url), proxy=None) as ws:
+                self.assertTrue(client_type(cfg)._handshake(ws))
+                link = relay_server.active_link('remote-remoteB')
+                self.assertIsNotNone(link)
+                self.assertEqual(cli.dispatch(args), 0)
+                self.assertIs(relay_server.active_link('remote-remoteB'), link)
+            self.assertFalse(self.plg['pairing'].load_register_credential('remoteB', engine_url=url + '-other'))
+            pairing = self.plg['pairing']
+            record = pairing._load_state()
+            self.assertEqual(record['register'].pop('engine_url'), url)
+            pairing._save_state(record)
+            self.assertEqual(config.load(), cfg)
+
     def test_invitation_ws_first_join_full_chain(self):
         """方向 A 真实全链：引擎签发邀请 → 插件 RelayClient(invite) 出站
         连真实 /relay/ws → 兑换建节点（remoteB，名册外）→ hello_ok 下发

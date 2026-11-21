@@ -2969,10 +2969,18 @@ def patch_project(name: str, body: dict[str, Any], identity=Depends(_resolve_ide
 
 
 @router_api.get('/projects/{name}/workspaces')
-def get_project_workspaces(name: str, identity=Depends(_resolve_identity), profile: str | None = None):
+def get_project_workspaces(name: str, identity=Depends(_resolve_identity), profile: str | None = None,
+                           defer_remote_sessions: bool = False):
     _admin_only(identity, '仅管理员可管理项目目录')
     from . import project_workspaces
-    return project_workspaces.view(name, profile=profile)
+    return project_workspaces.view(name, profile=profile, defer_remote_sessions=defer_remote_sessions)
+
+
+@router_api.get('/projects/{name}/members/{profile}/remote-work-session')
+def get_remote_work_session(name: str, profile: str, identity=Depends(_resolve_identity)):
+    _admin_only(identity, '仅管理员可查询远程成员工作会话')
+    from . import project_workspaces
+    return {'work_session_exists': project_workspaces.remote_work_session(name, profile)}
 
 
 @router_api.post('/projects/{name}/workspaces/{profile}')

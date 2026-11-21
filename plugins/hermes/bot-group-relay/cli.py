@@ -178,6 +178,17 @@ def dispatch(args) -> int:
                                        mcp_python="",
                                        home=relay_config.host_home())
         client = relay_mod.RelayClient(cfg)
+        if invite:
+            print("等待办公机确认配对…", flush=True)
+            try:
+                client.pair_invitation()
+            except KeyboardInterrupt:
+                return 130
+            except Exception as exc:
+                print(f"配对未完成（{type(exc).__name__}），可核对节点状态后重试。", file=sys.stderr)
+                return 1
+            print("配对已保存。日常连接由 Hermes gateway 维护；请启动或重新加载该网关。")
+            return 0
         try:
             client.start()  # 复用 #316 出站链路；后台线程维护连接
         except Exception as exc:  # noqa: BLE001 启动失败清理后如实报错

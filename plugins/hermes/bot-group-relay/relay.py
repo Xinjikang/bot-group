@@ -52,6 +52,22 @@ class RelayClient:
     def start(self) -> None:
         self._thread.start()
 
+    def pair_invitation(self) -> None:
+        """Persist administrator confirmation without claiming the gateway's daily link."""
+        from websockets.sync.client import connect
+        from . import pairing
+        if not self.cfg.invite:
+            raise ValueError("missing invitation")
+        while not pairing.load_register_credential(self.cfg.member, engine_url=self.cfg.engine_url,
+                                                   invite=self.cfg.invite):
+            with connect(relay_config.ws_url(self.cfg.engine_url), proxy=None,
+                         open_timeout=10, close_timeout=2) as ws:
+                if self._handshake(ws, pairing_only=True) is False:
+                    raise ValueError("invitation rejected")
+            if self._credential:
+                return
+            time.sleep(1)
+
     def stop(self) -> None:
         self._stop.set()
         self._streams.close_all()
@@ -97,12 +113,14 @@ class RelayClient:
                 return
             backoff = min(backoff * 2, RECONNECT_CAP)
 
-    def _handshake(self, ws) -> bool | None:
+    def _handshake(self, ws, *, pairing_only=False) -> bool | None:
         snapshot = mcp_digest.snapshot(self.cfg.mcp_python,
                                        code_version=relay_config.plugin_version())
         from . import pairing
         scope = {'engine_url': self.cfg.engine_url, 'invite': self.cfg.invite}
         credential = self._credential or pairing.load_register_credential(self.cfg.member, **scope)
+        if pairing_only and credential:
+            return True
         candidate = None
         hello = {"relay": {"kind": "hello"},
                  "member": self.cfg.member,

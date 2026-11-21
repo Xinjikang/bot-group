@@ -44,7 +44,7 @@ class LocalGatewayStream:
             self._finish()
             return
         try:
-            endpoint, ticket = self._tickets.fetch_ticket(self.home, purpose="relay")
+            endpoint, ticket = self._tickets.fetch_ticket(self.home, purpose="interactive")
             url = self._tickets.gateway_ws_url(endpoint)
             with ws_sync.connect(
                     url,

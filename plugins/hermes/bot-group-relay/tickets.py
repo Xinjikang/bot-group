@@ -89,7 +89,7 @@ def identify(home: str, timeout: float = IDENTIFY_TIMEOUT) -> dict:
         raise TicketError("Hermes gateway discovery returned invalid data") from exc
 
 
-def fetch_ticket(home: str, *, purpose: str = "relay", timeout: float = IDENTIFY_TIMEOUT) -> tuple[dict, str]:
+def fetch_ticket(home: str, *, purpose: str = "interactive", timeout: float = IDENTIFY_TIMEOUT) -> tuple[dict, str]:
     """identify → session-ticket，返回 (endpoint, ticket)。每次建本地连接重取、
     不缓存；identify 身份与 ticket 请求一致（同一 profile_id/instance_id）。"""
     endpoint = identify(home, timeout=timeout)

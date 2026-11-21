@@ -50,11 +50,11 @@ def is_connected(config) -> bool:
 def register(ctx) -> None:
     """插件入口：注册 bot-group-relay 平台适配器 + CLI 子命令 + 私聊工具。"""
     try:
-        from .adapter import RelayAdapter
+        from .adapter import create_adapter
         ctx.register_platform(
             name="bot-group-relay",
             label="bot-group relay",
-            adapter_factory=lambda cfg: RelayAdapter(cfg),
+            adapter_factory=create_adapter,
             check_fn=check_requirements,
             validate_config=validate_config,
             is_connected=is_connected,

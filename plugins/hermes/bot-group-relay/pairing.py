@@ -232,6 +232,8 @@ def save_register_credential(member: str, credential: str, *, engine_url: str = 
     with _LOCK:
         state = _load_state()
         state['register'] = {'member': member, 'credential': credential, 'saved_at': time.time()}
+        if engine_url:
+            state['register']['engine_url'] = engine_url.rstrip('/')
         if invite:
             scope = [member, engine_url, hashlib.sha256(invite.encode()).hexdigest()]
             state['register']['scope'] = scope
@@ -241,13 +243,27 @@ def save_register_credential(member: str, credential: str, *, engine_url: str = 
     logger.info("bot-group relay register credential saved member=%s", member)
 
 
+def saved_register(member: str) -> tuple[str, str]:
+    """Read the confirmed peer for this profile, including older scoped records."""
+    with _LOCK:
+        saved = _load_state().get('register') or {}
+    if not member or saved.get('member') != member:
+        return '', ''
+    scope = saved.get('scope')
+    url = saved.get('engine_url') or (scope[1] if isinstance(scope, list) and len(scope) == 3 else '')
+    return url.rstrip('/'), saved.get('credential') or ''
+
+
 def load_register_credential(member: str, *, engine_url: str = '', invite: str = '') -> str:
     """A new invitation cannot silently reuse credentials for an earlier one."""
+    if not invite:
+        url, credential = saved_register(member)
+        return credential if not engine_url or url == engine_url.rstrip('/') else ''
     with _LOCK:
         saved = _load_state().get("register") or {}
         if saved.get("member") == member:
             scope = [member, engine_url, hashlib.sha256(invite.encode()).hexdigest()]
-            if not invite or saved.get('scope') == scope:
+            if saved.get('scope') == scope:
                 return saved.get("credential") or ""
     return ""
 
