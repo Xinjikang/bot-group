@@ -24,6 +24,7 @@ import ssl
 import threading
 import time
 import urllib.parse
+from contextlib import closing
 
 from . import db, relay, relay_server
 
@@ -325,11 +326,16 @@ def _hello_payload(conn, member: str) -> dict | None:
     if row is None or row["credential_revoked"]:
         return None
     endpoint = relay.read_dial_endpoint(conn, member) or {}
+    first_join = bool(endpoint.get('activate_pairing'))
+    ticket = endpoint.get('activation_ticket')
+    activation = {'activate_pairing': True} if first_join else {}
+    if first_join and ticket and endpoint['activation_expires_at'] > relay._now():
+        activation.update(pairing_ticket=ticket, fingerprint=endpoint['fingerprint'])
     return {
         "relay": {"kind": "hello"},
         "member": member,
         "credential": str(endpoint.get("pairing_token") or ""),
-        **({'activate_pairing': True} if endpoint.get('activate_pairing') else {}),
+        **activation,
         "code_version": relay_server._engine_release_version() or "",
         "protocol_version": relay_server.RELAY_PROTOCOL_VERSION,
         "direction": "dial",
@@ -376,8 +382,8 @@ def _authenticate_dial(member: str, endpoint: dict, payload: dict, *, probe=Fals
         if probe:
             import math
             expiry = meta.get('expires_at')
-            if (meta.get('kind') != 'pairing_verified' or type(expiry) not in (int, float)
-                    or not math.isfinite(expiry)):
+            if (meta.get('kind') != 'pairing_verified' or meta.get('activation_mode') != 'after_confirm'
+                    or type(expiry) not in (int, float) or not math.isfinite(expiry)):
                 raise PairingProbeError('auth', 'invalid_receipt')
             if meta.get('member') != member:
                 raise PairingProbeError('identity', 'member_mismatch')
@@ -410,12 +416,12 @@ def _authenticate_dial(member: str, endpoint: dict, payload: dict, *, probe=Fals
         return None
 
 
-def verify_first_pairing(member: str, endpoint: dict, *, commitment=''):
-    """Ask the pinned plugin for its verified identity without a relay login."""
+def verify_first_pairing(member: str, endpoint: dict):
+    """Ask the pinned plugin for its verified identity without reserving its ticket."""
     return _authenticate_dial(member, endpoint, {
         "relay": {"kind": "pairing_probe"}, "member": member,
         "pairing_ticket": endpoint["pairing_token"], "fingerprint": endpoint['fingerprint'],
-        "commitment": commitment, "direction": "dial",
+        "direction": "dial",
         "code_version": relay_server._engine_release_version() or "",
         "protocol_version": relay_server.RELAY_PROTOCOL_VERSION,
     }, probe=True)
@@ -441,10 +447,18 @@ def dial_once(member: str, *, initial=None) -> bool:
             _record_failure(member, "auth", _endpoint_address(endpoint),
                             "缺少配对凭据，请重新导入配对链接")
             return False
+        has_ticket = bool(endpoint.get('activation_ticket'))
+        if has_ticket and not payload.get('pairing_ticket'):
+            with closing(db.get_connection()) as conn:
+                relay.discard_dial_activation_ticket(conn, member, endpoint, row['dial_endpoint'])
+            has_ticket = False
         authenticated = _authenticate_dial(member, endpoint, payload)
         if authenticated is None:
             return False
         ws, remote_generation, persistent_credential = authenticated
+        if has_ticket:
+            with closing(db.get_connection()) as conn:
+                relay.discard_dial_activation_ticket(conn, member, endpoint, row['dial_endpoint'])
         if persistent_credential:
             conn = db.get_connection()
             try:

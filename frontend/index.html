@@ -746,6 +746,9 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 #relay-nodes-dialog .dlg-btns{position:sticky;bottom:-26px;margin:18px -26px -26px;padding:12px 26px 26px;background:var(--card);box-shadow:0 -1px 0 var(--border-soft);z-index:2}
 .relay-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0}
 .relay-toolbar .profile-help{flex:1;min-width:140px;margin:0}
+#relay-nodes-dialog dialog{width:min(500px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;overflow-wrap:anywhere;box-sizing:border-box}
+#relay-join-dialog .relay-direction-choices{margin:12px 0}
+#relay-join-status[data-error="true"]{color:var(--danger)}
 #relay-node-list{display:flex;flex-direction:column;gap:8px;max-height:56dvh;overflow:auto;margin:6px 0}
 .relay-listen{margin:10px 0 12px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--card)}
 .relay-listen-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
@@ -1563,8 +1566,10 @@ async function api(path, opts = {}) {
   if (res.status === 401 && !path.includes("/auth/")) { logout(); throw new Error("unauthorized"); }
   if (!res.ok) {
     let detail = res.statusText;
-    try { detail = (await res.json()).detail || detail; } catch {}
+    let payload;
+    try { payload = await res.json(); detail = payload.detail || detail; } catch {}
     const error = new Error(typeof detail === 'object' ? (detail.message || JSON.stringify(detail)) : detail);
+    if (/^\/relay\/(pairings|invitations)(\/|$)/.test(path)) error.pairing = payload;
     error.detail = detail;
     error.status = res.status;
     throw error;
@@ -5186,7 +5191,8 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/service_restart.js?v=20261026-settings-icons"></script>
 <script src="/app/app_settings.js?v=20261026-auto-refresh"></script>
 <script src="/app/engine_logs.js?v=20261103"></script>
-<script src="/app/relay_nodes.js?v=20261121-mcp-retry"></script>
+<script src="/app/relay_join.js?v=first-join"></script>
+<script src="/app/relay_nodes.js?v=first-join"></script>
 <script src="/app/edit_policy_settings.js?v=20261030"></script>
 <script src="/app/background_settings.js?v=20261023-settings-anchor"></script>
 <script src="/app/directory_picker.js?v=20261011"></script>

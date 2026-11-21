@@ -25,7 +25,7 @@ from scripts.project_test_support import enable_members
 PLUGIN_DIR = Path(__file__).resolve().parents[1] / "plugins" / "hermes" / "bot-group-relay"
 
 
-def _plugin_modules(slot="bot_group_relay_test"):
+def _plugin_modules(slot="bot_group_relay_test", plugin_dir=PLUGIN_DIR):
     """两遍法加载插件模块（相对导入与执行顺序解耦）。"""
     import importlib.util
     import sys as _sys
@@ -33,12 +33,12 @@ def _plugin_modules(slot="bot_group_relay_test"):
     pkg_name = f"hermes_plugins.{slot}"
     parent_name = "hermes_plugins"
     parent = _sys.modules.setdefault(parent_name, types.ModuleType(parent_name))
-    parent.__path__ = [str(PLUGIN_DIR)]
+    parent.__path__ = [str(plugin_dir)]
     parent.__package__ = parent_name
     _sys.modules[parent_name] = parent
     # 相对导入要求子包本身可解析：注册包占位（父包属性 + sys.modules）
     pkg = types.ModuleType(pkg_name)
-    pkg.__path__ = [str(PLUGIN_DIR)]
+    pkg.__path__ = [str(plugin_dir)]
     pkg.__package__ = pkg_name
     _sys.modules[pkg_name] = pkg
     setattr(parent, slot, pkg)
@@ -46,7 +46,7 @@ def _plugin_modules(slot="bot_group_relay_test"):
     for sub in ("pairing", "config", "mcp_digest", "streams", "listen", "mcpproxy",
                 "cli", "tools"):
         full = f"{pkg_name}.{sub}"
-        spec = importlib.util.spec_from_file_location(full, PLUGIN_DIR / f"{sub}.py")
+        spec = importlib.util.spec_from_file_location(full, plugin_dir / f"{sub}.py")
         mod = importlib.util.module_from_spec(spec)
         mod.__name__ = full
         mod.__package__ = pkg_name
@@ -55,7 +55,7 @@ def _plugin_modules(slot="bot_group_relay_test"):
         modules[sub] = mod
     for sub, mod in modules.items():
         spec = importlib.util.spec_from_file_location(
-            f"{pkg_name}.{sub}", PLUGIN_DIR / f"{sub}.py")
+            f"{pkg_name}.{sub}", plugin_dir / f"{sub}.py")
         spec.loader.exec_module(mod)
     return modules
 
@@ -1773,6 +1773,54 @@ class FirstJoinTests(unittest.TestCase):
         self.assertFalse(self.plg['pairing']._load_state().get('persistent'))
         self.assertIsNone(result['_server']._active_ws)
 
+    def test_outbound_confirm_expiring_during_verified_probe_allows_immediate_retry(self):
+        from engine import relay_pairing
+        plg_listen = self.plg['listen']
+        with patch.object(plg_listen, 'STATE_DIR', Path(self._tmpdir.name)), \
+                patch.object(plg_listen, 'validate_bind_address', return_value='127.0.0.1'):
+            result = plg_listen.listen_serve(address='127.0.0.1', port=0, advertise='127.0.0.1',
+                member='remoteB', home=self._tmpdir.name, tls=True, mcp_entry='')
+        self.addCleanup(result['_server'].stop)
+        body = {'pairing_url': result['pairing_url']}
+
+        def prepare():
+            status, data = self._admin_post('/relay/pairings/preview', body)
+            self.assertEqual((status, data.get('state')), (200, 'pending_confirmation'), data)
+            return f"/relay/pairings/{data['pairing_id']}", data
+
+        early_path, early = prepare()
+        clock = [early['expires_at'] + 1]
+        verify = relay_dialer.verify_first_pairing
+        with patch.object(relay, '_now', side_effect=lambda: clock[0]):
+            self.assertEqual(self._admin_post(early_path + '/confirm', body)[1]['state'], 'expired')
+            with closing(db.get_connection()) as conn:
+                early_row = relay_pairing.read(conn, early['pairing_id'])
+            late_path, late = prepare()
+            clock[0] = late['expires_at'] - 1
+
+            def cross_deadline(*args, **kwargs):
+                receipt = verify(*args, **kwargs)
+                clock[0] = late['expires_at'] + 1
+                return receipt
+
+            with patch.object(relay_dialer, 'verify_first_pairing', side_effect=cross_deadline):
+                code, view = self._admin_post(late_path + '/confirm', body)
+            self.assertEqual((code, view['state']), (409, 'expired'))
+            # Read both stores before any new preview or status poll can hide the bug.
+            with closing(db.get_connection()) as conn:
+                late_row = relay_pairing.read(conn, late['pairing_id'])
+                self.assertFalse(relay.list_nodes(conn) or ip_allowlist.list_bindings(conn))
+            remote = self.plg['pairing']._load_state()
+            self.assertFalse(remote.get('persistent') or remote['pairing']['redeemed'])
+            self.assertIsNone(result['_server']._active_ws)
+            self.assertFalse('activation' in remote['pairing'], 'failed confirmation left a live remote reservation')
+            for row in (early_row, late_row):
+                self.assertEqual((row['state'], row['candidate']), ('expired', None))
+            retry_path, _ = prepare()
+            code, verified = self._admin_post(retry_path + '/confirm', body)
+            self.assertEqual((code, verified.get('state')), (200, 'confirmed'), verified)
+            self.assertTrue(self._wait_dial_connected('remoteB'))
+
     def test_outbound_confirm_losing_local_race_leaves_no_effective_remote_key(self):
         from concurrent.futures import ThreadPoolExecutor
         plg_listen = self.plg['listen']
@@ -1788,19 +1836,24 @@ class FirstJoinTests(unittest.TestCase):
         ready, resume = threading.Event(), threading.Event()
         verify = relay_dialer.verify_first_pairing
 
-        def wait_after_prepare(*args, **kwargs):
+        from engine import relay_pairing
+        def wait_after_verify(*args, **kwargs):
             checked = verify(*args, **kwargs)
             ready.set()
             if not resume.wait(8):
                 raise RuntimeError('test did not release the confirmation')
             return checked
 
-        with patch.object(relay_dialer, 'verify_first_pairing', side_effect=wait_after_prepare), \
+        with patch.object(relay_dialer, 'verify_first_pairing', side_effect=wait_after_verify), \
                 ThreadPoolExecutor(max_workers=1) as pool:
             pending = pool.submit(self._admin_post, path + '/confirm', body)
             try:
                 self.assertTrue(ready.wait(8))
                 self.assertEqual(self._admin_post(path + '/cancel')[1]['state'], 'cancelled')
+                with closing(db.get_connection()) as conn:
+                    row = relay_pairing.read(conn, data['pairing_id'])
+                    self.assertEqual((row['state'], row['candidate']), ('cancelled', None))
+                self.assertFalse('activation' in self.plg['pairing']._load_state()['pairing'])
             finally:
                 resume.set()
             status, cancelled = pending.result(timeout=8)
@@ -1810,6 +1863,87 @@ class FirstJoinTests(unittest.TestCase):
         self.assertIsNone(result['_server']._active_ws)
         with closing(db.get_connection()) as conn:
             self.assertFalse(relay.list_nodes(conn) or ip_allowlist.list_bindings(conn))
+        code, fresh = self._admin_post('/relay/pairings/preview', body)
+        self.assertEqual((code, fresh.get('state')), (200, 'pending_confirmation'), fresh)
+        code, confirmed = self._admin_post(f"/relay/pairings/{fresh['pairing_id']}/confirm", body)
+        self.assertEqual((code, confirmed.get('state')), (200, 'confirmed'), confirmed)
+        self.assertTrue(self._wait_dial_connected('remoteB'))
+
+    def test_outbound_idle_expiration_and_expired_cancel_clear_old_material(self):
+        from engine import relay_pairing, scanner
+        member, now = 'remoteB', relay._now()
+        endpoint = {'host': '127.0.0.1', 'port': 1, 'tls': True,
+                    'fingerprint': 'ab' * 32, 'pairing_token': 'fixture-ticket'}
+        with closing(db.get_connection()) as conn:
+            idle, cancelled = [relay_pairing.create(conn, member, endpoint, now + 100) for _ in range(2)]
+            # Model a database upgraded with old unconfirmed candidate material.
+            with conn:
+                conn.execute('UPDATE relay_dial_attempts SET candidate=?', ('obsolete-fixture',))
+        cancel_path = f"/relay/pairings/{cancelled['pairing_id']}"
+        with patch.object(relay, '_now', return_value=now + 101), \
+                patch.object(relay_dialer, 'verify_first_pairing') as verify:
+            status, response = self._admin_post(cancel_path + '/cancel')
+            self.assertEqual((status, response['state']), (200, 'expired'))
+            verify.assert_not_called()
+            with closing(db.get_connection()) as conn:
+                row = relay_pairing.read(conn, cancelled['pairing_id'])
+                self.assertEqual((row['state'], row['candidate']), ('expired', None))
+                self.assertIsNotNone(relay_pairing.read(conn, idle['pairing_id'])['candidate'])
+                scanner.run_once(conn)
+            with closing(db.get_connection()) as conn:
+                row = relay_pairing.read(conn, idle['pairing_id'])
+                self.assertEqual((row['state'], row['candidate']), ('expired', None))
+                self.assertFalse(relay.list_nodes(conn) or ip_allowlist.list_bindings(conn))
+
+    def test_expired_activation_ticket_is_cleared_without_first_dial(self):
+        from engine import relay_pairing
+        now = relay._now()
+        endpoint = {'host': 'fixture', 'port': 443, 'tls': True, 'fingerprint': 'ab' * 32,
+                    'pairing_token': 'fixture-ticket'}
+        with closing(db.get_connection()) as conn:
+            attempt = relay_pairing.create(conn, 'remoteB', endpoint, now + 60)
+            relay_pairing.decide(conn, attempt['pairing_id'], verified=('remoteB', endpoint, now + 60))
+            initial = relay.read_dial_endpoint(conn, 'remoteB')
+            self.assertEqual(initial['activation_ticket'], 'fixture-ticket')
+            with patch.object(relay, '_now', return_value=now + 61):
+                relay_pairing.expire_stale(conn)
+                clean = relay.read_dial_endpoint(conn, 'remoteB')
+                self.assertNotIn('activation_ticket', clean)
+                self.assertNotIn('activation_expires_at', clean)
+                self.assertEqual(clean['pairing_token'], initial['pairing_token'])
+
+    def test_outbound_activation_reconnect_after_lost_ack_does_not_redeem_again(self):
+        plg_listen, pairing = self.plg['listen'], self.plg['pairing']
+        with patch.object(plg_listen, 'STATE_DIR', Path(self._tmpdir.name)), \
+                patch.object(plg_listen, 'validate_bind_address', return_value='127.0.0.1'):
+            result = plg_listen.listen_serve(address='127.0.0.1', port=0, advertise='127.0.0.1',
+                member='remoteB', home=self._tmpdir.name, tls=True, mcp_entry='')
+        self.addCleanup(result['_server'].stop)
+        authenticate = relay_dialer._authenticate_dial
+        redeemed = []
+
+        def lose_first_ack(member, endpoint, payload, **kwargs):
+            reply = authenticate(member, endpoint, payload, **kwargs)
+            if reply and payload.get('activate_pairing') and not redeemed:
+                redeemed.append(pairing._load_state()['pairing']['redeemed_at'])
+                reply[0].close()
+                return None
+            return reply
+
+        body = {'pairing_url': result['pairing_url']}
+        code, view = self._admin_post('/relay/pairings/preview', body)
+        self.assertEqual(code, 200, view)
+        confirm = f"/relay/pairings/{view['pairing_id']}/confirm"
+        with patch.object(relay_dialer, '_authenticate_dial', side_effect=lose_first_ack):
+            code, confirmed = self._admin_post(confirm, body)
+            self.assertEqual((code, confirmed['state']), (200, 'confirmed'))
+            self.assertTrue(self._wait_dial_connected('remoteB'))
+        self.assertEqual(redeemed, [pairing._load_state()['pairing']['redeemed_at']])
+        with closing(db.get_connection()) as conn:
+            endpoint = relay.read_dial_endpoint(conn, 'remoteB')
+            self.assertFalse('activation_ticket' in endpoint or 'activation_expires_at' in endpoint)
+            self.assertEqual(len(relay.list_nodes(conn)), 1)
+        self.assertEqual(self._admin_post(confirm, body), (200, confirmed))
 
     def test_local_roster_conflict_prevents_pairing(self):
         """An existing local route is not a first-join identity."""

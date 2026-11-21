@@ -27,4 +27,4 @@ fi
 
 echo "bot-group relay 安装完成"
 echo "MCP 解释器: $VENV_DIR/bin/python"
-echo "将引擎地址/成员名/连接凭据配置到 BOT_GROUP_ENGINE_URL / BOT_GROUP_RELAY_MEMBER / BOT_GROUP_RELAY_CREDENTIAL"
+echo "在办公机打开设置 → 远程节点 → 添加远程 Hermes，按所选方向完成配对。"

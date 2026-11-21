@@ -9,16 +9,18 @@
   dialog.setAttribute('aria-labelledby', 'relay-nodes-title');
   dialog.innerHTML = `
     <h3 id="relay-nodes-title">远程节点管理</h3>
-    <p class="profile-help">管理 Hermes 远程节点的连接凭据和来源 IP；凭据只在签发成功后显示一次，关闭或刷新后不再显示。</p>
     <p id="relay-readonly" class="profile-help" role="note" hidden>当前为 Bot 身份，仅可查看说明；远程节点管理需要管理员登录。</p>
     <div id="relay-admin-body">
       <div class="relay-toolbar">
+        <button type="button" id="relay-add" class="primary">添加远程 Hermes</button>
+        <button type="button" id="relay-open-listen">本机监听配置</button>
         <button type="button" id="relay-refresh">刷新</button>
         <span id="relay-nodes-status" class="profile-help" role="status" aria-live="polite"></span>
       </div>
+      <dialog id="relay-listen-dialog" aria-labelledby="relay-listen-title">
       <section id="relay-listen" class="relay-listen" aria-labelledby="relay-listen-title">
         <div class="relay-listen-head">
-          <h4 id="relay-listen-title">引擎远程监听</h4>
+          <h4 id="relay-listen-title">本机监听配置</h4>
           <span id="relay-listen-badge" class="relay-badge offline">读取中</span>
         </div>
         <p id="relay-listen-summary" class="profile-help" role="status" aria-live="polite"></p>
@@ -31,31 +33,25 @@
         </div>
         <div id="relay-listen-url-row" class="relay-copy-row" hidden>
           <input id="relay-listen-url" readonly autocomplete="off" spellcheck="false"
-                 aria-label="ECS 插件引擎地址">
+                 aria-label="本机连接地址">
           <button type="button" id="relay-listen-copy">复制地址</button>
         </div>
         <p id="relay-listen-sources" class="profile-help"></p>
-        <p class="profile-help">只绑定所选网卡的具体单播地址，禁止 0.0.0.0 与 ::；本机回环始终可用。启用前需至少绑定一个来源 IP。</p>
         <p id="relay-listen-status" class="profile-help" role="status" aria-live="polite"></p>
       </section>
-      <section id="relay-direction" class="relay-direction" aria-labelledby="relay-direction-title">
+      <div class="dlg-btns"><button id="relay-listen-refresh">刷新</button><button id="relay-listen-close">关闭</button></div></dialog>
+      <section hidden id="relay-direction" class="relay-direction" aria-labelledby="relay-direction-title">
         <div class="relay-direction-head">
           <h4 id="relay-direction-title">连接方向</h4>
           <span id="relay-direction-badge" class="relay-badge offline">未选择节点</span>
         </div>
-        <p class="profile-help">谁可达谁监听：云端能连到本机时选方向 A，本机能连到云端监听端口时选方向 B。同一节点同一时刻只保留一条活动通道。</p>
-        <label class="relay-field" for="relay-direction-node">节点
-          <select id="relay-direction-node"></select>
-        </label>
         <div class="relay-direction-choices" role="group" aria-label="连接方向">
           <button type="button" id="relay-direction-listen" data-direction="listen" aria-pressed="false">
-            <span class="relay-direction-title">让云端连接这台电脑</span>
-            <span class="relay-direction-sub">云端插件 register → 本机监听</span>
+            <span class="relay-direction-title">云端连本机</span>
             <span class="relay-direction-flag" data-flag="listen"></span>
           </button>
           <button type="button" id="relay-direction-dial" data-direction="dial" aria-pressed="false">
-            <span class="relay-direction-title">让这台电脑连接云端</span>
-            <span class="relay-direction-sub">本机引擎拨入云端插件监听</span>
+            <span class="relay-direction-title">本机连云端</span>
             <span class="relay-direction-flag" data-flag="dial"></span>
           </button>
         </div>
@@ -80,12 +76,12 @@
           </div>
         </div>
         <section id="relay-pairing" class="relay-pairing" aria-labelledby="relay-pairing-title" hidden>
-          <h5 id="relay-pairing-title">导入配对链接（方向 B）</h5>
-          <p class="profile-help">粘贴云端插件 listen 输出的配对链接。先核对设备与短指纹，再由本机引擎预检可达性和证书；预检失败不会保存。</p>
+          <h5 id="relay-pairing-title">配对链接</h5>
+          <p class="profile-help">从该节点的 Hermes 插件复制配对链接。</p>
           <div class="relay-pairing-line">
             <label class="relay-field" for="relay-pairing-url">配对链接
               <input id="relay-pairing-url" autocomplete="off" spellcheck="false"
-                     placeholder="wss://example.com:18443?pairing_token=…&amp;fingerprint=…">
+                     placeholder="粘贴配对链接">
             </label>
             <button type="button" id="relay-pairing-parse">解析</button>
           </div>
@@ -102,21 +98,6 @@
         </section>
       </section>
       <div id="relay-node-list" aria-live="polite"></div>
-      <section id="relay-register" class="relay-register">
-        <h4>登记新节点</h4>
-        <p class="profile-help">一名 Hermes 成员对应一个节点；同时登记该节点允许的来源 IP。已登记成员请在节点卡片中重新签发或添加 IP。</p>
-        <div class="relay-register-line">
-          <label class="relay-field" for="relay-member">Hermes 成员
-            <select id="relay-member"></select>
-          </label>
-          <label class="relay-field" for="relay-register-ip">来源 IP
-            <input id="relay-register-ip" autocomplete="off" spellcheck="false" placeholder="例如 100.64.0.5">
-          </label>
-          <button type="button" id="relay-register-submit" class="primary" disabled>登记</button>
-        </div>
-        <p id="relay-register-gate" class="profile-help" role="status" aria-live="polite"></p>
-        <p id="relay-register-status" class="profile-help" role="status" aria-live="polite"></p>
-      </section>
       <section id="relay-credential" class="relay-credential" hidden aria-labelledby="relay-credential-title">
         <h4 id="relay-credential-title">请立即保存凭据</h4>
         <p class="profile-help" role="alert">凭据只显示这一次；关闭窗口、刷新页面或重新打开后无法再次查看。</p>
@@ -151,9 +132,11 @@
   const listenSources = $('#relay-listen-sources');
   const listenStatus = $('#relay-listen-status');
   const listenCopy = $('#relay-listen-copy');
-  const listenSection = $('#relay-listen');
+  const listenDialog = $('#relay-listen-dialog');
+  const directionPanel = $('#relay-direction');
+  let listenContinuation = null;
+  let selectedProfile = '';
   const directionBadge = $('#relay-direction-badge');
-  const directionNode = $('#relay-direction-node');
   const directionListen = $('#relay-direction-listen');
   const directionDial = $('#relay-direction-dial');
   const directionDetail = $('#relay-direction-detail');
@@ -179,20 +162,15 @@
   const pairingConfirm = $('#relay-pairing-confirm');
   const pairingCancel = $('#relay-pairing-cancel');
   const pairingStatus = $('#relay-pairing-status');
-  const memberSelect = $('#relay-member');
-  const registerIp = $('#relay-register-ip');
-  const register = $('#relay-register-submit');
-  const registerGate = $('#relay-register-gate');
-  const registerStatus = $('#relay-register-status');
   const credentialPanel = $('#relay-credential');
   const issuedMember = $('#relay-issued-member');
   const issuedCredential = $('#relay-issued-credential');
   const close = $('#relay-close');
 
-  let epoch = 0, busy = false, nodes = [], members = [], issued = null;
+  let epoch = 0, busy = false, nodes = [], issued = null;
   let bindings = new Map();
   let bindingsError = '';
-  let nodesReady = false, membersReady = false, bindingsReady = false;
+  let nodesReady = false, bindingsReady = false;
   let loading = false, writeUncertain = false;
   let interfaces = [], listenState = null, interfacesReady = false, statusReady = false;
   let listenLoading = false, listenUncertain = false, listenError = '';
@@ -216,14 +194,6 @@
     if (!Number.isFinite(ts) || ts <= 0) return '—';
     return new Date(ts * 1000).toLocaleString();
   }
-  function selectedMember() {
-    const profile = memberSelect.value;
-    return members.find(member => member.profile === profile) || null;
-  }
-  function candidateMembers() {
-    const registered = new Set(nodes.map(node => node.member));
-    return members.filter(member => !registered.has(member.profile));
-  }
   function bindingFor(member) {
     return bindings.get(member) || [];
   }
@@ -231,7 +201,7 @@
     if (!bindingFor(member).includes(ip)) bindings.set(member, [...bindingFor(member), ip]);
   }
   function registrationReady() {
-    return nodesReady && membersReady && bindingsReady && !loading && !writeUncertain;
+    return nodesReady && bindingsReady && !loading && !writeUncertain;
   }
   function isLoopback(value) {
     const normalized = String(value || '').trim().toLowerCase();
@@ -272,10 +242,10 @@
     return [...seen].sort();
   }
   function directionLabel(direction) {
-    return direction === 'dial' ? '让这台电脑连接云端' : '让云端连接这台电脑';
+    return direction === 'dial' ? '本机连云端' : '云端连本机';
   }
   function selectedDirectionNode() {
-    return nodes.find(node => node.member === directionNode.value) || null;
+    return nodes.find(node => node.member === selectedProfile) || null;
   }
   function nodeDirection(node) {
     return node?.direction === 'dial' ? 'dial' : 'listen';
@@ -311,39 +281,8 @@
     return `${endpoint.tls === false ? 'ws' : 'wss'}://${host}:${endpoint.port}`;
   }
   function renderDirection() {
-    const node = selectedDirectionNode();
-    const previous = directionNode.value;
-    directionNode.replaceChildren();
-    if (!nodes.length) {
-      directionNode.append(new Option('暂无可选节点', ''));
-      directionNode.disabled = true;
-      directionBadge.className = 'relay-badge offline';
-      directionBadge.textContent = '未登记节点';
-      directionDetail.hidden = true;
-      pairingSection.hidden = true;
-      stageListen.hidden = true;
-      listenSection.hidden = false;
-      directionListen.classList.remove('active');
-      directionDial.classList.remove('active');
-      directionListen.setAttribute('aria-pressed', 'false');
-      directionDial.setAttribute('aria-pressed', 'false');
-      const listenFlag = directionListen.querySelector('[data-flag="listen"]');
-      const dialFlag = directionDial.querySelector('[data-flag="dial"]');
-      listenFlag.hidden = true;
-      dialFlag.hidden = true;
-      report(directionStatus, '先登记远程节点，再选择连接方向。');
-      report(directionFailure, '');
-      return;
-    }
-    for (const item of nodes) {
-      const label = `${item.display_name || item.member}（${item.member}）`;
-      directionNode.append(new Option(label, item.member));
-    }
-    const keep = nodes.some(item => item.member === previous) ? previous
-      : nodes.some(item => item.member === node?.member) ? node.member : nodes[0].member;
-    directionNode.value = keep;
-    directionNode.disabled = busy || loading || directionBusy || !nodes.length;
     const selected = selectedDirectionNode();
+    directionPanel.hidden = !selected;
     if (!selected) return;
     const direction = directionView || nodeDirection(selected);
     const serverDirection = nodeDirection(selected);
@@ -376,7 +315,7 @@
       directionBadge.textContent = '凭据已吊销';
     } else if (online) {
       directionBadge.className = 'relay-badge online';
-      directionBadge.textContent = `已连接 · ${serverDirection === 'dial' ? 'B' : 'A'}`;
+      directionBadge.textContent = '已连接';
     } else if (selected.switch_error) {
       directionBadge.className = 'relay-badge revoked';
       directionBadge.textContent = '切换失败';
@@ -431,10 +370,9 @@
 
     directionDetail.hidden = false;
     stageListen.hidden = false;
-    listenSection.hidden = direction === 'dial';
     pairingSection.hidden = direction !== 'dial';
-    directionTest.hidden = false;
-    directionTest.textContent = direction === 'dial' ? '测试连接（引擎拨入）' : '测试连接（由云端 register 执行）';
+    directionTest.hidden = direction !== 'dial';
+    directionTest.textContent = direction === 'dial' ? '测试连接' : '由云端发起连接';
 
     let status = '', statusError = false, failure = '', failureError = false;
     if (revoked) {
@@ -442,9 +380,9 @@
       statusError = true;
     } else if (onlineForView) {
       if (mcpVerifying) {
-        status = `已连通：${directionLabel(direction)}；MCP 只读验证中：经已认证通道调用随包成员工具…`;
+        status = `已连通：${directionLabel(direction)}；正在验证 MCP…`;
       } else if (mcpFailed) {
-        status = `已连通：${directionLabel(direction)}；MCP 只读验证失败：${selected.mcp_verify_error || '未知原因'}`;
+        status = '云端 Hermes 的 MCP 只读验证失败。';
       } else if (mcpVerified) {
         status = `已连通：${directionLabel(direction)}；MCP 只读验证已通过（已读取本项目名单）。`;
       } else {
@@ -456,11 +394,11 @@
       status = `切换失败：${selected.switch_error}`;
       statusError = true;
     } else if (switching) {
-      status = `切换中：目标为${directionLabel(selected.switch_target || direction)}。正在先断旧通道，再建立新通道；期间暂停派发。`;
+      status = `切换中：目标为${directionLabel(selected.switch_target || direction)}。请稍候。`;
     } else if (selected.offline_reason === 'switch') {
-      status = `切换中断线：${directionLabel(direction)}尚未认证，等待新方向连接；不会按故障掉线告警。`;
+      status = `切换中断线：${directionLabel(direction)}尚未认证，等待新方向连接。`;
     } else if (selected.offline_reason === 'unexpected') {
-      status = '连接异常掉线：不是方向切换，按普通重连恢复。';
+      status = '连接已中断，请检查网络后重试。';
       statusError = true;
     } else if (selected.dial_state === 'backoff' || selected.dial_state === 'connecting') {
       status = `引擎正在向${remote || '云端监听地址'}拨号，失败会按退避重试。`;
@@ -474,7 +412,7 @@
     if (onlineForView && mcpVerifying) {
       failure = '';
     } else if (onlineForView && mcpFailed) {
-      failure = `MCP 只读验证失败：${selected.mcp_verify_error || '未知原因'}`;
+      failure = `请核对云端 Hermes 的项目授权后重新验证。${selected.mcp_verify_error || '未知原因'}`;
       failureError = true;
     } else if (!online && selected.dial_failure?.stage) {
       failure = `引擎拨号 ${selected.dial_failure.address || remote} 卡在${stageLabel(selected.dial_failure.stage)}：${selected.dial_failure.error || '未知错误'}`;
@@ -483,7 +421,7 @@
       failure = `失败原因：${selected.switch_error}`;
       failureError = true;
     } else if (!online && direction === 'listen' && !listenState?.remote_enabled) {
-      failure = '本机监听未开启：先在上方选择网卡并开启监听，云端插件才能 register。';
+      failure = '请打开本机监听配置，选择网卡并启用。';
       failureError = true;
     }
     report(directionFailure, failure, failureError);
@@ -495,7 +433,7 @@
     directionRetry.hidden = !(selected.switch_error || selected.dial_failure || selected.dial_state === 'abandoned'
       || selected.offline_reason === 'unexpected');
     directionBack.hidden = false;
-    directionBack.textContent = direction === 'dial' ? '切回让云端连接这台电脑' : '切回让这台电脑连接云端';
+    directionBack.textContent = direction === 'dial' ? '切回云端连本机' : '切回本机连云端';
     directionTest.disabled = busy || loading || directionBusy || revoked || direction !== 'dial'
       || !endpoint || switching;
     directionVerify.hidden = !(direction === 'dial' && onlineForView && mcpFailed);
@@ -557,7 +495,7 @@
       summary = '监听状态未知，请刷新重试。';
       summaryError = true;
     } else if (enabled) {
-      summary = `实际监听 ${hostPort(listenState.remote_address, listenState.remote_port)}（运行结果）`;
+      summary = `实际监听 ${hostPort(listenState.remote_address, listenState.remote_port)}`;
     } else {
       summary = `未开启远程监听；本机回环 ${listenState.loopback || '127.0.0.1'} 可用。`;
       if (listenState.error) {
@@ -580,50 +518,32 @@
       const ips = allowedSourceIps();
       report(listenSources, ips.length
         ? `允许来源：${ips.join('、')}（本机回环始终放行）。`
-        : '允许来源：尚未绑定；请先在节点卡片绑定来源 IP，再开启远程监听。', false);
+        : '首次接入时，确认节点后会绑定其来源 IP。', false);
     }
     renderListenOptions();
   }
-  function updateGate() {
-    let text = '', error = false;
-    if (loading) {
-      text = '正在读取节点、成员和来源 IP，登记暂不可用。';
-    } else if (!nodesReady) {
-      text = '节点列表读取失败，登记暂不可用；请刷新成功后再登记。';
-      error = true;
-    } else if (!membersReady) {
-      text = '成员列表读取失败，登记暂不可用；请刷新重试。';
-      error = true;
-    } else if (!bindingsReady) {
-      text = '来源 IP 绑定读取失败，登记暂不可用；请刷新重试。';
-      error = true;
-    } else if (writeUncertain) {
-      text = '上次操作结果未确认，请先刷新核对，暂不可重复登记。';
-      error = true;
-    }
-    report(registerGate, text, error);
-  }
   function refreshControls() {
     const ready = registrationReady();
-    refresh.disabled = busy || loading;
-    memberSelect.disabled = busy;
-    registerIp.disabled = busy || loading || !ready;
-    close.disabled = busy;
-    register.disabled = busy || !ready || !selectedMember() || !registerIp.value.trim();
+    const changingDirection = directionBusy || pairingBusy;
+    refresh.disabled = busy || loading || changingDirection;
+    close.disabled = busy || changingDirection;
+    $('#relay-add').disabled = busy || !nodesReady || loading || changingDirection;
+    $('#relay-open-listen').disabled = busy || loading || changingDirection;
     for (const button of list.querySelectorAll('button')) {
-      button.disabled = busy || !ready;
+      button.disabled = busy || !ready || directionBusy || pairingBusy;
     }
     for (const input of list.querySelectorAll('input')) {
       input.disabled = busy || !ready;
     }
     const lready = listenReady();
+    $('#relay-listen-close').disabled = busy;
+    $('#relay-listen-refresh').disabled = busy || loading;
     listenAddress.disabled = busy || loading || !lready;
     listenSave.disabled = busy || loading || !lready || !listenAddress.value;
     listenDisable.disabled = busy || loading || !lready || !listenState?.remote_enabled;
     listenCopy.disabled = busy || !listenUrl.value;
     const dirNode = selectedDirectionNode();
-    const dirLocked = busy || loading || directionBusy || !dirNode;
-    directionNode.disabled = busy || loading || directionBusy || !nodes.length;
+    const dirLocked = busy || loading || directionBusy || pairingBusy || !dirNode || !!dirNode.credential_revoked;
     directionListen.disabled = dirLocked;
     directionDial.disabled = dirLocked;
     directionTest.disabled = dirLocked || !!dirNode?.credential_revoked
@@ -633,9 +553,9 @@
       || mcpVerifyInflight.has(dirNode?.member);
     directionRetry.disabled = dirLocked;
     directionBack.disabled = dirLocked;
-    pairingParse.disabled = dirLocked || pairingBusy;
-    pairingConfirm.disabled = dirLocked || pairingBusy || !pendingPairing;
-    updateGate();
+    pairingUrl.disabled = dirLocked;
+    pairingParse.disabled = dirLocked;
+    pairingConfirm.disabled = dirLocked || !pendingPairing;
   }
   function clearIssued() {
     issued = null;
@@ -649,20 +569,6 @@
     issuedCredential.value = credential;
     credentialPanel.hidden = false;
     credentialPanel.scrollIntoView({block: 'center'});
-  }
-  function renderMembers() {
-    const available = candidateMembers();
-    memberSelect.replaceChildren();
-    if (!available.length) {
-      memberSelect.append(new Option(nodes.length ? '全部 Hermes 成员已登记' : '暂无可登记的 Hermes 成员', ''));
-    } else {
-      memberSelect.append(new Option('选择 Hermes 成员', ''));
-      for (const member of available) {
-        const label = `${member.display_name || member.profile}（${member.profile}）${member.active === 0 ? ' · 已停用' : ''}`;
-        memberSelect.append(new Option(label, member.profile));
-      }
-    }
-    refreshControls();
   }
   function renderNodesUnavailable() {
     list.replaceChildren();
@@ -696,7 +602,7 @@
     } else if (!ips.length) {
       const note = document.createElement('span');
       note.className = 'profile-help relay-source-empty';
-      note.textContent = '未绑定来源 IP；该节点无法从远程连接。';
+      note.textContent = '尚未绑定来源 IP。';
       ipList.append(note);
     } else {
       for (const ip of ips) {
@@ -746,7 +652,7 @@
     if (!nodes.length) {
       const empty = document.createElement('p');
       empty.className = 'profile-help relay-empty';
-      empty.textContent = '暂无已登记节点。选择 Hermes 成员并填写来源 IP 完成首次登记。';
+      empty.textContent = '暂无远程 Hermes。';
       list.append(empty);
       return;
     }
@@ -771,6 +677,7 @@
       meta.className = 'relay-node-meta';
       const fields = [
         ['成员', node.member],
+        ['连接方向', directionLabel(nodeDirection(node))],
         ['代次', node.generation ?? '—'],
         ['最近心跳', fmtHeartbeat(node.last_heartbeat)],
         ['占用', node.capacity_used ?? 0],
@@ -804,21 +711,28 @@
       reissue.dataset.action = 'reissue';
       reissue.textContent = '重新签发';
       actions.append(reissue);
+      const directionButton = document.createElement('button');
+      directionButton.type = 'button';
+      directionButton.dataset.action = 'direction';
+      directionButton.textContent = '切换方向';
+      directionButton.setAttribute('aria-expanded', String(selectedProfile === node.member));
+      actions.prepend(directionButton);
       card.append(head, meta, sourceSection(node), actions);
+      if (selectedProfile === node.member) card.append(directionPanel);
       list.append(card);
     }
     renderDirection();
     refreshControls();
   }
   function renderReadonly() {
+    closeChildren();
     epoch++;
     clearIssued();
     nodes = [];
-    members = [];
+    selectedProfile = '';
     bindings = new Map();
     bindingsError = '';
     nodesReady = false;
-    membersReady = false;
     bindingsReady = false;
     loading = false;
     writeUncertain = false;
@@ -844,8 +758,6 @@
     report(directionFailure, '');
     report(pairingStatus, '');
     report(nodesStatus, '');
-    report(registerStatus, '');
-    report(registerGate, '');
     readonly.hidden = false;
     body.hidden = true;
   }
@@ -853,7 +765,6 @@
     readonly.hidden = true;
     body.hidden = false;
     renderNodes();
-    renderMembers();
   }
   async function loadNodes(generation, quiet = false) {
     refresh.disabled = true;
@@ -876,22 +787,6 @@
       return false;
     } finally {
       if (generation === epoch) refreshControls();
-    }
-  }
-  async function loadMembers(generation) {
-    try {
-      const data = await api('/members', {cache: 'no-store', signal: AbortSignal.timeout(10000)});
-      if (generation !== epoch || !dialog.open) return false;
-      members = (data.members || []).filter(member =>
-        member && member.profile && member.profile !== 'user' && member.runtime === 'hermes');
-      renderMembers();
-      return true;
-    } catch (error) {
-      if (generation !== epoch || !dialog.open) return false;
-      members = [];
-      renderMembers();
-      report(registerStatus, `Hermes 成员列表读取失败：${message(error)}。`, true);
-      return false;
     }
   }
   async function loadBindings(generation) {
@@ -963,7 +858,6 @@
     const generation = ++epoch;
     loading = true;
     nodesReady = false;
-    membersReady = false;
     bindingsReady = false;
     bindingsError = '';
     listenLoading = true;
@@ -973,17 +867,16 @@
     refreshControls();
     const results = await Promise.all([
       loadNodes(generation, quiet),
-      loadMembers(generation),
       loadBindings(generation),
       loadListen(generation),
     ]);
     if (generation !== epoch || !dialog.open) return;
-    [nodesReady, membersReady, bindingsReady] = results;
+    [nodesReady, bindingsReady] = results;
     loading = false;
     listenLoading = false;
-    if (nodesReady && membersReady && bindingsReady) writeUncertain = false;
-    renderNodes();
-    renderMembers();
+    if (nodesReady && bindingsReady) writeUncertain = false;
+    if (nodesReady) renderNodes();
+    else renderNodesUnavailable();
     renderListen();
     renderDirection();
     refreshControls();
@@ -993,11 +886,10 @@
     dialog.showModal();
     clearIssued();
     nodes = [];
-    members = [];
+    selectedProfile = '';
     bindings = new Map();
     bindingsError = '';
     nodesReady = false;
-    membersReady = false;
     bindingsReady = false;
     loading = true;
     writeUncertain = false;
@@ -1019,7 +911,6 @@
     report(directionFailure, '');
     report(pairingStatus, '');
     report(nodesStatus, '');
-    report(registerStatus, '');
     report(listenStatus, '');
     renderListen();
     if (!allowed()) {
@@ -1031,75 +922,7 @@
     await reload();
     if (dialog.open && allowed()) {
       maybeVerifyMcp();
-      memberSelect.focus();
-    }
-  }
-  async function registerNode() {
-    if (busy || !allowed() || !registrationReady()) return;
-    const member = selectedMember();
-    const ip = registerIp.value.trim();
-    if (!member) {
-      report(registerStatus, '请选择 Hermes 成员。', true);
-      return;
-    }
-    if (!ip) {
-      report(registerStatus, '请填写该节点允许的来源 IP。', true);
-      registerIp.focus();
-      return;
-    }
-    if (!isIp(ip)) {
-      report(registerStatus, '来源 IP 格式不正确，请填写 IPv4 或 IPv6 地址。', true);
-      registerIp.focus();
-      return;
-    }
-    if (isLoopback(ip)) {
-      report(registerStatus, '本机回环地址始终放行，无需登记。', true);
-      registerIp.focus();
-      return;
-    }
-    if (nodes.some(node => node.member === member.profile)) {
-      report(registerStatus, '该成员已有节点，请使用节点卡片中的“重新签发”或“添加 IP”。', true);
-      return;
-    }
-    busy = true;
-    refreshControls();
-    report(registerStatus, '正在登记成员并绑定来源 IP…');
-    try {
-      const data = await api('/relay/nodes', {
-        method: 'POST',
-        body: JSON.stringify({member: member.profile, display_name: member.display_name || member.profile}),
-      });
-      if (!dialog.open || !allowed()) return;
-      if (data.member !== member.profile || !data.credential) throw new Error('登记响应缺少成员标识或凭据');
-      writeUncertain = false;
-      showIssued(member.profile, data.credential);
-      try {
-        const bound = await api('/admin/source-ips/add', {
-          method: 'POST',
-          body: JSON.stringify({member: member.profile, ip}),
-        });
-        if (bound.member !== member.profile || !bound.ip) throw new Error('来源 IP 绑定响应格式异常');
-        addLocalBinding(member.profile, bound.ip);
-        writeUncertain = false;
-        report(registerStatus, `已登记 ${member.profile} 并绑定来源 IP ${bound.ip}；凭据仅显示一次，请立即复制。`);
-        registerIp.value = '';
-      } catch (bindError) {
-        if (!bindError.status) writeUncertain = true;
-        report(registerStatus,
-          `成员 ${member.profile} 已登记，但来源 IP 绑定失败：${message(bindError)}。请在节点卡片中重试添加 IP；凭据仅显示一次。`, true);
-      }
-      await reload(true);
-    } catch (error) {
-      if (dialog.open && allowed()) {
-        const lost = !error.status;
-        if (lost) writeUncertain = true;
-        report(registerStatus, lost
-          ? `登记请求结果未确认：${message(error)}。请先点击刷新核对节点列表，勿直接重复登记。`
-          : `登记失败：${message(error)}。`, true);
-      }
-    } finally {
-      busy = false;
-      if (dialog.open) refreshControls();
+      $('#relay-add').focus();
     }
   }
   async function revokeNode(member) {
@@ -1194,7 +1017,7 @@
       if (data.member !== member || !data.ip) throw new Error('来源 IP 绑定响应格式异常');
       addLocalBinding(member, data.ip);
       writeUncertain = false;
-      report(registerStatus, `已为 ${member} 添加来源 IP ${data.ip}；立即生效。`);
+      report(nodesStatus, `已为 ${member} 添加来源 IP ${data.ip}；立即生效。`);
       await reload(true);
     } catch (error) {
       if (!error.status) writeUncertain = true;
@@ -1208,16 +1031,16 @@
     if (busy || !allowed() || !registrationReady()) return;
     busy = true;
     refreshControls();
-    report(registerStatus, `正在移除 ${member} 的来源 IP ${ip}…`);
+    report(nodesStatus, `正在移除 ${member} 的来源 IP ${ip}…`);
     try {
       await api(`/admin/source-ips/${encodeURIComponent(member)}/${encodeURIComponent(ip)}`, {method: 'DELETE'});
       bindings.set(member, bindingFor(member).filter(item => item !== ip));
       writeUncertain = false;
-      report(registerStatus, `已移除 ${member} 的来源 IP ${ip}；立即生效。`);
+      report(nodesStatus, `已移除 ${member} 的来源 IP ${ip}；立即生效。`);
       await reload(true);
     } catch (error) {
       if (!error.status) writeUncertain = true;
-      report(registerStatus, `移除来源 IP 失败：${message(error)}。`, true);
+      report(nodesStatus, `移除来源 IP 失败：${message(error)}。`, true);
     } finally {
       busy = false;
       if (dialog.open) refreshControls();
@@ -1243,7 +1066,7 @@
       listenError = '';
       if (address) {
         if (data.remote_enabled) {
-          report(listenStatus, `远程监听已开启：${hostPort(data.remote_address, data.remote_port)}。请复制上方引擎地址到 ECS 插件。`);
+          report(listenStatus, `远程监听已开启：${hostPort(data.remote_address, data.remote_port)}。`);
         } else {
           report(listenStatus, `监听未开启：${data.error || '所选地址未能绑定，请检查网卡与端口。'}`, true);
         }
@@ -1254,6 +1077,13 @@
       }
       renderListen();
       await reload(true);
+      if (address && listenState?.remote_enabled && listenState.remote_address === address && listenContinuation) {
+        const resume = listenContinuation;
+        listenContinuation = null;
+        listenDialog.close();
+        busy = false;
+        await resume();
+      }
     } catch (error) {
       if (!error.status) listenUncertain = true;
       report(listenStatus, !error.status
@@ -1407,7 +1237,7 @@
         }
       }
       if (token === directionWatch && generation === epoch) {
-        report(directionStatus, '后台仍在切换中；请点击刷新核对，页面不会用计时器判定失败。');
+        report(directionStatus, '正在切换，请刷新查看进度。');
         renderDirection();
       }
     })();
@@ -1420,7 +1250,7 @@
     mcpVerifyInflight.add(member);
     if (dialog.open) renderDirection();
     try {
-      report(directionStatus, 'MCP 只读验证中：经已认证通道调用随包成员工具读取本项目名单…');
+      report(directionStatus, 'MCP 只读验证中：读取本项目名单…');
       const result = await api(`/relay/nodes/${encodeURIComponent(member)}/mcp-verify`, {
         method: 'POST',
         signal: AbortSignal.timeout(30000),
@@ -1461,6 +1291,12 @@
       report(directionStatus, '凭据已吊销，请先重新签发。', true);
       return;
     }
+    if (target === 'listen' && !listenState?.remote_enabled) {
+      openListen(() => {
+        if (selectedProfile === node.member) switchDirection(target);
+      });
+      return;
+    }
     directionView = target;
     renderDirection();
     refreshControls();
@@ -1470,12 +1306,8 @@
       report(directionStatus, `当前已经是${directionLabel(target)}。`);
       return;
     }
-    if (target === 'listen' && !listenState?.remote_enabled) {
-      report(directionStatus, '方向 A 需要本机远程监听已开启；请先在上方选择网卡并开启监听。', true);
-      return;
-    }
     if (target === 'dial' && !node.dial_endpoint) {
-      report(directionStatus, '方向 B 需要先导入云端配对链接。', true);
+      report(directionStatus, '请粘贴云端 Hermes 的配对链接。', true);
       pairingUrl.focus();
       return;
     }
@@ -1483,7 +1315,7 @@
     directionWatch += 1;
     const token = directionWatch;
     refreshControls();
-    report(directionStatus, `正在切换到${directionLabel(target)}：先断开旧连接，再建立新方向；期间暂停派发。`);
+    report(directionStatus, `正在切换到${directionLabel(target)}：请稍候。`);
     report(directionFailure, '');
     try {
       const result = await api(`/relay/nodes/${encodeURIComponent(node.member)}/switch`, {
@@ -1514,7 +1346,7 @@
     const view = directionView || nodeDirection(node);
     switchDirection(view === 'dial' ? 'listen' : 'dial');
   }
-  async function copy(value, label, target = registerStatus) {
+  async function copy(value, label, target = nodesStatus) {
     try {
       await navigator.clipboard.writeText(value);
       report(target, `已复制${label}。`);
@@ -1537,20 +1369,43 @@
     }
   }
 
+  function openListen(resume = null) {
+    if (!allowed()) return;
+    listenContinuation = resume;
+    listenDialog.showModal();
+    if (!listenReady()) loadListen(epoch);
+  }
+  function closeChildren() {
+    listenContinuation = null;
+    if (listenDialog.open) listenDialog.close();
+    firstJoin.dismiss();
+  }
+  const firstJoin = createRelayJoinDialog(dialog, {
+    allowed,
+    requireListen(start) {
+      if (listenState?.remote_enabled && !listenUncertain) start();
+      else openListen(start);
+    },
+    async registered(member) {
+      await reload(true);
+      if (dialog.open && allowed() && nodesReady) report(nodesStatus, '已添加 ' + member + '。');
+    },
+    copy,
+  });
+  $('#relay-add').addEventListener('click', firstJoin.open);
+  $('#relay-open-listen').addEventListener('click', () => openListen());
+  $('#relay-listen-refresh').addEventListener('click', () => { if (!busy && !loading) reload(true); });
+  $('#relay-listen-close').addEventListener('click', () => { if (!busy) listenDialog.close(); });
+  listenDialog.addEventListener('cancel', event => { if (busy) event.preventDefault(); });
+  listenDialog.addEventListener('close', () => { listenContinuation = null; });
   entry.addEventListener('click', open);
   close.addEventListener('click', () => dialog.close());
   listenSave.addEventListener('click', saveListen);
   listenDisable.addEventListener('click', disableListen);
   listenCopy.addEventListener('click', () => {
-    if (listenUrl.value) copy(listenUrl.value, 'ECS 插件引擎地址', listenStatus);
+    if (listenUrl.value) copy(listenUrl.value, '本机连接地址', listenStatus);
   });
   listenAddress.addEventListener('change', refreshControls);
-  directionNode.addEventListener('change', () => {
-    clearPairing();
-    directionView = '';
-    renderDirection();
-    refreshControls();
-  });
   directionListen.addEventListener('click', () => switchDirection('listen'));
   directionDial.addEventListener('click', () => switchDirection('dial'));
   directionTest.addEventListener('click', () => {
@@ -1586,18 +1441,24 @@
   refresh.addEventListener('click', async () => {
     if (busy || loading || !allowed()) return;
     clearIssued();
-    report(registerStatus, '');
     await reload();
     if (dialog.open && allowed()) maybeVerifyMcp();
   });
-  register.addEventListener('click', registerNode);
-  registerIp.addEventListener('input', refreshControls);
-  memberSelect.addEventListener('change', refreshControls);
   list.addEventListener('click', event => {
     const button = event.target.closest('button[data-action]');
     if (!button) return;
     const card = button.closest('[data-relay-member]');
     if (!card) return;
+    if (button.dataset.action === 'direction') {
+      clearPairing();
+      pairingUrl.value = '';
+      directionView = '';
+      selectedProfile = selectedProfile === card.dataset.relayMember ? '' : card.dataset.relayMember;
+      directionWatch++;
+      renderNodes();
+      maybeVerifyMcp();
+      return;
+    }
     if (button.dataset.action === 'add-ip') {
       if (busy || !registrationReady()) return;
       const form = card.querySelector('[data-ip-form]');
@@ -1635,18 +1496,18 @@
     if (issued) copy(issued.credential, '连接凭据');
   });
   dialog.addEventListener('cancel', event => {
-    if (event.target === dialog && busy) event.preventDefault();
+    if (event.target === dialog && (busy || directionBusy || pairingBusy)) event.preventDefault();
   });
   dialog.addEventListener('close', () => {
+    closeChildren();
     epoch++;
     clearIssued();
     list.replaceChildren();
     nodes = [];
-    members = [];
+    selectedProfile = '';
     bindings = new Map();
     bindingsError = '';
     nodesReady = false;
-    membersReady = false;
     bindingsReady = false;
     loading = false;
     writeUncertain = false;
@@ -1665,8 +1526,6 @@
     pairingUrl.value = '';
     pairingPreview.hidden = true;
     report(nodesStatus, '');
-    report(registerStatus, '');
-    report(registerGate, '');
     report(listenStatus, '');
     report(directionStatus, '');
     report(directionFailure, '');

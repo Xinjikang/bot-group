@@ -201,32 +201,30 @@ def main():
         page = context.new_page()
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.route('**/*', route)
-        page.goto('http://127.0.0.1:18045/app/index.html')
+        page.goto('http://localhost/app/index.html')
         page.wait_for_function('document.querySelector("#login").hidden && S.isUserIdentity === true')
 
         page.locator('#btn-settings').click()
         page.locator('#btn-relay-nodes').click()
         page.wait_for_function('document.querySelector("#relay-nodes-dialog").open')
         page.wait_for_function('document.querySelector("#relay-nodes-status").textContent.includes("暂无")')
-        assert page.locator('#relay-direction-badge').inner_text() == '未登记节点'
-        assert page.locator('#relay-direction-listen').is_disabled()
+        assert page.locator('#relay-direction').is_hidden()
+        assert page.locator('#relay-member').count() == 0
         page.screenshot(path=str(evidence / 'direction-empty-1280-dark.png'))
-
-        # Register a node through the existing panel.
-        page.locator('#relay-member').select_option('hermes-remote')
-        page.locator('#relay-register-ip').fill('100.64.0.5')
-        page.locator('#relay-register-submit').click()
-        page.wait_for_function('!document.querySelector("#relay-direction-listen").disabled')
-        page.wait_for_function('document.querySelector("#relay-direction-node").value === "hermes-remote"')
+        new_node()
+        page.locator('#relay-refresh').click()
+        page.locator('article[data-relay-member="hermes-remote"] button[data-action="direction"]').click()
         assert page.locator('#relay-direction-listen').get_attribute('aria-pressed') == 'true'
         assert '等待连接' in page.locator('#relay-direction-status').inner_text()
         assert '未开启远程监听' in page.locator('#relay-direction-local').inner_text()
         page.screenshot(path=str(evidence / 'direction-listen-offline-1280-dark.png'))
 
         # Enable the engine listener and mark the node online: three stages complete.
+        page.locator('#relay-open-listen').click()
         page.locator('#relay-listen-address').select_option('100.64.0.10')
         page.locator('#relay-listen-save').click()
         page.wait_for_function('document.querySelector("#relay-listen-badge").textContent === "已开启"')
+        page.locator('#relay-listen-close').click()
         state['node'].update({'state': 'online', 'mcp_fingerprint': 'abcdef0123456789'})
         page.locator('#relay-refresh').click()
         page.wait_for_function('document.querySelector("#relay-direction-badge").textContent.includes("已连接")')
@@ -239,7 +237,7 @@ def main():
 
         # Direction B without a pairing import is refused, and the form is displayed.
         page.locator('#relay-direction-dial').click()
-        assert '先导入云端配对链接' in page.locator('#relay-direction-status').inner_text()
+        assert '配对链接' in page.locator('#relay-direction-status').inner_text()
         assert page.locator('#relay-listen').is_hidden()
         assert page.locator('#relay-pairing').is_visible()
 
@@ -290,7 +288,7 @@ def main():
         state['switch_mode'] = 'transition'
         page.locator('#relay-direction-listen').click()
         page.wait_for_function('document.querySelector("#relay-direction-badge").textContent === "切换中"')
-        assert '先断旧通道' in page.locator('#relay-direction-status').inner_text()
+        assert '切换中' in page.locator('#relay-direction-status').inner_text()
         state['node'].update({'direction': 'listen', 'switch_state': '', 'switch_target': '',
                               'state': 'online', 'offline_reason': '', 'dial_state': 'idle',
                               'mcp_fingerprint': 'abcdef0123456789'})
@@ -360,7 +358,7 @@ def main():
                               'switch_state': '', 'switch_target': '', 'switch_error': '',
                               'dial_state': 'idle', 'dial_failure': None})
         page.locator('#relay-refresh').click()
-        page.wait_for_function('document.querySelector("#relay-direction-status").textContent.includes("连接异常掉线")')
+        page.wait_for_function('document.querySelector("#relay-direction-status").textContent.includes("连接已中断")')
         assert page.locator('#relay-direction-badge').inner_text() == '异常掉线'
         state['node'].update({'state': 'online', 'offline_reason': '',
                               'dial_state': 'connected', 'mcp_fingerprint': 'abcdef0123456789'})

@@ -211,23 +211,21 @@ class ListenServer:
             kind = (hello.get('relay') or {}).get('kind')
             if kind == 'pairing_probe':
                 version = relay_config.plugin_version()
-                if credential or (version and hello.get('code_version') != version):
+                if credential or hello.get('commitment') or (version and hello.get('code_version') != version):
                     conn.close(code=4003, reason='version mismatch')
                     return
-                expiry = pairing.verify_dial_offer(self.member, hello.get('pairing_ticket'), fingerprint,
-                                                   hello.get('commitment', ''))
+                expiry = pairing.verify_dial_offer(self.member, hello.get('pairing_ticket'), fingerprint)
                 if expiry is None:
                     conn.close(code=4001, reason='pairing not available')
                     return
                 conn.send(json.dumps({'relay': {'kind': 'pairing_verified', 'member': self.member,
-                                                 'expires_at': expiry}}))
+                                                 'expires_at': expiry, 'activation_mode': 'after_confirm'}}))
                 return
-            # Only an approved first join may activate a reserved candidate. Ordinary
-            # reconnects and explicit switching on existing nodes keep their credential path.
+            # No first-join credential becomes active during the independent probe.
             if pairing.verify_persistent(member, credential):
                 persistent = ''
             elif hello.get('activate_pairing') is True:
-                if not pairing.activate_dial_offer(member, credential):
+                if not pairing.activate_dial_offer(member, credential, hello.get('pairing_ticket'), fingerprint):
                     conn.close(code=4001, reason='activation unavailable')
                     return
                 persistent = ''

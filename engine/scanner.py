@@ -385,8 +385,8 @@ def scan_requirements(conn) -> int:
 
 def run_once(conn) -> dict:
     """执行一轮扫描，返回各来源计数。"""
-    from . import router
-    from . import steer_ledger
+    from . import relay_pairing, router, steer_ledger
+    relay_pairing.expire_stale(conn)
     steer_ledger.reconcile_targets(conn)
     steer_ledger.expire_stale(conn)
     result = {

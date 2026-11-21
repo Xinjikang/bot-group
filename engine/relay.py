@@ -97,6 +97,9 @@ CREATE INDEX IF NOT EXISTS relay_invitation_expiry ON relay_invitations(expires_
 def initialize(conn) -> None:
     from . import relay_pairing
     conn.executescript(SCHEMA + relay_pairing.SCHEMA)
+    # Previews from older versions have no further use for a saved candidate.
+    with conn:
+        conn.execute('UPDATE relay_dial_attempts SET candidate=NULL WHERE candidate IS NOT NULL')
     if 'failure_stage' not in {row[1] for row in conn.execute('PRAGMA table_info(relay_invitation_attempts)')}:
         conn.execute('ALTER TABLE relay_invitation_attempts ADD COLUMN failure_stage TEXT')
         conn.commit()
@@ -969,6 +972,14 @@ def update_dial_pairing_token(conn, member: str, token: str) -> None:
         "UPDATE relay_nodes SET dial_endpoint=?,updated_at=? WHERE member=?",
         (json.dumps(endpoint), time.time(), member))
     conn.commit()
+
+
+def discard_dial_activation_ticket(conn, member, endpoint, expected):
+    """Drop the one-time ticket without overwriting a concurrently edited endpoint."""
+    clean = {k: v for k, v in endpoint.items() if k not in ('activation_ticket', 'activation_expires_at')}
+    with conn:
+        conn.execute('UPDATE relay_nodes SET dial_endpoint=?,updated_at=? '
+                     'WHERE member=? AND dial_endpoint=?', (json.dumps(clean), _now(), member, expected))
 
 
 def set_dial_endpoint(conn, member: str, endpoint: dict, *, now=None) -> None:

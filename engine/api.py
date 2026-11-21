@@ -505,23 +505,25 @@ def relay_pairing_confirm(pairing_id: str, body: _PairingImportBody, identity=De
     from . import relay, relay_dialer, relay_pairing
     member, endpoint = _pairing_link(body)
     with closing(db.get_connection()) as conn:
-        row = relay_pairing.read(conn, pairing_id)
+        row, checked_at = relay_pairing.read_for_confirm(conn, pairing_id)
         if row is None:
             raise HTTPException(404, '配对不存在')
         if not relay_pairing.matches(row, member, endpoint):
             return _pairing_response({'state': 'failed', 'stage': 'confirmation', 'reason': 'preview_mismatch'}, 409)
-        result = relay_pairing.view(row)
+        result = relay_pairing.view(row, now=checked_at)
         if result['state'] != 'pending_confirmation':
             return _pairing_response(result, 200 if result['state'] == 'confirmed' else 409)
         conflict = relay.remote_member_conflict(conn, member)
     failure = ('confirmation', 'name_conflict') if conflict else None
+    verified = None
     if not failure:
         try:
-            relay_dialer.verify_first_pairing(member, endpoint, commitment=relay.hash_credential(row['candidate']))
+            reported, expires_at = relay_dialer.verify_first_pairing(member, endpoint)
+            verified = (reported, endpoint, expires_at)
         except relay_dialer.PairingProbeError as exc:
             failure = (exc.stage, exc.reason)
     with closing(db.get_connection()) as conn:
-        result, created = relay_pairing.decide(conn, pairing_id, failure=failure)
+        result, created = relay_pairing.decide(conn, pairing_id, failure=failure, verified=verified)
     if result is None:
         raise HTTPException(404, '配对不存在')
     if created:
