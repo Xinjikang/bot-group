@@ -311,7 +311,6 @@ def exercise(args, evidence):
         candidates = result(api.get('/profiles/candidates', params={'project': 'alpha'}))['candidates']
         labels = {}
         evidence['workspaces'] = {}
-        evidence['workspaces'] = {}
         for member in (a, b):
             host_root = (ha if member == a else hb) / 'projects'
             assert result(api.put(f'/relay/nodes/{member}/workspace-root', json={'root': str(host_root)}))['root'] == str(host_root)
@@ -329,12 +328,7 @@ def exercise(args, evidence):
             sid = session_adapter.create_session(a, 'workspace-reset-check', project='alpha')
             assert session_adapter.session_exists(a, sid)
             assert Path(gateway_a.sessions[sid]['snapshot']['info']['cwd']) == ha / 'projects' / 'alpha'
-            evidence['workspaces'][member] = prepared
-        from engine import session_adapter
-        with patch.object(hermes_gateway, 'enabled', return_value=False):
-            sid = session_adapter.create_session(a, 'workspace-reset-check', project='alpha')
-            assert session_adapter.session_exists(a, sid)
-            assert Path(gateway_a.sessions[sid]['snapshot']['info']['cwd']) == ha / 'projects' / 'alpha'
+            evidence['fresh_session_workspace'] = gateway_a.sessions[sid]['snapshot']['info']['cwd']
         assert set(labels.values()) == {'default（远程）', 'default（远程 2）'}
         members = {item['profile']: item['display_name'] for item in result(api.get('/members?project=alpha'))['members']}
         assert members[profile] == profile and all(members[k] == v for k, v in labels.items())
@@ -392,8 +386,8 @@ def exercise(args, evidence):
         evidence['replies'].append(dispatch(api, b, gateway_b, gateway_a, lb['proxy_url'], 'after-b'))
         worktree = hb / 'projects' / '.bot-group-worktrees' / 'alpha' / b
         assert any(Path(s['snapshot']['info']['cwd']) == worktree for s in gateway_b.sessions.values())
-        assert subprocess.check_output(['git', 'branch', '--show-current'], cwd=worktree, text=True).strip() == 'bot-group/' + b
-        evidence['worktree_after_switch'] = dict(path=str(worktree), branch='bot-group/' + b)
+        assert subprocess.check_output(['git', 'branch', '--show-current'], cwd=worktree, text=True,
+                                       env=os.environ.copy()).strip() == 'bot-group/' + b
         evidence['worktree_after_switch'] = dict(path=str(worktree), branch='bot-group/' + b)
         assert relay_server.active_link(b) is orig
         evidence['actual_submissions'] = {profile: len(local_gateway.submit_requests),

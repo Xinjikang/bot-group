@@ -2,6 +2,7 @@
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing
 import json
+import os
 import re
 import subprocess
 import threading
@@ -99,9 +100,12 @@ def configuration(conn, project, member):
 
 
 def _git_value(directory, *args):
+    env = os.environ.copy()
+    for key in ('GIT_DIR', 'GIT_COMMON_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY'):
+        env.pop(key, None)
     try:
         return subprocess.check_output(['git', '-C', directory, *args], stderr=subprocess.DEVNULL,
-                                       text=True, encoding='utf-8', timeout=10).strip()
+                                       text=True, encoding='utf-8', timeout=10, env=env).strip()
     except (subprocess.SubprocessError, OSError, UnicodeError):
         raise HTTPException(409, '请核对办公机项目仓库的 origin 和 master 分支') from None
 
