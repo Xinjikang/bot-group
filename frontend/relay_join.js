@@ -16,7 +16,7 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
       </div>
     </form>
     <div id="relay-join-invite" hidden>
-      <label for="relay-join-command">在云端 Hermes 运行</label>
+      <label id="relay-join-guide" for="relay-join-command">复制命令，发给远程 Hermes 执行。</label>
       <div class="relay-copy-row">
         <input id="relay-join-command" readonly type="password" autocomplete="off">
         <button id="relay-join-copy">复制命令</button>
@@ -31,6 +31,7 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
   parent.append(dialog);
   const $ = id => dialog.querySelector('#relay-join-' + id);
   let attempt = null, timer = 0, version = 0, busy = false;
+  let renewal = null;
   const current = token => dialog.open && parent.open && allowed() && version === token;
   const request = (path, method = 'GET', data) => api(path, {
     method, cache: 'no-store', signal: AbortSignal.timeout(20000),
@@ -48,6 +49,10 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
     ++version;
     clearTimeout(timer);
     attempt = null;
+    renewal = null;
+    $('title').textContent = '添加远程 Hermes';
+    $('guide').textContent = '复制命令，发给远程 Hermes 执行。';
+    $('cancel').textContent = '取消';
     lock(false);
     $('choices').hidden = false;
     for (const id of ['form', 'invite', 'identity', 'confirm']) $(id).hidden = true;
@@ -59,6 +64,13 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
   function dismiss() {
     reset();
     if (dialog.open) dialog.close();
+  }
+  function endRenewal(message) {
+    attempt = null;
+    $('invite').hidden = true;
+    $('command').value = '';
+    $('cancel').textContent = '关闭';
+    status(message, true);
   }
   function failure(view) {
     const device = view.host || view.member || '云端 Hermes';
@@ -73,11 +85,17 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
     if (!current(token)) return;
     if (view.state === 'confirmed') {
       const member = view.node_member || view.member;
+      const renewed = Boolean(renewal);
       dismiss();
-      await registered(member);
+      await registered(member, renewed);
       return;
     }
     if (!['waiting', 'pending_confirmation'].includes(view.state)) {
+      if (renewal) {
+        endRenewal(view.state === 'expired' ? '换发命令已过期，请关闭后重新签发。'
+          : view.state === 'cancelled' ? '本次换发已取消，请使用最新签发的命令。' : '换发失败，请关闭后重新签发。');
+        return;
+      }
       reset();
       status(view.state === 'cancelled' ? '本次配对已取消。' : failure(view), true);
       return;
@@ -92,7 +110,7 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
       $('identity').textContent = `已核验成员　${view.member}（远程）　·　${endpoint}`;
       status('请核对远端身份后确认添加。');
     } else {
-      status('等待云端 Hermes 连接。');
+      status(renewal ? '等待远程 Hermes 执行。引擎接受命令后，旧凭据即失效。' : '等待云端 Hermes 连接。');
     }
     poll(token);
   }
@@ -107,6 +125,10 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
       } catch (error) {
         if (!current(token) || busy) return;
         if (error.status === 404 || error.status === 403) {
+          if (renewal) {
+            endRenewal('无法读取换发结果，请关闭窗口后核对管理员身份和节点状态。');
+            return;
+          }
           reset();
           status('本机无法读取配对记录，请核对管理员身份并重新配对。', true);
         } else {
@@ -122,9 +144,11 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
     const base = inbound ? '/relay/invitations' : '/relay/pairings';
     const link = $('url').value.trim();
     lock(true);
-    status(inbound ? '正在生成邀请…' : '正在核验云端 Hermes…');
+    status(renewal ? '正在生成换发命令…' : inbound ? '正在生成邀请…' : '正在核验云端 Hermes…');
     try {
-      const view = await request(inbound ? base : base + '/preview', 'POST', inbound ? null : {pairing_url: link});
+      const path = renewal ? '/relay/nodes/' + encodeURIComponent(renewal.member) + '/renewal'
+        : inbound ? base : base + '/preview';
+      const view = await request(path, 'POST', inbound ? null : {pairing_url: link});
       if (!current(token)) return;
       if (!view.pairing_id) throw new Error();
       attempt = {path: base + '/' + encodeURIComponent(view.pairing_id), link: inbound ? '' : link};
@@ -132,12 +156,16 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
       $('form').hidden = true;
       $('choices').hidden = true;
       if (inbound) {
-        $('command').value = `hermes bot-group-relay register --engine-url "${view.engine_url}" --invite "${view.invite_token}"`;
+        const profile = renewal && (renewal.host_profile || renewal.member);
+        if (renewal && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(profile)) throw new Error('invalid profile');
+        const hermes = renewal ? `hermes -p "${profile}"` : 'hermes';
+        $('command').value = `${hermes} bot-group-relay register --engine-url "${view.engine_url}" --invite "${view.invite_token}"`;
         $('invite').hidden = false;
       }
       await display(inbound ? {state: 'waiting'} : view, token);
     } catch (error) {
-      if (current(token)) status(error.status === 400 ? '本机无法解析配对链接，请从云端 Hermes 重新复制。'
+      if (current(token)) status(renewal ? '换发命令生成失败，请核对节点连接方向和监听状态后重试。'
+        : error.status === 400 ? '本机无法解析配对链接，请从云端 Hermes 重新复制。'
         : error.pairing?.state ? failure(error.pairing)
         : inbound ? '本机生成邀请失败，请重新选择云端连本机。' : '本机核验失败，请检查云端配对链接并重试。', true);
     } finally {
@@ -179,5 +207,18 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
   $('confirm').onclick = () => decide(true);
   $('cancel').onclick = () => decide(false);
   dialog.addEventListener('cancel', event => { event.preventDefault(); decide(false); });
-  return {dismiss, open() { if (allowed()) { reset(); dialog.showModal(); } }};
+  return {dismiss, open() { if (allowed()) { reset(); dialog.showModal(); } },
+    renew(node, label) {
+      requireListen(() => {
+        if (!allowed() || !parent.open) return;
+        reset();
+        renewal = node;
+        $('title').textContent = '换发凭据 · ' + label;
+        $('choices').hidden = true;
+        $('guide').textContent = '复制命令，发给远程 Hermes 在 ' + (node.host_profile || node.member)
+          + ' profile 下执行。插件会保存新凭据。';
+        dialog.showModal();
+        start(true);
+      });
+    }};
 }

@@ -34,12 +34,14 @@ CLOSE_BAD_PROTOCOL = 4003
 class RelayClient:
     """一条出站 WSS（一个成员一条连接）。"""
 
-    def __init__(self, cfg: relay_config.RelayConfig, *, on_status=None):
+    def __init__(self, cfg: relay_config.RelayConfig, *, on_status=None, follow_saved=True):
         self.cfg = cfg
+        self._follow_saved = follow_saved
         self._on_status = on_status or (lambda state: None)
         self._generation = 0
         # 携带邀请时，重连只使用为本次邀请确认的凭据。
         self._credential = "" if cfg.invite else cfg.credential
+        self._rejected_key = ""
         self._engine_url = ""
         self._streams = streams_mod.StreamRegistry(cfg.home, on_event=self._on_local_event)
         self._send_queue: queue.Queue = queue.Queue()
@@ -84,8 +86,16 @@ class RelayClient:
 
     def _run(self) -> None:
         import websockets.sync.client as ws_sync
+        from . import pairing
         backoff = RECONNECT_BASE
         while not self._stop.is_set():
+            if self._follow_saved and (not self.cfg.invite or self._credential):
+                saved = pairing.load_register_credential(self.cfg.member, engine_url=self.cfg.engine_url)
+                if saved:
+                    self._credential = saved
+            if self._rejected_key and self._credential == self._rejected_key:
+                self._stop.wait(1)
+                continue
             try:
                 with ws_sync.connect(relay_config.ws_url(self.cfg.engine_url),
                                      proxy=None, open_timeout=10, close_timeout=2,
@@ -97,7 +107,10 @@ class RelayClient:
                             return
                         continue
                     if not handshake:
-                        return  # Explicit refusal; no automatic re-registration.
+                        if self._rejected_key:
+                            self._on_status("offline")
+                            continue
+                        return
                     backoff = RECONNECT_BASE
                     self._on_status("online")
                     self._recv_loop(ws)
@@ -136,12 +149,15 @@ class RelayClient:
             hello.update(invite=self.cfg.invite, join_proof=proof,
                          credential_commitment=hashlib.sha256(candidate.encode()).hexdigest())
         try:
+            self._rejected_key = ""
             ws.send(json.dumps(hello, ensure_ascii=False))
             reply = json.loads(ws.recv(timeout=10))
         except Exception as exc:  # noqa: BLE001 关闭码经异常可见
             code = getattr(getattr(exc, "rcvd", None), "code", None)
             # 引擎按版本/凭据/摘要拒绝：重试无意义，结束出站循环
             if code in (4001, 4002, 4003):
+                if code == 4001 and credential and self._follow_saved and not pairing_only:
+                    self._rejected_key = self._credential = credential
                 logger.warning("bot-group relay handshake rejected member=%s code=%s",
                                self.cfg.member, code)
                 return False
@@ -156,6 +172,7 @@ class RelayClient:
             return None
         if candidate or kind != 'hello_ok':
             return False
+        self._credential = credential
         self._generation = int(reply["relay"].get("generation") or 0)
         self._engine_url = reply.get("engine_url") or ""
         logger.info("bot-group relay link up member=%s generation=%d",

@@ -63,6 +63,7 @@ def main():
         'register_bodies': [],
         'issued': [],
         'next_credential': 1,
+        'renewal_state': 'waiting',
     }
     errors, writes = [], []
 
@@ -194,6 +195,18 @@ def main():
                 state['listen'].update({'remote_enabled': False, 'remote_address': None,
                                         'remote_port': None, 'error': ''})
             req.fulfill(json=deepcopy(state['listen']))
+            return
+        if path == '/relay/nodes/hermes-remote/renewal' and req.request.method == 'POST':
+            state['renewal_state'] = 'waiting'
+            req.fulfill(json={'pairing_id': 'test-renewal', 'engine_url': 'https://engine.example',
+                              'invite_token': 'test-renewal-ticket'})
+            return
+        if path == '/relay/invitations/test-renewal/cancel':
+            state['renewal_state'] = 'cancelled'
+            req.fulfill(json={'state': 'cancelled'})
+            return
+        if path == '/relay/invitations/test-renewal':
+            req.fulfill(json={'state': state['renewal_state'], 'node_member': 'hermes-remote'})
             return
         if path == '/relay/nodes':
             if req.request.method == 'GET':
@@ -490,17 +503,30 @@ def main():
         assert state['revoke_posts'] == 1
         assert page.locator('#relay-node-list article[data-relay-member="hermes-remote"] button[data-action="revoke"]').count() == 0
 
-        # Reissue needs its own confirmation and replaces the credential.
-        expected_reissue = f'TEST-RELAY-CREDENTIAL-{state["next_credential"]}'
-        page.locator('#relay-node-list article[data-relay-member="hermes-remote"] button[data-action="reissue"]').click()
-        page.wait_for_function('document.querySelector("#app-alert").open')
-        assert '重新签发 hermes-remote' in page.locator('#app-alert-message').inner_text()
-        assert '旧凭据立即失效' in page.locator('#app-alert-message').inner_text()
-        page.locator('#app-alert button', has_text='确定').click()
-        page.wait_for_function('!document.querySelector("#relay-credential").hidden')
-        new_credential = page.locator('#relay-issued-credential').input_value()
-        assert new_credential == expected_reissue
-        assert state['register_bodies'][-1].get('rotate') is True
+        # The same modal delivers a scoped command and monitors redemption.
+        state['listen'].update(remote_enabled=True, remote_address='100.64.0.10', remote_port=18042)
+        remote = next(n for n in state['nodes'] if n['member'] == 'hermes-remote')
+        remote['host_profile'] = 'default'
+        page.locator('#relay-refresh').click()
+        page.wait_for_function('document.querySelector("#relay-listen-summary").textContent.includes("100.64.0.10")')
+        reissue = page.locator('#relay-node-list article[data-relay-member="hermes-remote"] button[data-action="reissue"]')
+        reissue.click()
+        page.locator('#relay-join-copy').wait_for()
+        assert '发给远程 Hermes' in page.locator('#relay-join-guide').inner_text()
+        page.locator('#relay-join-cancel').click()
+        page.wait_for_function('!document.querySelector("#relay-join-dialog").open')
+        assert state['renewal_state'] == 'cancelled'
+        reissue.click()
+        page.locator('#relay-join-copy').click()
+        new_credential = 'test-renewal-ticket'
+        assert page.evaluate('navigator.clipboard.readText()') == (
+            'hermes -p "default" bot-group-relay register --engine-url "https://engine.example" --invite "test-renewal-ticket"')
+        page.screenshot(path=str(evidence / 'relay-renewal-command.png'))
+        remote['credential_revoked'] = False
+        state['renewal_state'] = 'confirmed'
+        page.wait_for_function('document.querySelector("#relay-nodes-status").textContent.includes("新凭据已在引擎生效")')
+        assert page.locator('#relay-join-command').input_value() == ''
+        assert state['register_posts'] == posts
         page.wait_for_function('document.querySelector("#relay-node-list").textContent.includes("离线")')
 
         # Bot identity: read-only explanation, no node requests.

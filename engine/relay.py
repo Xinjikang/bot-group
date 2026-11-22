@@ -91,6 +91,10 @@ CREATE TABLE IF NOT EXISTS relay_invitation_attempts (
     failure_stage TEXT
 );
 CREATE INDEX IF NOT EXISTS relay_invitation_expiry ON relay_invitations(expires_at);
+CREATE TABLE IF NOT EXISTS relay_renewals (
+    token_hash TEXT PRIMARY KEY REFERENCES relay_invitations(token_hash) ON DELETE CASCADE,
+    target_member TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS relay_node_identities (
     member TEXT PRIMARY KEY REFERENCES relay_nodes(member),
     host_profile TEXT NOT NULL,
@@ -125,8 +129,14 @@ def hash_credential(credential: str) -> str:
 INVITATION_TTL_SECONDS = 3600.0   # 一次性邀请 1 小时内兑换有效
 
 
+def _cancel_renewals(conn, member):
+    conn.execute("UPDATE relay_invitation_attempts SET cancelled=1 WHERE token_hash IN "
+                 "(SELECT r.token_hash FROM relay_renewals r JOIN relay_invitations i USING(token_hash) "
+                 "WHERE r.target_member=? AND i.redeemed=0)", (member,))
+
+
 def issue_invitation(conn, *, ttl_seconds: float = INVITATION_TTL_SECONDS,
-                     now=None) -> dict:
+                     now=None, renew_member=None) -> dict:
     """引擎签发一次性邀请（管理员动作）：返回
     {invite_token, engine_url_scheme_placeholder? 不含}——调用方组装展示。
     只存 token hash；兑换原子单次、过期失效。"""
@@ -137,6 +147,8 @@ def issue_invitation(conn, *, ttl_seconds: float = INVITATION_TTL_SECONDS,
         conn.execute("BEGIN IMMEDIATE")
         # Retain recent terminal results for retries without growing the bootstrap ledger indefinitely.
         cutoff = now - INVITATION_TTL_SECONDS
+        conn.execute("DELETE FROM relay_renewals WHERE token_hash IN "
+                     "(SELECT token_hash FROM relay_invitations WHERE expires_at<?)", (cutoff,))
         conn.execute("DELETE FROM relay_invitation_attempts WHERE token_hash IN "
                      "(SELECT token_hash FROM relay_invitations WHERE expires_at<?)", (cutoff,))
         conn.execute("DELETE FROM relay_invitations WHERE expires_at<?", (cutoff,))
@@ -144,6 +156,13 @@ def issue_invitation(conn, *, ttl_seconds: float = INVITATION_TTL_SECONDS,
                      (token_hash, now + ttl_seconds, now))
         conn.execute("INSERT INTO relay_invitation_attempts (pairing_id,token_hash) VALUES (?,?)",
                      (pairing_id, token_hash))
+        if renew_member is not None:
+            node = read_node(conn, renew_member)
+            if not node or node['direction'] != 'listen' or node['switch_state']:
+                raise InvitationConflict('请选择连接方向为「云端连本机」且方向切换已完成的节点')
+            _cancel_renewals(conn, renew_member)
+            conn.execute("INSERT INTO relay_renewals(token_hash,target_member) VALUES (?,?)",
+                         (token_hash, renew_member))
     return {"invite_token": token, "pairing_id": pairing_id, "expires_at": now + ttl_seconds}
 
 
@@ -151,7 +170,8 @@ def invitation_open(conn) -> bool:
     """Only live, unconsumed invitations open the unbound WS bootstrap path."""
     return conn.execute(
         "SELECT 1 FROM relay_invitations i JOIN relay_invitation_attempts a USING(token_hash) "
-        "WHERE i.redeemed=0 AND a.cancelled=0 AND a.failure_stage IS NULL AND i.expires_at>=? LIMIT 1",
+        "WHERE NOT EXISTS (SELECT 1 FROM relay_renewals r WHERE r.token_hash=i.token_hash) "
+        "AND i.redeemed=0 AND a.cancelled=0 AND a.failure_stage IS NULL AND i.expires_at>=? LIMIT 1",
         (_now(),)).fetchone() is not None
 
 
@@ -176,8 +196,9 @@ def _redeem_invitation_hash(conn, token_hash, member, now):
         (member, now, token_hash, now, token_hash)).rowcount == 1
 
 
-_INVITATION = ("SELECT a.*, i.expires_at, i.redeemed, n.member AS node_member FROM relay_invitation_attempts a "
-               "JOIN relay_invitations i USING(token_hash) LEFT JOIN relay_node_identities n USING(pairing_id) WHERE ")
+_INVITATION = ("SELECT a.*, i.expires_at, i.redeemed, r.target_member, COALESCE(r.target_member,n.member) "
+               "AS node_member FROM relay_invitation_attempts a JOIN relay_invitations i USING(token_hash) "
+               "LEFT JOIN relay_renewals r USING(token_hash) LEFT JOIN relay_node_identities n USING(pairing_id) WHERE ")
 
 
 class InvitationConflict(ValueError):
@@ -241,7 +262,19 @@ def offer_invitation(conn, token, member, peer_ip, proof, commitment):
             return _invitation_view(row, now)
         if row['redeemed']:
             return None
-        if db.is_builtin_user(member) or paired_device(conn, commitment):
+        target = row['target_member']
+        if target:
+            from . import ip_allowlist
+            node = read_node(conn, target)
+            if (not node or node['host_profile'] != member or node['direction'] != 'listen'
+                    or node['switch_state'] or not ip_allowlist.member_allowed(conn, target, peer_ip)
+                    or paired_device(conn, commitment)):
+                return None
+            if not _redeem_invitation_hash(conn, token_hash, target, now):
+                return None
+            conn.execute("UPDATE relay_nodes SET credential_hash=?,credential_revoked=0,updated_at=? WHERE member=?",
+                         (commitment, now, target))
+        elif db.is_builtin_user(member) or paired_device(conn, commitment):
             _refuse_invitation(conn, row['pairing_id'], member, peer_ip, 'identity')
             return None
         conn.execute('UPDATE relay_invitation_attempts SET member=?,peer_ip=?,proof_hash=?,credential_commitment=? '
@@ -392,6 +425,7 @@ def register_node(conn, member: str, credential: str, *, display_name: str = "",
         config = mcp_config if mcp_config is not None else json.loads(existing["mcp_config"] or "{}")
         config_json = json.dumps(config, sort_keys=True, ensure_ascii=False)
         expected = str(config.get("_package_sha") or "")
+        _cancel_renewals(conn, member)
         conn.execute(
             "UPDATE relay_nodes SET credential_hash=?, credential_revoked=0, "
             "mcp_config=?, expected_mcp_sha=?, updated_at=? WHERE member=?",
@@ -416,6 +450,7 @@ def register_node(conn, member: str, credential: str, *, display_name: str = "",
 def revoke_credential(conn, member: str, *, now=None) -> None:
     """单独吊销某成员连接凭据：现连立即失效，需管理员重发凭据。"""
     now = _now() if now is None else now
+    _cancel_renewals(conn, member)
     conn.execute("UPDATE relay_nodes SET credential_revoked=1,updated_at=? WHERE member=?",
                  (now, member))
     conn.commit()

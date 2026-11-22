@@ -954,9 +954,13 @@
   }
   async function reissueNode(member) {
     if (busy || !allowed() || !registrationReady() || !nodes.some(node => node.member === member)) return;
-    if (!await showConfirm(`重新签发 ${member} 的连接凭据？旧凭据立即失效，凭据只显示一次。`)) return;
-    if (busy || !allowed() || !dialog.open || !registrationReady()) return;
     const node = nodes.find(item => item.member === member);
+    if (nodeDirection(node) === 'listen') {
+      firstJoin.renew(node, remoteName(node));
+      return;
+    }
+    if (!await showConfirm(`重新签发 ${member} 的入站凭据？此凭据用于切换到「云端连本机」后的认证。当前「本机连云端」连接使用云端签发的配对链接。旧入站凭据立即失效。`)) return;
+    if (busy || !allowed() || !dialog.open || !registrationReady()) return;
     busy = true;
     refreshControls();
     report(nodesStatus, `正在重新签发 ${member} 的凭据…`);
@@ -1361,7 +1365,7 @@
         area.setAttribute('readonly', '');
         area.style.position = 'fixed';
         area.style.opacity = '0';
-        document.body.append(area);
+        (target.closest('dialog') || document.body).append(area);
         area.select();
         const ok = document.execCommand('copy');
         area.remove();
@@ -1390,10 +1394,12 @@
       if (listenState?.remote_enabled && !listenUncertain) start();
       else openListen(start);
     },
-    async registered(member) {
+    async registered(member, renewed) {
       await reload(true);
       const node = nodes.find(item => item.member === member);
-      if (dialog.open && allowed() && node) report(nodesStatus, '已添加 ' + remoteName(node) + '。');
+      if (dialog.open && allowed() && renewed) {
+        report(nodesStatus, (node ? remoteName(node) : member) + ' 的新凭据已在引擎生效。远端命令显示“配对已保存”即完成。');
+      } else if (dialog.open && allowed() && node) report(nodesStatus, '已添加 ' + remoteName(node) + '。');
     },
     copy,
   });

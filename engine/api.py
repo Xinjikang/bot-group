@@ -357,12 +357,23 @@ def relay_invitation_issue(identity=Depends(_resolve_identity)):
     register --invite 使用。仅管理员；兑换单次、过期失效。engine_url 指向
     本机监听地址（listen_control 配置），未配置监听时返回 listen_configured
     =false（前端引导先配监听；邀请本身不依赖监听先后）。"""
+    return _issue_relay_invitation(identity)
+
+
+@router_api.post('/relay/nodes/{member}/renewal')
+def relay_node_renewal(member: str, identity=Depends(_resolve_identity)):
+    return _issue_relay_invitation(identity, renew_member=member)
+
+
+def _issue_relay_invitation(identity, renew_member=None):
     _admin_only(identity, 'relay 邀请签发仅限管理员')
     from . import relay, listen_control, config
     conn = db.get_connection()
     try:
-        issued = relay.issue_invitation(conn)
+        issued = relay.issue_invitation(conn, renew_member=renew_member)
         listen_address = listen_control.read_config(conn)
+    except relay.InvitationConflict as exc:
+        raise HTTPException(409, str(exc)) from None
     finally:
         conn.close()
     address = listen_address or "127.0.0.1"

@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+远程节点换发回归使用 `python -X utf8 -B -m unittest scripts.test_plugin_listen_pairing.FirstJoinTests.test_renewal_command_updates_existing_node_and_waiting_gateway scripts.test_plugin_listen_pairing.FirstJoinTests.test_renewal_is_scoped_and_cancellable`。临时 SQLite 和随机回环端口验证原节点换发、网关恢复、来源限制、取消与重复执行。`python -X utf8 -B -m scripts.test_relay_nodes_browser --evidence <报告目录>` 在 Chrome 核对转发指引、复制内容、取消、完成和清除。
+
 邀请命令与日常连接的交接使用 `python -X utf8 -B -m unittest scripts.test_plugin_listen_pairing.FirstJoinTests.test_cli_exits_after_pairing_then_gateway_connects_from_disk scripts.test_relay_plugin.TicketTests scripts.test_relay_plugin.RelayClientTests`。项目 Python 在隔离 SQLite、临时插件状态目录和随机回环端口验证配对确认后 CLI 退出、重读已保存的引擎地址和凭据、重复命令保留在线连接，以及当前 profile 的 interactive 网关票据。
 
 远程 Hermes 项目成员刷新回归使用 `python -X utf8 -B -m unittest scripts.test_relay_gateway.RelayConnectionSplitTests`。隔离 SQLite 与随机回环端口上的 WebSocket 验证名单在远程应答前返回、远端工作会话的有无、租约释放及离线状态。使用装有 Playwright 和 Chrome 的项目环境运行 `python -X utf8 -B scripts/test_member_name_browser.py`，验证慢节点等待期间可编辑成员，快节点先完成，回填保留输入焦点，失败仅标记对应远程行。

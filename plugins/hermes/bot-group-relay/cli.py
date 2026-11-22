@@ -177,9 +177,9 @@ def dispatch(args) -> int:
                                        credential=credential, invite=invite,
                                        mcp_python="",
                                        home=relay_config.host_home())
-        client = relay_mod.RelayClient(cfg)
+        client = relay_mod.RelayClient(cfg, follow_saved=False)
         if invite:
-            print("等待办公机确认配对…", flush=True)
+            print("正在向办公机提交邀请…", flush=True)
             try:
                 client.pair_invitation()
             except KeyboardInterrupt:
@@ -187,7 +187,7 @@ def dispatch(args) -> int:
             except Exception as exc:
                 print(f"配对未完成（{type(exc).__name__}），可核对节点状态后重试。", file=sys.stderr)
                 return 1
-            print("配对已保存。日常连接由 Hermes gateway 维护；请启动或重新加载该网关。")
+            print("配对已保存。日常连接由 Hermes gateway 维护。")
             return 0
         try:
             client.start()  # 复用 #316 出站链路；后台线程维护连接

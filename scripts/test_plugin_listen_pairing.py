@@ -2214,6 +2214,70 @@ class FirstJoinTests(unittest.TestCase):
             pairing._save_state(record)
             self.assertEqual(config.load(), cfg)
 
+    def test_renewal_command_updates_existing_node_and_waiting_gateway(self):
+        from argparse import Namespace
+        url = f'http://127.0.0.1:{self._api_client()}'
+        config, cli, pairing = self.plg['config'], self.plg['cli'], self.plg['pairing']
+        profile, target = 'default', 'remote-default'
+        with closing(db.get_connection()) as conn, conn:
+            relay.register_paired_node(conn, 'original', profile, relay.hash_credential('old-key'),
+                                       device_key='original-device', direction='listen')
+            relay.revoke_credential(conn, target)
+        pairing.save_register_credential(profile, 'old-key', engine_url=url)
+        offline, online = threading.Event(), threading.Event()
+        def status(state):
+            if state == 'offline':
+                offline.set()
+            if state == 'online':
+                online.set()
+        gateway = self._load_relay_module().RelayClient(
+            config.RelayConfig(url, profile, 'old-key', '', self._tmpdir.name), on_status=status)
+        gateway.start()
+        try:
+            self.assertTrue(offline.wait(6))
+            code, issued = self._admin_post(f'/relay/nodes/{target}/renewal')
+            self.assertEqual(code, 200)
+            args = Namespace(command='register', engine_url=url, member='', credential='', invite=issued['invite_token'])
+            with patch.object(cli, '_require_authorized'), patch.object(config, 'host_member', return_value=profile):
+                self.assertEqual(cli.dispatch(args), 0)
+                self.assertEqual(cli.dispatch(args), 0)
+            self.assertTrue(online.wait(6))
+            with closing(db.get_connection()) as conn:
+                saved_url, key = pairing.saved_register(profile)
+                self.assertEqual(saved_url, url)
+                self.assertEqual(relay.authenticated_member(conn, profile, key), target)
+                self.assertFalse(relay.verify_credential(conn, target, 'old-key'))
+                self.assertEqual([n['member'] for n in relay.list_nodes(conn)], [target])
+                self.assertEqual(relay.read_invitation(conn, issued['pairing_id'])['node_member'], target)
+        finally:
+            gateway.stop()
+            gateway._thread.join(5)
+
+    def test_renewal_is_scoped_and_cancellable(self):
+        target, peer = 'remote-test', '192.0.2.22'
+        with closing(db.get_connection()) as conn:
+            relay.register_remote_node(conn, target, 'old', direction='listen', peer_ip=peer)
+            def issue():
+                return relay.issue_invitation(conn, renew_member=target)
+            def offer(ticket, member=target, source=peer):
+                return relay.offer_invitation(conn, ticket['invite_token'], member, source, 'ab'*32,
+                                              relay.hash_credential('replacement'))
+            first, second = issue(), issue()
+            self.assertFalse(relay.invitation_open(conn))
+            self.assertIsNone(offer(first))
+            self.assertIsNone(offer(second, member='another'))
+            self.assertIsNone(offer(second, source='192.0.2.23'))
+            relay.decide_invitation(conn, second['pairing_id'], confirm=False)
+            self.assertIsNone(offer(second))
+            self.assertTrue(relay.verify_credential(conn, target, 'old'))
+            third = issue()
+            relay.revoke_credential(conn, target)
+            self.assertIsNone(offer(third))
+            final = issue()
+            self.assertEqual(offer(final)['state'], 'confirmed')
+            self.assertEqual(offer(final)['node_member'], target)
+            self.assertFalse(relay.verify_credential(conn, target, 'old'))
+
     def test_invitation_ws_first_join_full_chain(self):
         """方向 A 真实全链：引擎签发邀请 → 插件 RelayClient(invite) 出站
         连真实 /relay/ws → 兑换建节点（remoteB，名册外）→ hello_ok 下发
