@@ -194,7 +194,7 @@ def view(name, profile=None, *, defer_remote_sessions=False):
             'SELECT profile,active,role,role_id FROM project_members WHERE project=?', (name,))}
         remote = {r[0] for r in conn.execute(
             'SELECT n.member FROM relay_nodes n JOIN project_members pm ON pm.profile=n.member '
-            'WHERE pm.project=?', (name,))} if defer_remote_sessions else set()
+            'WHERE pm.project=?', (name,))}
         for m in member_views(conn):
             if m['profile'] == db.BUILTIN_USER_PROFILE or m['profile'] not in memberships:
                 continue
@@ -202,7 +202,7 @@ def view(name, profile=None, *, defer_remote_sessions=False):
             if profile is not None and m['profile'] != profile:
                 continue
             from . import hermes_gateway, hermes_runtime, session_adapter, wake
-            if m['profile'] in remote:
+            if defer_remote_sessions and m['profile'] in remote:
                 m['remote_session_pending'] = True
                 m['work_session_exists'] = None
             else:
@@ -214,6 +214,13 @@ def view(name, profile=None, *, defer_remote_sessions=False):
                         hermes_gateway.GatewayRefusal, hermes_runtime.HermesConfigurationError,
                         subprocess.TimeoutExpired):
                     m['work_session_exists'] = None
+            if m['profile'] in remote:
+                from . import remote_workspaces
+                m['remote_workspace'] = True
+                m['directory_mode'] = p['directory_mode']
+                m['workspace'] = remote_workspaces.state(conn, name, m['profile'], p['directory_mode'])
+                members.append(m)
+                continue
             m['workspace_assigned'] = m['profile'] in assigned
             m['directory_mode'] = member_mode(conn, p, m['profile'])
             m['assigned_workspace_path'] = assigned.get(m['profile'], '')
@@ -231,6 +238,8 @@ def view(name, profile=None, *, defer_remote_sessions=False):
         if p['directory_mode'] == 'worktree':
             from concurrent.futures import ThreadPoolExecutor
             def check(m):
+                if m.get('remote_workspace'):
+                    return m
                 path = m['workspace']['path']
                 try:
                     if snapshot_error:
@@ -248,7 +257,7 @@ def view(name, profile=None, *, defer_remote_sessions=False):
             try:
                 if snapshot_error:
                     raise HTTPException(409, snapshot_error)
-                repository = next((m['workspace'] for m in members if m['workspace']['path'] and key(m['workspace']['path']) == key(p['root'])), None)
+                repository = next((m['workspace'] for m in members if not m.get('remote_workspace') and m['workspace']['path'] and key(m['workspace']['path']) == key(p['root'])), None)
                 if repository is None and profile is None:
                     repository = inspect(p['root'], p['root'], snapshot)
                 repository = repository or {}
@@ -306,6 +315,8 @@ def manage(name, profile, body, actor):
             if db.is_builtin_user(profile) or not conn.execute(
                     'SELECT 1 FROM members WHERE profile=?', (profile,)).fetchone():
                 raise HTTPException(400, '请选择使用独立 worktree 的 bot')
+            if conn.execute('SELECT 1 FROM relay_nodes WHERE member=?', (profile,)).fetchone():
+                raise HTTPException(409, '远程成员工作区由远程节点准备')
             if p['directory_mode'] != 'worktree':
                 raise HTTPException(409, '请先保存独立 worktree 模式')
             if action == 'set_mode':

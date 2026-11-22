@@ -229,12 +229,13 @@ def listen_apply(body: _ListenBody, identity=Depends(_resolve_identity)):
 @router_api.get('/relay/nodes')
 def relay_nodes_list(identity=Depends(_resolve_identity)):
     _admin_only(identity, 'relay 节点列表仅限管理员')
-    from . import relay, relay_server
+    from . import relay, relay_server, remote_workspaces
     conn = db.get_connection()
     try:
         rows = relay.list_nodes(conn)
         return JSONResponse([{
             'member': r['member'], 'host_profile': r['host_profile'],
+            'workspace_root': remote_workspaces.root_for(conn, r['member']),
             'display_name': r['display_name'],
             'credential_revoked': bool(r['credential_revoked']),
             'generation': r['generation'], 'state': r['state'],
@@ -258,6 +259,24 @@ def relay_nodes_list(identity=Depends(_resolve_identity)):
         } for r in rows], headers={'Cache-Control': 'no-store'})
     finally:
         conn.close()
+
+
+class _WorkspaceRoot(BaseModel):
+    root: str = Field(min_length=1, max_length=4096)
+
+
+@router_api.put('/relay/nodes/{member}/workspace-root')
+def relay_workspace_root(member: str, body: _WorkspaceRoot, identity=Depends(_resolve_identity)):
+    _admin_only(identity, '仅管理员可配置远程协作目录')
+    from . import remote_workspaces
+    return remote_workspaces.set_root(member, body.root)
+
+
+@router_api.post('/projects/{name}/members/{profile}/prepare-workspace')
+def prepare_remote_workspace(name: str, profile: str, identity=Depends(_resolve_identity)):
+    _admin_only(identity, '仅管理员可准备远程协作目录')
+    from . import remote_workspaces
+    return remote_workspaces.schedule(name, profile).result()
 
 
 def _dial_state(member: str) -> str:
@@ -2024,6 +2043,10 @@ def set_member_active(profile: str, body: dict[str, Any], identity=Depends(_reso
               {'profile': profile, 'before': previous['active'] if previous else 0, 'after': active})
         conn.commit()
         advanced, expired = 0, 0
+        if active:
+            from . import remote_workspaces
+            if remote_workspaces.root_for(conn, profile):
+                remote_workspaces.schedule(project, profile)
         if not active:
             # 停用前已积压的 pending 一并作废（规格 27.3 第 5 点，项目作用域）：
             # 只作废该项目消息产生的未读（跨项目的点对点未读不动）。
@@ -2990,8 +3013,14 @@ def get_project_workspaces(name: str, identity=Depends(_resolve_identity), profi
 @router_api.get('/projects/{name}/members/{profile}/remote-work-session')
 def get_remote_work_session(name: str, profile: str, identity=Depends(_resolve_identity)):
     _admin_only(identity, '仅管理员可查询远程成员工作会话')
-    from . import project_workspaces
-    return {'work_session_exists': project_workspaces.remote_work_session(name, profile)}
+    from . import project_workspaces, remote_workspaces
+    exists = project_workspaces.remote_work_session(name, profile)
+    conn = _conn()
+    try:
+        mode = project_workspaces.project(conn, name)['directory_mode']
+        return {'work_session_exists': exists, 'workspace': remote_workspaces.state(conn, name, profile, mode)}
+    finally:
+        conn.close()
 
 
 @router_api.post('/projects/{name}/workspaces/{profile}')

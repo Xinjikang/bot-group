@@ -1,10 +1,19 @@
 """A controlled model boundary listening on the remote plugin's real gateway WS path."""
 from contextlib import contextmanager
 import json
+import os
 import threading
 from uuid import uuid4
 
 from websockets.sync.server import serve
+
+
+def isolated_git_origin(url, repository):
+    """Route the fixture URL to a temporary bare repository, preserving inherited Git options."""
+    index = int(os.environ.get('GIT_CONFIG_COUNT', '0'))
+    return {'GIT_ALLOW_PROTOCOL': 'file', 'GIT_CONFIG_COUNT': str(index + 1),
+            f'GIT_CONFIG_KEY_{index}': 'url.' + repository.as_uri() + '.insteadOf',
+            f'GIT_CONFIG_VALUE_{index}': url}
 
 
 class DispatchGateway:

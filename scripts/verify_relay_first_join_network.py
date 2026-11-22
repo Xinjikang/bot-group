@@ -6,6 +6,7 @@ import ipaddress
 import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -23,7 +24,7 @@ from mcp.client.stdio import stdio_client
 
 from engine import auth, config, db, hermes_gateway, ip_allowlist, listen_control, queue
 from engine import relay, relay_dialer, relay_server, signing_keys, topic_dispatch, wake
-from scripts.relay_dispatch_fixture import DispatchGateway
+from scripts.relay_dispatch_fixture import DispatchGateway, isolated_git_origin
 from scripts.test_plugin_listen_pairing import _plugin_modules
 from scripts.unified_test_support import isolated_database
 
@@ -196,7 +197,16 @@ def exercise(args, evidence):
 
         stack.enter_context(patch.object(hermes_connections, 'acquire', side_effect=local_connection))
         stack.enter_context(patch.object(hermes_gateway, 'enabled', return_value=True))
-        (Path(path).parent / 'alpha').mkdir()
+        office = Path(path).parent / 'alpha'
+        office.mkdir()
+        origin = 'https://isolated.invalid/alpha.git'
+        subprocess.run(['git', 'init', '-b', 'master', str(office)], check=True, capture_output=True)
+        subprocess.run(['git', '-c', 'user.email=test@example.invalid', '-c', 'user.name=fixture',
+                        'commit', '--allow-empty', '-m', 'fixture'], cwd=office, check=True, capture_output=True)
+        bare = office.parent / 'upstream.git'
+        subprocess.run(['git', 'clone', '--bare', str(office), str(bare)], check=True, capture_output=True)
+        subprocess.run(['git', 'remote', 'add', 'origin', origin], cwd=office, check=True)
+        stack.enter_context(patch.dict(os.environ, isolated_git_origin(origin, bare)))
         for plg, home, gateway in ((pa, ha, gateway_a), (pb, hb, gateway_b)):
             home.mkdir()
             tickets = importlib.import_module(plg['config'].__package__ + '.tickets')
@@ -300,12 +310,31 @@ def exercise(args, evidence):
             evidence['page_members'] = ui.cards_online(a, b, capture=True)
         candidates = result(api.get('/profiles/candidates', params={'project': 'alpha'}))['candidates']
         labels = {}
+        evidence['workspaces'] = {}
+        evidence['workspaces'] = {}
         for member in (a, b):
+            host_root = (ha if member == a else hb) / 'projects'
+            assert result(api.put(f'/relay/nodes/{member}/workspace-root', json={'root': str(host_root)}))['root'] == str(host_root)
             candidate = next(item for item in candidates if item.get('member_profile') == member)
             assert candidate['profile'] == profile and candidate['host_type'] == 'relay'
             labels[member] = candidate['display_name']
             enrolled = result(api.post('/bots/register', json={**candidate, 'project': 'alpha'}))
             assert enrolled['member_profile'] == member
+            prepared = result(api.post(f'/projects/alpha/members/{member}/prepare-workspace'))
+            assert prepared['mode'] == 'shared' and prepared['branch'] == 'master'
+            assert Path(prepared['path']) == host_root / 'alpha'
+            evidence['workspaces'][member] = prepared
+        from engine import session_adapter
+        with patch.object(hermes_gateway, 'enabled', return_value=False):
+            sid = session_adapter.create_session(a, 'workspace-reset-check', project='alpha')
+            assert session_adapter.session_exists(a, sid)
+            assert Path(gateway_a.sessions[sid]['snapshot']['info']['cwd']) == ha / 'projects' / 'alpha'
+            evidence['workspaces'][member] = prepared
+        from engine import session_adapter
+        with patch.object(hermes_gateway, 'enabled', return_value=False):
+            sid = session_adapter.create_session(a, 'workspace-reset-check', project='alpha')
+            assert session_adapter.session_exists(a, sid)
+            assert Path(gateway_a.sessions[sid]['snapshot']['info']['cwd']) == ha / 'projects' / 'alpha'
         assert set(labels.values()) == {'default（远程）', 'default（远程 2）'}
         members = {item['profile']: item['display_name'] for item in result(api.get('/members?project=alpha'))['members']}
         assert members[profile] == profile and all(members[k] == v for k, v in labels.items())
@@ -335,6 +364,8 @@ def exercise(args, evidence):
         assert not gateway_a.submit_requests and not gateway_b.submit_requests
         evidence['replies'].append(dispatch(api, a, gateway_a, gateway_b, issued['engine_url'], 'before-a'))
         evidence['replies'].append(dispatch(api, b, gateway_b, gateway_a, lb['proxy_url'], 'before-b'))
+        for gateway, home in ((gateway_a, ha), (gateway_b, hb)):
+            assert all(Path(s['snapshot']['info']['cwd']) == home / 'projects' / 'alpha' for s in gateway.sessions.values())
         orig = relay_server.active_link(b)
         assert orig is not None
         with host_env(profile, ha):
@@ -355,8 +386,15 @@ def exercise(args, evidence):
 
         after = wait(switched)
         assert after[b]['direction'] == 'dial' and relay_server.active_link(b) is orig
+        with closing(db.get_connection()) as conn, conn:
+            conn.execute("UPDATE projects SET directory_mode='worktree' WHERE name='alpha'")
         evidence['switch'] = {m: {k: after[m][k] for k in ('direction', 'state', 'generation')} for m in (a, b)}
         evidence['replies'].append(dispatch(api, b, gateway_b, gateway_a, lb['proxy_url'], 'after-b'))
+        worktree = hb / 'projects' / '.bot-group-worktrees' / 'alpha' / b
+        assert any(Path(s['snapshot']['info']['cwd']) == worktree for s in gateway_b.sessions.values())
+        assert subprocess.check_output(['git', 'branch', '--show-current'], cwd=worktree, text=True).strip() == 'bot-group/' + b
+        evidence['worktree_after_switch'] = dict(path=str(worktree), branch='bot-group/' + b)
+        evidence['worktree_after_switch'] = dict(path=str(worktree), branch='bot-group/' + b)
         assert relay_server.active_link(b) is orig
         evidence['actual_submissions'] = {profile: len(local_gateway.submit_requests),
                                           a: len(gateway_a.submit_requests), b: len(gateway_b.submit_requests)}

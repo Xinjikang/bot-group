@@ -88,7 +88,12 @@ def config_change(bot, directory, extra_directories=()):
 
 def commit_enrollment(conn, project, members):
     """Commit membership together with the assigned directories' grants."""
+    members = tuple(members)
     commit_directory_access(conn, project, members)
+    from . import remote_workspaces
+    for member in members:
+        if remote_workspaces.root_for(conn, member):
+            remote_workspaces.schedule(project, member)
 
 
 def commit_directory_access(conn, project, members):

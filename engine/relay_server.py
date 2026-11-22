@@ -273,6 +273,10 @@ def _route_inbound(link: NodeLink, envelope: dict) -> bool:
         logger.warning("relay generation-mismatch frame dropped member=%s kind=%s gen=%s",
                        link.member, kind, frame_gen)
         return True
+    if kind == 'workspace_result':
+        from . import remote_workspaces
+        remote_workspaces.receive(link, meta.get('request_id'), envelope.get('workspace'))
+        return True
     if kind == "heartbeat":
         # 心跳只判存活（写 online 以当前代为准——上方代次校验已保证，SQL 再带
         # 代条件防处理瞬间被接替的跨代窗口，manager node1981 ②）。状态写库

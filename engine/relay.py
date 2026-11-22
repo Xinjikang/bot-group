@@ -102,6 +102,13 @@ CREATE TABLE IF NOT EXISTS relay_node_identities (
     device_key TEXT NOT NULL UNIQUE
 );
 CREATE INDEX IF NOT EXISTS relay_host_profile ON relay_node_identities(host_profile);
+CREATE TABLE IF NOT EXISTS relay_workspace_roots (
+    member TEXT PRIMARY KEY REFERENCES relay_nodes(member), root TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS relay_project_workspaces (
+    member TEXT NOT NULL, project TEXT NOT NULL, root TEXT NOT NULL, mode TEXT NOT NULL,
+    result TEXT NOT NULL, PRIMARY KEY(member,project)
+);
 """
 
 

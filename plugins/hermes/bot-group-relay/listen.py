@@ -299,6 +299,10 @@ class ListenServer:
             logger.warning("bot-group relay stale dial frame dropped kind=%s gen=%s",
                            kind, frame_gen)
             return
+        if kind == 'workspace_request':
+            from . import workspaces
+            workspaces.respond(ws, meta, envelope.get('workspace'))
+            return
         if kind == "mcp_snapshot_request":
             snapshot = mcp_digest.snapshot(self._mcp_python(),
                                            code_version=relay_config.plugin_version())

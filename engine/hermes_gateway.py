@@ -87,19 +87,19 @@ class RelayLease:
         self.close()
 
 
-def connection(profile, *, home=None, command=None, read_only=False, on_event=None, history=False):
-    from . import bot_identity
-    from . import hermes_connections
+def remote_member(profile):
     from . import relay
-    from .session_adapter import _hermes_home
-    # 远程 relay 成员（req#168）：本机直连链路整体绕过，插件已在本机完成取票与
-    # gateway 连接；引擎只按成员开流转发 JSON-RPC 帧。
     conn = db.get_connection()
     try:
-        remote = relay.read_node(conn, profile) is not None
+        return relay.read_node(conn, profile) is not None
     finally:
         conn.close()
-    if remote:
+
+
+def connection(profile, *, home=None, command=None, read_only=False, on_event=None, history=False):
+    from . import bot_identity, hermes_connections
+    from .session_adapter import _hermes_home
+    if remote_member(profile):
         return _relay_lease(profile, on_event=on_event), str(Path(profile)), []
     home = Path(home) if home else bot_identity.hermes_home(profile, _hermes_home())
     if history:
@@ -111,7 +111,7 @@ def connection(profile, *, home=None, command=None, read_only=False, on_event=No
     return hermes_connections.acquire(home, command, callback=on_event, business=not read_only), home, command
 
 
-def _binding(conn, client, bot, project, profile, kind, thread_id, title, workdir, model_args):
+def _binding(conn, client, bot, project, profile, kind, thread_id, title, workdir, model_args, remote_workspace=None):
     from . import wake
     key = (project, bot['id'], kind, thread_id or 0)
     row = conn.execute('SELECT * FROM session_bindings WHERE project=? AND bot_id=? AND kind=? AND thread_id=?', key).fetchone()
@@ -128,7 +128,7 @@ def _binding(conn, client, bot, project, profile, kind, thread_id, title, workdi
         if found:
             snapshot = sessions.attach(client, found[0]['session_id'])
         else:
-            prompt = wake.wake_system_prompt(kind, project, workdir)
+            prompt = wake.wake_system_prompt(kind, project, workdir, remote_workspace=remote_workspace)
             request_id = uuid.uuid5(uuid.NAMESPACE_URL, repr(key) + ':' + prompt_state.digest(prompt)).hex
             snapshot = sessions.new(client, title=title, workdir=workdir, system_prompt=prompt,
                                     model_args=model_args, request_id=request_id)
@@ -339,7 +339,7 @@ def _sync_delegation_state(conn, row):
 
 
 def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args,
-          bound_task=None, job_id=None, trigger_msg_id=None):
+          bound_task=None, job_id=None, trigger_msg_id=None, remote_workspace=None):
     from . import wake, browser_resources, hermes_session_auth
     session = wake.session_name(profile, kind, thread_id, project)
     client = None
@@ -370,7 +370,7 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
             description = sessions.initialization_rpc(client, 'runtime.describe')
             if not {'durable-admission-v1', 'acp-session-mcp-v1'} <= set(description['capabilities']):
                 raise GatewayRefusal('gateway_capabilities_unavailable')
-            snapshot = _binding(conn, client, bot, project, profile, kind, thread_id, session, workdir, model_args)
+            snapshot = _binding(conn, client, bot, project, profile, kind, thread_id, session, workdir, model_args, remote_workspace)
         if snapshot['running'] or snapshot['pending']:
             # attach 复核发现原生忙：回写观察缓存，退回后同一 TTL 窗口内不再反复占队首
             _native_busy_feedback(conn, snapshot['session_id'])
@@ -399,7 +399,7 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
                                                                    trigger_msg_id, bound_task, [])
         elif bound_task is not None:
             signal += wake._TASK_SUFFIX.format(task_id=bound_task)
-        current_prompt = wake.wake_system_prompt(kind, project, workdir)
+        current_prompt = wake.wake_system_prompt(kind, project, workdir, remote_workspace=remote_workspace)
         prompt_hash = prompt_state.pending_hash(conn, description['profile_id'], snapshot['session_id'], current_prompt)
         if prompt_hash is not None:
             signal = current_prompt + '\n\n' + signal

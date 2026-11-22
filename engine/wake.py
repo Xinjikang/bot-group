@@ -433,7 +433,7 @@ def system_prompt_for(kind: str) -> str:
     return (_CHAT_SYSTEM_PROMPT if kind == "chat" else _WORK_SYSTEM_PROMPT)
 
 
-def wake_system_prompt(kind: str, project: str, workdir: str) -> str:
+def wake_system_prompt(kind: str, project: str, workdir: str, *, remote_workspace=None) -> str:
     """Static collaboration rules followed by current, project-scoped facts."""
     import json
     from .project_workspaces import project as get_project
@@ -444,8 +444,9 @@ def wake_system_prompt(kind: str, project: str, workdir: str) -> str:
     try:
         row = get_project(conn, project)
         owner = project_owner(conn, project)
-        with LOCK:
-            resources = workspace_resources.prompt_config(conn, project, workdir)
+        if remote_workspace is None:
+            with LOCK:
+                resources = workspace_resources.prompt_config(conn, project, workdir)
     finally:
         conn.close()
     context = {
@@ -453,12 +454,17 @@ def wake_system_prompt(kind: str, project: str, workdir: str) -> str:
         '项目显示名': row['display_name'] or row['name'],
         '项目描述': row['description'] or '',
         '项目负责人': owner,
-        '项目主目录': str(Path(row['root']).resolve()),
-        '目录模式': '共用项目主目录' if Path(workdir).resolve() == Path(row['root']).resolve() else '独立 worktree',
-        '当前工作目录': workdir,
-        '工作区配置': resources,
     }
-    return (system_prompt_for(kind) + '\n\n' + workspace_resources.RULE + '\n\n## 当前项目\n'
+    prompt = system_prompt_for(kind)
+    if remote_workspace is None:
+        context.update({'项目主目录': str(Path(row['root']).resolve()),
+                        '目录模式': '共用项目主目录' if Path(workdir).resolve() == Path(row['root']).resolve() else '独立 worktree',
+                        '当前工作目录': workdir, '工作区配置': resources})
+        prompt += '\n\n' + workspace_resources.RULE
+    else:
+        context.update({'项目主目录': remote_workspace['main'], '当前工作目录': remote_workspace['path'],
+                        '目录模式': remote_workspace['mode'], '当前分支': remote_workspace['branch']})
+    return (prompt + '\n\n## 当前项目\n'
             + json.dumps(context, ensure_ascii=False, indent=2)
             + '\n群聊和任务工具的 project 参数使用项目稳定 ID。')
 
@@ -911,6 +917,19 @@ def _spawn(profile: str, kind: str, signal: str | None, thread_id: int | None,
            project: str, job_id=None, task_id=None, trigger_msg_id: int | None = None) -> dict:
     from .project_workspaces import LOCK
     from .session_adapter import _SWITCH_LOCK
+    from . import remote_workspaces
+    from fastapi import HTTPException
+    if _shutting_down.is_set():
+        return {'ok': False, 'busy': True, 'detail': 'engine is shutting down'}
+    try:
+        remote_workspace = remote_workspaces.for_session(project, profile)
+    except HTTPException as exc:
+        import uuid
+        detail = '远程工作区：' + str(exc.detail)
+        _report_execution_error(profile, project, thread_id, session_name(profile, kind, thread_id, project),
+                                f'queue:{job_id}' if job_id is not None else uuid.uuid4().hex,
+                                detail, job_id=job_id, parent_id=trigger_msg_id)
+        return {'ok': False, 'detail': detail}
     with LOCK, _SWITCH_LOCK:
         if _shutting_down.is_set():
             return {'ok': False, 'busy': True, 'detail': 'engine is shutting down'}
@@ -924,7 +943,8 @@ def _spawn(profile: str, kind: str, signal: str | None, thread_id: int | None,
                 finally:
                     conn.close()
             result = _spawn_in_workspace(profile, kind, signal, thread_id, project,
-                                         job_id, task_id, trigger_msg_id)
+                                         job_id, task_id, trigger_msg_id,
+                                         **({'remote_workspace': remote_workspace} if remote_workspace else {}))
             if not result.get('ok') and not result.get('busy') and not result.get('failure_handled'):
                 import uuid
                 _report_execution_error(profile, project, thread_id, session_name(profile, kind, thread_id, project),
@@ -944,7 +964,8 @@ def _spawn(profile: str, kind: str, signal: str | None, thread_id: int | None,
 
 
 def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: int | None,
-                        project: str, job_id=None, task_id=None, trigger_msg_id: int | None = None) -> dict:
+                        project: str, job_id=None, task_id=None, trigger_msg_id: int | None = None,
+                        *, remote_workspace=None) -> dict:
     """subprocess 唤醒的公共实现。
 
     项目规则与协作提示词的加载方式：
@@ -967,6 +988,11 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
             return {'ok': False, 'detail': '项目已归档或不存在'}
         if not _profile_active(conn, project, profile):
             return {'ok': False, 'detail': '成员尚未加入项目或已停用'}
+        if remote_workspace is not None:
+            from . import remote_workspaces
+            root, _, mode = remote_workspaces.configuration(conn, project, profile)
+            if (root, mode) != (remote_workspace['root'], remote_workspace['mode']):
+                return {'ok': False, 'busy': True, 'detail': '远程工作区配置已变更，正在重新准备'}
         bound_task = task_retry.select_task(conn, profile, project, task_id) if kind == 'work' else None
     finally:
         conn.close()
@@ -982,9 +1008,12 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                 return {'ok': False, 'detail': 'topic turn changed before spawn'}
         finally:
             conn.close()
-    workdir = _workdir_for(profile, project)
-    from . import project_rules
-    project_rules.sync(project, workdir)
+    if remote_workspace is None:
+        workdir = _workdir_for(profile, project)
+        from . import project_rules
+        project_rules.sync(project, workdir)
+    else:
+        workdir = remote_workspace['path']
     # req#83：查/建会话绑定，拿真实 Hermes session_id。spawn 传真实 session_id（断点续，
     # U1：-c 精确 ID 匹配优先 + 自动 compression tip 跟随），去掉 --create-if-missing
     # （首建由引擎显式 create_session 完成，恢复与首建分开——绑定失效明确失败，不静默重建）。
@@ -1045,7 +1074,7 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         if (bot and bot['host_type'] == 'relay') or hermes_gateway.enabled():
             return hermes_gateway.spawn(profile, kind, signal, thread_id, project,
                 bot=bot, workdir=workdir, model_args=model_args, bound_task=bound_task,
-                job_id=job_id, trigger_msg_id=trigger_msg_id)
+                job_id=job_id, trigger_msg_id=trigger_msg_id, remote_workspace=remote_workspace)
     use_binding = runtime not in ("codex", "dsh") and session_adapter.available()
     if use_binding:
         conn = db.get_connection()

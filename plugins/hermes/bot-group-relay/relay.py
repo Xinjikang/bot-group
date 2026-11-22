@@ -214,6 +214,10 @@ class RelayClient:
             logger.warning("bot-group relay stale frame dropped member=%s kind=%s gen=%s",
                            self.cfg.member, kind, frame_gen)
             return
+        if kind == 'workspace_request':
+            from . import workspaces
+            workspaces.respond(ws, meta, envelope.get('workspace'))
+            return
         if kind == "mcp_snapshot_request":
             # 同步问询：实时重算本次实际摘要（换包未异步上报也能取到本次值）
             snapshot = mcp_digest.snapshot(self.cfg.mcp_python,

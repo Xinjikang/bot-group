@@ -63,6 +63,8 @@ def classify(text):
     # 的「最后一个 JSON 错误事件优先」提取之前判定——否则被 'adapter broken' 之类
     # 终端错误事件吞掉，落 unknown。
     raw = str(text).lower()
+    if raw.startswith('远程工作区：'):
+        return 'configuration'
     if raw.startswith('session state query failed: '):
         return 'session_state'
     if 'auto review capability unavailable' in raw or 'preset not confirmed' in raw:
@@ -193,6 +195,8 @@ def report(profile, project, thread_id, attempt, detail, *, exit_code=1, parent_
         if parent:
             round_no, depth = parent['round'], parent['depth'] + 1
         public_message = MESSAGES[category]
+        if diagnostic.startswith('远程工作区：'):
+            public_message = diagnostic[:320]
         if category == 'session_state':
             reason = str(detail).partition(': ')[2]
             if reason.isidentifier():

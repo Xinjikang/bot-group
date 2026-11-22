@@ -721,7 +721,37 @@
       directionButton.textContent = '切换方向';
       directionButton.setAttribute('aria-expanded', String(selectedProfile === node.member));
       actions.prepend(directionButton);
-      card.append(head, meta, sourceSection(node), actions);
+      const workspace = document.createElement('form');
+      workspace.className = 'relay-copy-row';
+      const rootLabel = document.createElement('label');
+      rootLabel.textContent = '协作根目录';
+      const rootInput = document.createElement('input');
+      rootInput.value = node.workspace_root || '';
+      rootInput.placeholder = '远程绝对路径，如 /srv/projects';
+      rootInput.required = true;
+      rootLabel.append(rootInput);
+      const saveRoot = document.createElement('button');
+      saveRoot.textContent = '验证并保存';
+      const result = document.createElement('p');
+      result.className = 'profile-help';
+      result.setAttribute('role', 'status');
+      workspace.append(rootLabel, saveRoot);
+      workspace.onsubmit = async event => {
+        event.preventDefault();
+        if (!allowed() || saveRoot.disabled) return;
+        saveRoot.disabled = true;
+        rootInput.disabled = true;
+        report(result, '正在远程主机上核验目录…');
+        try {
+          const saved = await api('/relay/nodes/' + encodeURIComponent(node.member) + '/workspace-root', {
+            method: 'PUT', body: JSON.stringify({root: rootInput.value.trim()}),
+          });
+          rootInput.value = node.workspace_root = saved.root;
+          report(result, '远程目录已验证并保存。');
+        } catch (error) { report(result, message(error), true); }
+        finally { saveRoot.disabled = false; rootInput.disabled = false; }
+      };
+      card.append(head, meta, workspace, result, sourceSection(node), actions);
       if (selectedProfile === node.member) card.append(directionPanel);
       list.append(card);
     }

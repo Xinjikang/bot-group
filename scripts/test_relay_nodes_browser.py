@@ -196,6 +196,14 @@ def main():
                                         'remote_port': None, 'error': ''})
             req.fulfill(json=deepcopy(state['listen']))
             return
+        if path == '/relay/nodes/hermes-remote/workspace-root' and req.request.method == 'PUT':
+            value = req.request.post_data_json['root']
+            if not value.startswith('/'):
+                req.fulfill(status=409, json={'detail': '请输入远程主机上的绝对路径'})
+            else:
+                next(n for n in state['nodes'] if n['member'] == 'hermes-remote')['workspace_root'] = value
+                req.fulfill(json={'root': value})
+            return
         if path == '/relay/nodes/hermes-remote/renewal' and req.request.method == 'POST':
             state['renewal_state'] = 'waiting'
             req.fulfill(json={'pairing_id': 'test-renewal', 'engine_url': 'https://engine.example',
@@ -407,6 +415,15 @@ def main():
         assert '100.64.0.5' in remote_card.inner_text()
         assert '100.64.0.6' in spare_card.inner_text()
         assert '尚未连接' in remote_card.inner_text()
+        root = remote_card.get_by_label('协作根目录')
+        save = remote_card.get_by_role('button', name='验证并保存')
+        root.fill('relative')
+        save.click()
+        remote_card.get_by_text('请输入远程主机上的绝对路径', exact=True).wait_for()
+        root.fill('/fixture/projects')
+        save.click()
+        remote_card.get_by_text('远程目录已验证并保存。', exact=True).wait_for()
+        assert not spare_card.get_by_label('协作根目录').input_value()
         page.screenshot(path=str(evidence / 'relay-nodes-bindings-1280-dark.png'))
 
         # Add and remove an extra source IP from the node card; both take effect immediately.

@@ -189,7 +189,11 @@ def configure(conn, row, client, snapshot, *, force_mcp=False, refresh_model=Tru
     fetch = getattr(client, 'request_mcp_snapshot', None)
     spec = relay.merge_mcp_spec(conn, row["profile"], spec, engine_url=wake._engine_url(),
                                 fetch_report=fetch)
-    result = sessions.configure_tracked(conn, row['project'], client, snapshot, workdir=row['workdir'],
+    workdir = row['workdir']
+    if not refresh_model and relay.read_node(conn, row['profile']) is not None:
+        # A signing-key refresh resumes the existing session, including grants from older engines.
+        workdir = snapshot['info'].get('cwd')
+    result = sessions.configure_tracked(conn, row['project'], client, snapshot, workdir=workdir,
         model_args=json.loads(row['model_args']), server=spec, force_mcp=force_mcp,
         member=row['profile'], refresh_model=refresh_model)
     validate(conn, {**context(row), 'signing_generation': current})
