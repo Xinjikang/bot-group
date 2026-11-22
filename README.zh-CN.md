@@ -220,13 +220,13 @@ Bot 通过 MCP 工具参与群聊、读取消息和处理任务。MCP 是宿主�
 
 办公机运行 bot-group 引擎，远程 Linux 主机（如 ECS）运行 Hermes gateway。准备好目标 Hermes profile、支持 `venv` 的 Python 3.11+，以及可下载 Python 依赖的网络或软件源。参与代码项目还需要 Git 和该仓库的读取权限。
 
-1. **安装插件。** 当办公机使用最新正式版，且该 Release 的附件中有 `install-relay.pyz` 时，将下面一行发给远程 Hermes，在目标 profile 下执行。
+1. **联网安装插件。** 办公机使用含远程 Hermes 功能的最新正式版时，将下面一行命令发给远程 Hermes。它会在 ECS 下载配套安装器，下载成功后安装到当前 profile。
 
    ```bash
    curl -fL --retry 3 https://github.com/Xinjikang/bot-group/releases/latest/download/install-relay.pyz -o install-relay.pyz && python3 install-relay.pyz
    ```
 
-   办公机使用指定版本时，将 URL 中的 `latest/download` 换成 `download/<办公机版本标签>`。指定命名 profile 可在命令末尾加 `--profile luna`。安装器包含同一发布版本的插件与 MCP，校验内置归档，安装锁定依赖，启用插件并保留已有配对。成功后按输出重启该 profile 的 gateway。使用开发构建或 ECS 无法访问 GitHub 时，可将办公机维护者提供的配套 `install-relay.pyz` 发给远程 Hermes，直接运行 `python3 install-relay.pyz`。
+   办公机使用指定版本时，将 URL 中的 `latest/download` 换成 `download/<办公机版本标签>`。使用内网发布源时，将命令中的 URL 换成该发布源中配套安装器的 HTTPS 地址。指定命名 profile 可在命令末尾加 `--profile luna`。安装器校验内置插件归档、安装 MCP 的锁定依赖、启用插件并保留已有配对。成功后按输出重启该 profile 的 gateway。
 2. **配对节点。** 在办公机打开「设置 → 远程节点 → 添加远程 Hermes」。选「云端连本机」时，将页面生成的邀请命令发给远程 Hermes 执行，在办公机核对成员和来源 IP 后确认。选「本机连云端」时，由远程 Hermes 生成配对链接，粘贴到页面并核对证书指纹。配对完成后确认节点显示「在线」。
 3. **设置协作根目录。** 在远程节点卡填写 ECS 上可写的绝对路径，例如 `/mnt/projects`，点「验证并保存」。每个节点配置一次，供它参与的所有项目使用。
 4. **加入项目并准备工作区。** 在「项目详情 → 成员与目录」添加对应的远程成员。引擎会通知插件从项目的 `origin` 拉取代码。共享主目录模式使用 ECS 上的 `<协作根目录>/<项目 ID>`；工作树模式在这份仓库上创建成员分支和 worktree。成员卡会显示实际路径或准备失败的原因。
