@@ -1,6 +1,6 @@
 # 测试脚本索引
 
-远程协作根目录使用 `python -X utf8 -B -m unittest scripts.test_remote_workspaces`。在临时 Git 仓库验证共享 master、独立具名 worktree、重复准备、基线未发布、分叉与保留未提交文件，以及远端分支推送并在办公机合并。下文的 `scripts.verify_relay_first_join_network` 使用临时 bare 仓库，在双向 relay 上通过节点根目录 API 验证实际会话 cwd 和点名回执。`scripts.test_relay_nodes_browser` 验证节点卡的保存、错误回显和不同节点的值。
+远程协作根目录使用 `python -X utf8 -B -m unittest scripts.test_remote_workspaces`。在临时 Git 仓库验证共享 master、独立具名 worktree、重复准备、基线未发布、分叉与保留未提交文件，以及远端分支推送并在办公机合并。下文的 `scripts.verify_relay_first_join_network` 使用临时 bare 仓库，在双向 relay 上通过节点根目录 API 验证实际会话 cwd 和点名回执。`scripts.test_relay_nodes_browser` 验证节点卡的保存、错误回显和不同节点的值，并在 1280px 和 390px 视口检查协作根目录标签间距、输入框和保存按钮的位置与高度。
 
 远程节点换发回归使用 `python -X utf8 -B -m unittest scripts.test_plugin_listen_pairing.FirstJoinTests.test_renewal_command_updates_existing_node_and_waiting_gateway scripts.test_plugin_listen_pairing.FirstJoinTests.test_renewal_is_scoped_and_cancellable`。临时 SQLite 和随机回环端口验证原节点换发、网关恢复、来源限制、取消与重复执行。`python -X utf8 -B -m scripts.test_relay_nodes_browser --evidence <报告目录>` 在 Chrome 核对转发指引、复制内容、取消、完成和清除。
 

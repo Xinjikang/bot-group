@@ -417,6 +417,15 @@ def main():
         assert '尚未连接' in remote_card.inner_text()
         root = remote_card.get_by_label('协作根目录')
         save = remote_card.get_by_role('button', name='验证并保存')
+        def check_workspace_layout(card):
+            field = card.get_by_label('协作根目录')
+            control = field.bounding_box()
+            button = card.get_by_role('button', name='验证并保存').bounding_box()
+            assert abs(control['y'] - button['y']) <= 1 and control['height'] == button['height']
+            assert control['x'] + control['width'] < button['x']
+            assert field.evaluate("el => getComputedStyle(el.labels[0]).rowGap") == '8px'
+
+        check_workspace_layout(remote_card)
         root.fill('relative')
         save.click()
         remote_card.get_by_text('请输入远程主机上的绝对路径', exact=True).wait_for()
@@ -593,6 +602,7 @@ def main():
         assert overflow <= 0, overflow
         for theme in ('dark', 'light'):
             page.evaluate('(theme) => applyTheme(theme)', theme)
+            check_workspace_layout(spare_card)
             page.screenshot(path=str(evidence / f'relay-nodes-390-{theme}.png'))
         page.evaluate("applyTheme('dark')")
         spare_add = page.locator('#relay-node-list article[data-relay-member="hermes-spare"] button[data-action="add-ip"]')
