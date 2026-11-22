@@ -34,7 +34,8 @@ class SessionReuseTests(unittest.TestCase):
         self.context = grants.context(self.grant)
         self.headers = self.headers_for()
         app = FastAPI(); app.include_router(api.router_api)
-        self.client = TestClient(app); self.addCleanup(self.client.close)
+        # req#171：来源绑定第二层按 socket peer 核对；夹具用回环模拟生产本机来源
+        self.client = TestClient(app, client=('127.0.0.1', 4321)); self.addCleanup(self.client.close)
         self.snapshot = {'session_id': 'sid', 'revision': 1, 'execution_generation': 0,
                          'running': False, 'pending': [], 'info': {'source': 'acp',
                          'cwd': str(Path(self.path).parent), 'edit_approval_policy': 'workspace_session'}}

@@ -19,19 +19,18 @@ PS = shutil.which('powershell')
 class PublicReleaseTests(unittest.TestCase):
     def test_release_contains_installer_and_fixed_bootstrap_addresses(self):
         with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            (root / 'engine/maintenance').mkdir(parents=True)
-            (root / 'engine/maintenance/bootstrap.py').write_text('pass\n')
-            (root / 'install.ps1').write_text('Write-Host done\n')
-            (root / 'README.zh-CN.md').write_text('Chinese\n')
+            out = Path(folder)
             base = 'https://github.com/Xinjikang/bot-group/releases/download/v1.2.3/'
-            make_release.make_release(root, root / 'out', 'bot-group', 'v1.2.3', base)
-            entry = json.loads((root / 'out/releases.json').read_text())['releases'][0]
+            make_release.make_release(ROOT, out, 'bot-group', 'v1.2.3', base)
+            entry = json.loads((out / 'releases.json').read_text())['releases'][0]
             self.assertEqual(entry['bootstrap'], base + 'bootstrap.py')
             self.assertEqual(entry['source'], base + 'bot-group-v1.2.3.zip')
-            self.assertEqual(entry['bootstrap_sha256'], hashlib.sha256((root / 'engine/maintenance/bootstrap.py').read_bytes()).hexdigest())
-            self.assertEqual((root / 'out/install.ps1').read_bytes(), (root / 'install.ps1').read_bytes())
-            manifest = json.loads((root / 'out/release_manifest.json').read_text())
+            self.assertEqual(entry['bootstrap_sha256'], hashlib.sha256((ROOT / 'engine/maintenance/bootstrap.py').read_bytes()).hexdigest())
+            self.assertEqual((out / 'install.ps1').read_bytes(), (ROOT / 'install.ps1').read_bytes())
+            self.assertTrue((out / 'install-relay.pyz').is_file())
+            self.assertNotIn('install-relay.pyz', json.dumps(entry))
+            manifest = json.loads((out / 'release_manifest.json').read_text())
+            self.assertNotIn('install-relay.pyz', manifest['program_files'])
             self.assertIn('README.zh-CN.md', manifest['program_files'])
 
     def test_upgrade_defaults_to_public_index_and_preserves_override(self):

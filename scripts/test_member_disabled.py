@@ -340,7 +340,8 @@ class QueuedJobDisabledTests(unittest.TestCase):
     def setUp(self):
         self.conn = sqlite3.connect(":memory:", factory=_KeepOpen)
         self.conn.row_factory = sqlite3.Row
-        self.conn.executescript(SCHEMA)
+        from engine import db
+        db.init_schema(self.conn)
         for project in ('xjk', 'other-project'):
             self.conn.execute("INSERT INTO projects(name,root,created_at) VALUES(?,'.','now')", (project,))
             for profile in ('a', 'b'):

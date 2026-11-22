@@ -12,7 +12,7 @@ import sqlite3
 import time
 import uuid
 
-from . import hermes_background as background
+from . import hermes_background as background, hermes_task_recovery as recovery
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS hermes_delegation_cycles (
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS hermes_delegation_inputs (
     PRIMARY KEY(execution_id, request_id), UNIQUE(execution_id, message_id)
 );
 """
-SCHEMA += background.SCHEMA
+SCHEMA += background.SCHEMA + recovery.SCHEMA
 
 
 def cycle(conn, row):
@@ -243,8 +243,11 @@ def background_kind(conn, row):
     return 'mixed' if processes and processes < len(ids) else 'process' if processes else 'delegation'
 
 
-def poll(conn, row, client):
+def poll(conn, row, client, *, task_cue=None):
     """Runs only on this execution's background reconciler, never on an HTTP read path."""
+    if task_cue is not None:
+        # Automatic task recovery is not an administrative stop or a callback replay.
+        return recovery.poll(conn, row, client, task_cue)
     from . import hermes_gateway_ledger as ledger
     if not owned(conn, row) and not row['cancel_reason']:
         row = ledger.cancel(conn, row['execution_id'], 'superseded')

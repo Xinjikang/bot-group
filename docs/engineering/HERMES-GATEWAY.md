@@ -50,7 +50,9 @@ MCP 初始化失败恢复使用现有终态结果与 `session.mutate editor_mcp`
 
 ## 会话、MCP 和原生审批
 
-新会话使用 `source=acp`，首次通过 `session.mutate editor_mcp` 注入会话级 task_queue。配置指纹按 profile/session/project 持久化；后续相同配置通过 `session.resume(editor=...)` 恢复私有传输参数，保留原生 agent 与 MCP 连接。model/provider/reasoning 仅在引擎指定值变化时更新；workspace/edit_policy 按会话快照比较。实际工具发现和调用由 Hermes 原生机制完成。
+新会话使用 `source=acp`，首次通过 `session.mutate editor_mcp` 注入会话级 task_queue。配置指纹按 profile/session/project 持久化。后续相同配置通过 `session.resume(editor=...)` 恢复私有传输参数，保留原生 agent 与 MCP 连接。推理强度按指定值变化更新，工作目录和编辑策略按会话快照比较。实际工具发现和调用由 Hermes 原生机制完成。
+
+复用会话时，引擎在 `prompt.submit` 前比较目标模型、供应商与上次确认生效的值。两者有差异时发送 `session.mutate` 的 `model` 操作。成功回执更新缓存；待确认或模型解析失败时沿用原模型，下次唤醒重试。旧版缓存会在升级后的首次唤醒重新核验。详见[项目模型契约](PROJECT-MEMBER-MODELS-2026-10-11.md)。
 
 初始化的 describe/list/resume/create/mutate 在池租约传输失败后允许一次被动重连和一次原参数重试。create/mutate 保留原 request ID；mutation 同时保留 payload、revision 和 execution generation，由原生持久回执去重及检查状态。明确拒绝和第二次失败向上返回。配置后的快照若已 running/pending，提交前退回调度等待。prompt 提交继续走持久执行账本。断线日志记录连接标识、方法、耗时、关闭码及心跳阶段，省略远端关闭文本和请求内容。设计与验证范围见 [心跳与初始化恢复](../design/2026-11-04-hermes-rpc-heartbeat.md)。
 

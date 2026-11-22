@@ -14,7 +14,8 @@ from . import db, hermes_runtime
 from . import hermes_gateway_ledger as ledger, hermes_gateway_sessions as sessions
 from . import hermes_prompt_state as prompt_state
 from . import hermes_startup as startup
-from .hermes_gateway_client import GatewayClient, GatewayRefusal, GatewayTransportError, discover, ensure
+from .hermes_gateway_client import (GatewayClient, GatewayRefusal, GatewayTransportError,
+                                    GatewayUnavailable, discover, ensure)
 
 logger = logging.getLogger(__name__)
 _workers = set()
@@ -26,10 +27,80 @@ def enabled():
     return hermes_runtime.gateway_source(hermes_runtime.source_directory(_hermes_home()))
 
 
+def _relay_lease(profile, *, on_event=None):
+    """远程 relay 成员：从活跃插件连接开一条流，包装成 Lease 兼容接口。"""
+    from . import relay_server
+    from . import relay
+    conn = db.get_connection()
+    try:
+        online = relay.is_online(conn, profile)
+    finally:
+        conn.close()
+    if not online:
+        raise GatewayUnavailable('remote member relay offline: ' + profile)
+    transport = relay_server.open_transport(profile)
+    if transport is None:
+        raise GatewayUnavailable('remote member relay link absent: ' + profile)
+    endpoint = {'profile_id': profile, 'instance_id': 'relay-' + profile,
+                'runtime_protocol': 1, 'api_origin': '', 'control_home': '',
+                'code_sha': '', 'authority_epoch': 1}
+    return RelayLease(GatewayClient(endpoint, on_event=on_event, transport=transport),
+                      transport=transport)
+
+
+class RelayLease:
+    """远程 transport 的 Lease 兼容包装（rpc/endpoint/close）。"""
+    def __init__(self, client: GatewayClient, transport=None):
+        self.client = client
+        self.transport = transport
+        self.closed = False
+
+    @property
+    def endpoint(self):
+        return self.client.endpoint
+
+    def rpc(self, method, **params):
+        if self.closed:
+            raise GatewayTransportError('relay lease closed')
+        return self.client.rpc(method, **params)
+
+    def request_mcp_snapshot(self, timeout=10.0):
+        """configure 前同步问询远端 MCP 实际摘要（manager node1981 ③）。
+        无 transport 能力（异常构造）返回 None。"""
+        if self.closed:
+            return None
+        requester = getattr(self.transport, 'request_mcp_snapshot', None)
+        if requester is None:
+            return None
+        return requester(timeout)
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        self.client.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+
+def remote_member(profile):
+    from . import relay
+    conn = db.get_connection()
+    try:
+        return relay.read_node(conn, profile) is not None
+    finally:
+        conn.close()
+
+
 def connection(profile, *, home=None, command=None, read_only=False, on_event=None, history=False):
-    from . import bot_identity
-    from . import hermes_connections
+    from . import bot_identity, hermes_connections
     from .session_adapter import _hermes_home
+    if remote_member(profile):
+        return _relay_lease(profile, on_event=on_event), str(Path(profile)), []
     home = Path(home) if home else bot_identity.hermes_home(profile, _hermes_home())
     if history:
         # Transcript reads own their socket and cannot interrupt admission RPCs.
@@ -40,7 +111,7 @@ def connection(profile, *, home=None, command=None, read_only=False, on_event=No
     return hermes_connections.acquire(home, command, callback=on_event, business=not read_only), home, command
 
 
-def _binding(conn, client, bot, project, profile, kind, thread_id, title, workdir, model_args):
+def _binding(conn, client, bot, project, profile, kind, thread_id, title, workdir, model_args, remote_workspace=None):
     from . import wake
     key = (project, bot['id'], kind, thread_id or 0)
     row = conn.execute('SELECT * FROM session_bindings WHERE project=? AND bot_id=? AND kind=? AND thread_id=?', key).fetchone()
@@ -57,14 +128,14 @@ def _binding(conn, client, bot, project, profile, kind, thread_id, title, workdi
         if found:
             snapshot = sessions.attach(client, found[0]['session_id'])
         else:
-            prompt = wake.wake_system_prompt(kind, project, workdir)
+            prompt = wake.wake_system_prompt(kind, project, workdir, remote_workspace=remote_workspace)
             request_id = uuid.uuid5(uuid.NAMESPACE_URL, repr(key) + ':' + prompt_state.digest(prompt)).hex
             snapshot = sessions.new(client, title=title, workdir=workdir, system_prompt=prompt,
                                     model_args=model_args, request_id=request_id)
             prompt_state.created(conn, client.endpoint['profile_id'], snapshot['session_id'], prompt)
     if snapshot['info']['source'] != 'acp':
         old_sid = snapshot['session_id']
-        snapshot = sessions.migrate_legacy(client, snapshot, workdir=workdir)
+        snapshot = sessions.migrate_legacy(client, snapshot, workdir=workdir or snapshot['info']['cwd'])
         conn.execute('INSERT OR IGNORE INTO hermes_session_migrations VALUES(?,?,?,?)',
                      (profile, old_sid, snapshot['session_id'], time.time()))
     conn.execute("INSERT INTO session_bindings(project,bot_id,profile,kind,thread_id,session_id,runtime,generation,title,updated_at) "
@@ -268,7 +339,7 @@ def _sync_delegation_state(conn, row):
 
 
 def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args,
-          bound_task=None, job_id=None, trigger_msg_id=None):
+          bound_task=None, job_id=None, trigger_msg_id=None, remote_workspace=None):
     from . import wake, browser_resources, hermes_session_auth
     session = wake.session_name(profile, kind, thread_id, project)
     client = None
@@ -277,14 +348,15 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
     conn = db.get_connection()
     session_lock = hermes_session_auth.lock_for(session)
     session_lock.acquire()
+    injected_ids: list[int] = []
     try:
         if ledger.active(conn, session):
             from . import hermes_delegations
             direct = hermes_delegations.direct_wait(conn, profile, project, trigger_msg_id) if kind == 'work' else None
             if direct:
                 prior, message_id = direct
-                text = wake._finalize_injection_signal(profile, kind, thread_id, project,
-                                                       message_id, prior['task_id'], [])
+                text, _ = wake._finalize_injection_signal(profile, kind, thread_id, project,
+                                                          message_id, prior['task_id'], [])
                 if not hermes_delegations.enqueue_direct(conn, prior, message_id, text):
                     return {'ok': False, 'busy': True, 'detail': 'delegation wait changed during delivery'}
                 _start_worker(prior['execution_id'])
@@ -298,7 +370,9 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
             description = sessions.initialization_rpc(client, 'runtime.describe')
             if not {'durable-admission-v1', 'acp-session-mcp-v1'} <= set(description['capabilities']):
                 raise GatewayRefusal('gateway_capabilities_unavailable')
-            snapshot = _binding(conn, client, bot, project, profile, kind, thread_id, session, workdir, model_args)
+            snapshot = _binding(conn, client, bot, project, profile, kind, thread_id, session, workdir, model_args, remote_workspace)
+            if workdir is None:
+                workdir = snapshot['info']['cwd']
         if snapshot['running'] or snapshot['pending']:
             # attach 复核发现原生忙：回写观察缓存，退回后同一 TTL 窗口内不再反复占队首
             _native_busy_feedback(conn, snapshot['session_id'])
@@ -323,11 +397,11 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
             _native_busy_feedback(conn, snapshot['session_id'])
             return {'ok': False, 'busy': True, 'detail': 'native session became busy during initialization'}
         if signal is None:
-            signal = wake._finalize_injection_signal(profile, kind, thread_id, project,
-                                                     trigger_msg_id, bound_task, [])
+            signal, injected_ids = wake._finalize_injection_signal(profile, kind, thread_id, project,
+                                                                   trigger_msg_id, bound_task, [])
         elif bound_task is not None:
             signal += wake._TASK_SUFFIX.format(task_id=bound_task)
-        current_prompt = wake.wake_system_prompt(kind, project, workdir)
+        current_prompt = wake.wake_system_prompt(kind, project, workdir, remote_workspace=remote_workspace)
         prompt_hash = prompt_state.pending_hash(conn, description['profile_id'], snapshot['session_id'], current_prompt)
         if prompt_hash is not None:
             signal = current_prompt + '\n\n' + signal
@@ -342,6 +416,14 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
             workdir=workdir, session_id=snapshot['session_id'], profile_id=description['profile_id'], started_at=start,
             parent_id=topic['turn_parent_id'] if topic else None, round_no=topic['round'] if topic else None,
             prompt_hash=prompt_hash)
+        # req#168 manager node1985：实际注入的点名须在网关可收到 prompt.submit
+        # 之前持久关联到 submission——attach 与 prepare 同一事务边界（attach 的
+        # commit 把两者一起落盘，且必然先于 submit RPC），settle_thread 在 submit
+        # 期间收口时行已带 submission_id，不会被误标 expired；之后权威回执
+        # （apply_receipt → settle_by_submission）按同一 submission 结算。
+        from . import relay
+        relay.attach_submission(conn, message_ids=injected_ids, member=profile,
+                                submission_id=row['submission_id'])
         _publish(row)
         browser_resources.register(conn, {}, project=project, profile=profile, session=session,
                                    started_at=start, thread_id=thread_id, task_id=bound_task,
@@ -350,9 +432,15 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
         attempted = True
         with startup.phase(profile, project, session, 'submit'):
             receipt = client.rpc('prompt.submit', session_id=row['session_id'], submission_id=row['submission_id'], text=signal)
-        ledger.apply_receipt(conn, row['execution_id'], receipt)
+        row = ledger.apply_receipt(conn, row['execution_id'], receipt)
+        # 同一 submission 的确认回执：receipt 已被网关受理（queued/started/终态）才算
+        # admitted；unknown 等未确认状态不算（manager node1977 ②——不确定期间不得
+        # 把离线点名标 submitted，保留核对依据）。
+        admitted = row['state'] in ('running', 'submitting', 'terminal')
         _start_worker(row['execution_id'])
-        return {'ok': True, 'channel': 'hermes-gateway', 'detail': 'admission ' + receipt['admission_id']}
+        return {'ok': True, 'channel': 'hermes-gateway', 'detail': 'admission ' + receipt['admission_id'],
+                'submission_id': row['submission_id'], 'admitted': admitted,
+                'injected_message_ids': injected_ids}
     except Exception as exc:
         if row is None:
             raise
@@ -361,7 +449,9 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
         else:
             ledger.not_submitted(conn, row['execution_id'], str(exc))
         _start_worker(row['execution_id'])
-        return {'ok': True, 'channel': 'hermes-gateway', 'detail': 'execution pending reconciliation'}
+        return {'ok': True, 'channel': 'hermes-gateway', 'detail': 'execution pending reconciliation',
+                'submission_id': row['submission_id'], 'admitted': False,
+                'injected_message_ids': injected_ids}
     finally:
         conn.close()
         if client:
@@ -422,11 +512,14 @@ def _finish(conn, row, client):
         if isinstance(receipt, dict):
             row = ledger.apply_receipt(conn, row['execution_id'], receipt)
     code = 0 if row['outcome'] == 'completed' else 1
-    recovery = code and startup.eligible(conn, row)
+    from . import hermes_task_recovery
+    cue = hermes_task_recovery.active_cue(conn, row)
+    unaccepted = cue is not None and cue['state'] == 'unaccepted'
+    recovery = code and not unaccepted and startup.eligible(conn, row)
     conn.execute('UPDATE wake_runs SET ended_at=?,exit_code=? WHERE session=? AND started_at=?',
                  (row['ended_at'], code, row['session'], row['started_at']))
     conn.commit()
-    if not recovery:
+    if not recovery and not unaccepted:
         _notify_exit(row, code)
     browser_resources.finish_run(row['session'], row['started_at'])
     steer_ledger.reconcile_targets(conn)
@@ -444,6 +537,8 @@ def _finish(conn, row, client):
             retried = startup.requeue(conn, row)
         wake._intentional_stops.discard(row['session'])
     events.bus.publish('wake.finished', {'session': row['session'], 'wake_started_at': row['started_at'], 'ended_at': row['ended_at']})
+    if unaccepted and cue['notice_message_id'] is not None:
+        hermes_task_recovery.publish_notice(row['project'], (cue['notice_message_id'], False))
     advance = (row['cancel_reason'] != 'superseded' and hermes_delegations.owned(conn, row)
                and startup.same_turn(conn, row))
     if not recovery:
@@ -474,8 +569,10 @@ def _record_uncertain(conn, execution_id, detail):
 
 
 def _watch(execution_id, *, retry_manual=False):
-    from . import wake
+    from . import hermes_task_recovery, wake
     client = None
+    recovery_started_at = time.monotonic()
+    leaving_recovery_probe = False
     conn = db.get_connection()
     try:
         while True:
@@ -493,7 +590,30 @@ def _watch(execution_id, *, retry_manual=False):
                     continue
                 row = ledger.read(conn, execution_id)
             _sync_run_state(row)
+            if row['state'] in ('manual', 'waiting_delegation') and not row['cancel_reason']:
+                cue = hermes_task_recovery.pending(conn, row)
+                if cue is not None:
+                    try:
+                        if client is None:
+                            client, _, _ = connection(row['profile'], home=row['home'],
+                                                      command=json.loads(row['python']))
+                        from . import hermes_delegations
+                        if hermes_delegations.poll(conn, row, client, task_cue=cue):
+                            _sync_delegation_state(conn, ledger.read(conn, execution_id))
+                            continue
+                        pending = hermes_task_recovery.pending(conn, row)
+                        if pending is not None and pending['request_id'] == cue['request_id']:
+                            now = time.time()
+                            if (pending['next_check_at'] <= now + hermes_task_recovery.START_CHECK_INTERVAL
+                                    and time.monotonic() - recovery_started_at < 3):
+                                time.sleep(max(0, pending['next_check_at'] - now))
+                                continue  # Observe a quick native start without waiting for the next scan.
+                    except Exception:
+                        logger.exception('Hermes task recovery probe failed execution=%s', execution_id)
+                    leaving_recovery_probe = True
+                    return  # Retain the durable input and the queued wake for the next check.
             if row['state'] == 'manual' and not retry_manual:
+                leaving_recovery_probe = True
                 return
             manual_attempt = retry_manual and row['state'] == 'manual'
             retry_manual = False
@@ -525,7 +645,8 @@ def _watch(execution_id, *, retry_manual=False):
                 from . import hermes_delegations
                 if (hermes_delegations.waiting(conn, row) or
                         (hermes_delegations.cycle(conn, row) and
-                         (row['cancel_reason'] or not hermes_delegations.owned(conn, row)))):
+                         (row['cancel_reason'] or (not hermes_delegations.owned(conn, row)
+                          and not hermes_task_recovery.current_admission(conn, row))))):
                     changed = hermes_delegations.poll(conn, row, client)
                     row = ledger.read(conn, execution_id)
                     _sync_delegation_state(conn, row)
@@ -592,9 +713,16 @@ def _watch(execution_id, *, retry_manual=False):
     finally:
         if client:
             client.close()
-        conn.close()
         with _lock:
             _workers.discard(execution_id)
+        try:
+            if leaving_recovery_probe and not wake._shutting_down.is_set():
+                # HTTP can adopt while this worker is leaving. Check after unregistering.
+                current = ledger.read(conn, execution_id)
+                if current is not None and current['state'] == 'running' and hermes_task_recovery.current_admission(conn, current):
+                    _start_worker(execution_id)
+        finally:
+            conn.close()
 
 
 def _start_worker(execution_id, *, retry_cleanup=False, retry_manual=False):

@@ -113,18 +113,57 @@ def main():
         page.screenshot(path=str(Path(tempfile.gettempdir()) / 'member-name-edit-mobile.png'))
         field.press('Escape')
         page.locator('#pj-members-add').click()
-        page.wait_for_function('document.querySelectorAll("#member-picker-list input[type=checkbox]").length === 6')
-        assert page.locator('#member-picker-list input:disabled:checked').count() == 4
-        assert '已加入项目' in page.locator('#member-picker-list').inner_text()
+        page.wait_for_function('document.querySelectorAll("#member-picker-list input[type=checkbox]").length === 2')
         assert page.locator('#member-picker-join').is_disabled()
         page.locator('#member-picker-list input:not(:disabled)').first.check()
         assert page.locator('#member-picker-join').is_enabled()
         page.locator('#member-picker-close').click()
         state['all_joined'] = True
         page.locator('#pj-members-add').click()
-        page.wait_for_function('document.querySelectorAll("#member-picker-list input:disabled:checked").length === 6')
+        page.get_by_text('暂无可加入的 Bot，可创建 profile 或刷新列表。', exact=True).wait_for()
+        assert page.locator('#member-picker-list input[type=checkbox]').count() == 0
         assert page.locator('#member-picker-join').is_disabled()
         assert len(scans) == 2 and all('project=p' in url for url in scans)
+        page.locator('#member-picker-close').click()
+
+        # A held relay request must leave both the roster and the inline editor usable.
+        held = []
+        def remote_status(route):
+            if '/remote-slow/' in route.request.url:
+                held.append(route)
+            else:
+                route.fulfill(json={'work_session_exists': False, 'workspace': {
+                    'valid': True, 'path': '/fixture/projects/p', 'head': '12ab34cd' * 5, 'branch': 'master'}})
+        page.route('**/remote-work-session', remote_status)
+        for profile in ('remote-slow', 'remote-fast'):
+            members.append({**members[0], 'profile': profile, 'display_name': profile,
+                            'remote_workspace': True, 'workspace': {'valid': False, 'error': '远程工作区待准备'},
+                            'bot_id': len(members) + 100, 'work_session_exists': None, 'remote_session_pending': True})
+        with page.expect_request('**/remote-slow/remote-work-session'):
+            page.locator('#pj-members-refresh').click()
+        slow = page.locator('.project-member-card[data-profile="remote-slow"]')
+        fast = page.locator('.project-member-card[data-profile="remote-fast"]')
+        fast.get_by_text('暂无远程工作会话', exact=True).wait_for()
+        assert fast.get_by_text('/fixture/projects/p', exact=True).is_visible()
+        assert fast.get_by_role('button', name='准备远程工作区').is_visible()
+        assert not slow.get_by_text('E:/sample', exact=True).count()
+        assert slow.get_by_text('正在查询远程工作会话…', exact=True).is_visible()
+        assert page.locator('.project-member-card').count() == 4
+        assert page.locator('.project-member-card[data-profile="default"] .remote-session-status').count() == 0
+        slow.locator('.member-name-edit').click()
+        draft = slow.locator('.member-name-input')
+        draft.fill('未保存的名字')
+        held.pop().fulfill(json={'work_session_exists': True})
+        slow.get_by_text('已有远程工作会话', exact=True).wait_for()
+        assert draft.input_value() == '未保存的名字' and draft.evaluate('el => el === document.activeElement')
+        assert slow.locator('.reset-session').is_enabled()
+        draft.press('Escape')
+        with page.expect_request('**/remote-slow/remote-work-session'):
+            page.locator('#pj-members-refresh').click()
+        slow.get_by_text('正在查询远程工作会话…', exact=True).wait_for()
+        held.pop().fulfill(status=503, json={'detail': 'offline'})
+        slow.get_by_text('远程工作会话状态未知，可刷新重试', exact=True).wait_for()
+        assert slow.locator('.reset-session').is_disabled()
         assert not errors, errors
         browser.close()
     print('Member identity browser checks passed')

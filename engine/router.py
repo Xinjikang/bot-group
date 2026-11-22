@@ -20,7 +20,7 @@ import re
 import sqlite3
 import time
 
-from . import db, wake
+from . import db, topic_dispatch, wake
 from .mentions import parse_mentions
 from .delivery import effective_need_reply
 
@@ -146,16 +146,18 @@ def _thread_round(conn: sqlite3.Connection, thread_id: int) -> int:
 
 def _insert_inbox_rows(
     conn: sqlite3.Connection, message_id: int, profiles: list[str], project: str = ""
-) -> None:
+) -> list[str]:
     """给这些 profile 插 pending 未读行。
 
     按项目的 project_members.active 状态筛选，避免为停用成员积压未读消息。
     """
-    for p in _active_profiles(conn, profiles, project):
+    active = _active_profiles(conn, profiles, project)
+    for p in active:
         conn.execute(
             "INSERT INTO inbox (message_id, profile, status) VALUES (?, ?, 'pending')",
             (message_id, p),
         )
+    return active
 
 
 def _is_ack_message(text: str) -> bool:
@@ -288,26 +290,29 @@ def _round_members(conn: sqlite3.Connection, thread_id: int) -> list[str]:
     return others
 
 
-def _round_spoken(conn: sqlite3.Connection, thread_id: int, round_no: int, profile: str) -> bool:
+MAX_MESSAGE_ID = (1 << 63) - 1
+
+
+def _round_spoken(conn: sqlite3.Connection, thread_id: int, round_no: int, profile: str, through_id: int = MAX_MESSAGE_ID) -> bool:
     """profile 在第 round_no 轮是否已独立发言（parent_id IS NULL 且 round=round_no）。"""
     n = conn.execute(
         "SELECT COUNT(*) AS n FROM messages "
-        "WHERE thread_id=? AND sender=? AND round=? AND parent_id IS NULL",
-        (thread_id, profile, round_no),
+        "WHERE thread_id=? AND sender=? AND round=? AND parent_id IS NULL AND id<=?",
+        (thread_id, profile, round_no, through_id),
     ).fetchone()["n"]
     return n > 0
 
 
-def _edge_responded(conn: sqlite3.Connection, msg_id: int, profile: str) -> bool:
+def _edge_responded(conn: sqlite3.Connection, msg_id: int, profile: str, through_id: int = MAX_MESSAGE_ID) -> bool:
     """@ 边 (msg_id→profile) 是否已回应：存在 parent_id=msg_id 且 sender=profile 的消息。"""
     n = conn.execute(
-        "SELECT COUNT(*) AS n FROM messages WHERE parent_id=? AND sender=?",
-        (msg_id, profile),
+        "SELECT COUNT(*) AS n FROM messages WHERE parent_id=? AND sender=? AND id<=?",
+        (msg_id, profile, through_id),
     ).fetchone()["n"]
     return n > 0
 
 
-def _round_all_pass(conn: sqlite3.Connection, thread_id: int, round_no: int, members: list[str]) -> bool:
+def _round_all_pass(conn: sqlite3.Connection, thread_id: int, round_no: int, members: list[str], through_id: int) -> bool:
     """本轮所有 bot 成员都弃权或独立发言是 pass（user 不算，发起者不参与判定）。"""
     for p in members:
         if db.is_builtin_user(p):
@@ -317,8 +322,8 @@ def _round_all_pass(conn: sqlite3.Connection, thread_id: int, round_no: int, mem
             continue  # 弃权算 pass
         msg = conn.execute(
             "SELECT content FROM messages "
-            "WHERE thread_id=? AND sender=? AND round=? AND parent_id IS NULL ORDER BY id LIMIT 1",
-            (thread_id, p, round_no),
+            "WHERE thread_id=? AND sender=? AND round=? AND parent_id IS NULL AND id<=? ORDER BY id LIMIT 1",
+            (thread_id, p, round_no, through_id),
         ).fetchone()
         if msg is None:
             return False  # 还没发言，不算全员 pass
@@ -334,11 +339,15 @@ def _dfs_subtree(
     round_no: int,
     depth: int,
     skipped: set[str],
+    through_id: int,
+    active_members: set[str] | None = None,
 ) -> dict | None:
     """从 msg 的 @ 边 DFS 找第一个未回应的接话位。
 
     depth = 当前消息的深度（独立发言=0，接话=1..4）。depth >= MAX_DEPTH 剪枝。
     返回 {profile, parent_id, round, depth} 或 None。
+    active_members：本轮可唤醒成员（req#169 缺陷②：已停用成员不产生发言位——
+    @ 已停用成员等同无 @ 边，自动跳过不等超时；历史发言保留可追溯）。
     """
     if depth >= MAX_DEPTH:
         return None  # 深度到顶，剪枝
@@ -349,14 +358,15 @@ def _dfs_subtree(
         mentions = [str(m) for m in json.loads(msg["mentions"] or "[]")]
     except (TypeError, ValueError):
         mentions = []
-    members = set(_thread_members(conn, thread_id))
+    if active_members is None:
+        active_members = set(_round_members(conn, thread_id))
     for x in mentions:
-        if db.is_builtin_user(x) or x not in members:
-            continue  # 引擎不唤醒 user
+        if db.is_builtin_user(x) or x not in active_members:
+            continue  # 引擎不唤醒 user；停用/非成员不产生发言位
         slot = f"e:{msg_id}:{x}"
         if slot in skipped:
             continue
-        if not _edge_responded(conn, msg_id, x):
+        if not _edge_responded(conn, msg_id, x, through_id):
             # req#56 点2：原 @ 者声明「无需回复」（need_reply=0）→ 该 @ 边不产生
             # 发言位，被 @ 者不发言也不阻塞 turn（自动跳过，不等超时）。
             # need_reply=1（默认）仍产生发言位，被 @ 者必须实质回应。
@@ -365,30 +375,41 @@ def _dfs_subtree(
             return {"profile": x, "parent_id": msg_id, "round": round_no, "depth": depth + 1}
         # x 已接话，DFS x 的接话消息的子树
         x_msg = conn.execute(
-            "SELECT id FROM messages WHERE parent_id=? AND sender=? ORDER BY id LIMIT 1",
-            (msg_id, x),
+            "SELECT id FROM messages WHERE parent_id=? AND sender=? AND id<=? ORDER BY id LIMIT 1",
+            (msg_id, x, through_id),
         ).fetchone()
         if x_msg:
-            sub = _dfs_subtree(conn, thread_id, x_msg["id"], round_no, depth + 1, skipped)
+            sub = _dfs_subtree(conn, thread_id, x_msg["id"], round_no, depth + 1, skipped,
+                               through_id, active_members)
             if sub:
                 return sub
     return None
 
 
-def settle_thread(conn, thread_id):
+def settle_thread(conn, thread_id, *, through_id=None):
     """Pause automatic discussion; keep the topic available for user messages."""
     conn.execute(
         "UPDATE threads SET status='settled',turn_profile='',turn_parent_id=NULL,turn_wake_at='' "
         "WHERE id=? AND status!='closed'",
         (thread_id,),
     )
+    if through_id is None:
+        conn.execute("DELETE FROM topic_dispatch WHERE thread_id=?", (thread_id,))
     conn.execute("UPDATE inbox SET status='expired' WHERE status='pending' AND message_id IN "
-                 "(SELECT id FROM messages WHERE thread_id=?)", (thread_id,))
+                 "(SELECT id FROM messages WHERE thread_id=? AND id<=?)",
+                 (thread_id, MAX_MESSAGE_ID if through_id is None else through_id))
+    # req#168：话题收口时，从未提交的离线点名标 offline_expired——
+    # 显示「成员离线，未投递」，收口保持收口（用户重新点名=新 @ 边）。
+    from . import relay
+    settle_ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM messages WHERE thread_id=? AND id<=?",
+        (thread_id, MAX_MESSAGE_ID if through_id is None else through_id)).fetchall()]
+    relay.expire_mentions(conn, message_ids=settle_ids)
     conn.execute("UPDATE wake_jobs SET status='done',ended_at=?,detail='topic settled' "
                  "WHERE thread_id=? AND kind='chat' AND status='queued'", (db.now_iso(), thread_id))
 
 
-def _next_speaker(conn: sqlite3.Connection, thread_id: int) -> dict | None:
+def _next_speaker(conn: sqlite3.Connection, thread_id: int, through_id: int = MAX_MESSAGE_ID) -> dict | None:
     """从开场白 DFS，找第一个「该发言但还没发言」的发言位。
 
     返回 {profile, parent_id, round, depth} 或 None（None=收口：全员 pass/弃权）。
@@ -406,7 +427,7 @@ def _next_speaker(conn: sqlite3.Connection, thread_id: int) -> dict | None:
     if current and current["turn_profile"]:
         p, parent = current["turn_profile"], current["turn_parent_id"]
         slot = f"e:{parent}:{p}" if parent is not None else f"r:{cur_round}:{p}"
-        responded = _edge_responded(conn, parent, p) if parent is not None else _round_spoken(conn, thread_id, cur_round, p)
+        responded = _edge_responded(conn, parent, p, through_id) if parent is not None else _round_spoken(conn, thread_id, cur_round, p, through_id)
         if p in members and not db.is_builtin_user(p) and slot not in skipped and not responded:
             depth = 0
             if parent is not None:
@@ -415,35 +436,38 @@ def _next_speaker(conn: sqlite3.Connection, thread_id: int) -> dict | None:
             return {"profile": p, "parent_id": parent, "round": cur_round, "depth": depth}
 
     round_no = max(1, cur_round)
+    active_members = set(members)  # req#169 缺陷②：DFS @ 边只认可唤醒成员
     while round_no <= cur_round + 200:  # 防死循环上限
         # User interjections are handled after the active turn, before resuming members.
         for message in conn.execute(
-            "SELECT id,depth FROM messages WHERE thread_id=? AND sender='user' AND round=? ORDER BY id",
-            (thread_id, round_no),
+            "SELECT id,depth FROM messages WHERE thread_id=? AND sender='user' AND round=? AND id<=? ORDER BY id",
+            (thread_id, round_no, through_id),
         ).fetchall():
-            reply = _dfs_subtree(conn, thread_id, message["id"], round_no, message["depth"], skipped)
+            reply = _dfs_subtree(conn, thread_id, message["id"], round_no, message["depth"], skipped,
+                                 through_id, active_members)
             if reply:
                 return reply
         for p in members:
             slot = f"r:{round_no}:{p}"
             if slot in skipped:
                 continue
-            if not _round_spoken(conn, thread_id, round_no, p):
+            if not _round_spoken(conn, thread_id, round_no, p, through_id):
                 if db.is_builtin_user(p):
                     continue  # 不唤醒 user（人主动发言，不阻塞轮次）
                 return {"profile": p, "parent_id": None, "round": round_no, "depth": 0}
             # p 已独立发言，DFS 它的子树（@ 边）
             p_msg = conn.execute(
                 "SELECT id FROM messages "
-                "WHERE thread_id=? AND sender=? AND round=? AND parent_id IS NULL ORDER BY id LIMIT 1",
-                (thread_id, p, round_no),
+                "WHERE thread_id=? AND sender=? AND round=? AND parent_id IS NULL AND id<=? ORDER BY id LIMIT 1",
+                (thread_id, p, round_no, through_id),
             ).fetchone()
             if p_msg:
-                sub = _dfs_subtree(conn, thread_id, p_msg["id"], round_no, 0, skipped)
+                sub = _dfs_subtree(conn, thread_id, p_msg["id"], round_no, 0, skipped,
+                                   through_id, active_members)
                 if sub:
                     return sub
         # 本轮所有成员独立发言完（或 user 跳过）
-        if _round_all_pass(conn, thread_id, round_no, members):
+        if _round_all_pass(conn, thread_id, round_no, members, through_id):
             return None  # 全员 pass/弃权 → 收口
         round_no += 1
     return None
@@ -625,7 +649,7 @@ def route_message(
     need_reply: int = 1,
     execution: dict | None = None,
 ) -> dict:
-    """落一条消息并完成 inbox 分发 + 唤醒入队。
+    """保存消息与 inbox；话题登记后台调度，点对点直接登记唤醒。
 
     返回 {message_id, mentions, inbox_profiles, wake: [(profile, kind, trigger)]}。
     project：消息归属项目（点对点由前端传；话题消息由调用方从 thread 取）。
@@ -633,9 +657,26 @@ def route_message(
     被 @ 者可静默标已读、窄闸门豁免。
     """
     started = time.perf_counter()
+    from . import slow_send_diag
+    diag_on = slow_send_diag.enabled()  # 开关只读一次；未启用零埋点开销
+    if diag_on:
+        slow_send_diag.defer_on()  # 事务内事件进内存缓冲，锁外统一落盘
+    d0 = slow_send_diag.now_pair() if diag_on else None  # S3 起点（wall+thread_cpu 成对）
+    d4 = d5 = d6 = None  # S4/S5、S5/S6、S6/S7 分界（逐步取样，每条合法路径有定义）
     if not conn.in_transaction:
-        conn.execute("BEGIN IMMEDIATE")
+        if diag_on:  # 锁申请（尚未取得；取得后另记 is_begin）
+            slow_send_diag.txn_request(conn)
+        try:
+            conn.execute("BEGIN IMMEDIATE")  # S3：写锁申请→取得
+        except Exception:
+            if diag_on:  # 申请失败未取得：只记 failed，绝不记持有（is_begin）
+                slow_send_diag.txn_end(conn, "failed")
+                slow_send_diag.defer_flush()  # 事务未开启：缓冲立即可落盘
+            raise
+        if diag_on:  # 实际取得锁（持有区间起点，排除申请等待）
+            slow_send_diag.txn_begin(conn)
     locked = time.perf_counter()
+    d3 = slow_send_diag.now_pair() if diag_on else None
     silent = text is None
     skip = silent or (not attachment_ids and _is_ack_message(text))
     if silent and (sender_type != "bot" or thread_id is None):
@@ -688,6 +729,8 @@ def route_message(
         # 🔴 归零点必须先 commit 再报错：报错会跳过末尾 commit 触发事务回滚，
         # 若不显式提交，marker 不落库 → 归零失效 → 这对 bot 永久锁死。
         conn.commit()
+        if diag_on:
+            slow_send_diag.txn_end(conn, "commit")
         logger.info("互@回环断链：%s 与 %s 已互@满 %d 轮，拒绝第 7 条消息（不投递不通知用户，已归零）",
                     sender, other, PINGPONG_MAX_ROUNDS)
         raise RouteError(PINGPONG_ERR_MSG, 400)
@@ -714,12 +757,14 @@ def route_message(
             depth = 0
 
     if silent:
+        d4 = slow_send_diag.now_pair() if diag_on else None  # silent 路径同样有 S4/S5 分界
         skipped = _skipped(conn, thread_id)
         skipped.add(f"r:{round_no}:{sender}")
         conn.execute("UPDATE threads SET turn_skipped=? WHERE id=?",
                      (json.dumps(sorted(skipped)), thread_id))
         message_id = None
     else:
+        d4 = slow_send_diag.now_pair() if diag_on else None  # S4/S5 分界（消息插入前）
         cur = conn.execute(
             "INSERT INTO messages (project, ts, sender, sender_type, content, mentions, thread_id, parent_id, round, depth, need_reply) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -751,6 +796,7 @@ def route_message(
 
     wake_list: list[tuple[str, str, str]] = []  # (profile, kind, trigger)
 
+    recipients = []
     if thread_id is None:
         # 点对点 @：只给被 @ 者插行，即时唤醒（work）
         # req#57 根因C（self-mention 自污染）：bot 正文 @ 了自己时，mentions 会含 sender
@@ -773,31 +819,48 @@ def route_message(
         # pass 不插 inbox 行（免分发，防死循环）；实质发言给其他成员插行
         if not is_ack:
             recipients = [m for m in members if m != sender]
-            _insert_inbox_rows(conn, message_id, recipients, project)
+            recipients = _insert_inbox_rows(conn, message_id, recipients, project)
 
         # 更新 last_active_at + 隐藏话题有新消息自动展示（hidden 置回 0）
         conn.execute(
             "UPDATE threads SET last_active_at = ?, hidden = 0 WHERE id = ?", (ts, thread_id)
         )
 
-        # 树模型：计算下一个发言者（DFS），唤醒一个
-        nxt = _next_speaker(conn, thread_id)
-        if nxt is not None:
-            _set_turn(conn, thread_id, nxt["profile"], nxt["parent_id"], nxt["round"])
-            wake_list.append((nxt["profile"], "chat", "thread-open"))
-        else:
-            # 某轮全员 pass/弃权后暂停自动讨论，等待用户新消息。
-            settle_thread(conn, thread_id)
+        if diag_on:
+            d5 = slow_send_diag.now_pair()
+        topic_dispatch.schedule(conn, thread_id, message_id, consumes_turn=sender_type == "bot")
 
     prepared = time.perf_counter()
-    # Persist the message and its wake jobs atomically with one durable commit.
+    if diag_on and d5 is None:  # 点对点路径无树计算：S6 只含唤醒入队
+        d5 = slow_send_diag.now_pair()
+    # Direct mentions enqueue their wakes in the send transaction.
     enqueued = []
     for p, kind, trigger in wake_list:
         if wake.enqueue(conn, p, kind, trigger, message_id, thread_id=thread_id, project=project, commit=False):
             enqueued.append((p, kind, trigger))
     queued = time.perf_counter()
-    conn.commit()
+    d6 = slow_send_diag.now_pair() if diag_on else None  # S6/S7 分界（COMMIT 前）
+    conn.commit()  # S7：COMMIT
     finished = time.perf_counter()
+    if diag_on:
+        slow_send_diag.txn_end(conn, "commit")
+        d7 = slow_send_diag.now_pair()
+        slow_send_diag.step("S3", *slow_send_diag.diff_ms(d0, d3),
+                            conn_id=id(conn), message_id=message_id, thread_id=thread_id)
+        # S4=事务内前半（话题行/成员名单/提及校验/发言位/父消息查询）
+        slow_send_diag.step("S4", *slow_send_diag.diff_ms(d3, d4),
+                            conn_id=id(conn), message_id=message_id, thread_id=thread_id)
+        # S5=事务内中段（消息插入/执行记录/收件箱分发/活跃时间更新）
+        slow_send_diag.step("S5", *slow_send_diag.diff_ms(d4, d5),
+                            conn_id=id(conn), message_id=message_id, thread_id=thread_id)
+        # S6=事务内后段（话题调度待办或点对点唤醒入队）
+        slow_send_diag.step("S6", *slow_send_diag.diff_ms(d5, d6),
+                            conn_id=id(conn), message_id=message_id, thread_id=thread_id)
+        slow_send_diag.step("S7", *slow_send_diag.diff_ms(d6, d7),
+                            conn_id=id(conn), message_id=message_id, thread_id=thread_id)
+        slow_send_diag.defer_flush()  # 事务已提交：锁外落盘缓冲
+    if thread_id is not None:
+        topic_dispatch.changed.set()
     if sender_type == 'user' or finished - started >= .1:
         logger.info('message.persist message_id=%s thread_id=%s lock_ms=%.1f prepare_ms=%.1f '
                     'enqueue_ms=%.1f commit_ms=%.1f total_ms=%.1f',
@@ -807,6 +870,6 @@ def route_message(
     return {
         "message_id": message_id,
         "mentions": mentions,
-        "inbox_profiles": [p for p, _, _ in wake_list],
+        "inbox_profiles": recipients,
         "wake": enqueued,
     }

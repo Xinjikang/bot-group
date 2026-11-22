@@ -233,6 +233,9 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(names, {'coco'})
 
     def test_register_and_reuse_bot(self):
+        from engine.profile_config import _yaml
+        config = self.hroot / 'profiles' / 'alice' / 'config.yaml'
+        config.write_text('model: chosen\nother: &view\n  theme: light\ndisplay: *view\n', encoding='utf-8')
         # 未绑定 → 注册新 Bot
         r1 = self.client.post("/bots/register", json={
             "host_type": "hermes", "profile": "alice",
@@ -240,6 +243,12 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(r1.status_code, 200)
         body1 = r1.json()
         self.assertTrue(body1["created"])
+        _, settings = _yaml(config.read_bytes())
+        self.assertEqual(settings['model'], {'default': 'chosen', 'switch_context_confirm_tokens': 0})
+        self.assertEqual(settings['display'], {'theme': 'light', 'busy_input_mode': 'steer'})
+        self.assertEqual(settings['other'], {'theme': 'light'})
+        custom = b'model: chosen\ndisplay:\n  busy_input_mode: queue\n'
+        config.write_bytes(custom)
         # 已绑定 → 复用（created=False，不覆盖 display_name）
         r2 = self.client.post("/bots/register", json={
             "host_type": "hermes", "profile": "alice",
@@ -247,6 +256,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(r2.status_code, 200)
         body2 = r2.json()
         self.assertFalse(body2["created"])
+        self.assertEqual(config.read_bytes(), custom)
         self.assertEqual(body2["bot_id"], body1["bot_id"])
         conn = db.get_connection()
         try:
@@ -264,6 +274,18 @@ class DiscoveryTests(unittest.TestCase):
         ):
             r = self.client.post("/bots/register", json=bad)
             self.assertEqual(r.status_code, 400, f"{bad} 应 400")
+
+    def test_invalid_profile_settings_leave_first_registration_retryable(self):
+        path = self.hroot / 'profiles' / 'bob' / 'config.yaml'
+        original = b'model: chosen\ndisplay: invalid\n'
+        path.write_bytes(original)
+        body = {'host_type': 'hermes', 'profile': 'bob', 'config_root': str(self.hroot)}
+        self.assertEqual(self.client.post('/bots/register', json=body).status_code, 400)
+        self.assertEqual(path.read_bytes(), original)
+        path.write_bytes(b'model: chosen\n')
+        response = self.client.post('/bots/register', json=body)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()['created'])
 
     def test_register_with_project_joins(self):
         conn = db.get_connection()

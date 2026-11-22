@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -34,18 +35,34 @@ def get_connection() -> sqlite3.Connection:
     transaction = current.get()
     if transaction is not None:
         return transaction.lease()
-    path = db_path()
+    from . import slow_send_diag
+    diag_on = slow_send_diag.enabled()  # 开关只读一次；未启用零埋点开销
+    t1 = slow_send_diag.now_pair() if diag_on else None
+    path = db_path()  # C1 配置读取（.env/环境/命令行）
+    t2 = slow_send_diag.now_pair() if diag_on else None
     parent = os.path.dirname(path)
     if parent:
-        os.makedirs(parent, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30)
+        os.makedirs(parent, exist_ok=True)  # C2 目录访问
+    t3 = slow_send_diag.now_pair() if diag_on else None
+    conn = sqlite3.connect(path, timeout=30)  # C3 connect 打开
+    t4 = slow_send_diag.now_pair() if diag_on else None
     try:
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA busy_timeout=30000")  # C4 两条 PRAGMA
         conn.execute("PRAGMA foreign_keys=ON")
     except Exception:
         conn.close()
         raise
+    if diag_on:
+        t5 = slow_send_diag.now_pair()
+        slow_send_diag.step("C1", *slow_send_diag.diff_ms(t1, t2),
+                            thread_id=threading.get_ident())
+        slow_send_diag.step("C2", *slow_send_diag.diff_ms(t2, t3),
+                            thread_id=threading.get_ident())
+        slow_send_diag.step("C3", *slow_send_diag.diff_ms(t3, t4),
+                            thread_id=threading.get_ident())
+        slow_send_diag.step("C4", *slow_send_diag.diff_ms(t4, t5),
+                            thread_id=threading.get_ident())
     return conn
 
 
@@ -98,6 +115,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(schema_path.read_text(encoding="utf-8"))
     from . import hermes_gateway_ledger
     hermes_gateway_ledger.initialize(conn)
+    from . import relay
+    relay.initialize(conn)
     from . import hermes_approvals
     conn.executescript(hermes_approvals.SCHEMA)
     _migrate_add_column(conn, 'hermes_executions', 'signing_generation', 'INTEGER')
@@ -233,7 +252,20 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE projects SET display_name=name WHERE display_name=''")
     conn.execute("UPDATE projects SET directory_mode=CASE WHEN COALESCE(worktree_root,'')='' "
                  "THEN 'shared' ELSE 'worktree' END WHERE directory_mode=''")
+    # req#171 模型修正：全局来源白名单（无成员维度）改为成员级绑定
+    # relay_source_bindings——旧全局表无法映射到成员，直接废弃清除。
+    conn.execute("DROP TABLE IF EXISTS source_ip_allowlist")
     conn.commit()
+    # req#173 双向接入：relay_nodes 补方向/拨号端点/切换态列（老库 ALTER；
+    # 新库由 relay.SCHEMA 的 CREATE TABLE IF NOT EXISTS 直接建齐）。
+    _migrate_add_column(conn, "relay_nodes", "direction", "TEXT NOT NULL DEFAULT 'listen'")
+    _migrate_add_column(conn, "relay_nodes", "dial_endpoint", "TEXT NOT NULL DEFAULT ''")
+    _migrate_add_column(conn, "relay_nodes", "proxy_port", "INTEGER NOT NULL DEFAULT 0")
+    _migrate_add_column(conn, "relay_nodes", "mcp_verify_state", "TEXT NOT NULL DEFAULT ''")
+    _migrate_add_column(conn, "relay_nodes", "mcp_verify_error", "TEXT NOT NULL DEFAULT ''")
+    _migrate_add_column(conn, "relay_nodes", "switch_state", "TEXT NOT NULL DEFAULT ''")
+    _migrate_add_column(conn, "relay_nodes", "switch_target", "TEXT NOT NULL DEFAULT ''")
+    _migrate_add_column(conn, "relay_nodes", "switch_error", "TEXT NOT NULL DEFAULT ''")
     from . import hermes_session_auth
     conn.executescript(hermes_session_auth.SCHEMA)
 

@@ -337,7 +337,7 @@ class DelegationTests(unittest.TestCase):
                                  bot={}, workdir='', model_args=[], trigger_msg_id=kwargs['trigger_msg_id'])
 
         with patch.object(wake, 'deliver', side_effect=deliver), \
-             patch.object(wake, '_finalize_injection_signal', return_value='direct signal') as signal, \
+             patch.object(wake, '_finalize_injection_signal', return_value=('direct signal', [])) as signal, \
              patch.object(gateway, '_start_worker'), \
              patch.object(gateway, 'connection', side_effect=AssertionError('Queue queried native gateway')):
             self.assertTrue(queue.process_one(self.conn))

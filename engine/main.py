@@ -19,12 +19,12 @@ import uuid
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket
 
 from . import db
 from . import config
 from .api import router_api, _resolve_identity, _admin_only
-from . import queue, scanner
+from . import queue, scanner, topic_dispatch
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 
@@ -86,24 +86,33 @@ async def _engine_lifespan(app: FastAPI):
     # SSE 跨线程投递：后台线程（reaper/心跳线程/queue worker）发事件要 threadsafe 切回主 loop
     from . import events
     events.set_loop(asyncio.get_running_loop())
+    from . import listen_control, relay_dialer
+    listen_control.restore_on_startup()
+    relay_dialer.restore_on_startup()
     from . import hermes_gateway
     hermes_gateway.recover()
 
     t_queue = threading.Thread(target=queue.run_forever, args=(stop_event,), daemon=True, name="queue-worker")
     t_scanner = threading.Thread(target=scanner.run_forever, args=(stop_event,), daemon=True, name="scanner")
+    t_topics = threading.Thread(target=topic_dispatch.run_forever, args=(stop_event,), daemon=True, name="topic-dispatch")
+    t_topics.start()
     t_queue.start()
     t_scanner.start()
     from . import project_hud
     t_hud = threading.Thread(target=project_hud.run_forever, args=(stop_event,), daemon=True, name='project-hud')
     t_hud.start()
-    logger.info("后台线程已启动：queue-worker + scanner")
+    logger.info("后台线程已启动：queue-worker + topic-dispatch + scanner")
 
     try:
         yield
     finally:
         wake._shutting_down.set()
         await asyncio.to_thread(hermes_gateway.close_connections, 5)
+        from . import relay_server
+        await asyncio.to_thread(relay_server.close_all)
         stop_event.set()
+        topic_dispatch.changed.set()
+        await asyncio.to_thread(t_topics.join)
         from . import hud_runtime
         await asyncio.to_thread(hud_runtime.cancel_active)
         await asyncio.to_thread(t_queue.join, 5)
@@ -131,6 +140,59 @@ app = FastAPI(title="group-engine", version="0.1.0", lifespan=lifespan)
 app.include_router(router_api)
 from .ui_presence import router as ui_presence_router
 app.include_router(ui_presence_router)
+
+
+# req#171 第一层：ASGI 级来源拦截（scope.type in http/websocket 统一处理，
+# 不用 @app.middleware("http")——WS 不走 http 中间件）。跑在身份解析之前，
+# 只能校「来源 IP 属于已绑定并集」或回环；member 级严格核对在第二层
+# （access.resolve_identity 与 relay 握手）。只读 scope["client"]（socket
+# peer），不读任何 X-Forwarded-For/X-Real-IP 转发头——伪造头不能获得
+# 绑定资格或本机权限。新邀请只对 /relay/ws 的握手开通临时准入。
+class SourceBindingMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            from . import ip_allowlist
+            from fastapi.responses import JSONResponse
+            peer = scope.get("client")
+            host = peer[0] if peer else None
+            conn = db.get_connection()
+            try:
+                allowed = ip_allowlist.source_allowed(conn, host)
+                if (not allowed and ip_allowlist._normalize(host or "")
+                        and scope["type"] == "websocket"
+                        and scope.get("path") == "/relay/ws"):
+                    # Only an open administrator invitation lets an unbound peer
+                    # reach the hello exchange. The endpoint still verifies the token.
+                    from . import relay
+                    allowed = relay.invitation_open(conn)
+            finally:
+                conn.close()
+            if not allowed:
+                if scope["type"] == "http":
+                    response = JSONResponse(
+                        {"detail": "来源 IP 未绑定，访问被拒绝"},
+                        status_code=403, headers={"Cache-Control": "no-store"})
+                    await response(scope, receive, send)
+                    return
+                await send({"type": "websocket.close", "code": 1008,
+                            "reason": "来源 IP 未绑定，访问被拒绝"})
+                return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(SourceBindingMiddleware)
+
+
+# 远程 relay WS 服务端入口（req#168）：ECS 插件主动出站 WSS 连本端点。
+# req#171：握手在 relay_server.relay_ws 内完成成员级第二层核对
+# （verify_credential 通过后 peer IP ∈ 该成员绑定集合，防交换来源冒用）。
+@app.websocket("/relay/ws")
+async def relay_ws_endpoint(websocket: WebSocket):
+    from . import relay_server
+    await relay_server.relay_ws(websocket)
 
 # 静态前端挂在 /app（访问 http://127.0.0.1:8180/app/）
 if _FRONTEND_DIR.exists():
@@ -212,7 +274,11 @@ def main(argv=None) -> None:
     _setup_logging()
     server = ManagedServer(uvicorn.Config(app, host=config.host(args.host),
         port=config.port(args.port), log_level='info',
-        timeout_graceful_shutdown=10))
+        timeout_graceful_shutdown=10,
+        # req#171：来源判定只信 socket peer——显式关闭转发头解析
+        # （proxy_headers=False）；FORWARDED_ALLOW_IPS 显式 127.0.0.1
+        # （非 *），伪造 X-Forwarded-For 不能改写 client 地址。
+        proxy_headers=False, forwarded_allow_ips='127.0.0.1'))
     app.state.server = server
     server.run()
 

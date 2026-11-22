@@ -260,6 +260,7 @@ body::before{
 .msg-content .mention{color:var(--cyan);font-weight:600}
 .msg-closed-hl .msg-content{border-left:3px solid var(--ok);background:rgba(75,200,138,.07)}
 /* req#41 task#78：撤回态样式 */
+.recovery-notice-state{margin:4px 0 0;padding:4px 8px;border-left:2px solid var(--border);font-size:12px;color:var(--fg-2);overflow-wrap:anywhere}
 .msg-retracted .msg-content{opacity:.55;font-style:italic;border-left:3px solid var(--fg-3)}
 .tag-retract{
   font-size:10px;color:var(--fg-3);border:1px solid var(--border);
@@ -354,13 +355,16 @@ body::before{
   background:rgba(17,26,46,.9);
 }
 #composer textarea{
-  flex:1;resize:none;height:66px;border:1px solid var(--border);border-radius:var(--radius);
-  padding:11px 15px;font:inherit;font-size:13.5px;outline:none;line-height:1.6;
-  background:rgba(10,14,26,.6);color:var(--fg);transition:.2s;
+  flex:1;resize:none;height:66px;min-height:66px;border:1px solid var(--border);border-radius:var(--radius);
+  padding:11px 15px;font:inherit;font-size:13.5px;outline:none;line-height:1.5;
+  background:rgba(10,14,26,.6);color:var(--fg);transition:border-color .2s,box-shadow .2s;
+  overflow-y:auto;overscroll-behavior-y:contain;scrollbar-width:none;
 }
 #composer textarea:focus{border-color:var(--accent);box-shadow:var(--glow)}
 #composer textarea::-webkit-scrollbar{width:0}
-#composer textarea{overflow:hidden;line-height:1.5}
+#composer textarea.composer-measure{
+  position:absolute;top:0;left:0;height:0;min-height:0;visibility:hidden;overflow:hidden;
+}
 #composer button{
   border:1px solid var(--accent);border-radius:var(--radius);padding:0 26px;cursor:pointer;
   font-size:14px;letter-spacing:3px;font-weight:700;color:var(--accent-2);
@@ -738,6 +742,107 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 #app-settings-menu button[hidden]{display:none}
 #app-settings-menu button:hover{background:var(--hover)}
 #app-settings-menu button:focus-visible,#btn-settings:focus-visible,#app-update-notice:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+#relay-nodes-dialog{width:680px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);overflow:auto;box-sizing:border-box}
+#relay-nodes-dialog .dlg-btns{position:sticky;bottom:-26px;margin:18px -26px -26px;padding:12px 26px 26px;background:var(--card);box-shadow:0 -1px 0 var(--border-soft);z-index:2}
+.relay-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0}
+.relay-toolbar .profile-help{flex:1;min-width:140px;margin:0}
+#relay-nodes-dialog dialog{width:min(500px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;overflow-wrap:anywhere;box-sizing:border-box}
+#relay-join-dialog .relay-direction-choices{margin:12px 0}
+#relay-join-status[data-error="true"]{color:var(--danger)}
+#relay-node-list{display:flex;flex-direction:column;gap:8px;max-height:56dvh;overflow:auto;margin:6px 0}
+.relay-listen{margin:10px 0 12px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--card)}
+.relay-listen-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.relay-listen h4{margin:0;font-size:13px}
+.relay-listen .profile-help{margin:6px 0 0}
+.relay-listen-controls{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:8px}
+.relay-listen-controls .relay-field{flex:1 1 220px}
+.relay-listen-controls>button{flex:0 0 auto;padding:8px 12px;border-radius:8px}
+#relay-listen-url-row{margin-top:8px}
+#relay-listen-url-row input{width:100%}
+#relay-listen-status{margin-top:6px}
+#relay-listen button:disabled{opacity:.5;cursor:not-allowed}
+#relay-listen-status[data-error="true"],#relay-listen-summary[data-error="true"],#relay-listen-sources[data-error="true"]{color:var(--danger)}
+.relay-direction{margin:10px 0 12px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--card)}
+.relay-direction-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.relay-direction h4{margin:0;font-size:13px}
+.relay-direction h5{margin:12px 0 4px;font-size:12px}
+.relay-direction>.profile-help{margin:6px 0}
+.relay-direction-choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}
+.relay-direction-choices>button{display:flex;flex-direction:column;align-items:flex-start;gap:3px;min-width:0;padding:9px 10px;border:1px solid var(--border);border-radius:9px;background:var(--bg);color:var(--fg);text-align:left;cursor:pointer}
+.relay-direction-choices>button.active{border-color:var(--accent);background:rgba(201,162,75,.10)}
+.relay-direction-choices>button:disabled{opacity:.55;cursor:not-allowed}
+.relay-direction-title{font-size:12px;font-weight:600}
+.relay-direction-sub{font-size:11px;color:var(--fg-3);overflow-wrap:anywhere}
+.relay-direction-flag{font-size:11px;color:var(--accent-2)}
+.relay-direction-addresses{display:grid;gap:4px;margin-top:9px;font-size:12px;color:var(--fg-2)}
+.relay-direction-addresses>span{display:flex;gap:6px;flex-wrap:wrap;min-width:0;overflow-wrap:anywhere}
+.relay-stages{display:flex;gap:6px;list-style:none;margin:9px 0 0;padding:0;flex-wrap:wrap}
+.relay-stages li{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--fg-3);border:1px solid var(--border-soft);border-radius:999px;padding:3px 8px}
+.relay-stages li em{font-style:normal;font-size:10px}
+.relay-stages li.relay-stage-done{border-color:var(--accent);color:var(--accent-2)}
+.relay-stages li.relay-stage-current{border-color:var(--accent);color:var(--fg)}
+.relay-stages li.relay-stage-pending{opacity:.7}
+.relay-stages li.relay-stage-failed{border-color:var(--danger);color:var(--danger);background:rgba(229,72,77,.08)}
+#relay-direction-status,#relay-direction-failure{margin:7px 0 0}
+#relay-direction-status[data-error="true"],#relay-direction-failure[data-error="true"],#relay-pairing-status[data-error="true"]{color:var(--danger)}
+.relay-direction-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-top:8px}
+.relay-direction-actions button{font-size:12px;padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--fg);cursor:pointer}
+.relay-direction-actions button:hover:not(:disabled){border-color:var(--accent);color:var(--accent-2)}
+.relay-direction-actions button:disabled{opacity:.5;cursor:not-allowed}
+.relay-pairing{margin-top:10px;padding-top:8px;border-top:1px solid var(--border-soft)}
+.relay-pairing-line{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:6px}
+.relay-pairing-line .relay-field{flex:1 1 280px}
+.relay-pairing-line>button{flex:0 0 auto;padding:8px 12px;border-radius:8px}
+.relay-pairing-preview{margin-top:8px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg)}
+.relay-pairing-preview p{display:flex;gap:6px;flex-wrap:wrap;margin:3px 0;font-size:12px;overflow-wrap:anywhere}
+.relay-pairing-preview .relay-direction-actions{margin-top:6px}
+.relay-empty{padding:12px 0;margin:0}
+.relay-node{border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--card)}
+.relay-node-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.relay-node-name{min-width:0;overflow-wrap:anywhere;font-size:13px}
+.relay-badge{flex:0 0 auto;border:1px solid var(--border);border-radius:999px;padding:2px 8px;font-size:11px;color:var(--fg-2);white-space:nowrap}
+.relay-badge.online{border-color:var(--accent);color:var(--accent-2);background:rgba(201,162,75,.14)}
+.relay-badge.offline{border-color:var(--border);color:var(--fg-2)}
+.relay-badge.revoked{border-color:var(--danger);color:var(--danger);background:rgba(224,92,106,.10)}
+.relay-node-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 12px;margin:8px 0;font-size:12px;color:var(--fg-2)}
+.relay-node-meta>span{min-width:0;overflow-wrap:anywhere}
+.relay-key{color:var(--fg-3);margin-right:6px}
+.relay-node-source{margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft)}
+.relay-source-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.relay-source-title{font-size:12px;color:var(--fg-2)}
+.relay-source-head button,.relay-ip-add button{font-size:12px;padding:4px 8px;border-radius:7px;border:1px solid var(--border);background:var(--card);color:var(--fg);cursor:pointer}
+.relay-source-head button:hover:not(:disabled),.relay-ip-add button:hover:not(:disabled){border-color:var(--accent);color:var(--accent-2)}
+.relay-ip-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.relay-ip-chip{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border);border-radius:999px;padding:2px 5px 2px 9px;font-size:12px;font-family:Consolas,"Courier New",monospace;background:var(--bg);color:var(--fg)}
+.relay-ip-chip button{border:0;background:transparent;color:var(--fg-3);font-size:13px;line-height:1;padding:0 2px;cursor:pointer}
+.relay-ip-chip button:hover{color:var(--danger)}
+.relay-source-empty{color:var(--danger)}
+.relay-ip-add{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px}
+.relay-ip-add input{flex:1 1 150px;min-width:0;box-sizing:border-box;border:1px solid var(--border);border-radius:7px;padding:5px 8px;font:inherit;font-size:12px;background:var(--bg);color:var(--fg)}
+.relay-source-status{flex:1 1 100%;min-width:0;margin:2px 0 0}
+.relay-node-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:8px}
+.relay-node-actions button{font-size:12px;padding:5px 9px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--fg);cursor:pointer}
+.relay-node-actions button:hover:not(:disabled){border-color:var(--accent);color:var(--accent-2)}
+.relay-node-actions button:disabled{opacity:.5;cursor:wait}
+.relay-node-actions .relay-danger{color:var(--danger);border-color:rgba(224,92,106,.45)}
+.relay-register{margin-top:14px;padding-top:12px;border-top:1px solid var(--border-soft)}
+.relay-register h4,#relay-credential h4{margin:0 0 6px;font-size:13px}
+.relay-register-line{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-top:8px}
+.relay-field{display:flex;flex-direction:column;gap:4px;flex:1 1 180px;min-width:0;margin:0;font-size:12px;color:var(--fg-2)}
+.relay-field select,.relay-field input{width:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit;background:var(--card);color:var(--fg)}
+.relay-register-line>button{flex:0 0 auto;padding:8px 14px;border-radius:8px}
+#relay-register-gate,#relay-register-status{margin:6px 0 0}
+#relay-credential{margin-top:14px;padding:10px 12px;border:1px solid var(--accent);border-radius:10px;background:rgba(201,162,75,.08)}
+#relay-credential .profile-help[role="alert"]{color:var(--accent-2)}
+#relay-credential>label{display:block;margin:8px 0 4px;font-size:12px;color:var(--fg-2)}
+.relay-copy-row{display:flex;gap:8px;align-items:center}
+.relay-copy-row input{flex:1;min-width:0;box-sizing:border-box;font-family:Consolas,"Courier New",monospace;font-size:12px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--fg)}
+.relay-copy-row button{flex:0 0 auto;font-size:12px;padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--fg);cursor:pointer}
+.relay-node>form.relay-copy-row{margin:10px 0 4px}
+.relay-node>form.relay-copy-row>label{display:flex;flex:1;align-items:center;gap:8px;min-width:0;margin:0;white-space:nowrap}
+.relay-node>form.relay-copy-row>button{height:36px}
+#relay-nodes-status[data-error="true"],#relay-register-gate[data-error="true"],#relay-register-status[data-error="true"]{color:var(--danger)}
+@media (max-width:560px){.relay-node-meta{grid-template-columns:1fr}.relay-toolbar .profile-help{min-width:0;flex-basis:100%}.relay-register-line .relay-field{flex-basis:100%}.relay-register-line>button{width:100%}.relay-ip-add input{flex-basis:100%}.relay-ip-add button{flex:1 1 auto}.relay-listen-controls .relay-field{flex-basis:100%}.relay-listen-controls>button{width:100%}.relay-direction-choices{grid-template-columns:1fr}.relay-direction-actions{justify-content:flex-start}.relay-direction-actions button{flex:1 1 auto}.relay-pairing-line .relay-field{flex-basis:100%}.relay-pairing-line>button{width:100%}.relay-stages{gap:4px}.relay-stages li{padding:3px 6px}}
 @media(max-width:600px){#topbar-right{max-width:100%;flex-wrap:wrap}#topbar-user-name{max-width:90px}#app-update-notice{max-width:110px}}
 #conn{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg-2)}
 [data-theme="light"] #topbar{background:var(--card)}
@@ -894,6 +999,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
       <button id="btn-edit-policy" type="button" aria-haspopup="dialog" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6z"/><path d="m8 12 3 3 5-6"/></svg><span>智能审批策略</span></button>
       <button id="btn-restart" type="button" title="重启服务" aria-label="重启服务" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2.3 5.7"/></svg><span class="settings-label">重启服务</span></button>
       <button id="btn-engine-logs" type="button" aria-haspopup="dialog" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 12h8M8 17h5"/></svg><span>查看日志</span></button>
+      <button id="btn-relay-nodes" type="button" aria-haspopup="dialog"><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/></svg><span>远程节点</span></button>
       <button id="btn-about" type="button" aria-haspopup="dialog" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></svg><span>关于</span></button>
       </div>
       </div>
@@ -1434,6 +1540,7 @@ const S = {
   showHidden: false,      // 需求1.3：隐藏话题是否展开显示
   showArchived: false,    // req#76：任务面板「显示已归档」开关（开后拉全部需求含已归档）
   msgs: [],               // 当前视图消息
+  recoveryNotices: {},    // 独立于消息水位的续办提醒状态
   msgCache: {},           // thread_id -> messages（增量用）
   lastMsgId: 0,
   messageView: 0,
@@ -1462,8 +1569,10 @@ async function api(path, opts = {}) {
   if (res.status === 401 && !path.includes("/auth/")) { logout(); throw new Error("unauthorized"); }
   if (!res.ok) {
     let detail = res.statusText;
-    try { detail = (await res.json()).detail || detail; } catch {}
+    let payload;
+    try { payload = await res.json(); detail = payload.detail || detail; } catch {}
     const error = new Error(typeof detail === 'object' ? (detail.message || JSON.stringify(detail)) : detail);
+    if (/^\/relay\/(pairings|invitations)(\/|$)/.test(path)) error.pairing = payload;
     error.detail = detail;
     error.status = res.status;
     throw error;
@@ -1526,7 +1635,10 @@ async function connectSSE() {
   if (S.restarting || !S.isUserIdentity || S.sseAttempt !== attempt) return;
   const es = new EventSource("/events");
   S.es = es;
-  es.onopen = () => { setConn("connected"); loadThinking(); };
+  es.onopen = () => {
+    setConn("connected"); loadThinking();
+    if (!S.currentThread) refreshAfterMessageChange();
+  };
   es.onerror = () => setConn(es.readyState === EventSource.CLOSED ? "disconnected" : "connecting", "引擎断线重连中…");
   es.onmessage = (ev) => {
     let evt; try { evt = JSON.parse(ev.data); } catch { return; }
@@ -1571,6 +1683,11 @@ function handleEvent(evt) {
       }
       break;
     }
+    case "recovery.notice.changed":
+      if (!S.currentThread && (!S.currentProject || S.currentProject === evt.data?.project)) {
+        refreshAfterMessageChange(); loadInboxSummary();
+      }
+      break;
     case "thread.created":
     case "thread.closed":
     case "thread.updated": loadThreads(); break;
@@ -2244,9 +2361,11 @@ async function refreshMessages() {
     ? `/messages?thread_id=${S.currentThread}&since_id=0`
     : initial ? '/messages?limit=100' : `/messages?since_id=${S.lastMsgId}`;
   try {
-    const r = await api(messageProjectUrl(url));
+    const recovery = !S.currentThread && S.isUserIdentity;
+    const r = await api(messageProjectUrl(recovery ? `${url}&recovery_notices=1` : url));
     if (view !== S.messageView) return;
     const incoming = r.messages || [];
+    if (recovery) S.recoveryNotices = r.recovery_notices || {};
     if (S.currentThread) {
       S.msgs = incoming;
     } else {
@@ -2298,6 +2417,7 @@ async function markVisibleThreadRead(threadId, messages, view) {
 function resetMessageWindow() {
   globalThis.messageNavigation?.reset();
   S.messageView++;
+  S.recoveryNotices = {};
   S.messageRefreshPending = null;
   S.messagesReady = false;
   S.hasOlderMessages = false;
@@ -2473,7 +2593,7 @@ function renderSignature() {
     S.userDisplayName,
     S.hasOlderMessages, S.historyRequest === S.messageView, S.historyError,
     // Message fields can change without changing their stable DOM identity.
-    JSON.stringify(S.msgs),
+    JSON.stringify(S.msgs), JSON.stringify(S.recoveryNotices),
     // 话题可见性/状态（隐藏/收口/关闭影响分组与结论行）
     S.threads.filter(t => !t.hidden || S.showHidden)
       .map(t => [t.id, t.status, t.first_message_id ?? "", t.title,
@@ -2949,6 +3069,7 @@ function renderMsg(m, thinking = []) {
       <div class="msg-meta">
         <span class="sender">${esc(m.sender_type === "engine" ? "系统通知" : NAME_OF(m.sender))}</span>
         <span>${esc(fmtTs(m.ts))}</span>
+        ${m.sender === "user" && m.thread_id && !isClose && !failed.delivery_failed ? "<span>已发送</span>" : ""}
         ${threadTag}${atTag}${closeTag}
         ${S.isUserIdentity ? `<button type="button" class="msg-retract-btn" data-retract="${m.id}" title="撤回这条消息">撤回</button>` : ""}
       </div>
@@ -2957,6 +3078,17 @@ function renderMsg(m, thinking = []) {
   const meta = div.querySelector(".msg-meta");
   const messageBody = div.querySelector(".msg-body");
   const contentNode = div.querySelector(".msg-content");
+  const state = S.recoveryNotices?.[m.id];
+  if (state) {
+    const action = document.createElement('div');
+    action.className = 'recovery-notice-state';
+    action.setAttribute('role', 'status');
+    action.textContent = state === 'released' ? '恢复状态：已解除占用，未重投原输入。'
+      : state === 'releasable'
+        ? `恢复状态：本轮已结束，未在原任务追加节点。核对结果和后台进程后，在本项目主消息框发送 /release-recovery ${m.id} 解除占用。需要续办时，可从任务侧栏恢复。`
+        : '恢复状态：本轮已结束，未在原任务追加节点。清理尚未确认，暂不能解除。';
+    contentNode.after(action);
+  }
   contentNode.messageContentSignature = JSON.stringify([m.content, m.attachments || [], mentions.map(NAME_OF)]);
   const retractBtn = div.querySelector(".msg-retract-btn");
   if (retractBtn) retractBtn.addEventListener("click", () => retractMessage(m.id, retractBtn));
@@ -2993,6 +3125,71 @@ async function retractMessage(messageId, btn) {
 // 需求2：切项目=消息归属跟着走——composer 绑定当前项目，每次请求显式带 project
 const composerImages = createImageComposer($("#composer"), $("#composer-text"),
   () => ({project: S.currentProject, thread_id: S.currentThread}));
+let resizeMainComposer = () => {};
+// The message navigation row is inserted by a later script; include it in the height budget.
+document.addEventListener("DOMContentLoaded", () => {
+  resizeMainComposer = bindMainComposerLayout($("#composer"), $("#composer-text"));
+}, {once: true});
+
+function bindMainComposerLayout(form, field) {
+  const wrap = field.parentElement;
+  const column = form.parentElement;
+  const fixed = [...column.children].filter(el => el !== form && el.id !== "msg-list");
+  // Measure native textarea wrapping without collapsing the live field or disturbing either scroll position.
+  const measure = document.createElement("textarea");
+  measure.className = "composer-measure";
+  measure.disabled = true;
+  measure.setAttribute("aria-hidden", "true");
+  wrap.appendChild(measure);
+  let width;
+
+  function resize(scrollBeforeBreak) {
+    width = wrap.getBoundingClientRect().width;
+    if (!width) return; // The signed-out app is hidden.
+    const style = getComputedStyle(field);
+    const min = parseFloat(style.minHeight);
+    const border = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+    // Subtract non-text controls, not the flexed message list. Reserve space for readable history.
+    let available = column.clientHeight - (form.offsetHeight - field.offsetHeight);
+    for (const el of fixed) {
+      const css = getComputedStyle(el);
+      if (css.display !== "none" && css.position !== "absolute" && css.position !== "fixed") {
+        available -= el.offsetHeight + parseFloat(css.marginTop) + parseFloat(css.marginBottom);
+      }
+    }
+    // Keep at least half and, where possible, enough for a complete message at a scrolled position.
+    const max = Math.max(min, Math.min(240, Math.floor(available / 2), available - 156));
+    measure.value = field.value;
+    const height = `${Math.max(min, Math.min(max, measure.scrollHeight + border))}px`;
+    if (field.style.height !== height) field.style.height = height;
+
+    if (scrollBeforeBreak !== undefined && field.scrollHeight > field.clientHeight) {
+      // Alt+Enter places the caret immediately after a hard break. Native layout of the prefix
+      // includes that empty line, and does not depend on the text after the break.
+      measure.value = field.value.slice(0, field.selectionStart);
+      const bottom = measure.scrollHeight - parseFloat(style.paddingBottom);
+      const top = bottom - parseFloat(style.lineHeight);
+      // scrollHeight is integer-rounded; keep a pixel of clearance at each boundary.
+      field.scrollTop = Math.max(bottom - field.clientHeight + 1, Math.min(scrollBeforeBreak, top - 1));
+    }
+    measure.value = "";
+  }
+
+  field.addEventListener("input", () => resize());
+  let frame = 0;
+  const observer = new ResizeObserver(entries => {
+    if (frame || !entries.some(({target, contentRect}) => target !== wrap || contentRect.width !== width)) return;
+    // Let observed boxes finish layout before a resize writes back to their descendants.
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      resize();
+    });
+  });
+  for (const el of [column, wrap, form.querySelector(".image-toolbar"), ...fixed]) observer.observe(el);
+  resize();
+  return resize;
+}
+
 $("#composer").addEventListener("submit", async (e) => {
   e.preventDefault();
   const text = $("#composer-text").value.trim();
@@ -3008,7 +3205,10 @@ $("#composer").addEventListener("submit", async (e) => {
     if (body.text.length > 2000) throw new Error(`消息过长（${body.text.length}/2000 字符），请删减字符`);
     if (await sendImageMessage(body)) {
       if (S.currentProject === body.project && (S.currentThread || null) === (body.thread_id || null)
-          && $("#composer-text").value.trim() === text) $("#composer-text").value = "";
+          && $("#composer-text").value.trim() === text) {
+        $("#composer-text").value = "";
+        resizeMainComposer();
+      }
       composerImages.refresh();
       if (view === S.messageView) refreshAfterMessageChange();
     }
@@ -3024,9 +3224,10 @@ $("#composer-text").addEventListener("keydown", (e) => {
   } else if (e.key === "Enter" && e.altKey) {
     e.preventDefault();
     const ta = e.target;
-    const { selectionStart, selectionEnd, value } = ta;
+    const { selectionStart, selectionEnd, value, scrollTop } = ta;
     ta.value = value.slice(0, selectionStart) + "\n" + value.slice(selectionEnd);
     ta.selectionStart = ta.selectionEnd = selectionStart + 1;
+    resizeMainComposer(scrollTop);
   }
 });
 
@@ -3103,6 +3304,7 @@ function mpApply(idx) {
   const cleaned = hadPrefix ? after.replace(/^[^\s]*\s?/, "") : after;
   const np = insertMemberMention(ta, m, before.length, ta.value.length - cleaned.length, S.currentProject);
   ta.selectionStart = ta.selectionEnd = np;
+  if (ta.id === "composer-text") resizeMainComposer();
   ta.focus();
 }
 function mpHide() {
@@ -3478,11 +3680,11 @@ function updateProfileModelScope() {
       : (dsh ? '保存到该成员的全局 cordis.patch.yml，各项目的独立覆盖保留。'
         : '保存到该成员的全局配置，各项目的独立覆盖保留。'))
     : (dsh ? '仅模型、供应商和推理强度保存到当前项目；人格与描述保存到该成员的 profile。'
-      : '仅用于当前项目。留空沿用成员全局配置。');
+      : '仅用于当前项目。留空沿用成员全局配置。保存后，下次唤醒该成员时应用。');
   const help = $('#profile-panel-model .profile-help');
   if (editor?.globalModelHelp) help.textContent = global ? editor.globalModelHelp
     : (dsh ? '模型、供应商和推理强度保存到当前项目，下一次启动生效。'
-      : '模型、供应商和推理强度保存到当前项目，下一次唤醒生效。');
+      : '供应商填写该成员已配置的供应商标识。');
 }
 $('#profile-apply-global').addEventListener('change', updateProfileModelScope);
 function pluginUnavailable(state) {
@@ -4992,6 +5194,8 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/service_restart.js?v=20261026-settings-icons"></script>
 <script src="/app/app_settings.js?v=20261026-auto-refresh"></script>
 <script src="/app/engine_logs.js?v=20261103"></script>
+<script src="/app/relay_join.js?v=credential-renewal"></script>
+<script src="/app/relay_nodes.js?v=remote-workspaces"></script>
 <script src="/app/edit_policy_settings.js?v=20261030"></script>
 <script src="/app/background_settings.js?v=20261023-settings-anchor"></script>
 <script src="/app/directory_picker.js?v=20261011"></script>
@@ -5001,7 +5205,7 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/project_removal.js?v=20261014-hidden-removed"></script>
 <script src="/app/project_template_references.js?v=20261016-latest-soul"></script>
 <script src="/app/profile_soul_templates.js?v=20261029-project-context"></script>
-<script src="/app/project_settings.js?v=20261102-profile-empty-overrides"></script>
+<script src="/app/project_settings.js?v=remote-workspaces"></script>
 <link rel="stylesheet" href="/app/project_hud.css?v=20261031-native-agent">
 <script src="/app/project_hud.js?v=20261103-independent-assistant"></script>
 <script src="/app/requirement_details.js?v=20261012-controls"></script>

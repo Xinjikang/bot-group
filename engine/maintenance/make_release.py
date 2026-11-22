@@ -32,7 +32,7 @@ from pathlib import Path
 # templates/projects/<id>/manifest.json + .tmpl + references），漏收会导致解包后
 # catalogue() 抛 invalid_template、/projects/templates 入口 400。
 _MANAGED_TOP = (
-    "engine", "tools", "frontend", "doc", "docs", "mcp", "templates",
+    "engine", "tools", "frontend", "doc", "docs", "mcp", "templates", "plugins",
     "requirements.txt", "requirements.lock", "install.py", "install.sh",
     "install.bat", "bootstrap.py", "bootstrap.sh", "bootstrap.bat",
     "start.bat", "start.sh", "stop.bat", "stop.sh", "upgrade.sh", "upgrade.py",
@@ -83,6 +83,8 @@ def _managed_files(root: Path) -> list[str]:
         for cur, dirs, names in os.walk(p):
             dirs[:] = [d for d in dirs
                        if d not in _EXCLUDE_PARTS and not d.startswith(".")]
+            if Path(cur) == root / "plugins/hermes/bot-group-relay" and "state" in dirs:
+                dirs.remove("state")
             for name in sorted(names):
                 if name.startswith('.') or name in _EXCLUDE_NAMES:
                     continue
@@ -93,6 +95,94 @@ def _managed_files(root: Path) -> list[str]:
                 rel = (Path(cur) / name).relative_to(root)
                 files.append(rel.as_posix())
     return sorted(set(files))
+
+
+def _relay_asset_files(root: Path) -> dict[str, Path]:
+    """bot-group-relay 分发包文件映射（tar 内相对路径 → 源文件）。
+
+    布局（解压到 $HERMES_HOME/plugins/bot-group-relay/，插件目录直接可被
+    gateway 发现）：插件源码（仓库 plugins/hermes/bot-group-relay/ 提为顶层）、
+    mcp/（随包 MCP 唯一源码）、engine/ 最小子集（mcp/server.py 的运行时依赖：
+    mcp_http + process_query，均自包含）、requirements.lock、install.sh。
+    """
+    plugin_dir = root / "plugins" / "hermes" / "bot-group-relay"
+    files: dict[str, Path] = {}
+    for name in sorted(os.listdir(plugin_dir)):
+        path = plugin_dir / name
+        if (path.is_file() and not name.startswith(".")
+                and (name.endswith(".py") or name in {"plugin.yaml", "requirements.lock", "install.sh"})):
+            files[name] = path
+    for top in ("mcp",):
+        for cur, dirs, names in os.walk(root / top):
+            dirs[:] = [d for d in dirs if d not in _EXCLUDE_PARTS and not d.startswith(".")]
+            for name in sorted(names):
+                if name.startswith(".") or name.endswith((".pyc", ".pyo")):
+                    continue
+                path = Path(cur) / name
+                files[path.relative_to(root).as_posix()] = path
+    # engine 最小子集：mcp/server.py 的 `from engine import mcp_http, process_query`
+    for name in ("__init__.py", "mcp_http.py", "process_query.py"):
+        files[f"engine/{name}"] = root / "engine" / name
+    return files
+
+
+def _make_relay_asset(root: Path, out_dir: Path, version: str) -> tuple[str, str]:
+    """产 bot-group-relay-<version>.tar.gz + 随包 manifest（含文件级 SHA256）。
+
+    req#168 返修（manager 12223）：打包时把实际发布版本注入归档内 VERSION 文件
+    ——插件运行时优先读 VERSION（config.plugin_version 单一事实源），hello 上报
+    的 plugin_version/code_version 因此等于同批引擎发布版本，同 tag 配套校验通过；
+    不沿用 config.py 的源码常量（1.0.0）导致首连 4003。"""
+    import tarfile
+    files = _relay_asset_files(root)
+    if not files:
+        raise ValueError("bot-group-relay 插件源码缺失，无法产出分发包")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    archive = out_dir / f"bot-group-relay-{version}.tar.gz"
+    manifest = {"version": version, "plugin": "bot-group-relay", "files": {}}
+    version_bytes = (version + "\n").encode("utf-8")
+    with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as tar:
+        for rel, path in sorted(files.items()):
+            data = path.read_bytes()
+            sha = hashlib.sha256(data).hexdigest()
+            manifest["files"][rel] = {"sha256": sha, "size": len(data)}
+            info = tarfile.TarInfo(rel)
+            info.size = len(data)
+            info.mode = 0o755 if rel.endswith(".sh") else 0o644
+            tar.addfile(info, __import__("io").BytesIO(data))
+        # 版本注入：归档内 VERSION（不落工作树，只进归档），与 manifest 同源
+        version_sha = hashlib.sha256(version_bytes).hexdigest()
+        manifest["files"]["VERSION"] = {"sha256": version_sha,
+                                        "size": len(version_bytes)}
+        version_info = tarfile.TarInfo("VERSION")
+        version_info.size = len(version_bytes)
+        version_info.mode = 0o644
+        tar.addfile(version_info, __import__("io").BytesIO(version_bytes))
+        manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+        info = tarfile.TarInfo("manifest.json")
+        info.size = len(manifest_bytes)
+        info.mode = 0o644
+        tar.addfile(info, __import__("io").BytesIO(manifest_bytes))
+    sha = hashlib.sha256(archive.read_bytes()).hexdigest()
+    return str(archive), sha
+
+
+def make_relay_installer(root: Path, archive: Path, out_dir: Path) -> Path:
+    """Bundle the exact release tarball with the standalone Linux installer."""
+    installer = out_dir / "install-relay.pyz"
+    payload = archive.read_bytes()
+    with zipfile.ZipFile(installer, "w") as bundle:
+        bundle.write(root / "tools/install_relay.py", "__main__.py")
+        bundle.writestr("relay.tar.gz", payload)
+        bundle.writestr("relay.sha256", hashlib.sha256(payload).hexdigest())
+    return installer
+
+
+def _relay_checksums(root: Path, out_dir: Path, version: str) -> str:
+    archive, sha = _make_relay_asset(root, out_dir, version)
+    installer = make_relay_installer(root, Path(archive), out_dir)
+    return (f"{sha}  {Path(archive).name}\n"
+            f"{hashlib.sha256(installer.read_bytes()).hexdigest()}  {installer.name}\n")
 
 
 def make_release(root: Path, out_dir: Path, name: str, version: str, base_url: str = "") -> int:
@@ -130,7 +220,10 @@ def make_release(root: Path, out_dir: Path, name: str, version: str, base_url: s
     manifest_path = out_dir / "release_manifest.json"
     manifest_path.write_bytes(manifest_bytes)
     manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
+    # req#168：同 tag 构建第二个资产 bot-group-relay-<version>.tar.gz（ECS 插件
+    # 分发包），SHA256 与主包一起进 SHA256SUMS。
     checksums = f"{sha}  {archive.name}\n{manifest_sha}  {manifest_path.name}\n"
+    checksums += _relay_checksums(root, out_dir, version)
     bootstrap = root / "engine" / "maintenance" / "bootstrap.py"
     installer_assets = {}
     if bootstrap.is_file():

@@ -186,6 +186,18 @@ def _handle_steer(conn: sqlite3.Connection, project: str, targets: list[str],
             "detail": "；".join(details)}
 
 
+def _handle_release_recovery(conn: sqlite3.Connection, project: str, targets: list[str],
+                             args: str, thread_id: int | None) -> dict:
+    if thread_id is not None or targets or not (args.isascii() and args.isdecimal() and 0 < len(args) <= 18):
+        raise CommandError('请在本项目主消息框发送 /release-recovery <提醒消息编号>')
+    from . import hermes_task_recovery
+    try:
+        result = hermes_task_recovery.release(conn, project, int(args))
+    except ValueError as exc:
+        raise CommandError(str(exc)) from exc
+    return {'handled': True, 'ok': True, 'command': '/release-recovery', **result}
+
+
 def _handle_help(conn: sqlite3.Connection, project: str, targets: list[str],
                  args: str, thread_id: int | None) -> dict:
     """/help：渲染命令表（由注册表生成）。"""
@@ -216,6 +228,14 @@ COMMAND_REGISTRY = {
         "scope": "@ 一个 bot；话题内限定当前话题，话题外限定本项目工作会话",
         "busy_policy": "立即叫停",
         "handler": _handle_stop,
+    },
+    "release-recovery": {
+        "name": "/release-recovery",
+        "menu_description": "核对后暂挂未接手的任务并解除占用，需提醒消息编号",
+        "help": "使用 /release-recovery <提醒消息编号> 解除一次已结束但未接手的续办。不重投原输入。",
+        "scope": "本项目主消息框，管理员",
+        "busy_policy": "仅在该次原生执行确认结束且清理完成后解除",
+        "handler": _handle_release_recovery,
     },
     "steer": {
         "name": "/steer",

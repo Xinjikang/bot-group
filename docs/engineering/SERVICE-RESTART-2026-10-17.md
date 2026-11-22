@@ -12,6 +12,8 @@ Windows 进程树处理参考 `0c8a604` 之前的 start.sh：沿允许的启动�
 
 ## 接口与回执
 
+新实例先在应用启动阶段完成数据库建表与升级，再读取远程监听配置和 relay 节点，恢复监听、拨号及切换状态。已有节点随原数据库保留。
+
 - `POST /admin/restart`：管理员鉴权，返回 202 和操作 ID。同一进行中的重启复用同一操作，避免重复启动助手。
 - `GET /admin/restart`：管理员读取回执与当前退出阶段。
 - 回执、日志分别保存到有效数据目录的 `logs/service-restart.json`、`logs/service-restart.log`；回执使用临时文件原子替换，跨引擎保留。

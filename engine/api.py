@@ -106,6 +106,690 @@ def get_hermes_gateway_status(identity=Depends(_resolve_identity)):
     return JSONResponse(status(), headers={'Cache-Control': 'no-store'})
 
 
+# --------------------------------------------------------------------------
+# 成员级来源绑定管理（req#171，主人 12417）：按成员登记（成员+IP 集合）/
+# 回读/更新 IP/移除 IP；无缓存——移除/变更即时生效。回环恒放行不落表。
+# --------------------------------------------------------------------------
+
+class _SourceBindingBody(BaseModel):
+    member: str
+    ips: list[str] = []
+
+
+@router_api.get('/admin/source-ips')
+def source_bindings_list(identity=Depends(_resolve_identity)):
+    _admin_only(identity, '来源 IP 绑定仅限管理员')
+    from . import ip_allowlist
+    conn = db.get_connection()
+    try:
+        return JSONResponse({
+            'loopback_always_allowed': list(ip_allowlist.LOOPBACK),
+            'bindings': ip_allowlist.list_bindings(conn),
+        }, headers={'Cache-Control': 'no-store'})
+    finally:
+        conn.close()
+
+
+@router_api.post('/admin/source-ips')
+def source_bindings_set(body: _SourceBindingBody, identity=Depends(_resolve_identity)):
+    """按成员登记/更新来源 IP 集合（整体替换该成员绑定；空集合=清空）。"""
+    _admin_only(identity, '来源 IP 绑定仅限管理员')
+    from . import ip_allowlist
+    conn = db.get_connection()
+    try:
+        result = ip_allowlist.set_bindings(conn, body.member, body.ips)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    finally:
+        conn.close()
+    return result
+
+
+class _SourceBindingAddBody(BaseModel):
+    member: str
+    ip: str
+
+
+@router_api.post('/admin/source-ips/add')
+def source_binding_add(body: _SourceBindingAddBody, identity=Depends(_resolve_identity)):
+    """按成员幂等添加单条来源 IP（#320 manager node2030 并发覆盖阻断）。
+
+    只插入本次 IP，不清除该成员已有绑定——并发页面各加各的不互相覆盖；
+    重复添加同地址仅一条。校验口径与整体替换接口一致。
+    """
+    _admin_only(identity, '来源 IP 绑定仅限管理员')
+    from . import ip_allowlist
+    conn = db.get_connection()
+    try:
+        result = ip_allowlist.add_binding(conn, body.member, body.ip)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    finally:
+        conn.close()
+    return result
+
+
+@router_api.delete('/admin/source-ips/{member}/{ip}')
+def source_binding_remove(member: str, ip: str, identity=Depends(_resolve_identity)):
+    _admin_only(identity, '来源 IP 绑定仅限管理员')
+    from . import ip_allowlist
+    conn = db.get_connection()
+    try:
+        if not ip_allowlist.remove_binding(conn, member, ip):
+            raise HTTPException(404, '绑定不存在')
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    finally:
+        conn.close()
+    return {'removed': ip, 'member': member}
+
+
+# --------------------------------------------------------------------------
+# 远程监听动态配置（req#172，主人 12499-12509）：保存指定本机单播地址后实际
+# 开启受限监听（禁通配/禁失败回退通配）；监听状态从运行结果取得；与来源绑定
+# 联动（非回环监听生效前来源绑定先就绪）。停用回退回环。
+# --------------------------------------------------------------------------
+
+class _ListenBody(BaseModel):
+    address: str = ''   # ''=停用远程监听（回退回环）；否则为本机单播地址
+
+
+@router_api.get('/admin/listen/interfaces')
+def listen_interfaces(identity=Depends(_resolve_identity)):
+    """本机网卡具体单播地址枚举（IPv4/IPv6，不含通配/回环/链路本地/组播）。"""
+    _admin_only(identity, '监听配置仅限管理员')
+    from . import listen_control
+    return {'interfaces': listen_control.enumerate_interfaces()}
+
+
+@router_api.get('/admin/listen/status')
+def listen_status(identity=Depends(_resolve_identity)):
+    """实际监听状态（远程启用与否/实际地址端口从运行结果取得）。"""
+    _admin_only(identity, '监听配置仅限管理员')
+    from . import listen_control
+    return listen_control.status()
+
+
+@router_api.post('/admin/listen')
+def listen_apply(body: _ListenBody, identity=Depends(_resolve_identity)):
+    """保存监听地址并真实生效；失败保持本机可用并如实报错。"""
+    _admin_only(identity, '监听配置仅限管理员')
+    from . import listen_control
+    address = (body.address or '').strip() or None
+    try:
+        return listen_control.ensure(address)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
+# --------------------------------------------------------------------------
+# 远程 relay 节点管理（req#168）：注册/吊销凭据/状态/离线点名记录
+# --------------------------------------------------------------------------
+
+@router_api.get('/relay/nodes')
+def relay_nodes_list(identity=Depends(_resolve_identity)):
+    _admin_only(identity, 'relay 节点列表仅限管理员')
+    from . import relay, relay_server, remote_workspaces
+    conn = db.get_connection()
+    try:
+        rows = relay.list_nodes(conn)
+        return JSONResponse([{
+            'member': r['member'], 'host_profile': r['host_profile'],
+            'workspace_root': remote_workspaces.root_for(conn, r['member']),
+            'display_name': r['display_name'],
+            'credential_revoked': bool(r['credential_revoked']),
+            'generation': r['generation'], 'state': r['state'],
+            'code_version': r['code_version'], 'last_heartbeat': r['last_heartbeat'],
+            'mcp_fingerprint': (r['mcp_fingerprint'] or '')[:16],
+            'expected_mcp_sha': (r['expected_mcp_sha'] or '')[:16],
+            'capacity_used': relay.capacity_used(conn, r['member']),
+            'peer_ip': relay_server.last_peer(r['member']),
+            # req#173：方向/切换态（页面同页两按钮 + 切换中显示 + 失败原因）
+            'direction': r['direction'],
+            'switch_state': r['switch_state'],
+            'switch_target': r['switch_target'],
+            'switch_error': r['switch_error'],
+            'offline_reason': relay.offline_reason(conn, r['member']),
+            'dial_state': _dial_state(r['member']),
+            'dial_endpoint': _dial_endpoint_view(conn, r['member']),
+            'dial_failure': _dial_failure(r['member']),
+            # manager node2102：MCP 只读验证（实际受限调用结果，换代作废）
+            'mcp_verify_state': r['mcp_verify_state'],
+            'mcp_verify_error': r['mcp_verify_error'],
+        } for r in rows], headers={'Cache-Control': 'no-store'})
+    finally:
+        conn.close()
+
+
+class _WorkspaceRoot(BaseModel):
+    root: str = Field(min_length=1, max_length=4096)
+
+
+@router_api.put('/relay/nodes/{member}/workspace-root')
+def relay_workspace_root(member: str, body: _WorkspaceRoot, identity=Depends(_resolve_identity)):
+    _admin_only(identity, '仅管理员可配置远程协作目录')
+    from . import remote_workspaces
+    return remote_workspaces.set_root(member, body.root)
+
+
+@router_api.post('/projects/{name}/members/{profile}/prepare-workspace')
+def prepare_remote_workspace(name: str, profile: str, identity=Depends(_resolve_identity)):
+    _admin_only(identity, '仅管理员可准备远程协作目录')
+    from . import remote_workspaces
+    return remote_workspaces.schedule(name, profile).result()
+
+
+def _dial_state(member: str) -> str:
+    """拨号器运行态（relay_dialer 为可选组件时防御导入）。"""
+    try:
+        from . import relay_dialer
+        return relay_dialer._task_state(member)
+    except Exception:  # noqa: BLE001
+        return 'idle'
+
+
+def _dial_failure(member: str) -> dict | None:
+    """最近一次拨号失败阶段（DNS/TCP/TLS/认证），不含配对凭据。"""
+    try:
+        from . import relay_dialer
+        return relay_dialer.dial_failure(member)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _dial_endpoint_view(conn, member: str) -> dict | None:
+    """拨号端点（脱敏）：页面显示对端地址/指纹，不含一次性配对凭据。"""
+    from . import relay
+    endpoint = relay.read_dial_endpoint(conn, member)
+    if endpoint is None:
+        return None
+    fingerprint = str(endpoint.get('fingerprint') or '')
+    return {
+        'host': endpoint.get('host') or '',
+        'port': endpoint.get('port') or 0,
+        'tls': bool(endpoint.get('tls', True)),
+        'fingerprint': fingerprint,
+        'fingerprint_short': fingerprint[:8],
+    }
+
+
+class _RelayRegisterBody(BaseModel):
+    member: str
+    display_name: str = ''
+    credential: str = ''   # 空=引擎生成并一次性返回（凭据值只此一次可读）
+    # None=未传（重签时保留原配置/期望摘要）；{} 显式传空才清空。
+    mcp_config: dict | None = None
+    # req#170 返修：rotate=false 首次登记（遇已存在成员不动，防刷新/双击
+    # 意外轮换）；rotate=true 重签（仅轮换凭据）。
+    rotate: bool = False
+
+
+@router_api.post('/relay/nodes')
+def relay_node_register(body: _RelayRegisterBody, identity=Depends(_resolve_identity)):
+    _admin_only(identity, 'relay 节点注册仅限管理员')
+    from . import relay
+    if not body.member or not body.member.strip():
+        raise HTTPException(400, 'member 必填')
+    conn = db.get_connection()
+    try:
+        result = relay.register_node(conn, body.member.strip(), body.credential,
+                                     display_name=body.display_name,
+                                     mcp_config=body.mcp_config,
+                                     rotate=body.rotate)
+    finally:
+        conn.close()
+    # 凭据仅新创建或重签时生成下发；首次登记遇已存在成员不返回凭据、
+    # 不轮换（credential_hash 不变）；调用方显式传入的凭据不回显
+    return {'member': body.member.strip(),
+            'credential': result['credential'] if not body.credential else None,
+            'created': result['created']}
+
+
+@router_api.post('/relay/nodes/{member}/revoke')
+def relay_node_revoke(member: str, identity=Depends(_resolve_identity)):
+    _admin_only(identity, 'relay 凭据吊销仅限管理员')
+    from . import relay, relay_server
+    conn = db.get_connection()
+    try:
+        if relay.read_node(conn, member) is None:
+            raise HTTPException(404, '节点不存在')
+        relay.revoke_credential(conn, member)
+    finally:
+        conn.close()
+    link = relay_server.active_link(member)
+    if link is not None:
+        link.close()  # 现连立即失效
+    return {'member': member, 'revoked': True}
+
+
+class _DialEndpointBody(BaseModel):
+    host: str
+    port: int
+    tls: bool = True
+    fingerprint: str = ''   # 证书指纹（自签/专有 CA 必填），空=走系统 CA 校验
+    pairing_token: str = ''  # 插件 listen 签发的一次性配对凭据（拨号 hello 出示）
+
+
+@router_api.post('/relay/invitations')
+def relay_invitation_issue(identity=Depends(_resolve_identity)):
+    """req#175 方向 A（云端主动连电脑）：引擎签发一次性邀请，云端插件
+    register --invite 使用。仅管理员；兑换单次、过期失效。engine_url 指向
+    本机监听地址（listen_control 配置），未配置监听时返回 listen_configured
+    =false（前端引导先配监听；邀请本身不依赖监听先后）。"""
+    return _issue_relay_invitation(identity)
+
+
+@router_api.post('/relay/nodes/{member}/renewal')
+def relay_node_renewal(member: str, identity=Depends(_resolve_identity)):
+    return _issue_relay_invitation(identity, renew_member=member)
+
+
+def _issue_relay_invitation(identity, renew_member=None):
+    _admin_only(identity, 'relay 邀请签发仅限管理员')
+    from . import relay, listen_control, config
+    conn = db.get_connection()
+    try:
+        issued = relay.issue_invitation(conn, renew_member=renew_member)
+        listen_address = listen_control.read_config(conn)
+    except relay.InvitationConflict as exc:
+        raise HTTPException(409, str(exc)) from None
+    finally:
+        conn.close()
+    address = listen_address or "127.0.0.1"
+    host = f'[{address}]' if ':' in address else address
+    return JSONResponse({'invite_token': issued['invite_token'], 'pairing_id': issued['pairing_id'],
+                         'expires_at': issued['expires_at'], 'engine_url': f"http://{host}:{config.port()}",
+                         'listen_configured': bool(listen_address)}, headers={'Cache-Control': 'no-store'})
+
+
+@router_api.get('/relay/invitations/{pairing_id}')
+def relay_invitation_status(pairing_id: str, identity=Depends(_resolve_identity)):
+    """Read a verified pairing attempt, not its authentication material."""
+    _admin_only(identity, 'relay 邀请状态仅限管理员')
+    from . import relay
+    conn = db.get_connection()
+    try:
+        result = relay.read_invitation(conn, pairing_id)
+    finally:
+        conn.close()
+    if result is None:
+        raise HTTPException(404, '邀请不存在')
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
+def _relay_invitation_decision(pairing_id, identity, *, confirm):
+    _admin_only(identity, 'relay 邀请操作仅限管理员')
+    from . import relay
+    conn = db.get_connection()
+    try:
+        result = relay.decide_invitation(conn, pairing_id, confirm=confirm)
+    except relay.InvitationConflict as exc:
+        raise HTTPException(409, str(exc)) from None
+    finally:
+        conn.close()
+    if result is None:
+        raise HTTPException(404, '邀请不存在')
+    return JSONResponse(result, status_code=409 if confirm and result['state'] == 'failed' else 200,
+                        headers={'Cache-Control': 'no-store'})
+
+
+@router_api.post('/relay/invitations/{pairing_id}/confirm')
+def relay_invitation_confirm(pairing_id: str, identity=Depends(_resolve_identity)):
+    """Register the immutable verified offer selected by the administrator."""
+    return _relay_invitation_decision(pairing_id, identity, confirm=True)
+
+
+@router_api.post('/relay/invitations/{pairing_id}/cancel')
+def relay_invitation_cancel(pairing_id: str, identity=Depends(_resolve_identity)):
+    """Cancel only an unconfirmed offer; never remove an established node."""
+    return _relay_invitation_decision(pairing_id, identity, confirm=False)
+
+
+class _PairingImportBody(BaseModel):
+    pairing_url: str = Field(repr=False, description='远端 Hermes 签发的原始 WSS 配对链接')
+
+
+def _parse_pairing_url(pairing_url: str) -> tuple[str, dict]:
+    import re
+    from urllib.parse import urlsplit, parse_qs
+    parsed = urlsplit(pairing_url.strip())
+    if (parsed.scheme != 'wss' or not parsed.hostname or parsed.username is not None
+            or parsed.path not in ('', '/') or parsed.fragment or not parsed.port):
+        raise ValueError('首次配对需要使用 WSS 配对链接')
+    query = parse_qs(parsed.query)
+    member = (query.get('member') or [''])[0].strip()
+    token = (query.get('pairing_token') or [''])[0].strip()
+    fingerprint = (query.get('fingerprint') or [''])[0].strip().lower().replace(':', '')
+    if not (re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', member) and token
+            and re.fullmatch(r'[0-9a-f]{64}', fingerprint)):
+        raise ValueError('配对链接缺少有效的成员、一次性凭据或证书指纹')
+    return member, {'host': parsed.hostname, 'port': parsed.port, 'tls': True,
+                    'fingerprint': fingerprint, 'pairing_token': token}
+
+
+def _pairing_link(body):
+    try:
+        return _parse_pairing_url(body.pairing_url)
+    except ValueError:
+        # URL parsing errors may include part of the input. Never echo the link.
+        raise HTTPException(400, '配对链接无效，请从远端 Hermes 重新获取') from None
+
+
+def _pairing_response(data, status=200):
+    return JSONResponse(data, status_code=status, headers={'Cache-Control': 'no-store'})
+
+
+@router_api.post('/relay/pairings/preview')
+def relay_pairing_preview(body: _PairingImportBody, identity=Depends(_resolve_identity)):
+    """Verify the actual host over pinned WSS without opening a relay channel."""
+    _admin_only(identity, 'relay 配对预览仅限管理员')
+    from contextlib import closing
+    from . import relay, relay_dialer, relay_pairing
+    member, endpoint = _pairing_link(body)
+    with closing(db.get_connection()) as conn:
+        conflict = relay_pairing.unavailable(conn, member, endpoint)
+    if not conflict:
+        try:
+            member, expires_at = relay_dialer.verify_first_pairing(member, endpoint)
+        except relay_dialer.PairingProbeError as exc:
+            return _pairing_response({'state': 'failed', 'stage': exc.stage, 'reason': exc.reason,
+                                      'host': endpoint['host'], 'port': endpoint['port']}, 502)
+        with closing(db.get_connection()) as conn:
+            result = relay_pairing.create(conn, member, endpoint, expires_at)
+        if result is not None:
+            return _pairing_response(result)
+        if expires_at <= relay._now():
+            return _pairing_response({'state': 'expired', 'stage': 'verification', 'reason': 'expired'}, 409)
+    return _pairing_response({'state': 'failed', 'member': member, 'stage': 'identity',
+                              'reason': 'name_conflict'}, 409)
+
+
+@router_api.post('/relay/pairings/import')
+def relay_pairing_import(body: _PairingImportBody, identity=Depends(_resolve_identity)):
+    """An unverified import must not bypass the explicit decision."""
+    _admin_only(identity, 'relay 配对导入仅限管理员')
+    _pairing_link(body)
+    return _pairing_response({'state': 'failed', 'stage': 'confirmation', 'reason': 'preview_required'}, 409)
+
+
+@router_api.get('/relay/pairings/{pairing_id}')
+def relay_pairing_status(pairing_id: str, identity=Depends(_resolve_identity)):
+    _admin_only(identity, 'relay 配对状态仅限管理员')
+    from contextlib import closing
+    from . import relay, relay_pairing
+    with closing(db.get_connection()) as conn:
+        row = relay_pairing.read(conn, pairing_id)
+        if row is None:
+            raise HTTPException(404, '配对不存在')
+        result = relay_pairing.view(row)
+        if result['state'] == 'confirmed':
+            node = relay.read_node(conn, result['node_member'])
+            result['connected'] = bool(node and node['state'] == 'online' and not node['credential_revoked'])
+    return _pairing_response(result)
+
+
+@router_api.post('/relay/pairings/{pairing_id}/confirm')
+def relay_pairing_confirm(pairing_id: str, body: _PairingImportBody, identity=Depends(_resolve_identity)):
+    """Recheck the exact selected identity before atomically registering it."""
+    _admin_only(identity, 'relay 配对操作仅限管理员')
+    from contextlib import closing
+    from . import relay, relay_dialer, relay_pairing
+    member, endpoint = _pairing_link(body)
+    with closing(db.get_connection()) as conn:
+        row, checked_at = relay_pairing.read_for_confirm(conn, pairing_id)
+        if row is None:
+            raise HTTPException(404, '配对不存在')
+        if not relay_pairing.matches(row, member, endpoint):
+            return _pairing_response({'state': 'failed', 'stage': 'confirmation', 'reason': 'preview_mismatch'}, 409)
+        result = relay_pairing.view(row, now=checked_at)
+        if result['state'] != 'pending_confirmation':
+            return _pairing_response(result, 200 if result['state'] == 'confirmed' else 409)
+        conflict = relay_pairing.unavailable(conn, member, endpoint)
+    failure = ('confirmation', 'name_conflict') if conflict else None
+    verified = None
+    if not failure:
+        try:
+            reported, expires_at = relay_dialer.verify_first_pairing(member, endpoint)
+            verified = (reported, endpoint, expires_at)
+        except relay_dialer.PairingProbeError as exc:
+            failure = (exc.stage, exc.reason)
+    with closing(db.get_connection()) as conn:
+        result, created = relay_pairing.decide(conn, pairing_id, failure=failure, verified=verified)
+    if result is None:
+        raise HTTPException(404, '配对不存在')
+    if created:
+        relay_dialer.start_dial(result['node_member'])
+    status = 200 if result['state'] == 'confirmed' else 409
+    if result['state'] == 'failed' and result['reason'] != 'name_conflict':
+        status = 502
+    return _pairing_response(result, status)
+
+
+@router_api.post('/relay/pairings/{pairing_id}/cancel')
+def relay_pairing_cancel(pairing_id: str, identity=Depends(_resolve_identity)):
+    _admin_only(identity, 'relay 配对操作仅限管理员')
+    from contextlib import closing
+    from . import relay_pairing
+    with closing(db.get_connection()) as conn:
+        result, _ = relay_pairing.decide(conn, pairing_id, cancel=True)
+    if result is None:
+        raise HTTPException(404, '配对不存在')
+    return _pairing_response(result, 409 if result['state'] == 'confirmed' else 200)
+
+
+@router_api.post('/relay/nodes/{member}/dial-endpoint')
+def relay_node_dial_endpoint(member: str, body: _DialEndpointBody,
+                             identity=Depends(_resolve_identity)):
+    """保存插件监听端点（配对记录）：方向 B 拨入地址+TLS/证书指纹。"""
+    _admin_only(identity, 'relay 拨号端点配置仅限管理员')
+    from . import relay
+    conn = db.get_connection()
+    try:
+        if relay.read_node(conn, member) is None:
+            raise HTTPException(404, '节点不存在')
+        relay.set_dial_endpoint(conn, member, body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    finally:
+        conn.close()
+    return {'member': member, 'saved': True}
+
+
+class _DialProbeBody(BaseModel):
+    host: str
+    port: int
+    fingerprint: str
+
+
+@router_api.post('/relay/nodes/{member}/dial-endpoint/probe')
+def relay_node_dial_probe(member: str, body: _DialProbeBody,
+                          identity=Depends(_resolve_identity)):
+    """配对导入预检：只读解析/TCP/TLS+证书指纹，不保存配置、不兑换凭据。
+
+    返回 200 与 {ok, stage, address, error}；stage=dns/tcp/tls/ok。
+    """
+    _admin_only(identity, 'relay 拨号端点预检仅限管理员')
+    from . import relay, relay_dialer
+    conn = db.get_connection()
+    try:
+        if relay.read_node(conn, member) is None:
+            raise HTTPException(404, '节点不存在')
+    finally:
+        conn.close()
+    result = relay_dialer.probe_endpoint(body.host, body.port, body.fingerprint)
+    result['member'] = member
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
+class _SwitchBody(BaseModel):
+    direction: str   # 'listen'（插件连引擎）/ 'dial'（引擎拨插件）
+
+
+@router_api.post('/relay/nodes/{member}/switch')
+def relay_node_switch(member: str, body: _SwitchBody, identity=Depends(_resolve_identity)):
+    """切换连接方向（req#173 先断后建）：记切换意图+目标方向（持久化）→
+    暂停派发 → 断旧连接 → 建新连接（dial 由拨号器拨入，认证成功后自动清
+    切换态恢复派发；listen 等插件重连，relay_ws 认证成功时清切换态）。
+    新方向失败：切换态保持、失败原因可读、可重试/切回。"""
+    _admin_only(identity, 'relay 方向切换仅限管理员')
+    from . import relay, relay_dialer, relay_server
+    conn = db.get_connection()
+    try:
+        if relay.read_node(conn, member) is None:
+            raise HTTPException(404, '节点不存在')
+        current = relay.read_node(conn, member)["direction"]
+        if body.direction not in ("listen", "dial"):
+            raise HTTPException(400, 'direction 必须是 listen 或 dial')
+        if body.direction == current and relay.read_node(conn, member)["switch_state"] != "switching":
+            # 无切换（目标=当前方向）：在线幂等返回现状；同方向离线/退避
+            # 耗尽时是显式重试——实际启动拨号（manager node2102：曾在线
+            # 意外掉线耗尽后点同方向重试必须发起请求，不能静默不动作）。
+            if body.direction == "dial" and relay_dialer._task_state(member) != "connected":
+                relay_dialer.start_dial(member)
+                return {'member': member, 'direction': current,
+                        'switch_state': '', 'dial_state': relay_dialer._task_state(member)}
+            return {'member': member, 'direction': current,
+                    'switch_state': '', 'dial_state': relay_dialer._task_state(member)}
+        if body.direction == "dial":
+            if relay.read_dial_endpoint(conn, member) is None:
+                raise HTTPException(400, '拨号方向必须先保存插件监听端点（dial-endpoint）')
+        relay.begin_switch(conn, member, body.direction)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    finally:
+        conn.close()
+    # 断旧连接（单活动通道：旧连接主动关闭不留孤儿）
+    link = relay_server.active_link(member)
+    if link is not None:
+        link.close()
+    if body.direction == "dial":
+        relay_dialer.start_dial(member)   # 建新：拨号器按退避拨入
+    else:
+        relay_dialer.stop_dial(member)    # 目标 listen：停拨号，等插件重连
+    return {'member': member, 'direction': body.direction,
+            'switch_state': 'switching',
+            'dial_state': relay_dialer._task_state(member)}
+
+
+def _verify_error_reason(status, body: str) -> str:
+    """MCP 只读验证失败原因（脱敏）：优先取工具层错误文本（含引擎
+    401/403 语义），无文本再按状态归类。不含凭据。"""
+    try:
+        data = json.loads(body or "{}")
+        error = str(data.get("error") or data.get("detail") or "")
+    except ValueError:
+        error = ""
+    if "engine 403" in error or "Session project mismatch" in error:
+        return f"权限拒绝(403): {error[:200]}"
+    if "engine 401" in error:
+        return f"凭据无效(401): {error[:200]}"
+    if error:
+        return f"验证失败: {error[:200]}"
+    if status == 401:
+        return "凭据无效(401)"
+    if status == 502:
+        return "验证执行失败(502)"
+    if status == 503:
+        return "服务暂不可用(503)"
+    return f"HTTP {status}"
+
+
+@router_api.post('/relay/nodes/{member}/mcp-verify')
+def relay_node_mcp_verify(member: str, identity=Depends(_resolve_identity)):
+    """manager node2102：配对导入并认证后，以实际随包 MCP 路径做一次受限
+    项目只读验证——引擎经已认证通道下发成员会话凭据（不享受本地管理员
+    身份），插件本机经 loopback 代理走真实隧道回引擎鉴权；结果落库
+    （mcp_verify_state=ok/failed+脱敏原因；连接换代即作废）。"""
+    _admin_only(identity, 'relay MCP 验证仅限管理员')
+    from . import auth, hermes_session_auth, relay, relay_dialer, relay_server
+    conn = db.get_connection()
+    try:
+        row = relay.read_node(conn, member)
+        if row is None:
+            raise HTTPException(404, '节点不存在')
+        if row["direction"] != "dial":
+            raise HTTPException(400, 'MCP 验证仅适用于拨号方向（方向 B）')
+        grant = conn.execute(
+            "SELECT * FROM hermes_session_grants WHERE profile=? AND revoked=0 "
+            "ORDER BY generation DESC LIMIT 1", (member,)).fetchone()
+        if grant is None:
+            error = '成员无未吊销的会话授权，无法签发受限凭据'
+            relay.set_mcp_verify(conn, member, state="failed", error=error,
+                                 generation=row["generation"])
+            return {'member': member, 'mcp_verify_state': 'failed',
+                    'mcp_verify_error': error}
+        ctx = hermes_session_auth.context(grant)
+        project = ctx["project"]
+        key = auth.session_token(member, ctx)
+        execution = dict(ctx, credential_type="session")
+    finally:
+        conn.close()
+    link = relay_server.active_link(member)
+    if link is None or not hasattr(link, "request_mcp_verify"):
+        conn = db.get_connection()
+        try:
+            error = '无在线的拨号通道，无法发起验证'
+            relay.set_mcp_verify(conn, member, state="failed", error=error,
+                                 generation=relay.read_node(conn, member)["generation"])
+        finally:
+            conn.close()
+        return {'member': member, 'mcp_verify_state': 'failed',
+                'mcp_verify_error': error}
+    # manager node2102：写库必须用**发起时的连接代**——验证期间旧连接
+    # 换代（掉线重连）后，迟到的回执按旧代条件写不命中，新行保持待验。
+    verify_generation = (getattr(link, "db_generation", None)
+                         or getattr(link, "generation", None))
+    report = link.request_mcp_verify(key, project, execution=execution)
+    conn = db.get_connection()
+    try:
+        if report is None:
+            state, error = "failed", "验证超时或链路断链"
+        elif report.get("status") == 200:
+            # 实际工具调用结果：members 数组正常且非空才算读到了本项目名单
+            try:
+                data = json.loads(report.get("body") or "{}")
+            except ValueError:
+                data = {}
+            members = data.get("members")
+            if isinstance(members, list) and members:
+                state, error = "ok", ""
+            else:
+                state, error = "failed", "成员名单为空或结果结构异常"
+        else:
+            state, error = "failed", _verify_error_reason(
+                report.get("status"), report.get("body") or "")
+        relay.set_mcp_verify(conn, member, state=state, error=error,
+                             generation=verify_generation)
+        # 返回落库后的真实状态：旧代迟到回执条件写不命中时，库中仍是待验
+        row = relay.read_node(conn, member)
+        stored_state = row["mcp_verify_state"] if row else state
+        stored_error = row["mcp_verify_error"] if row else error
+    finally:
+        conn.close()
+    logger.info("relay mcp verify member=%s project=%s state=%s stored=%s",
+                member, project, state, stored_state)
+    return {'member': member, 'mcp_verify_state': stored_state,
+            'mcp_verify_error': stored_error}
+
+
+@router_api.get('/relay/mentions')
+def relay_mentions_list(identity=Depends(_resolve_identity)):
+    """离线点名记录（三态）：管理员核对「等待上线/已投递/离线未投递」。"""
+    _admin_only(identity, 'relay 点名记录仅限管理员')
+    from . import relay
+    conn = db.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM relay_offline_mentions ORDER BY message_id DESC LIMIT 200").fetchall()
+        return JSONResponse([{
+            'message_id': r['message_id'], 'member': r['member'], 'state': r['state'],
+            'submission_id': (r['submission_id'] or '')[:16],
+            'project': r['project'], 'thread_id': r['thread_id'],
+        } for r in rows], headers={'Cache-Control': 'no-store'})
+    finally:
+        conn.close()
+
+
 @router_api.get("/system/updates")
 def get_app_updates(identity=Depends(_resolve_identity)):
     _admin_only(identity, '更新检查仅限管理员使用')
@@ -302,6 +986,8 @@ def post_msg(
     started = time.perf_counter()
     connected = routed = published = None
     outcome, message_id, conn = 'error', None, None
+    from . import slow_send_diag
+    diag_on = slow_send_diag.enabled()  # 开关只读一次；未启用零埋点开销
     try:
         conn = _conn()
         connected = time.perf_counter()
@@ -319,14 +1005,22 @@ def post_msg(
 
         # 话题消息：project 从 thread 取（权威），忽略 body 传的
         if thread_id is not None:
+            s1 = slow_send_diag.now_pair() if diag_on else None
             thr = conn.execute("SELECT project FROM threads WHERE id=?", (thread_id,)).fetchone()
             if thr is not None:
                 project = thr["project"]
+            if diag_on:  # S1：threads 项目查询
+                slow_send_diag.step("S1", *slow_send_diag.diff_ms(s1, slow_send_diag.now_pair()),
+                                    conn_id=id(conn), thread_id=thread_id)
 
         # req#83 task#146：斜杠命令分发（落到引擎 API 层，只对 sender=user，bot 的 /xxx 走普通消息）。
         # 命令处理有独立事务（commands 留痕），先分发再走普通路由。命令分支返回即结束，不落普通消息。
         if kind in ("user", "dev") and db.is_builtin_user(sender):
+            s2 = slow_send_diag.now_pair() if diag_on else None
             cmd_result = commands.dispatch(conn, project, sender, "user", text, thread_id)
+            if diag_on:  # S2：is_builtin_user + commands.dispatch 判断
+                slow_send_diag.step("S2", *slow_send_diag.diff_ms(s2, slow_send_diag.now_pair()),
+                                    conn_id=id(conn), thread_id=thread_id)
             if cmd_result is not None:
                 routed = time.perf_counter()
                 events.bus.publish("command.executed", {
@@ -356,7 +1050,31 @@ def post_msg(
         raise HTTPException(status_code=e.status, detail=str(e)) from e
     finally:
         if conn is not None:
-            conn.close()
+            # 统一异常出口：先释放写锁（显式回滚 → close 兜底），释放确认后
+            # 再记 rollback 行与落盘缓冲；回滚失败告警同样在释放后输出。
+            # 释放未确认（close 失败）时不记行不刷盘——不得锁内写盘或假宣告释放。
+            was_txn = diag_on and conn.in_transaction
+            rollback_error = None
+            close_error = None
+            if was_txn:
+                try:
+                    conn.rollback()  # 正常路径显式回滚实际释放写锁
+                except Exception as exc:  # noqa: BLE001 仅暂存，由 close 兜底释放
+                    rollback_error = exc
+            try:
+                conn.close()  # 关闭兜底：回滚失败时隐式回滚释放写锁
+            except Exception as exc:  # noqa: BLE001 关闭失败=释放未确认
+                close_error = exc
+            if close_error is None and diag_on:
+                # 释放已确认（close 成功）：锁外统一记 rollback 行与落盘（成功/兜底同序）
+                if was_txn:
+                    slow_send_diag.txn_end(conn, "rollback")
+                slow_send_diag.defer_flush()  # 幂等，正常路径已 flush
+            if rollback_error is not None:
+                logger.warning("message.send 异常路径显式回滚失败，已由 close 兜底释放: %s",
+                               rollback_error)
+            if close_error is not None:
+                logger.warning("message.send 连接关闭失败: %s", close_error)
         if kind != 'bot':
             finished = time.perf_counter()
             logger.info('message.send message_id=%s thread_id=%s outcome=%s connect_ms=%.1f '
@@ -533,20 +1251,13 @@ def post_thread(
                     "INSERT INTO inbox (message_id, profile, status) VALUES (?, ?, 'pending')",
                     (opening_msg_id, m),
                 )
+        from . import topic_dispatch
+        topic_dispatch.schedule(conn, thread_id, opening_msg_id)
         conn.commit()
-
-        # 树模型：开场白后 DFS 找第一个发言者（Round 1 第一个成员），
-        # 只唤醒一个，不是全体。
-        from . import router as _router
-        enqueued = []
-        nxt = _router._next_speaker(conn, thread_id)
-        if nxt is not None:
-            _router._set_turn(conn, thread_id, nxt["profile"], nxt["parent_id"], nxt["round"])
-            if wake.enqueue(conn, nxt["profile"], "chat", "thread-open", opening_msg_id, thread_id=thread_id, project=project):
-                enqueued.append(nxt["profile"])
+        topic_dispatch.changed.set()
 
         events.bus.publish("thread.created", {"thread_id": thread_id, "creator": creator})
-        return {"thread_id": thread_id, "members": member_list, "wake": enqueued}
+        return {"thread_id": thread_id, "members": member_list, "wake": []}
     finally:
         conn.close()
 
@@ -803,8 +1514,9 @@ def post_register_bot(body: dict[str, Any], identity=Depends(_resolve_identity))
     if 'role' in body or 'grants' in body or 'permissions' in body:
         raise HTTPException(400, '角色与权限请在加入后通过项目成员设置配置')
     project = (body.get("project") or "").strip()
-    conn = _conn()
-    try:
+    from contextlib import closing, nullcontext
+    from . import profile_config
+    with (profile_config._LOCK if host_type == 'hermes' else nullcontext()), closing(_conn()) as conn:
         try:
             reg = discovery.register_bot(conn, host_type, profile, config_root, display_name,
                                          (body.get("entry") or "").strip() or None)
@@ -817,15 +1529,14 @@ def post_register_bot(body: dict[str, Any], identity=Depends(_resolve_identity))
             member = bot_identity.enroll(conn, reg['bot_id'], project)
         else:
             member = None
-        if project:
-            from .codex_project_access import commit_enrollment
-            commit_enrollment(conn, project, [member])
-        else:
-            conn.commit()
+        with profile_config.registration_defaults(reg, host_type, config_root, profile):
+            if project:
+                from .codex_project_access import commit_enrollment
+                commit_enrollment(conn, project, [member])
+            else:
+                conn.commit()
         return {"bot_id": reg["bot_id"], "created": reg["created"],
                 "profile": profile, "member_profile": member, "project": project or None}
-    finally:
-        conn.close()
 
 
 @router_api.post("/bots/validate-dsh")
@@ -898,7 +1609,7 @@ def get_profile_candidates(project: str = '', identity=Depends(_resolve_identity
         for row in conn.execute("SELECT b.*, m.profile AS member_profile FROM bots b LEFT JOIN members m ON m.bot_id=b.id WHERE b.profile!='user' ORDER BY b.id"):
             if row['id'] in found or not discovery.candidate_available(row):
                 continue
-            candidates.append({'bot_id': row['id'], 'host_type': row['host_type'], 'profile': row['profile'],
+            candidates.append({'bot_id': row['id'], 'host_type': row['host_type'], 'runtime': row['runtime'], 'profile': row['profile'],
                                'config_root': row['config_root'], 'display_name': row['display_name'],
                                'member_profile': row['member_profile'], 'bound': True,
                                'already_project_member': row['id'] in enrolled})
@@ -980,6 +1691,11 @@ def get_members(project: str = "", active_only: bool = False, role: str | None =
                 (r["project"], r["profile"]): dict(r)
                 for r in conn.execute("SELECT project, profile, active, role, role_id FROM project_members WHERE project=?", (project,))
             }
+            # req#173 成员权限链（manager node2074/12711）：bot 身份读指定项目
+            # 名单须自身已加入该项目——未加入返回 403（无权读取成员名单）。
+            if request is not None and request.state.identity[1] == "bot" \
+                    and (project, request.state.identity[0]) not in pm:
+                raise HTTPException(403, "未加入该项目，无权读取成员名单")
         for r in rows:
             if enrolled_only and (project, r["profile"]) not in pm:
                 continue
@@ -1327,6 +2043,10 @@ def set_member_active(profile: str, body: dict[str, Any], identity=Depends(_reso
               {'profile': profile, 'before': previous['active'] if previous else 0, 'after': active})
         conn.commit()
         advanced, expired = 0, 0
+        if active:
+            from . import remote_workspaces
+            if remote_workspaces.root_for(conn, profile):
+                remote_workspaces.schedule(project, profile)
         if not active:
             # 停用前已积压的 pending 一并作废（规格 27.3 第 5 点，项目作用域）：
             # 只作废该项目消息产生的未读（跨项目的点对点未读不动）。
@@ -1807,7 +2527,10 @@ def get_threads(include_hidden: bool = False, request: Request = None):
                 except Exception:  # noqa: BLE001
                     members = []
                 bots = [m for m in members if not db.is_builtin_user(m)]
-                if bots:
+                d["dispatch_pending"] = conn.execute(
+                    "SELECT COUNT(*) FROM topic_dispatch WHERE thread_id=?", (d["id"],)
+                ).fetchone()[0]
+                if bots and not d["dispatch_pending"]:
                     d["all_responded"] = router._next_speaker(conn, d["id"]) is None
             threads.append(d)
         return {"threads": threads, "count": len(threads)}
@@ -2045,9 +2768,14 @@ def post_message_retract(message_id: int, body: dict[str, Any],
 def get_messages(since_id: int = 0, thread_id: Optional[int] = None,
                  before_id: Optional[int] = None,
                  limit: Optional[int] = Query(default=None, ge=1, le=500),
-                 project: Optional[str] = None):
+                 project: Optional[str] = None, recovery_notices: bool = False):
     conn = _conn()
     try:
+        # Notice state is separate from the append-only timeline and its cursor.
+        projection = {}
+        if recovery_notices and thread_id is None:
+            from . import hermes_task_recovery
+            projection['recovery_notices'] = hermes_task_recovery.notice_states(conn, project)
         if limit is not None or project is not None:
             clauses, params = ["id > ?"], [since_id]
             if project is not None:
@@ -2072,7 +2800,7 @@ def get_messages(since_id: int = 0, thread_id: Optional[int] = None,
             if descending:
                 rows.reverse()
             return {"messages": attachments.enrich(conn, rows), "count": len(rows),
-                    "has_more": has_more}
+                    "has_more": has_more, **projection}
         if thread_id is not None:
             rows = conn.execute(
                 "SELECT * FROM messages WHERE thread_id = ? AND id > ? ORDER BY id ASC",
@@ -2082,7 +2810,7 @@ def get_messages(since_id: int = 0, thread_id: Optional[int] = None,
             rows = conn.execute(
                 "SELECT * FROM messages WHERE id > ? ORDER BY id ASC", (since_id,)
             ).fetchall()
-        return {"messages": attachments.enrich(conn, rows), "count": len(rows)}
+        return {"messages": attachments.enrich(conn, rows), "count": len(rows), **projection}
     finally:
         conn.close()
 
@@ -2275,10 +3003,24 @@ def patch_project(name: str, body: dict[str, Any], identity=Depends(_resolve_ide
 
 
 @router_api.get('/projects/{name}/workspaces')
-def get_project_workspaces(name: str, identity=Depends(_resolve_identity), profile: str | None = None):
+def get_project_workspaces(name: str, identity=Depends(_resolve_identity), profile: str | None = None,
+                           defer_remote_sessions: bool = False):
     _admin_only(identity, '仅管理员可管理项目目录')
     from . import project_workspaces
-    return project_workspaces.view(name, profile=profile)
+    return project_workspaces.view(name, profile=profile, defer_remote_sessions=defer_remote_sessions)
+
+
+@router_api.get('/projects/{name}/members/{profile}/remote-work-session')
+def get_remote_work_session(name: str, profile: str, identity=Depends(_resolve_identity)):
+    _admin_only(identity, '仅管理员可查询远程成员工作会话')
+    from . import project_workspaces, remote_workspaces
+    exists = project_workspaces.remote_work_session(name, profile)
+    conn = _conn()
+    try:
+        mode = project_workspaces.project(conn, name)['directory_mode']
+        return {'work_session_exists': exists, 'workspace': remote_workspaces.state(conn, name, profile, mode)}
+    finally:
+        conn.close()
 
 
 @router_api.post('/projects/{name}/workspaces/{profile}')

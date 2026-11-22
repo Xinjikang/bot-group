@@ -17,6 +17,8 @@ from scripts.test_upgrade import UpgradeTestBase
 class ReleaseUpgradeTests(UpgradeTestBase):
     def setUp(self):
         super().setUp()
+        # These upgrade fixtures exercise engine-only releases predating the relay assets.
+        self.enterContext(mock.patch.object(make_release, '_relay_checksums', return_value=''))
         (self.prog / "VERSION").write_text("v1.0.0", encoding="utf-8")
         self._seed_manifest({"VERSION"})
         self.index = self.root / "releases.json"
@@ -289,6 +291,7 @@ class ReleaseUpgradeTests(UpgradeTestBase):
             'reports/tests/v1/task/evidence/result.json': 'INTERNAL_ONLY',
             'reports/research/selection/REPORT.md': 'INTERNAL_ONLY',
             'frontend/.hermes-tmp.fixture': 'INTERNAL_ONLY',
+            'plugins/hermes/bot-group-relay/state/pairing.json': 'INTERNAL_ONLY',
             'engine/.hermes-tmp.fixture/prompt.txt': 'INTERNAL_ONLY',
             'scripts/.private-note': 'INTERNAL_ONLY',
         }

@@ -79,10 +79,15 @@ def create_session(profile: str, title: str, *, project=None, kind='work') -> st
     返回真实 session_id（YYYYMMDD_HHMMSS_<6hex>）。
     """
     from . import hermes_gateway
-    if hermes_gateway.enabled():
+    from . import remote_workspaces
+    workspace = remote_workspaces.for_session(project, profile, conversation=True)
+    if workspace or hermes_gateway.enabled():
         from . import wake, hermes_prompt_state
-        workdir = wake._workdir_for(profile, project) if project is not None else str(Path.cwd())
-        prompt = wake.wake_system_prompt(kind, project, workdir) if project is not None else ''
+        if workspace:
+            workdir = workspace['path']
+        else:
+            workdir = wake._workdir_for(profile, project) if project is not None else str(Path.cwd())
+        prompt = wake.wake_system_prompt(kind, project, workdir, remote_workspace=workspace) if project is not None else ''
         client, _, _ = hermes_gateway.connection(profile)
         with client:
             sid = hermes_gateway.sessions.new(client, title=title, workdir=workdir,
@@ -117,7 +122,7 @@ def create_session(profile: str, title: str, *, project=None, kind='work') -> st
 def session_exists(profile: str, session_id: str) -> bool:
     """校验该 profile 下 session_id 是否仍有效（恢复前置，防失效绑定静默替换）。"""
     from . import hermes_gateway
-    if hermes_gateway.enabled():
+    if hermes_gateway.remote_member(profile) or hermes_gateway.enabled():
         client, _, _ = hermes_gateway.connection(profile)
         with client:
             try:
@@ -162,7 +167,7 @@ def compression_tip(profile: str, session_id: str) -> str:
     适配器回传实际 session_id，引擎只接受匹配当前 generation 的更新。
     """
     from . import hermes_gateway
-    if hermes_gateway.enabled():
+    if hermes_gateway.remote_member(profile) or hermes_gateway.enabled():
         client, _, _ = hermes_gateway.connection(profile)
         with client:
             return hermes_gateway.sessions.attach(client, session_id)['session_id']
@@ -185,7 +190,7 @@ def resolve_session_by_title(profile: str, title: str, *, read_only=False) -> st
     from . import hermes_gateway
     from websockets.exceptions import WebSocketException
     try:
-        if hermes_gateway.enabled():
+        if hermes_gateway.remote_member(profile) or hermes_gateway.enabled():
             client, _, _ = hermes_gateway.connection(profile, read_only=read_only)
             with client:
                 rows = client.rpc('session.list', title=title)['sessions']
@@ -267,7 +272,10 @@ def _resolve_or_create_locked(conn, project: str, profile: str, kind: str,
         conn.commit()
         return existing
     # 首建：调原生 new_session 拿真实 session_id
-    sid = create_session(profile, title)
+    if conn.execute('SELECT 1 FROM relay_nodes WHERE member=?', (profile,)).fetchone():
+        sid = create_session(profile, title, project=project, kind=kind)
+    else:
+        sid = create_session(profile, title)
     conn.execute(
         "INSERT INTO session_bindings "
         "(project, bot_id, profile, kind, thread_id, session_id, runtime, generation, title, updated_at) "

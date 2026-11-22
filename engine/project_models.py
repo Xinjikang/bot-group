@@ -76,7 +76,7 @@ def arguments(conn, project, member):
     if not bot:
         return []
     values, _ = read(conn, project, member)
-    if values['runtime'] == 'hermes':
+    if values['runtime'] == 'hermes' and bot['host_type'] != 'relay':
         # Explicit inherited fields prevent resume from restoring stale policy.
         if any(not values[field] for field in FIELDS):
             defaults = _hermes_defaults(bot)

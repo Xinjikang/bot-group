@@ -24,7 +24,8 @@ class AccessContractTests(unittest.TestCase):
         auth._LOGIN_ATTEMPTS.clear()
         self.app = FastAPI()
         self.app.include_router(api.router_api)
-        self.client = TestClient(self.app)
+        # req#171：来源绑定第二层按 socket peer 核对；夹具用回环模拟生产本机来源
+        self.client = TestClient(self.app, client=('127.0.0.1', 4321))
         self.addCleanup(self.client.close)
         self.admin = {"Authorization": "Bearer " + auth.login("测试密码")["token"]}
         self.bot = {"X-Group-Profile": "default", "X-Group-Key": auth.bot_token("default")}
@@ -56,6 +57,29 @@ class AccessContractTests(unittest.TestCase):
         self.assertEqual(self.client.get("/commands", headers=self.bot).status_code, 200)
         self.assertEqual(self.client.get("/members", headers=self.admin).status_code, 200)
 
+    def test_bot_members_read_requires_project_membership(self):
+        """manager node2074/12711 成员权限链：bot 身份经隧道 GET /members
+        ?project= 须自身已加入该项目——获准项目 200+实际成员、未加入 403。"""
+        from scripts.project_test_support import enable_members
+        conn = db.get_connection()
+        try:
+            # remote1 加入 alpha；default 不加入 gamma（未加入项目反例）
+            enable_members(conn, ("alpha",), profiles=["remote1"])
+            enable_members(conn, ("gamma",), profiles=["remote1"])
+            conn.commit()  # 跨连接可见（请求线程是独立连接）
+        finally:
+            conn.close()
+        # 未加入项目（bot=default 不在 gamma）：403（无权读取成员名单）
+        response = self.client.get("/members?project=gamma", headers=self.bot)
+        self.assertEqual(response.status_code, 403, response.text)
+        # 已加入项目：200 + 实际成员（bot 只看到项目内成员）
+        response = self.client.get("/members?project=alpha", headers=self.bot)
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        profiles = [m["profile"] for m in body["members"]]
+        self.assertIn("remote1", profiles, "获准项目返回实际成员")
+        self.assertEqual(body["count"], len(body["members"]))
+
     def test_login_unicode_types_rate_limit_and_expiry(self):
         for value in ("错误", None, 123, {}, []):
             self.assertEqual(self.client.post("/auth/login", json={"password": value}).status_code, 401)
@@ -77,7 +101,9 @@ class AccessContractTests(unittest.TestCase):
 
     def test_development_mode_requires_loopback_and_same_origin(self):
         with patch.dict(os.environ, {"GROUP_ADMIN_PASSWORD": "", "GROUP_SECRET": ""}):
-            self.assertEqual(self.client.get("/commands").status_code, 401)
+            # 开发模式：未配置密码时非回环来源拒绝（远程隔离）、回环放行
+            with TestClient(self.app, client=("192.0.2.1", 4321)) as remote:
+                self.assertEqual(remote.get("/commands").status_code, 401)
             payload = "admin:9999999999"
             forged = base64.urlsafe_b64encode(
                 f"{payload}.{auth._sign(payload)}".encode()).decode()

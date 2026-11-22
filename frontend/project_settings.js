@@ -346,6 +346,63 @@ function markDshBindings(data, available) {
   }
 }
 
+const remoteSessionRequests = new Map();
+function remoteSessionLabel(member) {
+  if (member.remote_session_pending) return '正在查询远程工作会话…';
+  if (member.work_session_exists == null) return '远程工作会话状态未知，可刷新重试';
+  return member.work_session_exists ? '已有远程工作会话' : '暂无远程工作会话';
+}
+
+function workspaceStatus(state, remote) {
+  if (!state.valid) return state.error || '目录不可用';
+  if (!state.head) return '目录可用';
+  const head = (state.detached ? 'detached' : state.branch) + ' · ' + state.head.slice(0, 12);
+  return (remote ? '上次远端核验　' : '') + head + (state.dirty ? ' · 有未提交改动' : ' · 工作区干净');
+}
+
+async function refreshRemoteSessions(project, members) {
+  const pending = members.filter(member => member.remote_session_pending);
+  const current = member => projectMembersCache.get(project)?.members.includes(member);
+  async function worker() {
+    while (pending.length) {
+      const member = pending.shift();
+      if (!current(member) || $('#pj-detail-form').dataset.origName !== project) continue;
+      const key = JSON.stringify([project, member.profile, member.bot_id]);
+      let request = remoteSessionRequests.get(key);
+      if (!request) {
+        request = api(`/projects/${encodeURIComponent(project)}/members/${encodeURIComponent(member.profile)}/remote-work-session`)
+          .catch(() => null)
+          .finally(() => remoteSessionRequests.delete(key));
+        remoteSessionRequests.set(key, request);
+      }
+      const result = await request;
+      if (!current(member)) continue;
+      member.remote_session_pending = false;
+      member.work_session_exists = result?.work_session_exists ?? null;
+      if ($('#pj-detail-form').dataset.origName !== project) continue;
+      const row = $('#pj-member-list').querySelector(`[data-profile="${CSS.escape(member.profile)}"]`);
+      const label = row?.querySelector('.remote-session-status');
+      if (!label) continue;
+      label.textContent = remoteSessionLabel(member);
+      if (member.remote_workspace && result?.workspace && !row.querySelector('.workspace').disabled) {
+        member.workspace = result.workspace;
+        const path = row.querySelector('.project-member-path');
+        path.textContent = path.title = member.workspace.path || '尚未取得远程路径';
+        const status = row.querySelector('.project-member-workspace .project-member-state');
+        status.textContent = workspaceStatus(member.workspace, true);
+        status.classList.toggle('valid', member.workspace.valid);
+        status.classList.toggle('invalid', !member.workspace.valid);
+      }
+      const button = row.querySelector('.reset-session');
+      if (button && !resettingMemberSessions.has(JSON.stringify([project, member.profile]))) {
+        const reset = sessionResetButton(member);
+        Object.assign(button, {textContent: reset.label, title: reset.title, disabled: reset.disabled});
+      }
+    }
+  }
+  await Promise.all([worker(), worker()]);
+}
+
 async function loadProjectMembers(options = {}) {
   const project = $('#pj-detail-form').dataset.origName;
   if (!project) return;
@@ -359,7 +416,7 @@ async function loadProjectMembers(options = {}) {
   const request = (async () => {
     try {
       const suffix = options.profile && cached ? `?profile=${encodeURIComponent(options.profile)}` : '';
-      const data = await api(`/projects/${encodeURIComponent(project)}/workspaces${suffix}`);
+      const data = await api(`/projects/${encodeURIComponent(project)}/workspaces${suffix}${suffix ? '&' : '?'}defer_remote_sessions=true`);
       if (projectMembersVersions.get(project) !== version) return;
       const previous = projectMembersCache.get(project);
       const merged = suffix && previous ? {...data, members: previous.members.map(m => data.members.find(n => n.profile === m.profile) || m)} : data;
@@ -369,7 +426,8 @@ async function loadProjectMembers(options = {}) {
       projectMembersCache.set(project, merged);
       if ($('#pj-detail-form').dataset.origName !== project) return;
       renderProjectMembers(project, merged);
-      $('#pj-members-status').textContent = '状态已更新';
+      $('#pj-members-status').textContent = merged.members.some(m => m.remote_session_pending) ? '成员已加载' : '状态已更新';
+      void refreshRemoteSessions(project, merged.members);
     } catch (err) {
       if ($('#pj-detail-form').dataset.origName === project && projectMembersVersions.get(project) === version) {
         $('#pj-members-status').textContent = '刷新失败：' + err.message;
@@ -463,7 +521,7 @@ function renderProjectMembers(project, data) {
     const reset = sessionResetButton(member);
     const state = member.workspace;
     const independent = member.directory_mode === 'worktree';
-    const path = state.path || `${data.project.worktree_root || ''}/${member.profile}`;
+    const path = state.path || (member.remote_workspace ? '尚未取得远程路径' : `${data.project.worktree_root || ''}/${member.profile}`);
     const row = document.createElement('div');
     row.className = 'project-member-card';
     row.dataset.profile = member.profile;
@@ -476,9 +534,10 @@ function renderProjectMembers(project, data) {
       <button type="button" role="menuitem" class="edit" title="修改将影响共用此 profile 的项目">编辑 profile</button>
       ${member.profile !== 'user' ? `<button type="button" role="menuitem" class="reset-session" title="${reset.title}" ${reset.disabled ? 'disabled' : ''}>${reset.label}</button><button type="button" role="menuitem" class="member-remove">移出项目</button>` : ''}
       </div></div></div>
-      <div class="project-member-workspace ${state.valid && !state.head ? 'compact-status' : ''}"><span class="project-member-caption">${independent ? '独立 worktree' : '项目主目录'}</span>
+      <div class="project-member-workspace ${state.valid && !state.head ? 'compact-status' : ''}"><span class="project-member-caption">${member.remote_workspace ? '远程' : ''}${independent ? '独立 worktree' : '项目主目录'}</span>
       <div class="project-member-path" title="${esc(path)}">${esc(path)}</div>
-      <p class="project-member-state ${state.valid ? 'valid' : 'invalid'}">${state.valid ? esc(state.head ? `${state.detached ? 'detached' : state.branch} · ${state.head.slice(0, 12)}${state.dirty ? ' · 有未提交改动' : ' · 工作区干净'}` : '目录可用') : esc(state.error || '目录不可用')}</p></div>
+      <p class="project-member-state ${state.valid ? 'valid' : 'invalid'}">${esc(workspaceStatus(state, member.remote_workspace))}</p></div>
+      ${member.remote_session_pending !== undefined ? `<p class="project-member-state remote-session-status" role="status">${remoteSessionLabel(member)}</p>` : ''}
       ${member.binding_invalid ? '<p class="project-member-state invalid" data-binding-invalid="true">宿主绑定失效：DSH HOME 目录或 profile 配置不可用；成员与历史保留。</p>' : ''}`;
     bindMemberNameEditor(row, member);
     row.querySelector('.edit').addEventListener('click', () => {
@@ -486,7 +545,20 @@ function renderProjectMembers(project, data) {
       closeDialogAnchored($('#dlg-project-detail'));
       openProfileEditor(member, project);
     });
-    row.querySelector('.workspace')?.addEventListener('click', () => openWorkspaceEditor(project, member));
+    const workspaceButton = row.querySelector('.workspace');
+    if (member.remote_workspace) {
+      workspaceButton.textContent = '准备远程工作区';
+      workspaceButton.onclick = async () => {
+        workspaceButton.disabled = true;
+        const status = row.querySelector('.project-member-workspace .project-member-state');
+        status.textContent = '远程节点正在核验仓库和工作目录…';
+        try {
+          await api(`/projects/${encodeURIComponent(project)}/members/${encodeURIComponent(member.profile)}/prepare-workspace`, {method: 'POST'});
+          await loadProjectMembers({profile: member.profile});
+        } catch (error) { status.textContent = error.message; }
+        finally { workspaceButton.disabled = false; }
+      };
+    } else workspaceButton?.addEventListener('click', () => openWorkspaceEditor(project, member));
     const resetStatus = document.createElement('p');
     resetStatus.className = 'project-member-state';
     resetStatus.setAttribute('role', 'status');

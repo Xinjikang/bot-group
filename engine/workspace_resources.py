@@ -172,8 +172,11 @@ def member(project, profile, body=None, actor=''):
                 p = ws.project(conn, project)
                 if p.get('removed') or not conn.execute('SELECT 1 FROM project_members WHERE project=? AND profile=?', (project, profile)).fetchone():
                     raise HTTPException(404, '项目成员不存在')
+                if conn.execute('SELECT 1 FROM relay_nodes WHERE member=?', (profile,)).fetchone():
+                    raise HTTPException(409, '远程工作区位于成员主机，请在成员卡片上准备工作区')
                 path = ws.selected_path(conn, p, profile)
-                sharing = [r['profile'] for r in conn.execute('SELECT profile FROM project_members WHERE project=?', (project,))
+                sharing = [r['profile'] for r in conn.execute('SELECT profile FROM project_members WHERE project=? '
+                           'AND profile NOT IN (SELECT member FROM relay_nodes)', (project,))
                            if ws.key(ws.selected_path(conn, p, r['profile'])) == ws.key(path)]
                 if body is not None:
                     for affected in sharing:

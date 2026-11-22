@@ -45,6 +45,8 @@ def hermes_home(member, fallback):
         conn.close()
     if not bot:
         return fallback if member == 'default' else fallback / 'profiles' / member
+    if bot['host_type'] == 'relay':
+        raise ValueError('远程 Hermes 的 profile 目录位于远端主机')
     if bot['runtime'] != 'hermes':
         raise ValueError('Hermes state is unavailable for this runtime')
     return hermes_profile_home(bot)

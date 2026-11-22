@@ -22,9 +22,9 @@ Windows 进程探测使用 Toolhelp 与 psutil，支持缺少 WMIC 的系统。�
 py -3.11 tools\make_release.py --formal --version v1.2.3 --out dist\v1.2.3 --base-url https://github.com/Xinjikang/bot-group/releases/download/v1.2.3/
 ```
 
-输出目录包含六个文件：`bot-group-v1.2.3.zip`、`release_manifest.json`、`SHA256SUMS`、`releases.json`、独立标准库安装入口 `bootstrap.py` 和 Windows 下载入口 `install.ps1`。ZIP 包含引擎、MCP、前端静态资源、tools、templates、依赖锁定清单、双语 README、文档与入口。`VERSION` 纳入文件级受管清单，随源码更新与恢复。数据、凭据、`.venv`、运行缓存和 `scripts/` 下的测试保持在安装环境或仓库中。
+输出目录包含八个文件。引擎资产为 `bot-group-v1.2.3.zip`、`release_manifest.json`、`releases.json`、`bootstrap.py` 和 Windows 安装入口 `install.ps1`。远程 Hermes 资产为 `bot-group-relay-v1.2.3.tar.gz` 和 Linux 单文件安装入口 `install-relay.pyz`。校验清单 `SHA256SUMS` 包含两个插件资产的 SHA256。安装器内置本批次的原始插件归档，管理员也可以单独转发安装器给远程 Hermes。引擎 ZIP 包含源码、文档、模板和入口。`VERSION` 纳入受管清单，数据、凭据和运行缓存保存在安装环境中。
 
-从干净的 Git 提交构建，将六个文件上传到对应 tag 的 GitHub Release，完成资产核对后发布为正式版本。`--base-url` 将索引中资产地址固定到该版本，bootstrap 的 SHA256 也写入索引。发布后从匿名客户端执行 README 命令完成实际安装；验收证据记录 tag、提交、资产摘要、安装位置、退出码与页面结果。
+从干净的 Git 提交构建，将八个文件上传到对应 tag 的 GitHub Release，完成资产核对后发布为正式版本。`--base-url` 将索引中资产地址固定到该版本，bootstrap 的 SHA256 也写入索引。发布后从匿名客户端执行 README 中对应平台的命令，验收记录 tag、提交、资产摘要、安装位置、退出码与结果。
 
 每个正式版本使用独立且固定的资产目录。将这些文件放到配置的可信 HTTPS/内网发布源；将索引中相对地址转换为相对于稳定索引 URL 的正确地址。稳定索引可以包含多条 Release；客户端选择数值最大的正式三段版本，跳过 `draft=true` 和 `prerelease=true`。发布前核对资产 SHA256，再更新稳定索引。命令生成本地资产，发布操作由发布负责人执行。
 

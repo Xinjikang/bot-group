@@ -285,21 +285,34 @@ def close_all(timeout: float = 5.0) -> None:
 
 
 class GatewayClient:
-    """One viewer connection; the receiver drains events independently of RPCs."""
-    def __init__(self, endpoint, *, on_event=None, deadline=None, max_message_bytes=8 * 1024 * 1024):
+    """One viewer connection; the receiver drains events independently of RPCs.
+
+    transport 抽取（req#168）：本地 bot 走本机 websockets 直连；远程 bot 传
+    relay transport（引擎↔插件 WSS 的一条流），传输内容仍是现有 JSON-RPC 帧，
+    ticket/协议协商由插件在本机完成。不同 transport 的 JSON-RPC id 各自从 1
+    开始（每实例独立 _sequence）。
+    """
+    def __init__(self, endpoint, *, on_event=None, deadline=None, max_message_bytes=8 * 1024 * 1024,
+                 transport=None):
         from websockets.sync.client import connect
         if _CLOSING.is_set():
             raise GatewayTransportError('Hermes viewers are closing')
-        origin = endpoint['api_origin'].rstrip('/')
-        url = origin.replace('https:', 'wss:', 1).replace('http:', 'ws:', 1) + '/api/ws'
         self.endpoint = endpoint
-        token = ticket(endpoint, **({'timeout': remaining(deadline)} if deadline else {}))
-        self._socket = connect(url, subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + token],
-                               proxy=None, open_timeout=remaining(deadline) if deadline else 10,
-                               close_timeout=1, ping_interval=20, ping_timeout=5, max_size=max_message_bytes)
-        if self._socket.subprotocol != 'hermes-gateway-v1':
-            self._socket.close()
-            raise GatewayTransportError('Hermes gateway protocol mismatch')
+        if transport is not None:
+            # 远程 relay：插件已在本机完成取票与 /api/ws 连接，引擎直接持流。
+            self._socket = transport
+            self._skip_protocol_check = True
+        else:
+            origin = endpoint['api_origin'].rstrip('/')
+            url = origin.replace('https:', 'wss:', 1).replace('http:', 'ws:', 1) + '/api/ws'
+            token = ticket(endpoint, **({'timeout': remaining(deadline)} if deadline else {}))
+            self._socket = connect(url, subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + token],
+                                   proxy=None, open_timeout=remaining(deadline) if deadline else 10,
+                                   close_timeout=1, ping_interval=20, ping_timeout=5, max_size=max_message_bytes)
+            self._skip_protocol_check = False
+            if self._socket.subprotocol != 'hermes-gateway-v1':
+                self._socket.close()
+                raise GatewayTransportError('Hermes gateway protocol mismatch')
         self._condition = threading.Condition()
         self._pending = {}
         self._sequence = 0

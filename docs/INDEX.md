@@ -1,8 +1,10 @@
 # 项目文档索引
 
+远程 Hermes 可从空节点列表按两个方向配对。部署与排障见 [ECS 插件安装指南](guides/BOT-GROUP-RELAY-INSTALL.md)，协议与身份确认见 [接入设计](design/2026-11-18-remote-hermes-adapter.md)，双节点派发和安装包验证见 [首次接入测试](../scripts/TEST_INDEX.md#远程-hermes-首次接入)。
+
 DSH 0.2.2 启动和凭据权限修复见 [兼容设计](design/2026-11-14-dsh-v022-compatibility.md)，版本变更见 [v0.2.15](releases/v0.2.15.md)。
 
-清晨首条消息卡顿的现场证据、取连接四段分解三档方案与清晨窗口探针设计见 [清晨卡顿探针设计](design/2026-11-12-morning-probe-design.md)；11-17 下午复现后的检测口径最小增补（三阈值、触发原因、结论三态、两例回归）见 [探针检测口径增补](design/2026-11-17-probe-detection-patch.md)。
+清晨首条消息卡顿的现场证据、取连接四段分解三档方案与清晨窗口探针设计见 [清晨卡顿探针设计](design/2026-11-12-morning-probe-design.md)；11-17 下午复现后的检测口径最小增补（三阈值、触发原因、结论三态、两例回归）见 [探针检测口径增补](design/2026-11-17-probe-detection-patch.md)；三次现场后收敛的引擎内分步计时与写事务起止埋点方案（定位 prepare 落点与锁持有者）见 [慢发送引擎内分步计时方案](design/2026-11-18-slow-send-instrumentation.md)；发送回执与选人/唤醒拆分的评估（短写事务硬约束、每话题顺序、崩溃幂等、验证场景）见 [发送路径异步拆分评估](design/2026-11-18-async-send-split.md)。
 
 全站事件循环阻塞的根因、认证数据库段线程隔离、心跳写入迁移与 WAL 实例初始化见 [authorize 阻塞修复](design/2026-11-10-authorize-lock-isolation.md)，已实现的线程边界、事务与响应契约见 [认证数据库隔离](engineering/AUTHORIZE-LOCK-ISOLATION.md)。
 
@@ -12,7 +14,7 @@ Hermes 成员界面继承值与实际唤醒参数的一致性、覆盖记录缺�
 
 Hermes 旧版已有会话绑定的唤醒状态分流、执行保护及原话题队列恢复见 [旧版状态分流](design/2026-11-09-hermes-legacy-state-routing.md) 和 [兼容契约](engineering/HERMES-COMPATIBILITY.md)。
 
-消息发送的单事务持久化、阶段耗时日志与发送中反馈见 [发送延迟设计](design/2026-11-06-message-send-latency.md) 和 [发送工程契约](engineering/MESSAGE-SEND.md)。
+消息发送的单事务持久化、阶段耗时日志与发送中反馈见 [发送延迟设计](design/2026-11-06-message-send-latency.md) 和 [发送工程契约](engineering/MESSAGE-SEND.md)。主消息输入框的自动伸缩、限高和换行光标验收见 [主消息输入框设计](design/2026-11-21-main-message-composer.md)。
 
 Hermes MCP 初始化失败的原始诊断、阶段日志及一次受限队列恢复见 [MCP 初始化恢复](design/2026-11-06-mcp-startup-recovery.md)。
 
@@ -58,7 +60,7 @@ Codex 与 Hermes 连续唤醒的规则正文、原生系统文本和工具 schem
 
 Hermes 新旧会话接口、安装定位和兼容提示见 [Hermes 兼容性](engineering/HERMES-COMPATIBILITY.md) 与 [设计依据](design/2026-10-27-hermes-compatibility.md)。
 
-当前正式版本为 [v0.2.16](releases/v0.2.16.md)，包含 Hermes 断线回执恢复、Windows 重启修复和仓库探针更新。历史版本见 [v0.2.15](releases/v0.2.15.md)、[v0.2.14](releases/v0.2.14.md)、[v0.2.13](releases/v0.2.13.md)、[v0.2.12](releases/v0.2.12.md)、[v0.2.11](releases/v0.2.11.md)、[v0.2.10](releases/v0.2.10.md)、[v0.2.9](releases/v0.2.9.md)、[v0.2.8](releases/v0.2.8.md)、[v0.2.7](releases/v0.2.7.md)、[v0.2.6](releases/v0.2.6.md)、[v0.2.5](releases/v0.2.5.md)、[v0.2.4](releases/v0.2.4.md)、[v0.2.3](releases/v0.2.3.md)、[v0.2.2](releases/v0.2.2.md)、[v0.2.1](releases/v0.2.1.md)、[v0.2.0](releases/v0.2.0.md)、[v0.1.9](releases/v0.1.9.md)、[v0.1.8](releases/v0.1.8.md)、[v0.1.7](releases/v0.1.7.md)、[v0.1.6](releases/v0.1.6.md)、[v0.1.5](releases/v0.1.5.md)、[v0.1.4](releases/v0.1.4.md)、[v0.1.3](releases/v0.1.3.md)、[v0.1.2](releases/v0.1.2.md)。
+当前正式版本为 [v0.3.0](releases/v0.3.0.md)，新增远程 Hermes 联网安装、双向配对、远程工作区与任务续办。历史版本见 [v0.2.16](releases/v0.2.16.md)、[v0.2.15](releases/v0.2.15.md)、[v0.2.14](releases/v0.2.14.md)、[v0.2.13](releases/v0.2.13.md)、[v0.2.12](releases/v0.2.12.md)、[v0.2.11](releases/v0.2.11.md)、[v0.2.10](releases/v0.2.10.md)、[v0.2.9](releases/v0.2.9.md)、[v0.2.8](releases/v0.2.8.md)、[v0.2.7](releases/v0.2.7.md)、[v0.2.6](releases/v0.2.6.md)、[v0.2.5](releases/v0.2.5.md)、[v0.2.4](releases/v0.2.4.md)、[v0.2.3](releases/v0.2.3.md)、[v0.2.2](releases/v0.2.2.md)、[v0.2.1](releases/v0.2.1.md)、[v0.2.0](releases/v0.2.0.md)、[v0.1.9](releases/v0.1.9.md)、[v0.1.8](releases/v0.1.8.md)、[v0.1.7](releases/v0.1.7.md)、[v0.1.6](releases/v0.1.6.md)、[v0.1.5](releases/v0.1.5.md)、[v0.1.4](releases/v0.1.4.md)、[v0.1.3](releases/v0.1.3.md)、[v0.1.2](releases/v0.1.2.md)。
 
 需求超时拆解、部分任务恢复和队列空唤醒抑制见 [需求恢复契约](engineering/REQUIREMENT-RECOVERY.md) 与 [设计依据](design/2026-10-27-requirement-recovery.md)。
 
@@ -168,7 +170,7 @@ Hermes/DSH 成对填写模型与供应商、来源带入和 Codex 界面规则�
 | [项目移除](engineering/PROJECT-REMOVAL-2026-10-14.md) | 逻辑移除、占用检查和重新导入 |
 | [目录选择](engineering/DIRECTORY-PICKER.md) | 网页目录导航及权限 |
 | [Profile 编辑](engineering/PROFILE-EDITOR.md) / [Profile 创建](engineering/PROFILE-CREATE.md) | 双宿主配置、备份、冲突与入组 |
-| [统一模型编辑](engineering/UNIFIED-MODEL-EDITOR.md) / [项目模型](engineering/PROJECT-MEMBER-MODELS-2026-10-11.md) | 项目覆盖与全局配置 |
+| [统一模型编辑](engineering/UNIFIED-MODEL-EDITOR.md) / [项目模型](engineering/PROJECT-MEMBER-MODELS-2026-10-11.md) | 项目覆盖与全局配置、Hermes 下次唤醒换模、失败提醒与重试。[四轮原生回归](../scripts/TEST_INDEX.md#hermes-项目成员换模) |
 
 ## 前端交互与内容
 

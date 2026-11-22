@@ -217,6 +217,8 @@ def create(conn, body):
     stage = container / ('.create-' + uuid.uuid4().hex)
     published = False
     written = []
+    registration = None
+    config_root = str(target) if host == 'codex' else str(root)
     with files._LOCK:
         try:
             conn.execute('BEGIN IMMEDIATE')
@@ -230,13 +232,12 @@ def create(conn, body):
                 provisioned = saved['auth_copied']
             else:
                 home, selector = _source(body)
-                config_root = str(target) if host == 'codex' else str(root)
                 if host == 'dsh':
                     from . import dsh_profile_create
                     content, provisioned = dsh_profile_create.content(home, body)
                 else:
-                    reg = discovery.register_bot(conn, host, name, config_root, body['display_name'])
-                    member = bot_identity.enroll(conn, reg['bot_id'], project) if project else None
+                    registration = discovery.register_bot(conn, host, name, config_root, body['display_name'])
+                    member = bot_identity.enroll(conn, registration['bot_id'], project) if project else None
                     content, provisioned = (_codex(home, selector, body) if host == 'codex'
                                             else _hermes(home, body, member))
                 if host == 'codex' and project:
@@ -264,12 +265,13 @@ def create(conn, body):
                 for path in sorted(stage.iterdir(), key=lambda p: p.name == _MARKER):
                     path.rename(target / path.name)
                 stage.rmdir()
-            config_root = str(target) if host == 'codex' else str(root)
-            reg = discovery.register_bot(conn, host, name, config_root, body['display_name'])
-            member = bot_identity.enroll(conn, reg['bot_id'], project) if project else None
-            conn.commit()
+            if registration is None:
+                registration = discovery.register_bot(conn, host, name, config_root, body['display_name'])
+                member = bot_identity.enroll(conn, registration['bot_id'], project) if project else None
+            with files.registration_defaults(registration, host, config_root, name):
+                conn.commit()
             notice = '已创建 profile 并加入项目' if project else '已创建 profile 并注册 Bot；可在成员列表选择后加入项目'
-            return {'created': True, 'bot_id': reg['bot_id'], 'member_profile': member,
+            return {'created': True, 'bot_id': registration['bot_id'], 'member_profile': member,
                     'host_type': host, 'config_root': config_root, 'project': project or None,
                     'profile': name, 'home': str(target), 'auth_copied': provisioned,
                     'notice': notice + ('；沿用 DSH HOME 的账号认证，实际可用性以首次运行结果为准。' if host == 'dsh'

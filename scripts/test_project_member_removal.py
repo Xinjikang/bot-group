@@ -132,7 +132,8 @@ class MemberRemovalTests(unittest.TestCase):
     def test_authenticated_http_removal_and_member_scope_revocation(self):
         app = FastAPI()
         app.include_router(api.router_api)
-        with patch.dict(os.environ, {'GROUP_ADMIN_PASSWORD': 'isolated-test-password'}), TestClient(app) as client:
+        with patch.dict(os.environ, {'GROUP_ADMIN_PASSWORD': 'isolated-test-password'}), \
+             TestClient(app, client=('127.0.0.1', 4321)) as client:
             admin = {'Authorization': 'Bearer ' + auth.login('isolated-test-password')['token']}
             bot = {'X-Group-Profile': 'dev-1', 'X-Group-Key': auth.bot_token('dev-1')}
             endpoint = '/projects/p/members/dev-1'

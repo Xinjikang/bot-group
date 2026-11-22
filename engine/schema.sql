@@ -168,6 +168,17 @@ CREATE TABLE IF NOT EXISTS threads (
     close_conclusion TEXT                    -- 收口结论（修订/仲裁指针）
 );
 
+-- Deleting the durable queue head advances the topic's scheduling cursor.
+CREATE TABLE IF NOT EXISTS topic_dispatch (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id INTEGER NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    through_id INTEGER NOT NULL,
+    trigger_msg_id INTEGER,
+    consumes_turn INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_topic_dispatch_thread ON topic_dispatch(thread_id, id);
+CREATE INDEX IF NOT EXISTS idx_topic_dispatch_consumed ON topic_dispatch(thread_id,id) WHERE consumes_turn=1;
+
 -- 同一次创建请求的重试复用话题；作用域为项目和已解析的创建者。
 CREATE TABLE IF NOT EXISTS thread_create_requests (
     project TEXT NOT NULL,
@@ -196,6 +207,13 @@ CREATE TABLE IF NOT EXISTS messages (
     need_reply  INTEGER DEFAULT 1            -- req#61：三态——NULL=无 @（无要求，窄闸门可静默标已读、不催办），0=声明无需回复（窄闸门豁免），1=必须回复
 );
 -- append-only 红线：本表只 INSERT；撤回只写 retract_by/retract_at 标记列，绝不 UPDATE content
+
+-- req#167 慢发送补丁：发送路径六处话题查询的按键索引。
+-- 轮次索引服务 _round_spoken/当轮用户消息/独立发言查找（router.py 4 处）；
+-- 回复索引服务 _edge_responded/DFS 接话查找（router.py 2 处）。
+-- 点对点互@回溯 2 处（thread_id IS NULL + sender_type/mentions LIKE）仍全扫，范围外。
+CREATE INDEX IF NOT EXISTS idx_messages_round ON messages(thread_id, sender, round, parent_id);
+CREATE INDEX IF NOT EXISTS idx_messages_reply ON messages(parent_id, sender);
 
 -- ============ inbox ============
 CREATE TABLE IF NOT EXISTS inbox (
@@ -511,4 +529,15 @@ CREATE TABLE IF NOT EXISTS mcp_operations (
     response TEXT,
     created_at TEXT NOT NULL,
     PRIMARY KEY(owner, operation_id)
+);
+
+-- req#171：成员级来源绑定（主人 12417：节点与 IP 一一对应可见；一成员
+-- 多 IP、同 IP 多成员）。凭据管身份、来源绑定管来源。精确 IP 匹配（IPv4/
+-- IPv6 规范化文本），不自动放行网段；回环 127.0.0.1/::1 恒放行不落此表。
+-- 无缓存——每次判定直查，移除/变更即时生效。
+CREATE TABLE IF NOT EXISTS relay_source_bindings (
+    member     TEXT NOT NULL,
+    ip         TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (member, ip)
 );

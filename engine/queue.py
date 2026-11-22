@@ -50,9 +50,63 @@ def _discard_queued(conn, job_id: int, detail: str) -> None:
     conn.commit()
 
 
+def _relay_node_gate(conn, candidate) -> tuple[str, list[int]]:
+    """req#168 节点闸门：远程 relay 成员的派发前置判定。
+
+    返回 (status, mention_ids)：
+    - 'go'：非远程节点，或在线且未达并发上限——原判定链继续。
+    - 'hold'：节点离线或达并发上限——continue 保留 queued（绝不 _discard_queued，
+      活不能丢）。离线且发言位仍有效时对快照内点名 upsert offline_waiting。
+    - 'expire'：离线且发言位已失效——从未提交的点名标 offline_expired，
+      原判定链继续（superseded topic turn 丢弃是正确的，活已由点名记录承担）。
+
+    容量按 hermes_executions.state != 'terminal' 计数、receipt 终态释放（首版成员级）。
+    """
+    from . import relay
+    from . import wake as wake_module
+    if relay.read_node(conn, candidate["profile"]) is None:
+        return "go", []
+    # req#173 切换状态机：切换中暂停派发——不投递、不记 offline_waiting、
+    # 不标 expired、不触发任务重试/告警（动作驱动，恢复派发由切换完成清除
+    # 切换态触发）。切换期间同一条点名最多执行一次：hold 保留 queued，
+    # 切换完成后闸门放行投递。
+    if relay.read_node(conn, candidate["profile"])["switch_state"] == "switching":
+        return "hold", []
+    mention_ids = [m["message_id"] for m in
+                   wake_module._snapshot_pending(conn, candidate["profile"], candidate["kind"],
+                                                 candidate["thread_id"], candidate["project"])]
+    online = relay.is_online(conn, candidate["profile"])
+    if online and not relay.at_capacity(conn, candidate["profile"]):
+        return "go", mention_ids
+    if not online:
+        if candidate["kind"] == "chat" and candidate["thread_id"] is not None:
+            thread = conn.execute(
+                "SELECT status,turn_profile,project,members FROM threads WHERE id=?",
+                (candidate["thread_id"],)).fetchone()
+            valid_turn = (thread is not None and thread["status"] == "open"
+                          and thread["turn_profile"] == candidate["profile"]
+                          and thread["project"] == candidate["project"]
+                          and candidate["profile"] in json.loads(thread["members"] or "[]"))
+            if valid_turn:
+                # 发言位仍有效：窄口径记「等待成员上线」，唯一键幂等只显示一条
+                for message_id in mention_ids:
+                    relay.upsert_offline_mention(conn, message_id=message_id,
+                                                 member=candidate["profile"],
+                                                 project=candidate["project"],
+                                                 thread_id=candidate["thread_id"])
+                return "hold", mention_ids
+            # 发言位已失效：从未提交的点名标 expired，活交给原判定链丢弃
+            relay.expire_mentions(conn, member=candidate["profile"], message_ids=mention_ids)
+            return "expire", mention_ids
+        # 离线点对点派活：保留 queued，等成员上线（不做 adapter outbox）
+        return "hold", mention_ids
+    # 在线但达并发上限：保留 queued（首版成员级可判忙闲）
+    return "hold", mention_ids
+
+
 def process_one(conn) -> bool:
     """取一个 queued job 并 deliver。返回是否处理了 job。"""
-    from . import project_readiness
+    from . import project_readiness, relay
     job = None
     for candidate in conn.execute("SELECT * FROM wake_jobs WHERE status='queued' ORDER BY id").fetchall():
         # 停用者不投递（规格 27.3 第 6 点 + req#27 按项目维度）：存量 job 也不许
@@ -61,6 +115,11 @@ def process_one(conn) -> bool:
             _discard_queued(conn, candidate["id"], "profile disabled")
             continue
         if not project_readiness.is_ready(conn, candidate['project']):
+            continue
+        # req#168 节点闸门：远程 relay 成员离线/达并发上限 → hold 保留 queued
+        #（绝不 _discard_queued）；离线且发言位仍有效记 offline_waiting。
+        gate, mention_ids = _relay_node_gate(conn, candidate)
+        if gate == "hold":
             continue
         if candidate["kind"] == "chat" and candidate["thread_id"] is not None:
             thread = conn.execute("SELECT status,turn_profile,project,members,round,turn_parent_id FROM threads WHERE id=?", (candidate["thread_id"],)).fetchone()
@@ -77,7 +136,20 @@ def process_one(conn) -> bool:
                 if candidate["trigger"] != expected:
                     _discard_queued(conn, candidate["id"], "superseded topic recovery")
                     continue
-        from . import hermes_delegations
+        from . import hermes_delegations, hermes_gateway, hermes_task_recovery
+        if hermes_task_recovery.holds_wake(conn, candidate):
+            continue
+        remote_message = candidate['kind'] == 'work' and (
+            bool(mention_ids) or (candidate['trigger'] in ('@msg', 'scan:group')
+                                  and relay.read_node(conn, candidate['profile']) is not None))
+        recovery = None if remote_message else hermes_task_recovery.candidate(conn, candidate)
+        if recovery is not None:
+            # Keep the original wake until the session appends a task node.
+            # A blocked B session is skipped without occupying other members' jobs.
+            if hermes_task_recovery.reserve(conn, candidate, recovery):
+                hermes_gateway._start_worker(recovery[0]['execution_id'])
+                return True
+            continue
         direct_wait = (candidate['kind'] == 'work'
                        and hermes_delegations.direct_wait(conn, candidate['profile'], candidate['project'],
                                                          candidate['trigger_msg_id']))
@@ -132,9 +204,11 @@ def process_one(conn) -> bool:
         # 注入正文里的触发消息标注；回复要求由注入正文逐条按 effective_need_reply 承载。
         _trigger_msg_id = job["trigger_msg_id"]
         from . import task_retry
-        task_id = int(job['trigger'].split(':')[-1]) if not direct_wait and job['trigger'].startswith('retry:task:') else None
-        bound_task = task_retry.select_task(conn, job['profile'], _proj, task_id) if job['kind'] == 'work' and not direct_wait else None
-        if not direct_wait and job['kind'] == 'work' and (job['trigger'] == 'scan:task' or job['trigger'].startswith('retry:task:')) and bound_task is None:
+        task_id = (int(job['trigger'].split(':')[-1])
+                   if not direct_wait and not remote_message and job['trigger'].startswith('retry:task:') else None)
+        bound_task = (task_retry.select_task(conn, job['profile'], _proj, task_id)
+                      if job['kind'] == 'work' and not direct_wait and not remote_message else None)
+        if not direct_wait and not remote_message and job['kind'] == 'work' and (job['trigger'] == 'scan:task' or job['trigger'].startswith('retry:task:')) and bound_task is None:
             _mark(conn, job['id'], 'cancelled', 'No published complete task remains eligible')
             return True
         if job['kind'] == 'work' and job['trigger'] == 'scan:req' and bound_task is None:
@@ -160,6 +234,22 @@ def process_one(conn) -> bool:
                     "UPDATE wake_jobs SET chat_context_until=? WHERE id=?",
                     (until, job["id"]),
                 )
+            # req#168：离线点名按「实际注入的目标点名」与「同一 submission 的
+            # 回执」结算（manager node1977 ② + node1981 ①）——admitted（receipt
+            # 已受理）且有 submission_id 才标 submitted；未决（pending
+            # reconciliation）保留 waiting 并持久关联 submission_id 供后续
+            # 权威回执结算（apply_receipt → settle_by_submission），收口跳过
+            # 已尝试但未决者。
+            injected_ids = result.get("injected_message_ids") or []
+            submission_id = result.get("submission_id")
+            if injected_ids and result.get("admitted") is True and submission_id:
+                relay.mark_submitted(conn, message_ids=injected_ids,
+                                     member=job["profile"],
+                                     submission_id=submission_id)
+            elif injected_ids and submission_id:
+                relay.attach_submission(conn, message_ids=injected_ids,
+                                        member=job["profile"],
+                                        submission_id=submission_id)
             # req#58：心跳归属不再写 last_wake_kind/last_wake_thread_id——判活事实源
             # 已改为心跳槽的 thread_id（MCP beat 时按会话报，heartbeat.active_entries
             # 按槽粒度输出），DB last_wake 关联是 profile 级单一归属、同 profile 双话题

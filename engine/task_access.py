@@ -74,6 +74,35 @@ def begin_write(conn):
         validate(conn, *guard)
 
 
+def claim_recovery_task(conn):
+    """Keep a session-scoped recovery claim on the task named by its active admission."""
+    guard = _guard.get()
+    if guard is None or guard[2] != 'task_claim':
+        return None
+    scope = guard[3]
+    if not scope or scope.get('credential_type') != 'session':
+        return None
+    from . import hermes_session_auth, hermes_task_recovery
+    row = hermes_session_auth.execution(conn, scope)
+    return row['task_id'] if hermes_task_recovery.current_admission(conn, row) else None
+
+
+def record_recovery_progress(conn, task_id):
+    """A node insertion counts only for the task and native admission that own this write."""
+    guard = _guard.get()
+    if guard is None or guard[2] not in {'task_log', 'task_complete'}:
+        return
+    scope = guard[3]
+    if not scope or scope.get('credential_type') != 'session':
+        return
+    from . import hermes_session_auth, hermes_task_recovery
+    row = hermes_session_auth.execution(conn, scope)
+    if row['task_id'] == task_id:
+        cue = hermes_task_recovery.active_cue(conn, row)
+        if cue is not None:
+            hermes_task_recovery.mark_accepted(conn, cue)
+
+
 def public_result(value):
     """Keep decomposition lease secrets out of nested read/brief responses."""
     if isinstance(value, dict):

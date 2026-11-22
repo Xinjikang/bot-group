@@ -26,7 +26,8 @@ class RuntimeSchemaTests(unittest.TestCase):
         self.bot = {'X-Group-Profile': 'default', 'X-Group-Key': auth.bot_token('default')}
         app = FastAPI()
         app.include_router(api.router_api)
-        self.client = TestClient(app)
+        # req#171：来源绑定第二层按 socket peer 核对；夹具用回环模拟生产本机来源
+        self.client = TestClient(app, client=('127.0.0.1', 4321))
         self.addCleanup(self.client.close)
         conn = db.get_connection()
         try:

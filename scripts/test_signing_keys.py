@@ -29,7 +29,8 @@ class SigningTests(unittest.TestCase):
         self.addCleanup(self.conn.close)
         app = FastAPI()
         app.include_router(api.router_api)
-        self.client = TestClient(app)
+        # req#171：来源绑定第二层按 socket peer 核对；夹具用回环模拟生产本机来源
+        self.client = TestClient(app, client=('127.0.0.1', 4321))
         self.addCleanup(self.client.close)
 
     def run_token(self, session='A', thread=None):
@@ -338,7 +339,9 @@ class SigningTests(unittest.TestCase):
         _, headers = self.run_token()
         ring = keys.read()
         request = Request({'type': 'http', 'method': 'GET', 'path': '/commands',
-                           'headers': [], 'route': Mock(path='/commands')})
+                           'headers': [], 'route': Mock(path='/commands'),
+                           # req#171：第二层按 socket peer 核对；用回环模拟生产本机来源
+                           'client': ('127.0.0.1', 4321)})
         with patch.object(auth, 'signing_keys', side_effect=[ring, AssertionError('second snapshot')]) as read:
             self.assertEqual(resolve_identity('default', None, headers['X-Group-Key'], request), ('default', 'bot'))
         self.assertEqual(read.call_count, 1)

@@ -433,7 +433,7 @@ def system_prompt_for(kind: str) -> str:
     return (_CHAT_SYSTEM_PROMPT if kind == "chat" else _WORK_SYSTEM_PROMPT)
 
 
-def wake_system_prompt(kind: str, project: str, workdir: str) -> str:
+def wake_system_prompt(kind: str, project: str, workdir: str, *, remote_workspace=None) -> str:
     """Static collaboration rules followed by current, project-scoped facts."""
     import json
     from .project_workspaces import project as get_project
@@ -444,8 +444,9 @@ def wake_system_prompt(kind: str, project: str, workdir: str) -> str:
     try:
         row = get_project(conn, project)
         owner = project_owner(conn, project)
-        with LOCK:
-            resources = workspace_resources.prompt_config(conn, project, workdir)
+        if remote_workspace is None:
+            with LOCK:
+                resources = workspace_resources.prompt_config(conn, project, workdir)
     finally:
         conn.close()
     context = {
@@ -453,12 +454,21 @@ def wake_system_prompt(kind: str, project: str, workdir: str) -> str:
         '项目显示名': row['display_name'] or row['name'],
         '项目描述': row['description'] or '',
         '项目负责人': owner,
-        '项目主目录': str(Path(row['root']).resolve()),
-        '目录模式': '共用项目主目录' if Path(workdir).resolve() == Path(row['root']).resolve() else '独立 worktree',
-        '当前工作目录': workdir,
-        '工作区配置': resources,
     }
-    return (system_prompt_for(kind) + '\n\n' + workspace_resources.RULE + '\n\n## 当前项目\n'
+    prompt = system_prompt_for(kind)
+    if remote_workspace is None:
+        context.update({'项目主目录': str(Path(row['root']).resolve()),
+                        '目录模式': '共用项目主目录' if Path(workdir).resolve() == Path(row['root']).resolve() else '独立 worktree',
+                        '当前工作目录': workdir, '工作区配置': resources})
+        prompt += '\n\n' + workspace_resources.RULE
+    elif remote_workspace.get('conversation'):
+        context['会话用途'] = '项目沟通。项目代码和基线在执行项目任务时核验。'
+        if remote_workspace['root']:
+            context['远端协作根目录'] = remote_workspace['root']
+    else:
+        context.update({'项目主目录': remote_workspace['main'], '当前工作目录': remote_workspace['path'],
+                        '目录模式': remote_workspace['mode'], '当前分支': remote_workspace['branch']})
+    return (prompt + '\n\n## 当前项目\n'
             + json.dumps(context, ensure_ascii=False, indent=2)
             + '\n群聊和任务工具的 project 参数使用项目稳定 ID。')
 
@@ -595,7 +605,8 @@ def _finalize_injection_signal(profile, kind, thread_id, project, trigger_msg_id
     注入 = 未读全量一次性塞进 -q（正文+id+发送者+need_reply+seq）。禁止静默截断、
     禁止「部分注入+补拉剩余」：正文总长超命令行预算时整段退化成纯信号，
     bot 自己 read_inbox 分页拉全量（I2）。退化信号带 upper_id（本次快照水位），
-    bot 按 after_id 游标分页读固定上界内仍有效的 pending。返回最终信号文本。
+    bot 按 after_id 游标分页读固定上界内仍有效的 pending。返回 (信号文本, 注入消息 ids)——
+    退化纯信号时 ids 为空（正文不含任何点名，manager node1977 ②）。
     """
     conn = db.get_connection()
     try:
@@ -606,13 +617,14 @@ def _finalize_injection_signal(profile, kind, thread_id, project, trigger_msg_id
     # upper_id = 本次快照水位（快照范围内的 max message_id，I1）。快照之后到达的
     # 消息 id > upper_id，不纳入本次补读范围，进入后续 wake/运行中投递（I1）。
     upper_id = max((m["message_id"] for m in snapshot), default=0)
+    injected_ids = [m["message_id"] for m in snapshot]
     if snapshot:
         body = _compose_injection(snapshot, kind, trigger_msg_id=trigger_msg_id)
         if bound_task is not None:
             body += _TASK_SUFFIX.format(task_id=bound_task)
         body += requirement_signal
         if _fits_command_budget(cmd_without_q + ["-q", body]):
-            return body
+            return body, injected_ids
     # 退化：纯信号 + upper_id 分页游标（I2/R1）。chat 单 thread 全量现场无需 upper_id。
     if kind == "work" and not snapshot and (bound_task is not None or requirement_signal):
         signal = "[系统唤醒信号] 本次为任务或需求调度，当前点对点收件箱为空。"
@@ -624,7 +636,7 @@ def _finalize_injection_signal(profile, kind, thread_id, project, trigger_msg_id
     if bound_task is not None:
         signal += _TASK_SUFFIX.format(task_id=bound_task)
     signal += requirement_signal
-    return signal
+    return signal, []
 
 
 def _native_hermes_entry(entry: str) -> str:
@@ -909,6 +921,20 @@ def _spawn(profile: str, kind: str, signal: str | None, thread_id: int | None,
            project: str, job_id=None, task_id=None, trigger_msg_id: int | None = None) -> dict:
     from .project_workspaces import LOCK
     from .session_adapter import _SWITCH_LOCK
+    from . import remote_workspaces
+    from fastapi import HTTPException
+    if _shutting_down.is_set():
+        return {'ok': False, 'busy': True, 'detail': 'engine is shutting down'}
+    try:
+        conversation = kind == 'chat' or (task_id is None and signal is None)
+        remote_workspace = remote_workspaces.for_session(project, profile, conversation=conversation)
+    except HTTPException as exc:
+        import uuid
+        detail = '远程工作区：' + str(exc.detail)
+        _report_execution_error(profile, project, thread_id, session_name(profile, kind, thread_id, project),
+                                f'queue:{job_id}' if job_id is not None else uuid.uuid4().hex,
+                                detail, job_id=job_id, parent_id=trigger_msg_id)
+        return {'ok': False, 'detail': detail}
     with LOCK, _SWITCH_LOCK:
         if _shutting_down.is_set():
             return {'ok': False, 'busy': True, 'detail': 'engine is shutting down'}
@@ -922,7 +948,8 @@ def _spawn(profile: str, kind: str, signal: str | None, thread_id: int | None,
                 finally:
                     conn.close()
             result = _spawn_in_workspace(profile, kind, signal, thread_id, project,
-                                         job_id, task_id, trigger_msg_id)
+                                         job_id, task_id, trigger_msg_id,
+                                         **({'remote_workspace': remote_workspace} if remote_workspace else {}))
             if not result.get('ok') and not result.get('busy') and not result.get('failure_handled'):
                 import uuid
                 _report_execution_error(profile, project, thread_id, session_name(profile, kind, thread_id, project),
@@ -942,7 +969,8 @@ def _spawn(profile: str, kind: str, signal: str | None, thread_id: int | None,
 
 
 def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: int | None,
-                        project: str, job_id=None, task_id=None, trigger_msg_id: int | None = None) -> dict:
+                        project: str, job_id=None, task_id=None, trigger_msg_id: int | None = None,
+                        *, remote_workspace=None) -> dict:
     """subprocess 唤醒的公共实现。
 
     项目规则与协作提示词的加载方式：
@@ -965,7 +993,13 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
             return {'ok': False, 'detail': '项目已归档或不存在'}
         if not _profile_active(conn, project, profile):
             return {'ok': False, 'detail': '成员尚未加入项目或已停用'}
-        bound_task = task_retry.select_task(conn, profile, project, task_id) if kind == 'work' else None
+        conversation = remote_workspace is not None and remote_workspace.get('conversation')
+        if remote_workspace is not None and not conversation:
+            from . import remote_workspaces
+            root, _, mode = remote_workspaces.configuration(conn, project, profile)
+            if (root, mode) != (remote_workspace['root'], remote_workspace['mode']):
+                return {'ok': False, 'busy': True, 'detail': '远程工作区配置已变更，正在重新准备'}
+        bound_task = task_retry.select_task(conn, profile, project, task_id) if kind == 'work' and not conversation else None
     finally:
         conn.close()
     if task_id is not None and bound_task is None:
@@ -980,9 +1014,12 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
                 return {'ok': False, 'detail': 'topic turn changed before spawn'}
         finally:
             conn.close()
-    workdir = _workdir_for(profile, project)
-    from . import project_rules
-    project_rules.sync(project, workdir)
+    if remote_workspace is None:
+        workdir = _workdir_for(profile, project)
+        from . import project_rules
+        project_rules.sync(project, workdir)
+    else:
+        workdir = remote_workspace['path']
     # req#83：查/建会话绑定，拿真实 Hermes session_id。spawn 传真实 session_id（断点续，
     # U1：-c 精确 ID 匹配优先 + 自动 compression tip 跟随），去掉 --create-if-missing
     # （首建由引擎显式 create_session 完成，恢复与首建分开——绑定失效明确失败，不静默重建）。
@@ -1040,10 +1077,10 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         conn.close()
     if runtime == 'hermes':
         from . import hermes_gateway
-        if hermes_gateway.enabled():
+        if (bot and bot['host_type'] == 'relay') or hermes_gateway.enabled():
             return hermes_gateway.spawn(profile, kind, signal, thread_id, project,
                 bot=bot, workdir=workdir, model_args=model_args, bound_task=bound_task,
-                job_id=job_id, trigger_msg_id=trigger_msg_id)
+                job_id=job_id, trigger_msg_id=trigger_msg_id, remote_workspace=remote_workspace)
     use_binding = runtime not in ("codex", "dsh") and session_adapter.available()
     if use_binding:
         conn = db.get_connection()
@@ -1142,9 +1179,10 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
         if not use_binding:
             cmd_without_q.insert(cmd_without_q.index("-Q"), "--create-if-missing")
         sid_for_run = sid
+    injected_ids: list[int] = []
     if signal is None:
-        signal = _finalize_injection_signal(profile, kind, thread_id, project,
-                                            trigger_msg_id, bound_task, cmd_without_q)
+        signal, injected_ids = _finalize_injection_signal(profile, kind, thread_id, project,
+                                                          trigger_msg_id, bound_task, cmd_without_q)
     elif bound_task is not None:
         signal += _TASK_SUFFIX.format(task_id=bound_task)
     # codex 的 prompt 是末位裸参数（无 -q 包装）；hermes 仍是 -q；dsh 提示词经 stdin。
@@ -1567,7 +1605,8 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
             _running_wakes[session] = run
         events.bus.publish("wake.spawned", run)
         _th.Thread(target=_watch_session, daemon=True, name=f"session-{profile}").start()
-        return {"ok": True, "channel": "subprocess", "detail": f"pid {proc.pid}"}
+        return {"ok": True, "channel": "subprocess", "detail": f"pid {proc.pid}",
+                "injected_message_ids": injected_ids}
     except Exception as exc:  # noqa: BLE001
         if 'proc' in locals() and proc.poll() is None:
             from .stop import _kill_process_tree

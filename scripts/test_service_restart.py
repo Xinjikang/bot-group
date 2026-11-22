@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import site
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,65 @@ class RestartTests(unittest.TestCase):
             'GROUP_DB': str(Path(self.tmp.name) / 'isolated.db'), 'GROUP_ADMIN_PASSWORD': 'test'})
         self.environment.start()
         self.addCleanup(self.environment.stop)
+
+    def test_startup_migrates_legacy_relay_before_restoring_switch(self):
+        from engine import relay
+
+        data = Path(self.tmp.name)
+        database = data / 'isolated.db'
+        with closing(sqlite3.connect(database)) as conn, conn:
+            conn.executescript((ROOT / 'engine' / 'schema.sql').read_text(encoding='utf-8'))
+            conn.executescript(relay.SCHEMA)
+            conn.execute('DROP TABLE relay_node_identities')
+            conn.execute("""INSERT INTO relay_nodes(member, created_at, switch_state, switch_target)
+                            VALUES('legacy-node', 1, 'switching', 'listen')""")
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1', 0))
+            port = sock.getsockname()[1]
+        url = f'http://127.0.0.1:{port}'
+        env = {**os.environ, 'GROUP_ENGINE_URL': url, 'XDG_GROUP_ENGINE_URL': url,
+               'GROUP_ATTACHMENTS_DIR': str(data / 'attachments'), 'HERMES_HOME': str(data / 'hermes'),
+               'CODEX_HOME': str(data / 'codex'), 'PYTHONPATH': str(ROOT)}
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        headers = {'Authorization': 'Bearer ' + auth.login('test')['token']}
+
+        def request(path, method='GET'):
+            req = urllib.request.Request(url + path, headers=headers, method=method)
+            with opener.open(req, timeout=2) as response:
+                return json.load(response)
+
+        with (data / 'boot.log').open('w+b') as log:
+            process = subprocess.Popen([sys.executable, '-m', 'engine.main', '--data-dir', str(data),
+                                        '--host', '127.0.0.1', '--port', str(port)], cwd=ROOT, env=env,
+                                       stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            verified = False
+            try:
+                deadline = time.monotonic() + 30
+                while process.poll() is None and time.monotonic() < deadline:
+                    try:
+                        health = request('/health')
+                        break
+                    except OSError:
+                        time.sleep(.1)
+                else:
+                    log.seek(0)
+                    self.fail(log.read().decode('utf-8', errors='replace')[-4000:])
+                self.assertEqual(Path(health['db_path']), database)
+                self.assertEqual(Path(health['program_root']), ROOT)
+                verified = True
+                node, = request('/relay/nodes')
+                self.assertEqual((node['member'], node['host_profile'], node['switch_state']),
+                                 ('legacy-node', 'legacy-node', ''))
+            finally:
+                try:
+                    if verified:
+                        request('/admin/shutdown', 'POST')
+                        self.assertEqual(process.wait(timeout=30), 0)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=10)
 
     def test_request_is_deduplicated_and_pins_effective_configuration(self):
         controller = restart.Restart('old')
@@ -81,7 +141,8 @@ class RestartTests(unittest.TestCase):
              patch.object(app.state, 'restart', controller, create=True), \
              patch.object(app.state, 'shutdown', Mock(snapshot=lambda: {'state': 'running'}), create=True), \
              patch.object(restart.subprocess, 'Popen') as spawn:
-            client = TestClient(app)
+            # req#171：来源绑定第二层按 socket peer 核对；夹具用回环模拟生产本机来源
+            client = TestClient(app, client=('127.0.0.1', 4321))
             for path in ('/admin/restart', '/admin/shutdown'):
                 self.assertEqual(client.post(path).status_code, 401)
                 self.assertEqual(client.post(path, headers={'X-Group-Profile': 'bot-test',
@@ -206,7 +267,6 @@ class RestartIntegration(unittest.TestCase):
                         self.assertNotEqual(health['instance_id'], old_id)
                         self.assertFalse(restart._pid_alive(old_pid))
                         self.assertEqual(browser_calls.read_text().splitlines(), [url + '/app/'])
-                        import sqlite3
                         with closing(sqlite3.connect(data / 'group.db')) as conn, conn:
                             conn.execute('CREATE TABLE restart_probe(value TEXT)')
                             conn.execute("INSERT INTO restart_probe VALUES('preserved')")

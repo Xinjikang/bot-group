@@ -1092,9 +1092,16 @@ def task_claim(project: str, role: str) -> dict:
                     conn, conn.execute('SELECT * FROM tasks WHERE id=? AND project=?', (h['id'], project)).fetchone()) for h in held],
             }
         claimable = _claimable_tasks(conn, project, role)
+        from .task_access import claim_recovery_task
+        recovery_task = claim_recovery_task(conn)
+        if recovery_task is not None:
+            claimable = [candidate for candidate in claimable if candidate['id'] == recovery_task]
         if not claimable:
             return {"claimed": False, "reason": "nothing_claimable",
                     "message": "No task is eligible. Use task_get to inspect briefing_status and dependency_blockers; publish a complete brief and wait for prerequisites to be done."}
+        from . import remote_workspaces
+        if error := remote_workspaces.claim_error(conn, project, role):
+            return {"claimed": False, "reason": "remote_workspace_unavailable", "message": error}
         target = claimable[0]
         ts = db.now_iso()
         cur = conn.execute(
@@ -1179,6 +1186,8 @@ def task_log(project: str, role: str, task_id: int, type: str, meta=None,
             (project, task_id, role, type, meta, result, comment, ts),
         )
         node_id = cur.lastrowid
+        from .task_access import record_recovery_progress
+        record_recovery_progress(conn, task_id)
         conn.execute(
             "UPDATE tasks SET status=?, next_bot=?, claimed_by='' WHERE id=?",
             (PENDING, next_bot, task_id),
@@ -1241,6 +1250,8 @@ def task_complete(project: str, role: str, task_id: int, type: str = "accept",
             (project, task_id, role, type, meta, result, comment, ts),
         )
         node_id = cur.lastrowid
+        from .task_access import record_recovery_progress
+        record_recovery_progress(conn, task_id)
         conn.execute(
             "UPDATE tasks SET status=?, done_at=?, claimed_by='' WHERE id=?",
             (DONE, ts, task_id),

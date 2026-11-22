@@ -31,13 +31,20 @@ def _mutation_ops(client):
     return [c.kwargs['operation'] for c in _mutations(client)]
 
 
+def _success(snapshot, method, **params):
+    if method == 'session.mutate' and params['operation'] == 'model':
+        return {'session_id': snapshot['session_id'], 'operation': 'model', 'revision': 2,
+                'model': params['payload']['model']}
+    return snapshot
+
+
 class ConfigureRefreshTests(unittest.TestCase):
     def _configure(self, *, snapshot=None, workdir='/w', model_args=(), server=None):
         snapshot = _snapshot() if snapshot is None else snapshot
         server = server or {'command': 'python', 'args': ['-m', 'mcp'], 'env': {}}
         client = Mock()
         # attach 返回同一 snapshot（真实 resume 会重读 config 派生字段）。
-        client.rpc.side_effect = lambda method, **kw: snapshot if method == 'session.resume' else snapshot
+        client.rpc.side_effect = lambda method, **kw: _success(snapshot, method, **kw)
         return sessions.configure(client, snapshot, workdir=workdir, model_args=list(model_args), server=server), client
 
     def test_explicit_model_and_reasoning_are_mutated(self):
@@ -108,11 +115,79 @@ class TrackedReasoningTests(unittest.TestCase):
             conn.close()
 
     def test_identical_turns_keep_policy_and_resume_private_transport(self):
+        self.client.rpc.side_effect = lambda method, **kw: _success(self.snapshot, method, **kw)
         self.configure(['--model', 'fixture', '--provider', 'local', '--reasoning', 'high'])
         self.client.reset_mock()
         self.configure(['--model', 'fixture', '--provider', 'local', '--reasoning', 'high'])
         self.assertEqual(_mutation_ops(self.client), [])
         self.assertIn('editor', self.client.rpc.call_args.kwargs)
+
+    def test_failed_switch_retries_and_notifies_user_once_per_target(self):
+        conn = db.get_connection()
+        self.addCleanup(conn.close)
+        warning = 'context_cache'
+        active = {'model': 'A', 'provider': 'original'}
+        self.snapshot['info'].update(active)
+
+        def rpc(method, **params):
+            if method == 'session.mutate' and params['operation'] == 'model':
+                if warning:
+                    return {'status': 'confirmation_required', 'warnings': [{'kind': warning}]}
+                self.snapshot['info'].update(params['payload'])
+            return _success(self.snapshot, method, **params)
+
+        self.client.rpc.side_effect = rpc
+        def turn(provider, **kwargs):
+            return sessions.configure_tracked(conn, 'alpha', self.lease, self.snapshot, workdir='/w',
+                model_args=['--model', 'B', '--provider', provider], server=self.server, member='fixture', **kwargs)
+
+        self.assertEqual(turn('one')['info']['model'], 'A')
+        turn('one', refresh_model=False)
+        turn('one')
+        warning = 'data_policy'
+        turn('two')
+        notices = conn.execute("SELECT content,mentions,need_reply FROM messages WHERE sender='engine' ORDER BY id").fetchall()
+        self.assertEqual(len(notices), 2)
+        self.assertTrue(all(json.loads(row['mentions']) == ['user'] and not row['need_reply'] for row in notices))
+        self.assertIn('model.switch_context_confirm_tokens=0', notices[0]['content'])
+        self.assertIn('A（original）', notices[0]['content'])
+        self.assertIn('/new @fixture', notices[0]['content'])
+        self.assertIn('数据使用政策', notices[1]['content'])
+        self.assertNotIn('switch_context', notices[1]['content'])
+        self.assertEqual([r[0] for r in conn.execute('SELECT profile FROM inbox')], ['user', 'user'])
+        warning = None
+        self.assertEqual(turn('two')['info']['model'], 'B')
+        turn('two')
+        self.assertEqual(_mutation_ops(self.client).count('model'), 4)
+
+    def test_legacy_target_is_rechecked_and_resolution_error_keeps_the_turn(self):
+        conn = db.get_connection()
+        self.addCleanup(conn.close)
+        self.configure()
+        config_key = conn.execute("SELECT key FROM settings WHERE key LIKE 'hermes_config:%'").fetchone()[0]
+        legacy = {'model': {'--model': 'B'}}
+        conn.execute("UPDATE settings SET value=? WHERE project='alpha' AND key=?",
+                     (json.dumps(legacy), config_key))
+        conn.commit()
+
+        def unresolved(method, **params):
+            if method == 'session.mutate' and params['operation'] == 'model':
+                raise GatewayRefusal('model_resolution_failed')
+            return self.snapshot
+
+        self.client.rpc.side_effect = unresolved
+        def turn():
+            return sessions.configure_tracked(conn, 'alpha', self.lease, self.snapshot, workdir='/w',
+                                              model_args=['--model', 'B'], server=self.server, member='fixture')
+        self.assertEqual(turn()['session_id'], 'sid')
+        notice = conn.execute("SELECT content FROM messages WHERE sender='engine'").fetchone()[0]
+        self.assertIn('无法解析', notice)
+        self.assertNotIn('switch_context', notice)
+        self.client.rpc.side_effect = lambda method, **kw: _success(self.snapshot, method, **kw)
+        turn()
+        updated = json.loads(conn.execute('SELECT value FROM settings WHERE key=?', (config_key,)).fetchone()[0])
+        self.assertEqual(updated['applied_model'], legacy['model'])
+        self.assertNotIn('failed_target', updated)
 
     def test_clear_after_reopen_resets_once(self):
         self.configure(['--reasoning', 'high'])

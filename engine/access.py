@@ -47,6 +47,18 @@ def resolve_identity(
             raise HTTPException(503, str(exc)) from None
         if not auth.verify_bot(profile, key, ring=ring) or db.is_builtin_user(profile):
             raise HTTPException(401, "Invalid member credential")
+        # req#171 第二层：凭据验证通过后核对 socket peer IP 属于该 member 的
+        # 绑定集合（防交换来源冒用：B 成员从 A 成员已绑定 IP 发起 HTTP 请求
+        # 在此被拒）。回环恒放行；request=None（非 HTTP 上下文）跳过。
+        if request is not None:
+            from . import ip_allowlist
+            peer = request.client.host if request.client else None
+            conn = db.get_connection()
+            try:
+                if not ip_allowlist.member_allowed(conn, profile, peer):
+                    raise HTTPException(403, "来源 IP 未绑定到该成员，访问被拒绝")
+            finally:
+                conn.close()
         if request is not None:
             session_scope = auth.session_scope(profile, key, ring[1])
             previous = getattr(request.state, 'execution_scope', None)
@@ -160,7 +172,10 @@ def _authorize_member(request, profile, route, body, *, connection=None):
             from . import hermes_session_auth
             hermes_session_auth.validate(conn, session_scope)
             scope = session_scope
-            if route in WRITE_ROUTES:
+            # task_get has its own execution check after the bounded recovery probe.
+            # All other write routes still resolve the active execution here.
+            recovery_read = path == '/task-tools/{operation}' and request.path_params.get('operation') == 'task_get'
+            if route in WRITE_ROUTES and not recovery_read:
                 scope = hermes_session_auth.resolve(conn, scope)
             request.state.execution_scope = scope
             requested_project = request.query_params.get('project')

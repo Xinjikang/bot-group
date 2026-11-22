@@ -32,3 +32,4 @@ group.db.bak_*
 /cache/
 /scratch/
 /install.json
+plugins/hermes/bot-group-relay/state/

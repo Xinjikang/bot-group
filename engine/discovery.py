@@ -85,6 +85,8 @@ def _codex_names(root: Path) -> set[str]:
 def candidate_available(bot) -> bool:
     """Check registered configuration paths without changing registration or membership."""
     from .bot_identity import codex_settings
+    if bot['host_type'] == 'relay':
+        return True
     try:
         root, profile = Path(bot['config_root']), bot['profile']
         if not root.is_dir():
@@ -389,6 +391,12 @@ def register_bot(conn: sqlite3.Connection, host_type: str, profile: str,
     host_type = (host_type or "").strip()
     profile = (profile or "").strip()
     config_root = (config_root or "").strip()
+    if host_type == 'relay':
+        row = conn.execute("SELECT id FROM bots WHERE host_type='relay' AND profile=? AND config_root=?",
+                           (profile, config_root)).fetchone()
+        if row is None:
+            raise ValueError('请先确认远程 Hermes 配对')
+        return {"bot_id": row["id"], "created": False}
     if host_type not in ("hermes", "codex", "dsh"):
         raise ValueError("host_type must be 'hermes', 'codex' or 'dsh'")
     if not profile or not _PROFILE_RE.match(profile) or db.is_builtin_user(profile):
@@ -416,9 +424,13 @@ def register_bot(conn: sqlite3.Connection, host_type: str, profile: str,
             if "runtime_entry" in bot_cols:
                 conn.execute("UPDATE bots SET runtime_entry=? WHERE id=?", (entry, row["id"]))
         return {"bot_id": row["id"], "created": False}
+    return insert_bot(conn, host_type, profile, config_root, host_type, display_name, entry)
+
+
+def insert_bot(conn, host_type, profile, config_root, runtime, display_name, entry=''):
     bot_cols = {r["name"] for r in conn.execute("PRAGMA table_info(bots)")}
     cols = ["host_type", "profile", "config_root", "runtime", "display_name"]
-    vals: list = [host_type, profile, config_root, host_type, display_name]
+    vals: list = [host_type, profile, config_root, runtime, display_name]
     if "runtime_entry" in bot_cols:
         cols.append("runtime_entry")
         vals.append(entry)

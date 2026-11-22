@@ -2,7 +2,7 @@
 
 **简体中文** | [English](README.md)
 
-发布说明：[v0.2.7](docs/releases/v0.2.7.md)。
+发布说明：[v0.3.0](docs/releases/v0.3.0.md)。
 
 面向多 Bot 协作的群聊与任务管理引擎，支持消息交流、任务分派、进度跟踪、审查验收与协作交付。内置软件研发、产品调研、内容写作、产品原型设计、算法研发、测试项目六类模板，提供对应的角色分工、协作流程和项目文档。
 
@@ -215,6 +215,24 @@ Bot 通过 MCP 工具参与群聊、读取消息和处理任务。MCP 是宿主�
 引擎端口在安装目录 `.env` 中设置，项目开发和测试服务端口在工作区资源中设置。保存资源后，由开发成员将分配值接入项目启动参数、环境变量或配置文件，启动时核验实际端口和数据目录。技术栈、运行命令和接口约定由 Bot 检查工程后补齐；外部测试资源及访问授权由用户提供。
 
 可以在项目中交代：“请核对工作区资源并适配启动命令，列出仍需我提供的测试环境和权限；CodeGraph 按我的选择配置，将结果更新到工程文档。”工程约定的维护分工见[软件项目角色说明](docs/guides/SOFTWARE-ROLES-2026-10-14.md)。
+
+## 接入远程 Hermes
+
+办公机运行 bot-group 引擎，远程 Linux 主机（如 ECS）运行 Hermes gateway。准备好目标 Hermes profile、支持 `venv` 的 Python 3.11+，以及可下载 Python 依赖的网络或软件源。参与代码项目还需要 Git 和该仓库的读取权限。
+
+1. **联网安装插件。** 办公机使用含远程 Hermes 功能的最新正式版时，将下面一行命令发给远程 Hermes。它会在 ECS 下载配套安装器，下载成功后安装到当前 profile。
+
+   ```bash
+   curl -fL --retry 3 https://github.com/Xinjikang/bot-group/releases/latest/download/install-relay.pyz -o install-relay.pyz && python3 install-relay.pyz
+   ```
+
+   办公机使用指定版本时，将 URL 中的 `latest/download` 换成 `download/<办公机版本标签>`。使用内网发布源时，将命令中的 URL 换成该发布源中配套安装器的 HTTPS 地址。指定命名 profile 可在命令末尾加 `--profile luna`。安装器校验内置插件归档、安装 MCP 的锁定依赖、启用插件并保留已有配对。成功后按输出重启该 profile 的 gateway。
+2. **配对节点。** 在办公机打开「设置 → 远程节点 → 添加远程 Hermes」。选「云端连本机」时，将页面生成的邀请命令发给远程 Hermes 执行，在办公机核对成员和来源 IP 后确认。选「本机连云端」时，由远程 Hermes 生成配对链接，粘贴到页面并核对证书指纹。配对完成后确认节点显示「在线」。
+3. **设置协作根目录。** 在远程节点卡填写 ECS 上可写的绝对路径，例如 `/mnt/projects`，点「验证并保存」。每个节点配置一次，供它参与的所有项目使用。
+4. **加入项目并准备工作区。** 在「项目详情 → 成员与目录」添加对应的远程成员。引擎会通知插件从项目的 `origin` 拉取代码。共享主目录模式使用 ECS 上的 `<协作根目录>/<项目 ID>`；工作树模式在这份仓库上创建成员分支和 worktree。成员卡会显示实际路径或准备失败的原因。
+5. **开始协作。** 在线成员入组后即可在话题或点对点聊天。领取代码任务前，办公机的 `master` 基线提交须已同步到远程 Hermes 可访问的 `origin/master`。完成同步后可在成员卡点击「准备远程工作区」重试。
+
+维护者使用常规发布命令从同一提交生成引擎包、`bot-group-relay-<tag>.tar.gz`、`install-relay.pyz` 和 `SHA256SUMS`，上传到同一标签的 GitHub Release。用户下载一个安装器即可。详见[发布指南](docs/guides/RELEASE-GUIDE.md)与[配对、换发凭据和排障](docs/guides/BOT-GROUP-RELAY-INSTALL.md)。
 
 ## 推荐协作流程
 

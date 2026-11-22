@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from engine import router
+from engine import router, topic_dispatch
 
 
 class TopicSkipTest(unittest.TestCase):
@@ -34,7 +34,10 @@ class TopicSkipTest(unittest.TestCase):
         self.conn.close()
 
     def send(self, sender, text):
-        return router.route_message(self.conn, sender, text, 'bot', 1)
+        result = router.route_message(self.conn, sender, text, 'bot', 1)
+        while topic_dispatch.process_one(self.conn):
+            pass
+        return result
 
     def test_silent_then_pass_finishes_round(self):
         result = self.send('a', None)
@@ -135,7 +138,8 @@ class TopicSkipTest(unittest.TestCase):
         from engine import scanner
         self.conn.execute("UPDATE threads SET last_active_at='2026-01-01T00:00:00' WHERE id=1")
         self.conn.commit()
-        scanner.scan_thread_idle(self.conn)
+        with patch.object(router.wake, "find_bot_processes", return_value=[]):
+            scanner.scan_thread_idle(self.conn)
         self.assertEqual(self.conn.execute('SELECT status FROM threads WHERE id=1').fetchone()[0], 'settled')
         self.enqueue.assert_not_called()
 
@@ -217,6 +221,7 @@ class TopicSkipTest(unittest.TestCase):
             with patch.object(router.wake, '_workdir_for', return_value=str(root)), \
                  patch('engine.project_rules.sync'), \
                  patch('engine.session_adapter.available', return_value=False), \
+                 patch('engine.hermes_gateway.enabled', return_value=False), \
                  patch.object(router.wake, '_hermes_bin', return_value='hermes'), \
                  patch.object(router.wake, 'find_bot_processes', return_value=[]), \
                  patch.object(router.wake.subprocess, 'Popen', side_effect=start_child) as popen, \

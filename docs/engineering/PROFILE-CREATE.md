@@ -1,5 +1,7 @@
 # 创建 profile 与选择项目成员
 
+首次添加本地 Hermes Bot 时，引擎在绑定的 profile 中写入 `model.switch_context_confirm_tokens=0`（关闭长上下文换模确认）和 `display.busy_input_mode=steer`（忙时输入用于纠偏）。创建新 profile 和选择已有 profile 都适用。已注册的 Bot 再次加入项目时沿用当前配置。费用和数据使用政策各有独立的确认条件。
+
 项目创建/导入第 5 步“选择成员与负责人”和 **项目详情 → 成员与目录 → 添加成员** 使用同一套勾选列表，顶部均提供“创建 profile”。创建窗口独立于项目详情窗口，内部选择 Hermes / Codex / DSH 并填写配置。
 
 `frontend/member_picker.js` 共用候选展示、选择、刷新及创建回调。`GET /profiles/candidates` 合并宿主扫描结果与已注册 Bot，标记已入组成员；选择列表仅展示尚未加入当前项目的 Bot。同名 profile 通过宿主、配置根目录与 Bot ID 区分。选中尚未注册的宿主 profile 时只注册 Bot。新建成功返回原列表并自动勾选，其他选择与向导角色草稿保留。详情点击“加入项目”才入组；向导最终确认时统一入组和授权。批量加入部分成功后，成功成员从候选列表移除，失败及未处理成员仍可重试；没有可加入成员时保留创建和刷新入口。

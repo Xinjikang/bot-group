@@ -38,7 +38,8 @@ class AuthStatusTest(unittest.TestCase):
     def test_auth_status_endpoint_reports_configuration_only(self):
         from fastapi.testclient import TestClient
         from engine.main import app
-        client = TestClient(app)
+        # req#171：main.app 挂了来源绑定中间件；夹具用回环模拟生产本机来源
+        client = TestClient(app, client=('127.0.0.1', 4321))
         with patch.dict(os.environ, {'GROUP_ADMIN_PASSWORD': ''}):
             r = client.get('/auth/status')
             self.assertEqual(r.status_code, 200)

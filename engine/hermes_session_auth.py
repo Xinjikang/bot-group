@@ -171,16 +171,31 @@ def server(row, generation):
     return spec
 
 
-def configure(conn, row, client, snapshot, *, force_mcp=False):
-    from . import hermes_gateway_sessions as sessions, signing_keys
+def configure(conn, row, client, snapshot, *, force_mcp=False, refresh_model=True):
+    from . import hermes_gateway_sessions as sessions, signing_keys, relay, wake
     current = _signing_generation()
     if snapshot['running'] or snapshot['pending']:
         raise HTTPException(409, 'Session credential handoff requires idle session')
     if current != row['signing_generation']:
         conn.execute('UPDATE hermes_session_grants SET pending_generation=? WHERE ' + WHERE, (current, *key(row)))
         conn.commit()
-    result = sessions.configure_tracked(conn, row['project'], client, snapshot, workdir=row['workdir'],
-        model_args=json.loads(row['model_args']), server=server(row, current), force_mcp=force_mcp)
+    spec = server(row, current)
+    # req#168 随包 MCP 配置：远程节点按节点配置渲染 MCP 启动命令与 env（经 relay
+    # 帧下发、插件原样转发到本机 gateway）；configure 前同步问询当前连接取得
+    # 「本次配置的远端实际摘要」复核（同连接原地换包、配置早于异步上报也能
+    # 取到本次值，manager node1981 ③）——无问询能力（本机连接）走库内摘要；
+    # 远端渲染缺 command 拒绝（绝不回落本机配置）；GROUP_ENGINE_URL 以远端渲染
+    # 值为准。身份令牌与上下文继续由引擎注入（manager node1977 ③）。
+    fetch = getattr(client, 'request_mcp_snapshot', None)
+    spec = relay.merge_mcp_spec(conn, row["profile"], spec, engine_url=wake._engine_url(),
+                                fetch_report=fetch)
+    workdir = row['workdir']
+    if not refresh_model and relay.read_node(conn, row['profile']) is not None:
+        # A signing-key refresh resumes the existing session, including grants from older engines.
+        workdir = snapshot['info'].get('cwd')
+    result = sessions.configure_tracked(conn, row['project'], client, snapshot, workdir=workdir,
+        model_args=json.loads(row['model_args']), server=spec, force_mcp=force_mcp,
+        member=row['profile'], refresh_model=refresh_model)
     validate(conn, {**context(row), 'signing_generation': current})
     conn.execute('UPDATE hermes_session_grants SET signing_generation=?,pending_generation=NULL WHERE ' + WHERE,
                  (current, *key(row)))
@@ -253,7 +268,7 @@ def maintain():
                     phase = 'resume'
                     snapshot = client.rpc('session.resume', session_id=row['session_id'])
                     phase = 'configure'
-                    configure(conn, row, client, snapshot)
+                    configure(conn, row, client, snapshot, refresh_model=False)
             except Exception as exc:
                 log_deferred(row, phase, exc)
                 conn.rollback()
