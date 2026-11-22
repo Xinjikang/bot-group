@@ -67,7 +67,7 @@ class DispatchGateway:
         if method == 'session.create':
             sid = uuid4().hex
             snapshot = {'session_id': sid, 'revision': 0, 'execution_generation': 0,
-                        'info': {'title': args['title'], 'source': 'acp', 'cwd': args['cwd']},
+                        'info': {'title': args['title'], 'source': 'acp', 'cwd': args.get('cwd', str(self.home))},
                         'running': False, 'pending': [], 'messages': [], 'prompts': [],
                         'subscription_id': uuid4().hex}
             self.sessions[sid] = {'snapshot': snapshot, 'submission': None}
@@ -90,7 +90,7 @@ class DispatchGateway:
             return {'mcp_servers': ['task_queue']}
         if method == 'prompt.submit':
             self.submit_requests.append(args['submission_id'])
-            assert session['submission'] is None and session.get('mcp') is not None
+            assert (session['submission'] is None or session['submission']['done']) and session.get('mcp') is not None
             received = {'session_id': sid, 'submission_id': args['submission_id'], 'text': args['text'],
                         'admission_id': uuid4().hex, 'done': False}
             session['submission'] = received

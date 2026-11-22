@@ -461,6 +461,10 @@ def wake_system_prompt(kind: str, project: str, workdir: str, *, remote_workspac
                         '目录模式': '共用项目主目录' if Path(workdir).resolve() == Path(row['root']).resolve() else '独立 worktree',
                         '当前工作目录': workdir, '工作区配置': resources})
         prompt += '\n\n' + workspace_resources.RULE
+    elif remote_workspace.get('conversation'):
+        context['会话用途'] = '项目沟通。项目代码和基线在执行项目任务时核验。'
+        if remote_workspace['root']:
+            context['远端协作根目录'] = remote_workspace['root']
     else:
         context.update({'项目主目录': remote_workspace['main'], '当前工作目录': remote_workspace['path'],
                         '目录模式': remote_workspace['mode'], '当前分支': remote_workspace['branch']})
@@ -922,7 +926,8 @@ def _spawn(profile: str, kind: str, signal: str | None, thread_id: int | None,
     if _shutting_down.is_set():
         return {'ok': False, 'busy': True, 'detail': 'engine is shutting down'}
     try:
-        remote_workspace = remote_workspaces.for_session(project, profile)
+        conversation = kind == 'chat' or (task_id is None and signal is None)
+        remote_workspace = remote_workspaces.for_session(project, profile, conversation=conversation)
     except HTTPException as exc:
         import uuid
         detail = '远程工作区：' + str(exc.detail)
@@ -988,12 +993,13 @@ def _spawn_in_workspace(profile: str, kind: str, signal: str | None, thread_id: 
             return {'ok': False, 'detail': '项目已归档或不存在'}
         if not _profile_active(conn, project, profile):
             return {'ok': False, 'detail': '成员尚未加入项目或已停用'}
-        if remote_workspace is not None:
+        conversation = remote_workspace is not None and remote_workspace.get('conversation')
+        if remote_workspace is not None and not conversation:
             from . import remote_workspaces
             root, _, mode = remote_workspaces.configuration(conn, project, profile)
             if (root, mode) != (remote_workspace['root'], remote_workspace['mode']):
                 return {'ok': False, 'busy': True, 'detail': '远程工作区配置已变更，正在重新准备'}
-        bound_task = task_retry.select_task(conn, profile, project, task_id) if kind == 'work' else None
+        bound_task = task_retry.select_task(conn, profile, project, task_id) if kind == 'work' and not conversation else None
     finally:
         conn.close()
     if task_id is not None and bound_task is None:

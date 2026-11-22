@@ -43,8 +43,10 @@ def new(client, *, title, workdir, system_prompt, model_args, request_id=None, l
     params = {key.lstrip('-'): value for key, value in options.items()
               if key in ('--model', '--provider', '--reasoning')}
     params.update(launch_options or {})
+    if workdir is not None:
+        params['cwd'] = workdir
     return initialization_rpc(client, 'session.create', request_id=request_id or uuid.uuid4().hex,
-        title=title, source='acp', cwd=workdir, editor=editor if editor is not None else {'mcp_servers': []},
+        title=title, source='acp', editor=editor if editor is not None else {'mcp_servers': []},
         client_env={'HERMES_EPHEMERAL_SYSTEM_PROMPT': system_prompt}, **params)
 
 

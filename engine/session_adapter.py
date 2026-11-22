@@ -80,7 +80,7 @@ def create_session(profile: str, title: str, *, project=None, kind='work') -> st
     """
     from . import hermes_gateway
     from . import remote_workspaces
-    workspace = remote_workspaces.for_session(project, profile)
+    workspace = remote_workspaces.for_session(project, profile, conversation=True)
     if workspace or hermes_gateway.enabled():
         from . import wake, hermes_prompt_state
         if workspace:

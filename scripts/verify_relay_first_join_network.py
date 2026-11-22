@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 import traceback
-from contextlib import ExitStack, closing
+from contextlib import ExitStack, asynccontextmanager, closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -59,7 +59,8 @@ def listener(plg, home, lan, stack, proxy):
     return obj
 
 
-async def send_mcp(gateway, received, expected_url, text):
+@asynccontextmanager
+async def member_mcp(gateway, received, expected_url):
     spec = gateway.sessions[received['session_id']]['mcp']
     configured = {entry['name']: entry['value'] for entry in spec['env']}
     assert configured['GROUP_ENGINE_URL'] == expected_url
@@ -70,9 +71,25 @@ async def send_mcp(gateway, received, expected_url, text):
     params = StdioServerParameters(command=spec['command'], args=['-B', *spec['args']], cwd=str(gateway.home), env=env)
     async with stdio_client(params) as (read, write), ClientSession(read, write) as client:
         await client.initialize()
+        yield client
+
+
+async def send_mcp(gateway, received, expected_url, text, *, seen_id=None):
+    async with member_mcp(gateway, received, expected_url) as client:
         sent = await client.call_tool('group_send', {'text': text, 'need_reply': False})
         assert not sent.isError, 'configured MCP did not send the reply'
+        if seen_id is not None:
+            seen = await client.call_tool('group_mark_seen', {'message_ids': [seen_id]})
+            assert not seen.isError and json.loads(seen.content[0].text)['seen'] == 1, seen.content
         return json.loads(sent.content[0].text)['message_id']
+
+
+async def claim_mcp(gateway, received, expected_url, task):
+    async with member_mcp(gateway, received, expected_url) as client:
+        info = await client.call_tool('task_get', {'project': 'alpha', 'task_id': task})
+        assert not info.isError and json.loads(info.content[0].text)['task']['id'] == task, info.content
+        claim = await client.call_tool('task_claim', {'project': 'alpha'})
+        assert not claim.isError and json.loads(claim.content[0].text)['claimed'], claim.content
 
 
 def mention(api, member, gateway, other, uri, label):
@@ -327,7 +344,7 @@ def exercise(args, evidence):
         with patch.object(hermes_gateway, 'enabled', return_value=False):
             sid = session_adapter.create_session(a, 'workspace-reset-check', project='alpha')
             assert session_adapter.session_exists(a, sid)
-            assert Path(gateway_a.sessions[sid]['snapshot']['info']['cwd']) == ha / 'projects' / 'alpha'
+            assert Path(gateway_a.sessions[sid]['snapshot']['info']['cwd']) == ha
             evidence['fresh_session_workspace'] = gateway_a.sessions[sid]['snapshot']['info']['cwd']
         assert set(labels.values()) == {'default（远程）', 'default（远程 2）'}
         members = {item['profile']: item['display_name'] for item in result(api.get('/members?project=alpha'))['members']}
@@ -356,10 +373,43 @@ def exercise(args, evidence):
         evidence['replies'] = []
         evidence['replies'].append(dispatch(api, profile, local_gateway, gateway_a, str(api.base_url).rstrip('/'), 'local'))
         assert not gateway_a.submit_requests and not gateway_b.submit_requests
+        git_env = os.environ.copy()
+        subprocess.run(['git', '-c', 'user.email=test@example.invalid', '-c', 'user.name=fixture',
+                        'commit', '--allow-empty', '-m', 'unpublished'], cwd=office, env=git_env, check=True)
+        with closing(db.get_connection()) as conn, conn:
+            now = db.now_iso()
+            req = conn.execute("INSERT INTO requirements(project,title,created_at,updated_at) VALUES('alpha','fixture',?,?)",
+                               (now, now)).lastrowid
+            task = conn.execute("INSERT INTO tasks(project,requirement_id,title,next_bot,created_at,description,"
+                                "design_basis,acceptance_criteria,briefing_status) VALUES('alpha',?,'fixture',?,?,"
+                                "'fixture','fixture','fixture','ready')", (req, b, now)).lastrowid
+        from engine import taskpool
+        unavailable = api.post(f'/projects/alpha/members/{b}/prepare-workspace')
+        assert unavailable.status_code == 409 and '缺少办公机基线' in unavailable.json()['detail']
+        claim = taskpool.task_claim('alpha', b)
+        assert not claim['claimed'] and '缺少办公机基线' in claim['message']
         evidence['replies'].append(dispatch(api, a, gateway_a, gateway_b, issued['engine_url'], 'before-a'))
         evidence['replies'].append(dispatch(api, b, gateway_b, gateway_a, lb['proxy_url'], 'before-b'))
         for gateway, home in ((gateway_a, ha), (gateway_b, hb)):
-            assert all(Path(s['snapshot']['info']['cwd']) == home / 'projects' / 'alpha' for s in gateway.sessions.values())
+            assert all(Path(s['snapshot']['info']['cwd']) == home for s in gateway.sessions.values())
+        with closing(db.get_connection()) as conn:
+            assert wake.enqueue(conn, b, 'work', 'scan:task', project='alpha')
+            direct = result(api.post('/msg', json={'sender': 'user', 'project': 'alpha',
+                                'text': f'@{b} 请从项目 origin 拉取基线', 'need_reply': True}))['message_id']
+            assert queue.process_one(conn)
+            admission = gateway_b.submissions[-1]
+            assert '请从项目 origin 拉取基线' in admission['text'] and wake._TASK_SUFFIX.format(task_id=task) not in admission['text']
+            row = conn.execute('SELECT task_id,workdir FROM hermes_executions WHERE submission_id=?',
+                               (admission['submission_id'],)).fetchone()
+            assert row['task_id'] is None and Path(row['workdir']) == hb
+            reply = send_mcp(gateway_b, admission, lb['proxy_url'], '@user 已收到仓库说明', seen_id=direct)
+            reply_id = worker.submit(asyncio.run, reply).result() if ui else asyncio.run(reply)
+            assert conn.execute('SELECT sender FROM messages WHERE id=? AND thread_id IS NULL', (reply_id,)).fetchone()[0] == b
+            gateway_b.settled(admission)
+            wait(lambda: conn.execute("SELECT 1 FROM hermes_executions WHERE submission_id=? AND state='terminal' AND cleanup_pending=0",
+                                      (admission['submission_id'],)).fetchone())
+            assert conn.execute('SELECT status FROM tasks WHERE id=?', (task,)).fetchone()[0] == 'pending'
+        evidence['missing_baseline'] = dict(task_claim=claim['reason'], direct_message=direct, direct_reply=reply_id)
         orig = relay_server.active_link(b)
         assert orig is not None
         with host_env(profile, ha):
@@ -384,6 +434,21 @@ def exercise(args, evidence):
             conn.execute("UPDATE projects SET directory_mode='worktree' WHERE name='alpha'")
         evidence['switch'] = {m: {k: after[m][k] for k in ('direction', 'state', 'generation')} for m in (a, b)}
         evidence['replies'].append(dispatch(api, b, gateway_b, gateway_a, lb['proxy_url'], 'after-b'))
+        subprocess.run(['git', 'push', str(bare), 'master'], cwd=office, env=git_env, check=True)
+        with closing(db.get_connection()) as conn:
+            assert wake.enqueue(conn, b, 'work', 'scan:task', project='alpha')
+            assert queue.process_one(conn)
+            assigned = gateway_b.submissions[-1]
+            assert wake._TASK_SUFFIX.format(task_id=task) in assigned['text']
+            assert assigned['session_id'] == admission['session_id']
+            claim_rpc = claim_mcp(gateway_b, assigned, lb['proxy_url'], task)
+            if ui:
+                worker.submit(asyncio.run, claim_rpc).result()
+            else:
+                asyncio.run(claim_rpc)
+            gateway_b.settled(assigned)
+            wait(lambda: conn.execute("SELECT 1 FROM hermes_executions WHERE submission_id=? AND state='terminal' AND cleanup_pending=0",
+                                      (assigned['submission_id'],)).fetchone())
         worktree = hb / 'projects' / '.bot-group-worktrees' / 'alpha' / b
         assert any(Path(s['snapshot']['info']['cwd']) == worktree for s in gateway_b.sessions.values())
         assert subprocess.check_output(['git', 'branch', '--show-current'], cwd=worktree, text=True,
@@ -392,7 +457,7 @@ def exercise(args, evidence):
         assert relay_server.active_link(b) is orig
         evidence['actual_submissions'] = {profile: len(local_gateway.submit_requests),
                                           a: len(gateway_a.submit_requests), b: len(gateway_b.submit_requests)}
-        assert evidence['actual_submissions'] == {profile: 1, a: 1, b: 2}
+        assert evidence['actual_submissions'] == {profile: 1, a: 1, b: 4}
         if ui:
             ui.finish(a, b)
         assert not gateway_a.errors and not gateway_b.errors, (gateway_a.errors, gateway_b.errors)

@@ -106,7 +106,7 @@ def _relay_node_gate(conn, candidate) -> tuple[str, list[int]]:
 
 def process_one(conn) -> bool:
     """取一个 queued job 并 deliver。返回是否处理了 job。"""
-    from . import project_readiness
+    from . import project_readiness, relay
     job = None
     for candidate in conn.execute("SELECT * FROM wake_jobs WHERE status='queued' ORDER BY id").fetchall():
         # 停用者不投递（规格 27.3 第 6 点 + req#27 按项目维度）：存量 job 也不许
@@ -118,7 +118,7 @@ def process_one(conn) -> bool:
             continue
         # req#168 节点闸门：远程 relay 成员离线/达并发上限 → hold 保留 queued
         #（绝不 _discard_queued）；离线且发言位仍有效记 offline_waiting。
-        gate, _ = _relay_node_gate(conn, candidate)
+        gate, mention_ids = _relay_node_gate(conn, candidate)
         if gate == "hold":
             continue
         if candidate["kind"] == "chat" and candidate["thread_id"] is not None:
@@ -139,7 +139,10 @@ def process_one(conn) -> bool:
         from . import hermes_delegations, hermes_gateway, hermes_task_recovery
         if hermes_task_recovery.holds_wake(conn, candidate):
             continue
-        recovery = hermes_task_recovery.candidate(conn, candidate)
+        remote_message = candidate['kind'] == 'work' and (
+            bool(mention_ids) or (candidate['trigger'] in ('@msg', 'scan:group')
+                                  and relay.read_node(conn, candidate['profile']) is not None))
+        recovery = None if remote_message else hermes_task_recovery.candidate(conn, candidate)
         if recovery is not None:
             # Keep the original wake until the session appends a task node.
             # A blocked B session is skipped without occupying other members' jobs.
@@ -201,9 +204,11 @@ def process_one(conn) -> bool:
         # 注入正文里的触发消息标注；回复要求由注入正文逐条按 effective_need_reply 承载。
         _trigger_msg_id = job["trigger_msg_id"]
         from . import task_retry
-        task_id = int(job['trigger'].split(':')[-1]) if not direct_wait and job['trigger'].startswith('retry:task:') else None
-        bound_task = task_retry.select_task(conn, job['profile'], _proj, task_id) if job['kind'] == 'work' and not direct_wait else None
-        if not direct_wait and job['kind'] == 'work' and (job['trigger'] == 'scan:task' or job['trigger'].startswith('retry:task:')) and bound_task is None:
+        task_id = (int(job['trigger'].split(':')[-1])
+                   if not direct_wait and not remote_message and job['trigger'].startswith('retry:task:') else None)
+        bound_task = (task_retry.select_task(conn, job['profile'], _proj, task_id)
+                      if job['kind'] == 'work' and not direct_wait and not remote_message else None)
+        if not direct_wait and not remote_message and job['kind'] == 'work' and (job['trigger'] == 'scan:task' or job['trigger'].startswith('retry:task:')) and bound_task is None:
             _mark(conn, job['id'], 'cancelled', 'No published complete task remains eligible')
             return True
         if job['kind'] == 'work' and job['trigger'] == 'scan:req' and bound_task is None:
@@ -238,12 +243,10 @@ def process_one(conn) -> bool:
             injected_ids = result.get("injected_message_ids") or []
             submission_id = result.get("submission_id")
             if injected_ids and result.get("admitted") is True and submission_id:
-                from . import relay
                 relay.mark_submitted(conn, message_ids=injected_ids,
                                      member=job["profile"],
                                      submission_id=submission_id)
             elif injected_ids and submission_id:
-                from . import relay
                 relay.attach_submission(conn, message_ids=injected_ids,
                                         member=job["profile"],
                                         submission_id=submission_id)

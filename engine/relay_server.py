@@ -500,7 +500,8 @@ def _engine_url() -> str:
 # X-Group-Operation-Id，结果不明时靠它按成员/凭据作用域核对——消息落库
 # 一次的幂等依赖）：仅 GET + 单个非空操作号（空路径/多段/其他方法拒）。
 # 心跳 /heartbeat 不属发送依赖，保持拒绝。
-_HTTP_TUNNEL_EXACT = (("POST", "/msg"),)
+_HTTP_TUNNEL_EXACT = (("POST", "/msg"), ("POST", "/inbox/seen"),
+                      ("POST", "/task-tools/task_get"), ("POST", "/task-tools/task_claim"))
 _HTTP_TUNNEL_PREFIXES = ("/health", "/projects/", "/tasks/", "/group/",
                          "/members", "/auth/status")
 _RECEIPT_PREFIX = "/mcp-operations/"

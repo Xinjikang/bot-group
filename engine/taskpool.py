@@ -1099,6 +1099,9 @@ def task_claim(project: str, role: str) -> dict:
         if not claimable:
             return {"claimed": False, "reason": "nothing_claimable",
                     "message": "No task is eligible. Use task_get to inspect briefing_status and dependency_blockers; publish a complete brief and wait for prerequisites to be done."}
+        from . import remote_workspaces
+        if error := remote_workspaces.claim_error(conn, project, role):
+            return {"claimed": False, "reason": "remote_workspace_unavailable", "message": error}
         target = claimable[0]
         ts = db.now_iso()
         cur = conn.execute(

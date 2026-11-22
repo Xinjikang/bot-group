@@ -135,7 +135,7 @@ def _binding(conn, client, bot, project, profile, kind, thread_id, title, workdi
             prompt_state.created(conn, client.endpoint['profile_id'], snapshot['session_id'], prompt)
     if snapshot['info']['source'] != 'acp':
         old_sid = snapshot['session_id']
-        snapshot = sessions.migrate_legacy(client, snapshot, workdir=workdir)
+        snapshot = sessions.migrate_legacy(client, snapshot, workdir=workdir or snapshot['info']['cwd'])
         conn.execute('INSERT OR IGNORE INTO hermes_session_migrations VALUES(?,?,?,?)',
                      (profile, old_sid, snapshot['session_id'], time.time()))
     conn.execute("INSERT INTO session_bindings(project,bot_id,profile,kind,thread_id,session_id,runtime,generation,title,updated_at) "
@@ -371,6 +371,8 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
             if not {'durable-admission-v1', 'acp-session-mcp-v1'} <= set(description['capabilities']):
                 raise GatewayRefusal('gateway_capabilities_unavailable')
             snapshot = _binding(conn, client, bot, project, profile, kind, thread_id, session, workdir, model_args, remote_workspace)
+            if workdir is None:
+                workdir = snapshot['info']['cwd']
         if snapshot['running'] or snapshot['pending']:
             # attach 复核发现原生忙：回写观察缓存，退回后同一 TTL 窗口内不再反复占队首
             _native_busy_feedback(conn, snapshot['session_id'])

@@ -163,10 +163,28 @@ def schedule(project, member):
     return future
 
 
-def for_session(project, member):
+def for_session(project, member, *, conversation=False):
     with closing(db.get_connection()) as conn:
         if not conn.execute('SELECT 1 FROM relay_nodes WHERE member=?', (member,)).fetchone():
             return None
+        if conversation:
+            return {'conversation': True, 'path': None, 'root': root_for(conn, member)}
     if not project:
         raise HTTPException(409, '远程会话需要指定项目工作区')
     return schedule(project, member).result()
+
+
+def claim_error(conn, project, member):
+    """Check the prepared baseline before assigning a task to a relay member."""
+    if not conn.execute('SELECT 1 FROM relay_nodes WHERE member=?', (member,)).fetchone():
+        return None
+    try:
+        _, office, mode = configuration(conn, project, member)
+        workspace = state(conn, project, member, mode)
+        if not workspace['valid']:
+            return workspace['error']
+        if workspace['baseline'] != _git_value(office, 'rev-parse', '--verify', 'refs/heads/master^{commit}'):
+            return '办公机基线已更新，请先准备远程工作区'
+    except HTTPException as exc:
+        return str(exc.detail)
+    return None
