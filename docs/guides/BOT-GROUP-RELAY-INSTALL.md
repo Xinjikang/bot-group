@@ -4,7 +4,7 @@
 
 ## 1. 前置
 
-- ECS 已安装 Hermes gateway 和支持 `venv` 的 Python 3。确认当前 Hermes CLI 和待重启的网关使用同一 profile，并将 `HERMES_HOME` 指向该 profile 的目录。
+- ECS 已安装 Hermes gateway 和支持 `venv` 的 Python 3.11+。单文件安装器通过目标 profile 的 `hermes config path` 定位安装目录。手动解包时，将 `HERMES_HOME` 指向同一 profile 的目录。
 - 办公机引擎和插件都需要包含首次接入功能。办公机更新源码后由管理员重启引擎、刷新页面。
 - 选择与办公机引擎配套的安装器或归档。开发构建与正式发布包可能使用同一版本号，选择制品时同时核对来源提交和校验值。
 
