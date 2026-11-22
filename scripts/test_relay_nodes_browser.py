@@ -422,10 +422,20 @@ def main():
             control = field.bounding_box()
             button = card.get_by_role('button', name='验证并保存').bounding_box()
             assert abs(control['y'] - button['y']) <= 1 and control['height'] == button['height']
-            assert control['x'] + control['width'] < button['x']
-            assert field.evaluate("el => getComputedStyle(el.labels[0]).rowGap") == '8px'
+            label = field.evaluate("""el => {
+                const range = document.createRange();
+                range.selectNodeContents(el.labels[0].firstChild);
+                return range.getBoundingClientRect().toJSON();
+            }""")
+            row = card.locator('form.relay-copy-row').bounding_box()
+            assert abs(label['left'] - row['x']) <= 1
+            assert abs(label['top'] + label['height'] / 2 - control['y'] - control['height'] / 2) <= 2
+            assert abs(control['x'] - label['right'] - 8) <= 1
+            assert abs(button['x'] - control['x'] - control['width'] - 8) <= 1
+            assert abs(button['x'] + button['width'] - row['x'] - row['width']) <= 1
+            return control['width']
 
-        check_workspace_layout(remote_card)
+        desktop_input_width = check_workspace_layout(remote_card)
         root.fill('relative')
         save.click()
         remote_card.get_by_text('请输入远程主机上的绝对路径', exact=True).wait_for()
@@ -602,7 +612,7 @@ def main():
         assert overflow <= 0, overflow
         for theme in ('dark', 'light'):
             page.evaluate('(theme) => applyTheme(theme)', theme)
-            check_workspace_layout(spare_card)
+            assert desktop_input_width > check_workspace_layout(spare_card)
             page.screenshot(path=str(evidence / f'relay-nodes-390-{theme}.png'))
         page.evaluate("applyTheme('dark')")
         spare_add = page.locator('#relay-node-list article[data-relay-member="hermes-spare"] button[data-action="add-ip"]')
