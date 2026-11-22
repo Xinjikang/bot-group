@@ -83,6 +83,8 @@ def _managed_files(root: Path) -> list[str]:
         for cur, dirs, names in os.walk(p):
             dirs[:] = [d for d in dirs
                        if d not in _EXCLUDE_PARTS and not d.startswith(".")]
+            if Path(cur) == root / "plugins/hermes/bot-group-relay" and "state" in dirs:
+                dirs.remove("state")
             for name in sorted(names):
                 if name.startswith('.') or name in _EXCLUDE_NAMES:
                     continue
@@ -107,7 +109,8 @@ def _relay_asset_files(root: Path) -> dict[str, Path]:
     files: dict[str, Path] = {}
     for name in sorted(os.listdir(plugin_dir)):
         path = plugin_dir / name
-        if path.is_file() and not name.endswith((".pyc", ".pyo")):
+        if (path.is_file() and not name.startswith(".")
+                and (name.endswith(".py") or name in {"plugin.yaml", "requirements.lock", "install.sh"})):
             files[name] = path
     for top in ("mcp",):
         for cur, dirs, names in os.walk(root / top):
@@ -164,6 +167,24 @@ def _make_relay_asset(root: Path, out_dir: Path, version: str) -> tuple[str, str
     return str(archive), sha
 
 
+def make_relay_installer(root: Path, archive: Path, out_dir: Path) -> Path:
+    """Bundle the exact release tarball with the standalone Linux installer."""
+    installer = out_dir / "install-relay.pyz"
+    payload = archive.read_bytes()
+    with zipfile.ZipFile(installer, "w") as bundle:
+        bundle.write(root / "tools/install_relay.py", "__main__.py")
+        bundle.writestr("relay.tar.gz", payload)
+        bundle.writestr("relay.sha256", hashlib.sha256(payload).hexdigest())
+    return installer
+
+
+def _relay_checksums(root: Path, out_dir: Path, version: str) -> str:
+    archive, sha = _make_relay_asset(root, out_dir, version)
+    installer = make_relay_installer(root, Path(archive), out_dir)
+    return (f"{sha}  {Path(archive).name}\n"
+            f"{hashlib.sha256(installer.read_bytes()).hexdigest()}  {installer.name}\n")
+
+
 def make_release(root: Path, out_dir: Path, name: str, version: str, base_url: str = "") -> int:
     # 限制输出文件名，版本正式性由 --formal 入口验证。
     if any(c in name + version for c in '/\\:') or name in ('.', '..') or version in ('.', '..'):
@@ -201,9 +222,8 @@ def make_release(root: Path, out_dir: Path, name: str, version: str, base_url: s
     manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
     # req#168：同 tag 构建第二个资产 bot-group-relay-<version>.tar.gz（ECS 插件
     # 分发包），SHA256 与主包一起进 SHA256SUMS。
-    relay_archive, relay_sha = _make_relay_asset(root, out_dir, version)
     checksums = f"{sha}  {archive.name}\n{manifest_sha}  {manifest_path.name}\n"
-    checksums += f"{relay_sha}  {Path(relay_archive).name}\n"
+    checksums += _relay_checksums(root, out_dir, version)
     bootstrap = root / "engine" / "maintenance" / "bootstrap.py"
     installer_assets = {}
     if bootstrap.is_file():

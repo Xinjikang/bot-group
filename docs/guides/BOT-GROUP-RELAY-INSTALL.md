@@ -6,11 +6,13 @@
 
 - ECS 已安装 Hermes gateway 和支持 `venv` 的 Python 3。确认当前 Hermes CLI 和待重启的网关使用同一 profile，并将 `HERMES_HOME` 指向该 profile 的目录。
 - 办公机引擎和插件都需要包含首次接入功能。办公机更新源码后由管理员重启引擎、刷新页面。
-- 将交付的插件归档和配套的 `SHA256SUMS` 放在同一目录。开发构建与正式发布包可能使用同一版本号，选择制品时同时核对来源提交和校验值。
+- 选择与办公机引擎配套的安装器或归档。开发构建与正式发布包可能使用同一版本号，选择制品时同时核对来源提交和校验值。
 
 ## 2. 安装
 
-在 ECS 的制品目录运行以下命令，将 `archive` 设为实际交付的文件名。校验通过后再解包、安装随包 MCP 的依赖并启用插件。
+推荐使用 [README 的一行安装命令](../../README.zh-CN.md#接入远程-hermes)。已有配套 `install-relay.pyz` 时，在 ECS 执行 `python3 install-relay.pyz` 即可安装到当前 profile；指定 profile 使用 `--profile <名称>`。按输出重启对应 gateway。
+
+手动安装时将归档和配套的 `SHA256SUMS` 放在同一目录，运行以下命令，将 `archive` 设为实际交付的文件名。校验通过后再解包、安装随包 MCP 的依赖并启用插件。
 
 ```bash
 (

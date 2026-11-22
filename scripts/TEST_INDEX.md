@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+远程 Hermes 单文件安装器使用 `python -X utf8 -B -m unittest scripts.test_relay_installer`。从真实插件构建归档和 `install-relay.pyz`，验证资产摘要、文件清单、损坏包拒绝、目标 profile、首次安装、依赖失败、启用失败回滚、重试与配对保留。测试使用临时 profile 和模拟的 Hermes、依赖安装命令；Windows 测试替代 Linux 文件锁和符号链接。发布时另在 Linux ECS 验证实际依赖安装和网关加载。
+
 远程协作根目录使用 `python -X utf8 -B -m unittest scripts.test_remote_workspaces`。在临时 Git 仓库验证共享 master、独立具名 worktree、重复准备、基线未发布、分叉与保留未提交文件，以及远端分支推送并在办公机合并。下文的 `scripts.verify_relay_first_join_network` 使用隔离 bare 仓库验证缺少基线时的话题回复、点对点收发与已读、领取受阻，以及发布基线后同一会话进入 worktree 并领取任务。`scripts.test_relay_nodes_browser` 在 1280px 和 390px 下检查协作根目录标签、输入框和按钮同排占满卡片内容宽度，并验证节点卡的保存、错误回显和不同节点的值。
 
 远程节点换发回归使用 `python -X utf8 -B -m unittest scripts.test_plugin_listen_pairing.FirstJoinTests.test_renewal_command_updates_existing_node_and_waiting_gateway scripts.test_plugin_listen_pairing.FirstJoinTests.test_renewal_is_scoped_and_cancellable`。临时 SQLite 和随机回环端口验证原节点换发、网关恢复、来源限制、取消与重复执行。`python -X utf8 -B -m scripts.test_relay_nodes_browser --evidence <报告目录>` 在 Chrome 核对转发指引、复制内容、取消、完成和清除。
