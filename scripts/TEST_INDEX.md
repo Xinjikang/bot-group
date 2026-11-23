@@ -22,6 +22,10 @@ Hermes 项目换模回执、定向提醒与注册默认值覆盖在 `scripts.tes
 
 ### 远程 Hermes 首次接入
 
+允许来源 IP 的网络标注使用 `python -X utf8 -B -m unittest scripts.test_ip_allowlist` 验证，覆盖同一来源 IP 按成员匹配入站接口、无连接记录的共享地址，以及公网 IPv4/IPv6。节点卡标签与精确 IP 增删操作由下列浏览器用例验证。
+
+监听地址识别与过滤由 `python -X utf8 -B -m unittest scripts.test_listen_control.ListenApiTests` 验证。模拟具名网卡和 IPv4/IPv6 地址，覆盖 Mihomo 过滤、Hyper-V 保留、局域网及公网标签。用 `python -X utf8 -B -m scripts.test_relay_nodes_browser --evidence <报告目录>` 在 Chrome 检查选项文字、保存的 IP 和实际监听摘要。
+
 合并后复验插件启动、配对确认及连接恢复，在仓库根目录使用项目 Python 运行 `python -X utf8 -B -m unittest scripts.test_relay_plugin scripts.test_plugin_listen_pairing`。将 `TMPDIR`、`TMP`、`TEMP` 指向已分配的测试数据目录，允许本机测试监听。安装包验收另按下文的页面联验运行，并指定实际解包目录。
 
 指定网卡监听动态配置（req#172 task#321）回归在 `scripts.test_listen_control`：单模块运行 `python -X utf8 -B -m unittest scripts.test_listen_control`（临时 SQLite；远程监听用独立高位端口 TEST_PORT=18820 真实 socket 验证，不动主引擎 8180）。覆盖：枚举不含通配/回环/链路本地/组播、校验拒绝 0.0.0.0/::/回环/非本机地址、无来源绑定时允许启用，未绑定来源仅可在有效邀请期间进入首次 WebSocket 握手、真实 TCP 连远程监听地址（绑定来源 200/移除绑定后 403/停用后拒绝连接）、端口占用失败如实报错并回滚配置、模拟进程退出后 restore_on_startup 恢复上次监听配置；API 层 bot 403 与通配 400。注意：本机无 LAN 单播地址（只有回环）的机器上真实监听用例自动 skipTest；远程 Server 与回环同端口不同地址在 Windows 可共存（实测），第二 Server lifespan='off' 不跑第二份后台线程；listen_control 线程退出路径不抢 _lock（_stop_locked 持锁 join 时死锁陷阱）。

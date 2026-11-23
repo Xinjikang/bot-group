@@ -65,26 +65,43 @@ def save_config(conn, address: str | None) -> None:
     conn.commit()
 
 
+def _network_label(name: str, addr) -> str:
+    adapter = name.casefold()
+    if addr.is_global:
+        return '公网'
+    if adapter in ('tailscale', 'tailscale0'):
+        return 'Tailscale'
+    if adapter.startswith('vethernet ('):
+        return 'Hyper-V 本机虚拟机'
+    if adapter.startswith(('以太网', 'ethernet', 'wi-fi', 'wlan', 'eth', 'enp', 'ens', 'eno', 'enx', 'wlp', '无线局域网')):
+        return '局域网'
+    return ''
+
+
 def enumerate_interfaces() -> list[dict]:
     """枚举本机网卡具体单播地址（IPv4/IPv6），排除通配/回环/链路本地/组播。"""
     import psutil
     found: dict[str, dict] = {}
-    for _name, addrs in psutil.net_if_addrs().items():
+    for name, addrs in psutil.net_if_addrs().items():
+        if name.casefold() == 'mihomo':
+            continue
         for a in addrs:
             if a.family not in (socket.AF_INET, socket.AF_INET6):
                 continue
-            if getattr(a, 'broadcast', None):  # 广播地址不是可绑地址
+            if a.address == a.broadcast:
                 continue
             try:
                 addr = ipaddress.ip_address(a.address)
             except ValueError:
                 continue
-            if any(addr in net for net in _EXCLUDED_NETS):
+            if addr.is_multicast or addr.is_link_local or any(addr in net for net in _EXCLUDED_NETS):
                 continue
             found[str(addr)] = {
                 'address': str(addr),
                 'version': addr.version,
                 'family': 'IPv4' if addr.version == 4 else 'IPv6',
+                'name': name,
+                'network': _network_label(name, addr),
             }
     return sorted(found.values(), key=lambda x: (x['version'], x['address']))
 

@@ -6,6 +6,8 @@
 import socket
 import unittest
 from contextlib import closing
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from engine import auth, db, listen_control, relay, signing_keys
 from scripts.unified_test_support import isolated_database
@@ -186,6 +188,33 @@ class ListenApiTests(unittest.TestCase):
             with self.subTest(address=address):
                 response = self.client.post("/admin/listen", json={"address": address})
                 self.assertEqual(response.status_code, 400, f"{address} 必须被拒")
+
+    def test_network_labels_and_mihomo_filter(self):
+        def ip(value, broadcast=None):
+            return SimpleNamespace(address=value, broadcast=broadcast,
+                                   family=socket.AF_INET6 if ':' in value else socket.AF_INET)
+
+        adapters = {
+            'MiHoMo': [ip('198.18.0.1'), ip('fd00::1')],
+            'vEthernet (Default Switch)': [ip('172.20.0.1')],
+            'Tailscale': [ip('100.64.0.8'), ip('fd7a:115c:a1e0::8')],
+            'Wi-Fi': [ip('192.168.1.8', '192.168.1.255'), ip('2606:4700::1111')],
+            'eth0': [ip('1.1.1.1', '1.1.1.255')],
+            'custom': [ip('198.18.0.2')],
+        }
+        with patch('psutil.net_if_addrs', return_value=adapters):
+            entries = self.client.get('/admin/listen/interfaces').json()['interfaces']
+            self.assertEqual({e['address']: (e['network'], e['name']) for e in entries}, {
+                '172.20.0.1': ('Hyper-V 本机虚拟机', 'vEthernet (Default Switch)'),
+                '100.64.0.8': ('Tailscale', 'Tailscale'),
+                'fd7a:115c:a1e0::8': ('Tailscale', 'Tailscale'),
+                '192.168.1.8': ('局域网', 'Wi-Fi'),
+                '2606:4700::1111': ('公网', 'Wi-Fi'),
+                '1.1.1.1': ('公网', 'eth0'),
+                '198.18.0.2': ('', 'custom'),
+            })
+            for address in ('198.18.0.1', 'fd00::1'):
+                self.assertEqual(self.client.post('/admin/listen', json={'address': address}).status_code, 400)
 
     def test_interfaces_and_status_shape(self):
         interfaces = self.client.get("/admin/listen/interfaces").json()

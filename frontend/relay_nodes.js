@@ -195,14 +195,16 @@
     return new Date(ts * 1000).toLocaleString();
   }
   function bindingFor(member) {
-    return bindings.get(member) || [];
+    return bindings.get(member)?.ips || [];
   }
   function remoteName(node) {
     if (node.host_profile && node.host_profile !== node.member) return node.display_name;
     return `${node.display_name || node.member}（远程）`;
   }
   function addLocalBinding(member, ip) {
-    if (!bindingFor(member).includes(ip)) bindings.set(member, [...bindingFor(member), ip]);
+    if (!bindingFor(member).includes(ip)) {
+      bindings.set(member, {...bindings.get(member), ips: [...bindingFor(member), ip]});
+    }
   }
   function registrationReady() {
     return nodesReady && bindingsReady && !loading && !writeUncertain;
@@ -240,7 +242,7 @@
   }
   function allowedSourceIps() {
     const seen = new Set();
-    for (const ips of bindings.values()) {
+    for (const {ips} of bindings.values()) {
       for (const ip of ips) seen.add(ip);
     }
     return [...seen].sort();
@@ -457,6 +459,9 @@
       pairingFingerprint.textContent = `${pendingPairing.fingerprint.slice(0, 8)}…`;
     }
   }
+  function listenNetwork(item) {
+    return [...new Set([item?.network, item?.name].filter(Boolean))].join(' · ');
+  }
   function renderListenOptions() {
     const previous = listenAddress.value || listenState?.remote_address || '';
     listenAddress.replaceChildren();
@@ -473,11 +478,8 @@
     const values = new Set();
     for (const item of list) {
       values.add(item.address);
-      listenAddress.append(new Option(`${item.address} · ${item.family || 'IP'}`, item.address));
-    }
-    if (previous && !values.has(previous) && listenState?.remote_enabled) {
-      listenAddress.append(new Option(`${previous}（当前监听）`, previous));
-      values.add(previous);
+      const label = [listenNetwork(item), item.address, item.family].filter(Boolean).join(' · ');
+      listenAddress.append(new Option(label, item.address));
     }
     listenAddress.value = values.has(previous) ? previous : '';
   }
@@ -499,7 +501,8 @@
       summary = '监听状态未知，请刷新重试。';
       summaryError = true;
     } else if (enabled) {
-      summary = `实际监听 ${hostPort(listenState.remote_address, listenState.remote_port)}`;
+      const network = listenNetwork(interfaces.find(item => item.address === listenState.remote_address));
+      summary = '实际监听 ' + [network, hostPort(listenState.remote_address, listenState.remote_port)].filter(Boolean).join(' · ');
     } else {
       summary = `未开启远程监听；本机回环 ${listenState.loopback || '127.0.0.1'} 可用。`;
       if (listenState.error) {
@@ -613,7 +616,8 @@
         const chip = document.createElement('span');
         chip.className = 'relay-ip-chip';
         const text = document.createElement('span');
-        text.textContent = ip;
+        const network = bindings.get(node.member)?.networks?.[ip];
+        text.textContent = [network, ip].filter(Boolean).join(' · ');
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.dataset.action = 'remove-ip';
@@ -831,7 +835,7 @@
       bindings = new Map();
       for (const item of data.bindings) {
         if (item && item.member && Array.isArray(item.ips)) {
-          bindings.set(item.member, item.ips.slice());
+          bindings.set(item.member, item);
         }
       }
       bindingsError = '';
@@ -1072,7 +1076,7 @@
     report(nodesStatus, `正在移除 ${member} 的来源 IP ${ip}…`);
     try {
       await api(`/admin/source-ips/${encodeURIComponent(member)}/${encodeURIComponent(ip)}`, {method: 'DELETE'});
-      bindings.set(member, bindingFor(member).filter(item => item !== ip));
+      bindings.set(member, {...bindings.get(member), ips: bindingFor(member).filter(item => item !== ip)});
       writeUncertain = false;
       report(nodesStatus, `已移除 ${member} 的来源 IP ${ip}；立即生效。`);
       await reload(true);

@@ -180,7 +180,7 @@ class NodeLink:
 
 _LINKS: dict[str, NodeLink] = {}
 _LINKS_LOCK = threading.Lock()
-_LAST_PEERS: dict[str, str] = {}
+_LAST_INBOUND: dict[str, tuple[str, str | None]] = {}
 
 
 def last_peer(member: str) -> str | None:
@@ -193,7 +193,14 @@ def last_peer(member: str) -> str | None:
         link = _LINKS.get(member)
         if link is not None and not link.closed and link.peer_ip:
             return link.peer_ip
-        return _LAST_PEERS.get(member)
+        inbound = _LAST_INBOUND.get(member)
+        return inbound[0] if inbound else None
+
+
+def last_inbound_endpoints() -> dict[str, tuple[str, str | None]]:
+    """已认证入站连接的远端和本地端点，用于标注来源网络。"""
+    with _LINKS_LOCK:
+        return _LAST_INBOUND.copy()
 
 
 def _db_generation(link: NodeLink) -> int:
@@ -452,7 +459,8 @@ async def relay_ws(websocket: WebSocket) -> None:
         previous = _LINKS.get(member)
         _LINKS[member] = link
         if peer:
-            _LAST_PEERS[member] = peer
+            server = websocket.scope.get('server')
+            _LAST_INBOUND[member] = (peer, server[0] if server else None)
     if previous is not None and not previous.closed:
         previous.close()
     try:

@@ -119,15 +119,29 @@ class _SourceBindingBody(BaseModel):
 @router_api.get('/admin/source-ips')
 def source_bindings_list(identity=Depends(_resolve_identity)):
     _admin_only(identity, '来源 IP 绑定仅限管理员')
-    from . import ip_allowlist
+    from . import ip_allowlist, listen_control, relay_server
     conn = db.get_connection()
     try:
-        return JSONResponse({
-            'loopback_always_allowed': list(ip_allowlist.LOOPBACK),
-            'bindings': ip_allowlist.list_bindings(conn),
-        }, headers={'Cache-Control': 'no-store'})
+        bindings = ip_allowlist.list_bindings(conn)
     finally:
         conn.close()
+    last_inbound = relay_server.last_inbound_endpoints()
+    interfaces = {}
+    if bindings and last_inbound:
+        try:
+            interfaces = {item['address']: item for item in listen_control.enumerate_interfaces()}
+        except OSError:
+            pass  # 网卡暂不可读时仍可展示和管理来源绑定。
+    for binding in bindings:
+        peer, local = last_inbound.get(binding['member'], (None, None))
+        interface = interfaces.get(local, {})
+        ingress = interface.get('network') or interface.get('name', '')
+        binding['networks'] = {ip: ip_allowlist.source_network(ip, ingress if ip == peer else '')
+                               for ip in binding['ips']}
+    return JSONResponse({
+        'loopback_always_allowed': list(ip_allowlist.LOOPBACK),
+        'bindings': bindings,
+    }, headers={'Cache-Control': 'no-store'})
 
 
 @router_api.post('/admin/source-ips')
