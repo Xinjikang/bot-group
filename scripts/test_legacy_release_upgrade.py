@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 from contextlib import closing
+from unittest import mock
 
 from scripts.test_upgrade import UpgradeTestBase
 from engine.maintenance import make_release
@@ -62,7 +63,9 @@ class LegacyReleaseUpgradeTests(UpgradeTestBase):
         (source / 'tools/install.py').write_text("LAYOUT = 'tools'\n" + INSTALLER, encoding='utf-8')
         (source / 'engine/main.py').write_text('new', encoding='utf-8')
         assets = self.root / 'assets'
-        self.assertEqual(make_release.make_release(source, assets, 'bot-group', 'v0.1.2'), 0)
+        # Both sides of this compatibility check predate the relay archive.
+        with mock.patch.object(make_release, '_relay_checksums', return_value=''):
+            self.assertEqual(make_release.make_release(source, assets, 'bot-group', 'v0.1.2'), 0)
         index = json.loads((assets / 'releases.json').read_text(encoding='utf-8'))
         for key in ('source', 'manifest'):
             index['releases'][0][key] = (assets / index['releases'][0][key]).as_uri()
