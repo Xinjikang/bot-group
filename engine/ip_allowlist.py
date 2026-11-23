@@ -21,6 +21,25 @@ from . import db
 # 其他网段一样走绑定——「精确 IP 匹配，不自动放行网段」）。
 LOOPBACK = ("127.0.0.1", "::1")
 
+_SHARED_V4 = ipaddress.ip_network('100.64.0.0/10')
+_PRIVATE_NETWORKS = tuple(map(ipaddress.ip_network, ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', 'fc00::/7')))
+
+
+def source_network(ip: str, ingress: str = '') -> str:
+    """依据地址范围和已认证连接的入站接口标注来源，仅用于展示。"""
+    addr = ipaddress.ip_address(ip)
+    if addr.is_multicast or addr.is_reserved or addr.is_unspecified:
+        return '特殊用途地址'
+    if addr.is_global:
+        return '公网'
+    if ingress and ingress != '公网':
+        return ingress
+    if addr in _SHARED_V4:
+        return '共享地址'
+    if any(addr in network for network in _PRIVATE_NETWORKS):
+        return '内网'
+    return '本地或特殊用途地址'
+
 # 成员级绑定表（schema.sql）：member + ip 联合主键——一成员多 IP、
 # 同 IP 多成员均可表达。
 _TABLE = "relay_source_bindings"

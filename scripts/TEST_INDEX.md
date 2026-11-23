@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+远端点对点唤醒使用项目 Python 执行 `python -X utf8 -B -m unittest scripts.test_relay_message_wake scripts.test_plugin_listen_pairing.EntryIdentityAndProxyTests`。临时数据库验证撤回、合并排队、投递与已读分离、失败再投，并用文件系统链接核对会话上报的 venv 解释器路径。
+
 远程 Hermes 单文件安装器使用 `python -X utf8 -B -m unittest scripts.test_relay_installer`。从真实插件构建归档和 `install-relay.pyz`，验证资产摘要、文件清单、损坏包拒绝、目标 profile、首次安装、依赖失败、启用失败回滚、重试与配对保留。测试使用临时 profile 和模拟的 Hermes、依赖安装命令；Windows 测试替代 Linux 文件锁和符号链接。发布时另在 Linux ECS 验证实际依赖安装和网关加载。
 
 远程协作根目录使用 `python -X utf8 -B -m unittest scripts.test_remote_workspaces`。在临时 Git 仓库验证共享 master、独立具名 worktree、重复准备、基线未发布、分叉与保留未提交文件，以及远端分支推送并在办公机合并。下文的 `scripts.verify_relay_first_join_network` 使用隔离 bare 仓库验证缺少基线时的话题回复、点对点收发与已读、领取受阻，以及发布基线后同一会话进入 worktree 并领取任务。`scripts.test_relay_nodes_browser` 在 1280px 和 390px 下检查协作根目录标签、输入框和按钮同排占满卡片内容宽度，并验证节点卡的保存、错误回显和不同节点的值。
@@ -21,6 +23,10 @@ Hermes 项目换模回执、定向提醒与注册默认值覆盖在 `scripts.tes
 结果保存在报告目录的 `result.json`。`session` 应在四轮中一致，`models` 是回环端点实收的请求模型，`notices` 是截至该轮发给用户的提醒。桌面与窄屏截图可通过 `test_project_models_browser.py --screenshot <报告目录>/editor.png` 保存。
 
 ### 远程 Hermes 首次接入
+
+允许来源 IP 的网络标注使用 `python -X utf8 -B -m unittest scripts.test_ip_allowlist` 验证，覆盖同一来源 IP 按成员匹配入站接口、无连接记录的共享地址，以及公网 IPv4/IPv6。节点卡标签与精确 IP 增删操作由下列浏览器用例验证。
+
+监听地址识别与过滤由 `python -X utf8 -B -m unittest scripts.test_listen_control.ListenApiTests` 验证。模拟具名网卡和 IPv4/IPv6 地址，覆盖 Mihomo 过滤、Hyper-V 保留、局域网及公网标签。用 `python -X utf8 -B -m scripts.test_relay_nodes_browser --evidence <报告目录>` 在 Chrome 检查选项文字、保存的 IP 和实际监听摘要。
 
 合并后复验插件启动、配对确认及连接恢复，在仓库根目录使用项目 Python 运行 `python -X utf8 -B -m unittest scripts.test_relay_plugin scripts.test_plugin_listen_pairing`。将 `TMPDIR`、`TMP`、`TEMP` 指向已分配的测试数据目录，允许本机测试监听。安装包验收另按下文的页面联验运行，并指定实际解包目录。
 
@@ -90,7 +96,7 @@ Hermes 旧版唤醒分流（Issue #28）：使用 `python -X utf8 -B -m scripts.
 
 引擎指定网卡监听（req#172 #321）：`env -u PYTHONPATH .venv/Scripts/python.exe -X utf8 -B scripts/verify_remote_listen_live.py --evidence <主目录报告下的新绝对目录>`。隔离数据目录 + 分配端口 18042，回环 Server 提供页面/API；真实登录设置页登记隔离成员并绑定本机 IPv4，界面保存该网卡后 `listen_control` 另起 lifespan=off Server。脚本断言监听仅回环+所选地址（psutil LISTEN 集合，无 0.0.0.0/::）、所选地址 `/health` 200、跨远程监听 `ws://<addr>:18042/relay/ws` 真实 hello_ok、界面在线；停用后远程地址不可连、回环 `/health` 200、监听集合只剩回环。后端监听核心另由 `env -u PYTHONPATH .venv/Scripts/python.exe -X utf8 -B -m unittest scripts.test_listen_control -q` 覆盖（9 项，含枚举/校验/绑定先就绪/端口占用回滚/重启恢复）。
 
-节点方向回归使用 `python -X utf8 -B -m scripts.test_relay_direction_browser --evidence <报告目录>`。合成管理员 API 配合 Chrome，从已有节点卡展开方向，覆盖端点预检、认证、切换、断线重试、MCP 验证及失败恢复、旧回执和 390px 主题。
+节点方向回归使用 `python -X utf8 -B -m scripts.test_relay_direction_browser --evidence <报告目录>`。合成管理员 API 配合 Chrome，从已有节点卡打开独立弹窗，核对焦点返回、选方向后显式确认、端点预检、认证、切换、断线重试、MCP 验证及失败恢复、旧回执和 390px 主题。
 
 消息上屏竞态：`python -X utf8 -B scripts/test_message_visibility_browser.py --evidence <主目录报告下的新绝对目录>`。需要 Playwright 与 Chrome，所有 HTTP 使用合成响应。覆盖发送回执主动刷新、旧列表响应期间合并新消息补拉、已读确认挂起时上屏，以及换话题后旧响应与补拉隔离。
 
@@ -369,7 +375,7 @@ DSH 成员字段移除与强制 Auto：`.venv/Scripts/python.exe -X utf8 -B -m u
 
 Profile 模型凭证与执行异常：`.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_profile_credentials scripts.test_profile_create scripts.test_execution_errors scripts.test_profile_config scripts.test_task_retry scripts.test_wake_pid_watch scripts.test_hermes_transport scripts.test_stop_scope -q`。覆盖静态 provider 扫描且源码未执行、默认/指定来源、自定义 key_env、多个 key 与地址、渠道排除、不兼容回滚；真实子进程 stderr、分类、脱敏、持久化去重、话题父消息、主动停止及重试。补充回归运行 `scripts.test_codex_driver_regressions scripts.test_wmic_free_wake scripts.test_engine_shutdown`，覆盖 Codex 过期凭证、实际唤醒链路及停机。浏览器运行 `scripts/test_profile_create_browser.py --evidence <主目录报告目录>/browser`，验证默认来源创建、无认证勾选框、桌面异常消息刷新恢复，以及创建对话框 390px 深浅主题。使用隔离目录、数据库和合成凭证；Hermes 安装版本升级后先检查静态适配器兼容性。
 
-正式 Release 验收：从干净提交构建六项发布资产，核对 Git 跟踪文件、包内外清单、VERSION 与摘要；运行 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_public_installer scripts.test_release_upgrade scripts.test_legacy_release_upgrade scripts.test_windows_bat.BatBytesTests -q`。公开发布后运行 `.venv\Scripts\python.exe -X utf8 -B scripts/verify_public_install.py --shell powershell --port <隔离空闲端口> --evidence <主目录报告目录>/public-install`，验证匿名下载、真实依赖安装、重复安装、BAT 启停、HTTP 页面及默认升级检查。此验收关闭真实桌面快捷方式生成，浏览器调用由记录器接收。报告记录发布提交、tag、六项资产摘要、退出码与实例清理结果；最新发布说明见 [v0.2.16](../docs/releases/v0.2.16.md)。
+正式 Release 验收：从干净提交构建八项发布资产（含远程插件和单文件安装器），核对 Git 跟踪文件、包内外清单、VERSION 与摘要；运行 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_public_installer scripts.test_release_upgrade scripts.test_legacy_release_upgrade scripts.test_windows_bat.BatBytesTests -q`。公开发布后运行 `.venv\Scripts\python.exe -X utf8 -B scripts/verify_public_install.py --shell powershell --port <隔离空闲端口> --evidence <主目录报告目录>/public-install`，验证匿名下载、真实依赖安装、重复安装、BAT 启停、HTTP 页面及默认升级检查。此验收关闭真实桌面快捷方式生成，浏览器调用由记录器接收。报告记录发布提交、tag、八项资产摘要、退出码与实例清理结果；最新发布说明见 [v0.3.1](../docs/releases/v0.3.1.md)。
 
 维护模块与 Hermes 共存：设置 `HERMES_TEST_SOURCE` 为已安装 Hermes 源码根，运行 `.venv\Scripts\python.exe -X utf8 -B -m unittest scripts.test_maintenance_namespace scripts.test_app_updates scripts.test_app_upgrade scripts.test_slash_injection_review -q`。覆盖同一进程内两种导入顺序、真实 SessionDB 创建/恢复/新建、更新检查和重启模块共存，以及基础 Python CLI、发布清单和独立 bootstrap 资产。`test_app_upgrade_integration` 另从提交 `1ac85a2d4fccc751343c940c3312f660314bd67d` 构造旧 tools 包安装，验证旧 API/助手迁移至 engine.maintenance、就绪失败回滚及成功后重启；配套运行 `test_service_restart`、`test_engine_shutdown`、`test_legacy_release_upgrade`。安装/发布回归沿用 `test_install`、`test_bootstrap`、`test_mcp_lock`、`test_release_upgrade`、`test_upgrade`、`test_public_installer`、`test_windows_bat`、`test_service`、`test_identity_repair`。入口位于 `tools/`，实现由 `engine.maintenance` 导入。
 

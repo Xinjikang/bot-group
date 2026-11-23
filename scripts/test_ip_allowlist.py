@@ -263,6 +263,18 @@ class MemberSourceBindingTests(unittest.TestCase):
         self.assertEqual(by_member["default"], [IP_B])
         self.assertEqual(listing["loopback_always_allowed"], ["127.0.0.1", "::1"])
 
+    def test_source_network_labels_use_member_and_observed_ip(self):
+        self.bind('architect', ['100.64.0.5', IP_A, '1.1.1.1', '2606:4700::1111'])
+        self.bind('default', ['100.64.0.5'])
+        with patch.object(relay_server, 'last_inbound_endpoints', return_value={'architect': ('100.64.0.5', '100.64.0.8')}), \
+             patch('engine.listen_control.enumerate_interfaces', return_value=[
+                 {'address': '100.64.0.8', 'name': 'Tailscale', 'network': 'Tailscale'}]):
+            bindings = self.loop.get('/admin/source-ips').json()['bindings']
+        labels = {item['member']: item['networks'] for item in bindings}
+        self.assertEqual(labels['architect'], {'100.64.0.5': 'Tailscale', IP_A: '内网',
+                                               '1.1.1.1': '公网', '2606:4700::1111': '公网'})
+        self.assertEqual(labels['default'], {'100.64.0.5': '共享地址'})
+
     def test_same_ip_multiple_members(self):
         # 同 IP 多成员共享（bot-43 12418）
         self.bind("architect", [IP_A])

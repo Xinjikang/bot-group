@@ -45,9 +45,12 @@ def main():
         'listen': {'remote_enabled': False, 'remote_address': None, 'remote_port': None,
                    'loopback': '127.0.0.1:18042', 'error': ''},
         'listen_interfaces': [
-            {'address': '100.64.0.10', 'version': 4, 'family': 'IPv4'},
+            {'address': '100.64.0.10', 'version': 4, 'family': 'IPv4', 'network': 'Tailscale', 'name': 'Tailscale'},
             {'address': '100.64.0.11', 'version': 4, 'family': 'IPv4'},
             {'address': 'fd00::10', 'version': 6, 'family': 'IPv6'},
+            {'address': '1.1.1.1', 'version': 4, 'family': 'IPv4', 'network': '公网', 'name': '以太网'},
+            {'address': '172.20.0.1', 'version': 4, 'family': 'IPv4', 'network': 'Hyper-V 本机虚拟机',
+             'name': 'vEthernet (Default Switch)'},
         ],
         'listen_gets': 0,
         'listen_status_gets': 0,
@@ -316,17 +319,18 @@ def main():
         page.wait_for_function('document.querySelector("#relay-nodes-dialog").open')
         page.wait_for_function('document.querySelector("#relay-nodes-status").textContent.includes("暂无已登记节点")')
         page.wait_for_function('document.querySelector("#relay-listen-badge").textContent === "仅本机"')
-        assert page.locator('#relay-listen-address option').count() == 4
         assert '未开启远程监听' in page.locator('#relay-listen-summary').inner_text()
-        listen_options = page.locator('#relay-listen-address option').evaluate_all('(items) => items.map(i => i.value)')
-        assert listen_options == ['', '100.64.0.10', '100.64.0.11', 'fd00::10'], listen_options
+        assert page.locator('#relay-listen-address option').all_text_contents() == [
+            '选择本机网卡地址', 'Tailscale · 100.64.0.10 · IPv4', '100.64.0.11 · IPv4', 'fd00::10 · IPv6',
+            '公网 · 以太网 · 1.1.1.1 · IPv4', 'Hyper-V 本机虚拟机 · vEthernet (Default Switch) · 172.20.0.1 · IPv4',
+        ]
         assert page.locator('#relay-readonly').is_hidden()
         assert page.locator('#relay-admin-body').is_visible()
         assert page.locator('#relay-member').count() == 0
         assert page.locator('#relay-add').is_enabled()
         page.screenshot(path=str(evidence / 'relay-nodes-empty-1280-dark.png'))
         state['nodes'] = [node('hermes-remote', 'ECS Hermes'), node('hermes-spare', '备用 Hermes')]
-        state['bindings'] = [{'member': 'hermes-remote', 'ips': ['100.64.0.5']},
+        state['bindings'] = [{'member': 'hermes-remote', 'ips': ['100.64.0.5'], 'networks': {'100.64.0.5': 'Tailscale'}},
                              {'member': 'hermes-spare', 'ips': ['100.64.0.6']}]
         page.locator('#relay-refresh').click()
         page.locator('#relay-open-listen').click()
@@ -339,7 +343,7 @@ def main():
         page.wait_for_function('document.querySelector("#relay-listen-badge").textContent === "已开启"')
         page.wait_for_function('!document.querySelector("#relay-listen-copy").disabled')
         assert state['listen_posts'][-1] == {'address': '100.64.0.10'}
-        assert '100.64.0.10:18042' in page.locator('#relay-listen-summary').inner_text()
+        assert page.locator('#relay-listen-summary').inner_text() == '实际监听 Tailscale · 100.64.0.10:18042'
         assert '允许来源' in page.locator('#relay-listen-sources').inner_text()
         assert page.locator('#relay-listen-url').input_value() == 'http://100.64.0.10:18042'
         assert page.locator('#relay-listen-url-row').is_visible()
@@ -412,7 +416,7 @@ def main():
         assert state['register_posts'] == posts
         remote_card = page.locator('#relay-node-list article[data-relay-member="hermes-remote"]')
         spare_card = page.locator('#relay-node-list article[data-relay-member="hermes-spare"]')
-        assert '100.64.0.5' in remote_card.inner_text()
+        assert 'Tailscale · 100.64.0.5' in remote_card.locator('.relay-ip-chip').inner_text()
         assert '100.64.0.6' in spare_card.inner_text()
         assert '尚未连接' in remote_card.inner_text()
         root = remote_card.get_by_label('协作根目录')

@@ -747,7 +747,13 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 .relay-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0}
 .relay-toolbar .profile-help{flex:1;min-width:140px;margin:0}
 #relay-nodes-dialog dialog{width:min(500px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;overflow-wrap:anywhere;box-sizing:border-box}
-#relay-join-dialog .relay-direction-choices{margin:12px 0}
+#relay-direction .relay-direction-choices,#relay-join-dialog .relay-direction-choices{margin:12px 0}
+#relay-direction h3{margin:0}
+#relay-direction details{margin-top:12px;color:var(--fg-2);font-size:12px}
+#relay-direction summary{cursor:pointer}
+#relay-direction [hidden],#relay-join-dialog [hidden]{display:none!important}
+#relay-direction p:empty{display:none}
+#relay-direction .relay-pairing{margin-top:12px}
 #relay-join-status[data-error="true"]{color:var(--danger)}
 #relay-node-list{display:flex;flex-direction:column;gap:8px;max-height:56dvh;overflow:auto;margin:6px 0}
 .relay-listen{margin:10px 0 12px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--card)}
@@ -5194,8 +5200,8 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/service_restart.js?v=20261026-settings-icons"></script>
 <script src="/app/app_settings.js?v=20261026-auto-refresh"></script>
 <script src="/app/engine_logs.js?v=20261103"></script>
-<script src="/app/relay_join.js?v=credential-renewal"></script>
-<script src="/app/relay_nodes.js?v=remote-workspaces"></script>
+<script src="/app/relay_join.js?v=direction-modal"></script>
+<script src="/app/relay_nodes.js?v=direction-modal"></script>
 <script src="/app/edit_policy_settings.js?v=20261030"></script>
 <script src="/app/background_settings.js?v=20261023-settings-anchor"></script>
 <script src="/app/directory_picker.js?v=20261011"></script>

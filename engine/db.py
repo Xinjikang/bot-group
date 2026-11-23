@@ -121,6 +121,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(hermes_approvals.SCHEMA)
     _migrate_add_column(conn, 'hermes_executions', 'signing_generation', 'INTEGER')
     _migrate_hermes_execution_cleanup(conn)
+    _migrate_add_column(conn, "inbox", "relay_execution_id", "TEXT")
     # req#101: additive readiness contract; ALTER DEFAULT backfills existing rows.
     # Repeated initialization preserves states owned by future setup workflows.
     with conn:

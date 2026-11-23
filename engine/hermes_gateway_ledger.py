@@ -64,7 +64,7 @@ def initialize(conn):
 
 def prepare(conn, *, session, project, profile, kind, thread_id, task_id, job_id,
             event_floor, source, python, home, workdir, session_id, profile_id,
-            started_at=None, parent_id=None, round_no=None, prompt_hash=None):
+            started_at=None, parent_id=None, round_no=None, prompt_hash=None, relay_message_ids=()):
     """Commit the write-ahead identity before prompt.submit can reach the wire."""
     start = time.time() if started_at is None else started_at
     eid, submission = uuid.uuid4().hex, uuid.uuid4().hex
@@ -79,6 +79,9 @@ def prepare(conn, *, session, project, profile, kind, thread_id, task_id, job_id
     conn.execute('UPDATE hermes_executions SET parent_id=?,round=?,signing_generation=? WHERE execution_id=?',
                  (parent_id, round_no, auth.signing_keys()[0], eid))
     from . import hermes_prompt_state
+    if relay_message_ids:
+        conn.executemany("UPDATE inbox SET relay_execution_id=? WHERE message_id=? AND profile=? AND status='pending'",
+                         ((eid, mid, profile) for mid in relay_message_ids))
     hermes_prompt_state.stage(conn, eid, str(profile_id), str(session_id), prompt_hash)
     conn.commit()
     return read(conn, eid)

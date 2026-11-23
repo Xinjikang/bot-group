@@ -396,9 +396,21 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
         if snapshot['running'] or snapshot['pending']:
             _native_busy_feedback(conn, snapshot['session_id'])
             return {'ok': False, 'busy': True, 'detail': 'native session became busy during initialization'}
+        relay_inputs = None
+        if signal is None and remote_workspace is not None and kind == 'work':
+            # Serialize withdrawal with the final snapshot and its execution record.
+            conn.execute('BEGIN IMMEDIATE')
+            relay_inputs = wake._snapshot_pending(conn, profile, kind, thread_id, project)
+            if not relay_inputs and bound_task is None and job_id is not None:
+                job = conn.execute('SELECT trigger FROM wake_jobs WHERE id=?', (job_id,)).fetchone()
+                if (job and job['trigger'] in ('@msg', 'scan:group')
+                        and not wake._requirement_signal(conn, profile, kind, project)):
+                    conn.rollback()
+                    return {'ok': True, 'detail': 'No pending message remains for delivery'}
         if signal is None:
             signal, injected_ids = wake._finalize_injection_signal(profile, kind, thread_id, project,
-                                                                   trigger_msg_id, bound_task, [])
+                                                                   trigger_msg_id, bound_task, [],
+                                                                   snapshot=relay_inputs)
         elif bound_task is not None:
             signal += wake._TASK_SUFFIX.format(task_id=bound_task)
         current_prompt = wake.wake_system_prompt(kind, project, workdir, remote_workspace=remote_workspace)
@@ -415,7 +427,7 @@ def spawn(profile, kind, signal, thread_id, project, *, bot, workdir, model_args
             task_id=bound_task, job_id=job_id, event_floor=floor, source='', python=json.dumps(command), home=home,
             workdir=workdir, session_id=snapshot['session_id'], profile_id=description['profile_id'], started_at=start,
             parent_id=topic['turn_parent_id'] if topic else None, round_no=topic['round'] if topic else None,
-            prompt_hash=prompt_hash)
+            prompt_hash=prompt_hash, relay_message_ids=[m['message_id'] for m in relay_inputs or ()])
         # req#168 manager node1985：实际注入的点名须在网关可收到 prompt.submit
         # 之前持久关联到 submission——attach 与 prepare 同一事务边界（attach 的
         # commit 把两者一起落盘，且必然先于 submit RPC），settle_thread 在 submit

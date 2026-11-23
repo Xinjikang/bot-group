@@ -26,7 +26,7 @@ class RequirementRecoveryTests(unittest.TestCase):
         self.addCleanup(busy.stop)
 
     def _deliver(self, profile, kind, **kwargs):
-        signal = wake._finalize_injection_signal(profile, kind, kwargs['thread_id'],
+        signal, _ = wake._finalize_injection_signal(profile, kind, kwargs['thread_id'],
             kwargs['project'], kwargs['trigger_msg_id'], kwargs['task_id'], ['model-recorder'])
         self.deliveries.append({'profile': profile, 'task_id': kwargs['task_id'], 'signal': signal})
         return {'ok': True}

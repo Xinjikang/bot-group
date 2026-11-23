@@ -16,6 +16,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
 
 from engine.maintenance import make_release
 
@@ -85,7 +86,8 @@ def copy_entries(destination):
 
 
 def build_archive(source, output):
-    with redirect_stdout(io.StringIO()):
+    # This fixture contains only the Windows launchers and their inert targets.
+    with redirect_stdout(io.StringIO()), mock.patch.object(make_release, '_relay_checksums', return_value=''):
         result = make_release.make_release(source, output, 'bat-fixture', 'v1.0.0')
     if result != 0:
         raise AssertionError(f'fixture release failed: {result}')

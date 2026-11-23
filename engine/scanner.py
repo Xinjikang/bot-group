@@ -19,7 +19,7 @@ import logging
 import time
 
 from . import db, events, router, wake
-from .delivery import effective_need_reply
+from .delivery import AWAITING_DELIVERY, effective_need_reply
 
 logger = logging.getLogger(__name__)
 
@@ -101,20 +101,23 @@ def scan_inbox(conn) -> int:
     # 新鲜 @ 就唤醒（bot 上线一次拉回全部未读，陈旧行随之自然清理）；全陈旧才不唤醒
     # （陈旧行由 bot 因其他原因上线时兜底读，不让扫描器为它专打枪成永动机）。
     p2p = conn.execute(
-        """
-        SELECT i.profile, m.project, m.ts, m.mentions, m.need_reply
+        f"""
+        SELECT i.profile, m.project, m.ts, m.mentions, m.need_reply, {AWAITING_DELIVERY} AS deliverable
         FROM inbox i
         JOIN messages m ON m.id = i.message_id
-        WHERE i.status = 'pending' AND m.thread_id IS NULL
+        WHERE i.status = 'pending' AND m.thread_id IS NULL AND m.retract_by IS NULL
           AND i.profile IN (SELECT profile FROM members WHERE profile != ?)
         """,
         (db.BUILTIN_USER_PROFILE,),
     ).fetchall()
     latest_by_recipient = {}
+    recipients_with_new_input = set()
     for message in p2p:
         if effective_need_reply(message, message["profile"]) is None:
             continue
         key = (message["profile"], message["project"])
+        if message["deliverable"]:
+            recipients_with_new_input.add(key)
         latest_by_recipient[key] = max(latest_by_recipient.get(key, ""), message["ts"])
     for (profile, project), latest_ts in latest_by_recipient.items():
         if not project_readiness.is_ready(conn, project):
@@ -132,7 +135,7 @@ def scan_inbox(conn) -> int:
                     continue
                 _finalize_stale_group(conn, profile, project)
             continue
-        if wake.enqueue(conn, r["profile"], "work", "scan:group", project=r["project"]):
+        if (profile, project) in recipients_with_new_input and wake.enqueue(conn, profile, "work", "scan:group", project=project):
             enqueued += 1
 
     # Upgrade/recovery for an older open topic with no assigned turn. Only
