@@ -2153,6 +2153,9 @@ def get_reasoning(profile: str, session: str, wake_started_at: float, after_id: 
     try:
         run = conn.execute("SELECT ended_at,exit_code,runtime_session_id,runtime FROM wake_runs WHERE session=? AND started_at=?",
                            (session, wake_started_at)).fetchone()
+        remote = conn.execute(
+            "SELECT generation,state,credential_revoked FROM relay_nodes WHERE member=?", (profile,)
+        ).fetchone() if not run or run["runtime"] not in ("codex", "dsh") else None
         topic_execution = conn.execute(
             "SELECT execution_id,state,cancel_reason FROM hermes_executions WHERE session=? AND started_at=?",
             (session, wake_started_at)).fetchone() if run and run['runtime'] == 'hermes' else None
@@ -2173,6 +2176,14 @@ def get_reasoning(profile: str, session: str, wake_started_at: float, after_id: 
         # 不落 Hermes compression_tip（否则对 runtime!='hermes' 抛 ValueError → /reasoning 500）。
         from . import dsh_reasoning
         result = dsh_reasoning.read(session, wake_started_at, after_id, wake_ended_at)
+    elif remote:
+        from . import remote_reasoning
+        if remote['state'] != 'online' or remote['credential_revoked']:
+            return JSONResponse({'retry_after_ms': 10000}, status_code=202)
+        result = remote_reasoning.read(profile, remote['generation'], run['runtime_session_id'] if run else None,
+                                       session, after_id, wake_started_at, wake_ended_at, ended_at)
+        if 'retry_after_ms' in result:
+            return JSONResponse(result, status_code=202)
     elif run and run['runtime_session_id']:
         from . import session_adapter
         options['hermes_session_id'] = session_adapter.compression_tip(profile, run['runtime_session_id'])

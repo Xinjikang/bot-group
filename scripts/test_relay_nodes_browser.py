@@ -313,10 +313,17 @@ def main():
             page.wait_for_function('!document.querySelector("#relay-nodes-dialog").open')
 
         # Admin entry and empty state.
+        state['nodes_hold'] = True
         open_settings()
         assert page.locator('#btn-relay-nodes').is_visible()
         page.locator('#btn-relay-nodes').click()
         page.wait_for_function('document.querySelector("#relay-nodes-dialog").open')
+        page.wait_for_function('document.querySelector("#relay-nodes-status").textContent.includes("正在读取")')
+        assert not page.get_by_text("暂无远程 Hermes。", exact=True).count()
+        page.wait_for_function('document.querySelector("#relay-listen-badge").textContent === "仅本机"')
+        assert state['held_nodes']
+        state['nodes_hold'] = False
+        state['held_nodes'].pop().fulfill(json=[])
         page.wait_for_function('document.querySelector("#relay-nodes-status").textContent.includes("暂无已登记节点")')
         page.wait_for_function('document.querySelector("#relay-listen-badge").textContent === "仅本机"')
         assert '未开启远程监听' in page.locator('#relay-listen-summary').inner_text()

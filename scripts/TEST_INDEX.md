@@ -98,6 +98,8 @@ Hermes 旧版唤醒分流（Issue #28）：使用 `python -X utf8 -B -m scripts.
 
 方向交接与网关启动回归使用项目 Python 运行 `python -X utf8 -B -m unittest scripts.test_plugin_listen_pairing.FirstJoinTests.test_gateway_direction_roundtrip scripts.test_plugin_listen_pairing.FirstJoinTests.test_gateway_restores_listen_only_pairing`。随机回环端口、隔离配对目录及数据库覆盖双向交接、占用端口与回连超时后原通道可用、旧监听配对升级和网关恢复。
 
+远程思考记录慢查询使用项目 Python 运行 `python -X utf8 -B -m unittest scripts.test_remote_reasoning`。隔离数据库、HTTP 路由和可暂停的网关替身验证读取期间节点列表可用、同会话共享请求、按唤醒时间与游标隔离、超时退避。`node scripts/test_thinking_lifecycle.cjs` 核对浏览器后台并发、重试与最终读取。`scripts.test_relay_nodes_browser` 在挂起节点响应时核验加载态。
+
 节点方向回归使用 `python -X utf8 -B -m scripts.test_relay_direction_browser --evidence <报告目录>`。合成管理员 API 配合 Chrome，从已有节点卡打开独立弹窗，核对焦点返回、选方向后显式确认、端点预检、认证、切换、断线重试、MCP 验证及失败恢复、旧回执和 390px 主题。
 
 消息上屏竞态：`python -X utf8 -B scripts/test_message_visibility_browser.py --evidence <主目录报告下的新绝对目录>`。需要 Playwright 与 Chrome，所有 HTTP 使用合成响应。覆盖发送回执主动刷新、旧列表响应期间合并新消息补拉、已读确认挂起时上屏，以及换话题后旧响应与补拉隔离。
