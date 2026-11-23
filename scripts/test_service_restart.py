@@ -168,6 +168,28 @@ class RestartTests(unittest.TestCase):
             self.assertEqual(spawn.call_count, 2)
             client.close()
 
+    def test_restart_accepts_only_a_verified_default_database_move(self):
+        from engine.maintenance import database_layout
+        root = Path(self.tmp.name)
+        source = root / 'group.db'
+        target = root / 'data' / 'group.db'
+        with closing(sqlite3.connect(source)) as conn:
+            conn.execute('CREATE TABLE retained(id INTEGER)')
+        old = {'id': 'move', 'instance_id': 'old', 'program_root': str(root), 'db_path': str(source)}
+        health = {**old, 'status': 'ok', 'instance_id': 'new', 'db_path': str(target)}
+        with patch.object(config, 'program_root', return_value=root), patch.dict(os.environ, GROUP_DB=str(source)), \
+             patch.object(database_layout, '_assert_stopped'), \
+             patch.object(restart_engine.subprocess, 'run', return_value=Mock(returncode=0)), \
+             patch.object(restart_engine.urllib.request, 'build_opener') as opener:
+            for migrated in (False, True):
+                if migrated:
+                    database_layout.migrate()
+                restart.write_receipt(old)
+                opener.return_value.open.return_value = io.StringIO(json.dumps(health))
+                self.assertEqual(restart_engine.run('move'), 0 if migrated else 1)
+            receipt = restart.read_receipt()
+            self.assertEqual((receipt['previous_db_path'], receipt['db_path']), (str(source), str(target)))
+
     def test_shutdown_heartbeat_keeps_topic_turn_for_restart(self):
         from engine import heartbeat, wake
         wake._shutting_down.set()
