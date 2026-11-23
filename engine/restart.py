@@ -49,16 +49,20 @@ class Restart:
         self.instance_id = instance_id
         self.lock = threading.Lock()
 
-    def begin(self):
+    def begin(self, request_id=None, instance_id=None, previous_id=None):
         with self.lock, maintenance_lock:
             from . import app_upgrade
+            current = status()
+            if request_id and current.get('id') == request_id:
+                return current
+            if request_id and (instance_id != self.instance_id or previous_id != current.get('id', '')):
+                raise RestartChanged('服务实例或重启回执已变更，请重新核对。')
             if app_upgrade.status().get('state') in app_upgrade.ACTIVE:
                 raise ValueError('应用正在升级，请完成后再重启。')
-            current = status()
             if current.get('state') in ('starting', 'restarting'):
                 return current
             root = config.program_root().resolve()
-            receipt = {'id': uuid.uuid4().hex, 'instance_id': self.instance_id,
+            receipt = {'id': request_id or uuid.uuid4().hex, 'instance_id': self.instance_id,
                        'state': 'starting', 'created_at': time.time(), 'error': '',
                        'program_root': str(root), 'db_path': str(Path(config.db_path()).resolve())}
             # Freeze effective CLI/env settings before handing off to a new process.
@@ -85,3 +89,7 @@ class Restart:
                 write_receipt(receipt)
                 raise
             return receipt
+
+
+class RestartChanged(ValueError):
+    """The caller observed a different restart baseline."""

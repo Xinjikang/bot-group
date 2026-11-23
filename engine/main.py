@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket
+from pydantic import BaseModel, Field
 
 from . import db
 from . import config
@@ -229,13 +230,22 @@ def shutdown_status(identity=Depends(_resolve_identity)):
     return {**app.state.shutdown.snapshot(), 'instance_id': app.state.instance_id}
 
 
+class RestartRequest(BaseModel):
+    request_id: str = Field(pattern=r'^[0-9a-f]{32}$')
+    instance_id: str = Field(min_length=1, max_length=64)
+    previous_id: str = Field(max_length=64)
+
+
 @app.post('/admin/restart', status_code=202)
-def request_restart(identity=Depends(_resolve_identity)):
+def request_restart(payload: RestartRequest | None = None, identity=Depends(_resolve_identity)):
+    from .restart import RestartChanged
     _admin_only(identity, '重启服务仅限管理员')
     if getattr(app.state, 'server', None) is None:
         raise HTTPException(503, '请通过 python -m engine.main 启动服务')
     try:
-        return app.state.restart.begin()
+        return app.state.restart.begin(**payload.model_dump()) if payload else app.state.restart.begin()
+    except RestartChanged as exc:
+        raise HTTPException(409, str(exc)) from exc
     except (OSError, ValueError) as exc:
         raise HTTPException(503, str(exc)) from exc
 
@@ -244,7 +254,8 @@ def request_restart(identity=Depends(_resolve_identity)):
 def restart_status(identity=Depends(_resolve_identity)):
     _admin_only(identity, '重启状态仅限管理员')
     from . import restart
-    return {**restart.status(), 'shutdown': app.state.shutdown.snapshot()}
+    return {**restart.status(), 'current_instance_id': app.state.restart.instance_id,
+            'shutdown': app.state.shutdown.snapshot()}
 
 
 class ManagedServer(uvicorn.Server):
