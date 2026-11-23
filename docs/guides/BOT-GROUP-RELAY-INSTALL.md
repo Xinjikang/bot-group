@@ -120,6 +120,7 @@ bot-group-relay/
 
 | 现象 | 处置 |
 | --- | --- |
+| 节点在线，`session.resume` 或 `session.export` 断流 | 按时间对照引擎和插件的 `relay gateway stream closed`，核对 stream 和 WebSocket 关闭码。两个连接方向均支持历史回复分块，每条网关回复最多 64 MiB。关闭码 1009 表示超出接收上限。引擎与云端插件均需包含分块支持。 |
 | 节点在线，点名在 `runtime.describe` 超时 | 对照同一时段的办公机日志和 ECS 插件的 stream 日志。插件通过当前 profile 的 `interactive` 票据连接 ECS 本机网关；取票失败时核对插件包与网关版本。 |
 | 页面提示成员名已被使用 | 对照已有节点和 ECS 当前 profile。已有节点在原卡片管理；新增独立节点使用另一个 profile 名。 |
 | 页面提示证书核验失败或配对过期 | 证书失败时，从目标 profile 重新取得配对链接并核对指纹。过期时重新核验仍有效的链接，或在“云端连本机”重新生成邀请。 |

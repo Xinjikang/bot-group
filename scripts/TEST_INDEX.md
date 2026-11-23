@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+远程长历史分块传输使用项目 Python 运行 `python -X utf8 -B -m unittest scripts.test_relay_gateway.RelayFrameTests scripts.test_plugin_listen_pairing.DirectionBDialTests.test_streamed_history_engine_dials`。使用临时数据库、随机回环端口和合成历史，验证两种拨号方向、原会话恢复、完整导出、分片提前到达、连接释放、中断及另开流发送。无需 ECS 或模型。
+
 远端点对点唤醒使用项目 Python 执行 `python -X utf8 -B -m unittest scripts.test_relay_message_wake scripts.test_plugin_listen_pairing.EntryIdentityAndProxyTests`。临时数据库验证撤回、合并排队、投递与已读分离、失败再投，并用文件系统链接核对会话上报的 venv 解释器路径。
 
 远程 Hermes 单文件安装器使用 `python -X utf8 -B -m unittest scripts.test_relay_installer`。从真实插件构建归档和 `install-relay.pyz`，验证资产摘要、文件清单、损坏包拒绝、目标 profile、首次安装、依赖失败、启用失败回滚、重试与配对保留。测试使用临时 profile 和模拟的 Hermes、依赖安装命令；Windows 测试替代 Linux 文件锁和符号链接。发布时另在 Linux ECS 验证实际依赖安装和网关加载。

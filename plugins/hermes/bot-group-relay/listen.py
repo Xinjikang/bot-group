@@ -18,7 +18,6 @@ import hashlib
 import json
 import logging
 import os
-import queue
 import socket
 import subprocess
 import sys
@@ -138,14 +137,12 @@ class ListenServer:
         self.mcp_python = mcp_python
         self.mcp_entry = mcp_entry
         self.scheme = scheme
-        self._streams = streams_mod.StreamRegistry(home, on_event=self._on_local_event)
         self._stop = threading.Event()
         self._server = None
         self._thread: threading.Thread | None = None
         self._active_ws = None
         self._active_generation = 0
         self._ws_lock = threading.Lock()
-        self._send_queue = queue.Queue()
         self._last_beat = 0.0
 
     # ---------- 生命周期 ----------
@@ -181,7 +178,6 @@ class ListenServer:
                 pass
         if self._server is not None:
             self._server.shutdown()
-        self._streams.close_all()
 
     def bound_port(self) -> int:
         if self._server is None:
@@ -260,25 +256,22 @@ class ListenServer:
             conn.send(json.dumps(hello_ok, ensure_ascii=False))
             logger.info("bot-group relay dial link up member=%s generation=%d",
                         member, generation)
-            self._serve_loop(conn, generation)
+            streams = streams_mod.StreamRegistry(self.home, conn)
+            try:
+                self._serve_loop(conn, generation, streams)
+            finally:
+                streams.close_all()
         except (ValueError, KeyError, TypeError, ConnectionClosed):
             return
 
-    def _serve_loop(self, conn, generation: int) -> None:
+    def _serve_loop(self, conn, generation: int, streams) -> None:
         import time as time_mod
         last_beat = time_mod.monotonic()
         while not self._stop.is_set():
-            # 本地事件回传（流线程塞入，监听线程统一发送）
-            while True:
-                try:
-                    pending = self._send_queue.get_nowait()
-                except queue.Empty:
-                    break
-                conn.send(pending)
             try:
                 raw = conn.recv(timeout=0.5)
                 envelope = json.loads(raw)
-                self._route_inbound(conn, envelope, generation)
+                self._route_inbound(conn, envelope, generation, streams)
             except TimeoutError:
                 pass
             except Exception:  # noqa: BLE001 断链
@@ -291,9 +284,8 @@ class ListenServer:
         with self._ws_lock:
             if self._active_ws is conn:
                 self._active_ws = None
-        self._streams.close_all()
 
-    def _route_inbound(self, ws, envelope: dict, generation: int) -> None:
+    def _route_inbound(self, ws, envelope: dict, generation: int, streams=None) -> None:
         """引擎→插件帧：与出站方向同口径（frame 转发本机 gateway、
         mcp_snapshot 实时问询、http_response 回传 loopback MCP 代理）。"""
         meta = envelope.get("relay") or {}
@@ -363,17 +355,8 @@ class ListenServer:
                              args=(ws, meta, envelope, generation),
                              name="bot-group-mcp-verify", daemon=True).start()
             return
-        if kind != "frame":
-            return
-        stream = meta.get("stream")
-        frame = envelope.get("frame")
-        if not isinstance(stream, str) or frame is None:
-            return
-        try:
-            local = self._streams.open(stream)
-            local.send_text(json.dumps(frame, ensure_ascii=False))
-        except streams_mod.StreamClosed:
-            logger.warning("bot-group relay dial frame dropped stream=%s (closed)", stream)
+        if kind in ("frame", "stream_release"):
+            streams.route(meta, envelope)
 
     def _mcp_entry(self) -> str | None:
         """随包 MCP stdio 入口 mcp/server.py：发布态在插件包根/mcp/，
@@ -531,14 +514,6 @@ class ListenServer:
             return 502, json.dumps({"error": error_text[:500]},
                                    ensure_ascii=False)
         return 200, text
-
-    def _on_local_event(self, local: streams_mod.LocalGatewayStream, frame: dict) -> None:
-        envelope = json.dumps({
-            "relay": {"kind": "frame", "stream": local.stream,
-                      "generation": self._active_generation},
-            "frame": frame,
-        }, ensure_ascii=False)
-        self._send_queue.put(envelope)
 
     def forward_http_request(self, request_id: str, method: str, path: str,
                              headers: dict, body: str) -> None:

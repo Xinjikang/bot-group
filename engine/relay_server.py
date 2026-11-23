@@ -43,13 +43,19 @@ class RelayTransport:
         self.stream = stream
         self._inbound: queue.Queue = queue.Queue()
         self._closed = False
+        self._parts = bytearray()
+        self._next_part = 0
+        self._state_lock = threading.Lock()
+        self._used = False
+        self._error = None
 
     def send(self, text: str) -> None:
         if self._closed:
             raise ConnectionError("relay stream closed")
+        self._used = True
         envelope = json.dumps({
             "relay": {"kind": "frame", "stream": self.stream,
-                      "generation": self._link.generation},
+                      "generation": self._link.generation, "accept_chunks": True},
             "frame": json.loads(text),
         }, ensure_ascii=False)
         self._link.send_text(envelope)
@@ -60,7 +66,9 @@ class RelayTransport:
     def __next__(self):
         item = self._inbound.get()
         if item is _CLOSED_SENTINEL:
-            self._closed = True
+            if self._error:
+                from .hermes_gateway_client import GatewayTransportError
+                raise GatewayTransportError(self._error)
             raise StopIteration
         return item
 
@@ -68,15 +76,75 @@ class RelayTransport:
         if not self._closed:
             self._inbound.put(raw)
 
+    def push_part(self, envelope):
+        with self._state_lock:
+            if self._closed:
+                return
+            seq = envelope.get("seq")
+            data = envelope.get("data")
+            if type(seq) is not int or seq != self._next_part:
+                error = "out-of-order relay response"
+            elif envelope.get("end") is True and data is None and self._next_part:
+                self._inbound.put(self._parts)
+                self._parts = bytearray()
+                self._next_part = 0
+                return
+            elif "end" not in envelope and isinstance(data, str) and 0 < len(data) <= 32 * 1024:
+                try:
+                    part = data.encode("utf-8")
+                except UnicodeEncodeError:
+                    self._finish("invalid UTF-8 in relay response")
+                    return
+                if len(self._parts) + len(part) <= 64 * 1024 * 1024:
+                    self._parts.extend(part)
+                    self._next_part += 1
+                    return
+                error = "Hermes response exceeds the WebSocket receive limit"
+            else:
+                error = "invalid relay response chunk"
+            self._finish(error)
+
+    def _finish(self, error=None):
+        self._closed = True
+        self._error = error
+        self._parts.clear()
+        self._inbound.put(_CLOSED_SENTINEL)
+
+    def remote_closed(self, code):
+        with self._state_lock:
+            if not self._closed:
+                logger.warning("relay gateway stream closed member=%s stream=%s generation=%s code=%s",
+                               self._link.member, self.stream, self._link.generation,
+                               code if type(code) is int else None)
+                error = (f"Hermes gateway stream closed (WebSocket {code})"
+                         if type(code) is int else "Hermes gateway stream closed")
+                self._finish(error)
+
     def request_mcp_snapshot(self, timeout: float = 10.0) -> dict | None:
         """configure 前同步问询远端 MCP 实际摘要（manager node1981 ③）。"""
         return self._link.request_mcp_snapshot(timeout)
 
     def close(self) -> None:
-        if self._closed:
+        with self._state_lock:
+            if not self._closed:
+                self._finish()
+        if self._link.transports.pop(self.stream, None) is None or not self._used or self._link.closed:
             return
-        self._closed = True
-        self._inbound.put(_CLOSED_SENTINEL)
+        envelope = json.dumps({"relay": {"kind": "stream_release", "stream": self.stream,
+                                          "generation": self._link.generation}})
+
+        def release():
+            try:
+                self._link.send_text(envelope)
+            except ConnectionError:
+                pass  # Disconnect also releases the plugin's streams.
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            release()
+        else:
+            loop.run_in_executor(None, release)
 
 
 _CLOSED_SENTINEL = object()
@@ -342,6 +410,13 @@ def _route_inbound(link: NodeLink, envelope: dict) -> bool:
         return True
     stream = meta.get("stream")
     transport = link.transports.get(stream) if isinstance(stream, str) else None
+    if kind in ("frame_chunk", "stream_closed"):
+        if transport is not None:
+            if kind == "frame_chunk":
+                transport.push_part(envelope)
+            else:
+                transport.remote_closed(envelope.get("code"))
+        return True
     frame = envelope.get("frame")
     if transport is None or frame is None:
         logger.warning("relay unknown stream frame dropped member=%s stream=%s",

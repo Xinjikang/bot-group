@@ -15,7 +15,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import queue
 import threading
 import time
 
@@ -43,8 +42,6 @@ class RelayClient:
         self._credential = "" if cfg.invite else cfg.credential
         self._rejected_key = ""
         self._engine_url = ""
-        self._streams = streams_mod.StreamRegistry(cfg.home, on_event=self._on_local_event)
-        self._send_queue: queue.Queue = queue.Queue()
         self._stop = threading.Event()
         self._retry = threading.Event()
         self._listener = None
@@ -77,7 +74,6 @@ class RelayClient:
         self._stop.set()
         self._retry.set()
         self._close_listener()
-        self._streams.close_all()
 
     def _open_listener(self):
         from . import listen
@@ -157,14 +153,17 @@ class RelayClient:
                     pairing.select_role(self.cfg.member, "dial")
                     self._close_listener()
                     self._on_status("online")
-                    self._recv_loop(ws)
+                    streams = streams_mod.StreamRegistry(self.cfg.home, ws)
+                    try:
+                        self._recv_loop(ws, streams)
+                    finally:
+                        streams.close_all()
             except Exception as exc:  # noqa: BLE001 断线重连
                 if self._stop.is_set():
                     return
                 logger.warning("bot-group relay link down member=%s cause=%s",
                                self.cfg.member, type(exc).__name__)
             self._on_status("offline")
-            self._streams.close_all()
             self._generation = 0
             self._retry.wait(timeout=backoff)
             self._retry.clear()
@@ -223,21 +222,13 @@ class RelayClient:
                     self.cfg.member, self._generation)
         return self._generation > 0
 
-    def _recv_loop(self, ws) -> None:
+    def _recv_loop(self, ws, streams) -> None:
         last_beat = 0.0
         while not self._stop.is_set():
-            # 本地事件回传（流线程塞入，出站线程统一发送）
-            while True:
-                try:
-                    pending = self._send_queue.get_nowait()
-                except queue.Empty:
-                    break
-                ws.send(pending)
             try:
-                # recv 至多 0.5s：send_queue 的本地事件回传不能等心跳间隔
                 raw = ws.recv(timeout=0.5)
                 envelope = json.loads(raw)
-                self._route_inbound(ws, envelope)
+                self._route_inbound(ws, envelope, streams)
             except TimeoutError:
                 pass
             except Exception as exc:  # noqa: BLE001
@@ -249,7 +240,7 @@ class RelayClient:
                                    ensure_ascii=False))
                 last_beat = time.monotonic()
 
-    def _route_inbound(self, ws, envelope: dict) -> None:
+    def _route_inbound(self, ws, envelope: dict, streams=None) -> None:
         meta = envelope.get("relay") or {}
         kind = meta.get("kind")
         frame_gen = meta.get("generation")
@@ -296,27 +287,5 @@ class RelayClient:
                 "mcp_entry": snapshot["mcp_entry"],
             }, ensure_ascii=False))
             return
-        if kind != "frame":
-            logger.warning("bot-group relay unknown frame member=%s kind=%s",
-                           self.cfg.member, kind)
-            return
-        stream = meta.get("stream")
-        frame = envelope.get("frame")
-        if not isinstance(stream, str) or frame is None:
-            return
-        try:
-            local = self._streams.open(stream)
-            local.send_text(json.dumps(frame, ensure_ascii=False))
-        except streams_mod.StreamClosed:
-            logger.warning("bot-group relay frame dropped stream=%s (closed)", stream)
-
-    # ---------- 本地事件回传 ----------
-
-    def _on_local_event(self, local: streams_mod.LocalGatewayStream, frame: dict) -> None:
-        """本机 gateway 事件帧 → 打包 relay 帧回引擎（流标识归属）。"""
-        envelope = json.dumps({
-            "relay": {"kind": "frame", "stream": local.stream,
-                      "generation": self._generation},
-            "frame": frame,
-        }, ensure_ascii=False)
-        self._send_queue.put(envelope)
+        if kind in ("frame", "stream_release"):
+            streams.route(meta, envelope)
