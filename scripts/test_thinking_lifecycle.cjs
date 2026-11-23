@@ -42,6 +42,17 @@ const legacyStorage = storage => {
 };
 const tick = () => new Promise(resolve => setImmediate(resolve));
 async function main() {
+  const slow = harness();
+  for (let i = 0; i < 5; i++) slow.ctx.startThinkBubble(wake(i));
+  assert.equal(slow.requests.length, 2, 'slow history reads leave connections for UI requests');
+  slow.requests.shift().resolve({retry_after_ms: 20000});
+  await tick();
+  assert.equal(slow.requests.length, 2, 'one free slot admits one queued collector');
+  assert.match(slow.requests[1].url, /session=bot-2/);
+  const firstRun = [...slow.ctx.S.thinkRuns.values()][0];
+  assert.equal(firstRun.after_id, 0);
+  assert.equal(firstRun.finished, false);
+  assert.equal([...slow.timers.values()][0].delay, 20000);
   const delegation = harness();
   const topicWait = {...wake(42), project: 'p', state: 'waiting_delegation'};
   delegation.ctx.snapshot = {runs: [topicWait], thinking: []};
@@ -116,7 +127,7 @@ async function main() {
   fresh.ctx.snapshot = new Error('offline');
   await fresh.ctx.loadThinking();
   assert.equal(fresh.ctx.S.thinkRuns.size, 1, 'snapshot failure preserves collectors');
-  assert.match(html, /es.onopen\s*=.*loadThinking\(\)/, 'SSE reconnect recovers missed spawns');
+  assert.match(html, /es\.onopen\s*=\s*\(\)\s*=>\s*\{[^}]*loadThinking\(\)/, 'SSE reconnect recovers missed spawns');
   const reversed = harness();
   reversed.ctx.startThinkBubble(wake(42, 200));
   reversed.ctx.snapshot = {runs: [wake(42, 100)]};
@@ -395,6 +406,8 @@ async function main() {
   recover.requests.shift().reject(new Error('temporary reasoning failure'));
   await tick();
   await recover.ctx.loadThinking();
+  assert.equal(recover.requests.length, 0, 'background refresh respects retry backoff');
+  [...recover.timers.values()][0].fn();
   assert.equal(recover.requests.length, 1, 'failed cache recovery remains eligible for retry');
   // The reply arrives while the cache recovery request still sees no send.
   recover.ctx.refreshThinkRunsForMessage(messageEvent({...wake(null, 300), project: 'p'}, 6871));
@@ -429,7 +442,10 @@ async function main() {
   await tick();
   assert.equal(failedRun.finished, false, 'exit event alone cannot discard an unread tail');
   assert.equal(failedExit.timers.size, 1, 'failed final read retains a retry');
-  const retryExit = failedExit.ctx.pollReasoning(failedRun);
+  failedExit.ctx.pollReasoning(failedRun);
+  assert.equal(failedExit.requests.length, 0, 'repeat events respect the failure backoff');
+  const retryTimer = [...failedExit.timers.values()][0];
+  const retryExit = retryTimer.fn();
   failedExit.requests.shift().resolve({entries: [{id: 1, reasoning: 'last output'}], latest_id: 1, process_ended_at: 110});
   await retryExit;
   assert.equal(failedRun.finished, true);

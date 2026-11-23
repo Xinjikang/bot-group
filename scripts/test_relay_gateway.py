@@ -313,6 +313,43 @@ class RelayHandshakeTests(RelayBase):
 
 
 class RelayFrameTests(RelayBase):
+    def test_partial_history_is_discarded_on_bad_sequence(self):
+        from engine.hermes_gateway_client import GatewayTransportError
+        link = relay_server.NodeLink(REMOTE, None, generation=5)
+        partial = link.open_transport()
+        healthy = link.open_transport()
+        meta = {"kind": "frame_chunk", "stream": partial.stream, "generation": 5}
+        relay_server._route_inbound(link, {"relay": meta, "seq": 0, "data": "partial"})
+        relay_server._route_inbound(link, {"relay": dict(meta, generation=4), "seq": 1, "end": True})
+        self.assertTrue(partial._inbound.empty())
+        relay_server._route_inbound(link, {"relay": meta, "seq": 2, "end": True})
+        with self.assertRaisesRegex(GatewayTransportError, "out-of-order"):
+            next(partial)
+        healthy.push('{"id":1}')
+        self.assertEqual(next(healthy), '{"id":1}')
+
+    def test_streamed_history_plugin_dials(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from scripts import test_relay_plugin as plugin
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(plugin._plugin.pairing, "_state_path", return_value=Path(tmp) / "state.json"), \
+                patch.object(plugin._plugin.config, "plugin_version", return_value=RELEASE_VERSION):
+            origin = self.ws_url.removesuffix("/relay/ws")
+            client = plugin.relay_mod.RelayClient(plugin.make_cfg(origin, home=tmp))
+            client.start()
+            try:
+                deadline = time.monotonic() + 5
+                while not client.generation and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(client.generation)
+                plugin.check_streamed_history(self, relay_server.active_link(REMOTE), plugin.tickets)
+            finally:
+                client.stop()
+                client._thread.join(5)
+
     def _link(self):
         ws = self._connect()
         hello = self._hello(ws)

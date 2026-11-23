@@ -714,6 +714,15 @@ class DirectionBDialTests(unittest.TestCase):
         self.assertFalse(rs_mod._tunnel_allowed("POST", "/mcp-operations/abc"),
                          "回执查询只读，POST 拒绝")
 
+    def test_streamed_history_engine_dials(self):
+        from importlib import import_module
+        from scripts.test_relay_plugin import check_streamed_history
+        result = self._listen_serve()
+        self.addCleanup(result["_server"].stop)
+        self.assertTrue(self._pair_and_dial(result))
+        tickets_module = import_module(self.plg["streams"].__package__ + ".tickets")
+        check_streamed_history(self, relay_server.active_link(REMOTE), tickets_module)
+
     def test_engine_dials_plugin_listen_and_frames(self):
         plg_listen = self.plg["listen"]
         # 隔离：证书生成目录与配对状态都落 TMPDIR（防污染插件真实 state/）

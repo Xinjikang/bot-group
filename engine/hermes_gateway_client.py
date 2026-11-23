@@ -347,6 +347,8 @@ class GatewayClient:
             received_code = getattr(received, 'code', None)
             if close is not None and close.code == 1009:
                 self._read_error = 'Hermes response exceeds the WebSocket receive limit'
+            elif isinstance(exc, GatewayTransportError):
+                self._read_error = str(exc)
         finally:
             _unregister(self)
             with self._condition:

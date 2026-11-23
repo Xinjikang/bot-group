@@ -4616,6 +4616,15 @@ async function heartbeatAlive(source) {
   }
 }
 
+// Leave browser connections available for foreground requests and the event streams.
+const reasoningWaiters = [];
+let activeReasoningReads = 0;
+function releaseReasoningRead() {
+  const next = reasoningWaiters.shift();
+  if (next) next();
+  else activeReasoningReads--;
+}
+
 async function pollReasoning(source, refreshReply = false) {
   if (refreshReply) source.reconcileOnRestore = true;
   if (source.polling) {
@@ -4623,12 +4632,21 @@ async function pollReasoning(source, refreshReply = false) {
     return;
   }
   if (source.finished && !refreshReply) return;
+  if (source.historyRetryAt > Date.now()) return;
   source.replyRefreshPending = false;
   clearTimeout(source.timer);
   source.polling = true;
+  if (activeReasoningReads >= 2) await new Promise(resolve => reasoningWaiters.push(resolve));
+  else activeReasoningReads++;
+  let retryDelay = 0;
   try {
     const end = source.wake_ended_at;
     const r = await api(`/reasoning?profile=${encodeURIComponent(source.profile)}&session=${encodeURIComponent(source.session)}&after_id=${source.after_id}&wake_started_at=${source.wake_started_at}${end == null ? "" : `&wake_ended_at=${end}`}`);
+    if (r.retry_after_ms > 0) {
+      retryDelay = r.retry_after_ms;
+      return;
+    }
+    source.historyFailures = 0;
     // Refetch with the new bound if another wake arrived during this request.
     if (r.process_ended_at != null) source.processEndedAt = r.process_ended_at;
     if (end !== source.wake_ended_at) return;
@@ -4702,10 +4720,19 @@ async function pollReasoning(source, refreshReply = false) {
     }
     source.reconcileOnRestore = false;
     renderThinkBubbles();
-  } catch { /* Retry without discarding collected entries or the cursor. */ }
-  finally {
+  } catch {
+    source.historyFailures = Math.min(5, (source.historyFailures || 0) + 1);
+    retryDelay = Math.min(30000, 1000 * 2 ** source.historyFailures);
+  } finally {
+    releaseReasoningRead();
     source.polling = false;
-    if (source.replyRefreshPending) pollReasoning(source, true);
+    if (retryDelay) {
+      source.historyRetryAt = Date.now() + retryDelay;
+      source.timer = setTimeout(() => {
+        source.historyRetryAt = 0;
+        return pollReasoning(source, !!(source.reconcileOnRestore || source.replyRefreshPending));
+      }, retryDelay);
+    } else if (source.replyRefreshPending) pollReasoning(source, true);
     else if (!source.finished) source.timer = setTimeout(() => pollReasoning(source),
       Date.now() - source.lastContentAt > WAKE_SILENCE_MS ? 30000 : 2000);
   }
@@ -4870,7 +4897,7 @@ function saveThinkingState() {
   for (const source of S.thinkRuns.values()) {
     if (thinkingCacheActive(source) || !Number.isFinite(source.cacheUpdatedAt)) source.cacheUpdatedAt = now;
   }
-  const runs = [...S.thinkRuns.values()].map(({timer, polling, replyRefreshPending, reconcileOnRestore, ...data}) => data);
+  const runs = [...S.thinkRuns.values()].map(({timer, polling, replyRefreshPending, reconcileOnRestore, historyRetryAt, historyFailures, ...data}) => data);
   const bubbles = [...S.thinkBubbles.values()].map(({timer, run, pollingRun, ...data}) => data);
   try {
     for (let budget = THINKING_CACHE_CHARS; budget >= 4096; budget /= 2) {
@@ -4894,7 +4921,7 @@ function restoreThinkingState() {
     const saved = prepareThinkingCache(raw.runs, raw.bubbles);
     for (const source of saved.runs) {
       if (!source.key || !Number.isFinite(source.wake_started_at)) continue;
-      S.thinkRuns.set(source.key, {...source, timer: null, polling: false});
+      S.thinkRuns.set(source.key, {...source, timer: null, polling: false, historyRetryAt: 0, historyFailures: 0});
     }
     for (const bubble of saved.bubbles) {
       if (!S.thinkRuns.has(bubble.sourceKey) || !Array.isArray(bubble.entries)) continue;
@@ -5201,7 +5228,7 @@ themeBtn.addEventListener("click", () => {
 <script src="/app/app_settings.js?v=20261026-auto-refresh"></script>
 <script src="/app/engine_logs.js?v=20261103"></script>
 <script src="/app/relay_join.js?v=direction-modal"></script>
-<script src="/app/relay_nodes.js?v=direction-handoff"></script>
+<script src="/app/relay_nodes.js?v=node-loading"></script>
 <script src="/app/edit_policy_settings.js?v=20261030"></script>
 <script src="/app/background_settings.js?v=20261023-settings-anchor"></script>
 <script src="/app/directory_picker.js?v=20261011"></script>

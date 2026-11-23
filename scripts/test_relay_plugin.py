@@ -235,6 +235,72 @@ def make_cfg(engine_url: str, *, mcp_python: str = "", home: str = "/home/bot/.h
                        mcp_python=mcp_python, home=home)
 
 
+def check_streamed_history(case, link, tickets_module):
+    from engine.hermes_gateway_client import GatewayClient, GatewayTransportError
+    from engine.relay_server import RelayTransport
+    from websockets.sync.server import serve
+    from websockets.exceptions import ConnectionClosed
+
+    history = {"messages": [{"content": "记录🌙" * 1024, "index": i} for i in range(880)]}
+    first_part = threading.Event()
+    released = threading.Event()
+    original = RelayTransport.push_part
+
+    def observe(transport, envelope):
+        original(transport, envelope)
+        if envelope.get("data"):
+            first_part.set()
+
+    def gateway(ws):
+        try:
+            for raw in ws:
+                request = json.loads(raw)
+                rid, method = request["id"], request["method"]
+                if method in ("session.resume", "session.export", "test.disconnect"):
+                    data = json.dumps({"id": rid, "result": history}, ensure_ascii=False)
+                if method == "session.resume":
+                    def fragments():
+                        yield data[:800]
+                        if not first_part.wait(5):
+                            raise AssertionError("first fragment wasn't forwarded immediately")
+                        yield data[800:]
+                    ws.send(fragments())
+                elif method == "session.export":
+                    ws.send(data)
+                elif method == "test.disconnect":
+                    def broken():
+                        yield data[:200]
+                        ws.close(1011, "fixture closed")
+                        yield data[200:]
+                    try:
+                        ws.send(broken())
+                    except ConnectionClosed:
+                        pass
+                    return
+                else:
+                    ws.send(json.dumps({"id": rid, "result": {"accepted": True}}))
+        finally:
+            released.set()
+
+    with serve(gateway, "127.0.0.1", 0, subprotocols=["hermes-gateway-v1"]) as server:
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        endpoint = {"api_origin": f"http://127.0.0.1:{server.socket.getsockname()[1]}"}
+        with mock.patch.object(tickets_module, "fetch_ticket", return_value=(endpoint, "fixture")), \
+                mock.patch.object(RelayTransport, "push_part", observe):
+            with GatewayClient({}, transport=link.open_transport()) as client:
+                case.assertEqual(client.rpc("session.resume", timeout=10), history)
+                case.assertEqual(client.rpc("session.export", timeout=10), history)
+                case.assertEqual(client.rpc("prompt.submit", timeout=3), {"accepted": True})
+            case.assertTrue(released.wait(3), "closing the lease must release its gateway socket")
+            with GatewayClient({}, transport=link.open_transport()) as client:
+                with case.assertRaisesRegex(GatewayTransportError, r"gateway stream closed \(WebSocket \d+\)"):
+                    client.rpc("test.disconnect", timeout=5)
+            with GatewayClient({}, transport=link.open_transport()) as client:
+                case.assertTrue(client.rpc("prompt.submit", timeout=3)["accepted"])
+    worker.join(3)
+
+
 class GatewayInvitationConfigTests(unittest.TestCase):
     def test_invite_only_profile_is_enabled_for_gateway_startup(self):
         cfg = types.SimpleNamespace(extra={"invite": "test-invite", "engine_url": "http://fixture.invalid"})
@@ -391,6 +457,12 @@ class VersionTests(unittest.TestCase):
 
 class RelayClientTests(unittest.TestCase):
     def setUp(self):
+        state_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(state_dir.cleanup)
+        state = mock.patch.object(_plugin.pairing, "_state_path",
+                                  return_value=Path(state_dir.name) / "pairing.json")
+        state.start()
+        self.addCleanup(state.stop)
         self.engine = FakeEngine().start()
         self.addCleanup(self.engine.stop)
 

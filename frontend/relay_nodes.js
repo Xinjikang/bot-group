@@ -607,6 +607,7 @@
   function renderNodes() {
     list.replaceChildren();
     if (!nodes.length) {
+      if (!nodesReady) return;
       const empty = document.createElement('p');
       empty.className = 'profile-help relay-empty';
       empty.textContent = '暂无远程 Hermes。';
@@ -760,6 +761,7 @@
       if (generation !== epoch || !dialog.open) return false;
       if (!Array.isArray(data)) throw new Error('远程节点响应格式异常');
       nodes = data;
+      nodesReady = true;
       renderNodes();
       if (!quiet) report(nodesStatus, nodes.length
         ? `已加载 ${nodes.length} 个节点 · 更新于 ${new Date().toLocaleTimeString()}`
@@ -768,6 +770,7 @@
     } catch (error) {
       if (generation !== epoch || !dialog.open) return false;
       nodes = [];
+      nodesReady = false;
       renderNodesUnavailable();
       report(nodesStatus, `读取远程节点失败：${message(error)}。点击刷新重试。`, true);
       return false;
