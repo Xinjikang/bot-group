@@ -1,14 +1,27 @@
-function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy}) {
+function relayDirectionChoices(prefix) {
+  return `<div class="relay-direction-choices" id="${prefix}-choices" role="group" aria-label="连接方向">
+    <button type="button" id="${prefix}-dial">本机连云端<span class="relay-direction-flag" data-flag="dial" hidden></span></button>
+    <button type="button" id="${prefix}-listen">云端连本机<span class="relay-direction-flag" data-flag="listen" hidden></span></button>
+  </div>`;
+}
+
+function createRelayDirectionDialog(parent, prefix, {id = prefix, title, badge = '', content, actions}) {
   const dialog = document.createElement('dialog');
-  dialog.id = 'relay-join-dialog';
-  dialog.setAttribute('aria-labelledby', 'relay-join-title');
+  dialog.id = id;
+  dialog.setAttribute('aria-labelledby', prefix + '-title');
   dialog.innerHTML = `
-    <h3 id="relay-join-title">添加远程 Hermes</h3>
-    <div class="relay-direction-choices" id="relay-join-choices">
-      <button id="relay-join-dial">本机连云端</button>
-      <button id="relay-join-listen">云端连本机</button>
-    </div>
-    <form id="relay-join-form" hidden>
+    <div class="relay-direction-head"><h3 id="${prefix}-title">${title}</h3>${badge}</div>
+    ${relayDirectionChoices(prefix)}
+    ${content}
+    <div class="dlg-btns">${actions}</div>`;
+  parent.append(dialog);
+  return dialog;
+}
+
+function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy}) {
+  const dialog = createRelayDirectionDialog(parent, 'relay-join', {
+    id: 'relay-join-dialog', title: '添加远程 Hermes',
+    content: `<form id="relay-join-form" hidden>
       <label for="relay-join-url">云端 Hermes 配对链接</label>
       <div class="relay-pairing-line">
         <input id="relay-join-url" type="password" autocomplete="off" required placeholder="粘贴配对链接">
@@ -23,12 +36,10 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
       </div>
     </div>
     <p id="relay-join-identity" class="relay-pairing-preview" hidden></p>
-    <p id="relay-join-status" class="profile-help" role="status" aria-live="polite"></p>
-    <div class="dlg-btns">
-      <button id="relay-join-cancel">取消</button>
-      <button id="relay-join-confirm" class="primary" hidden>确认添加</button>
-    </div>`;
-  parent.append(dialog);
+    <p id="relay-join-status" class="profile-help" role="status" aria-live="polite"></p>`,
+    actions: `<button id="relay-join-cancel">取消</button>
+      <button id="relay-join-confirm" class="primary" hidden>确认添加</button>`,
+  });
   const $ = id => dialog.querySelector('#relay-join-' + id);
   let attempt = null, timer = 0, version = 0, busy = false;
   let renewal = null;

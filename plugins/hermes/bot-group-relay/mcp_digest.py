@@ -37,7 +37,8 @@ def mcp_entry() -> Path | None:
 def mcp_python(mcp_python_env: str = "") -> str:
     """随包 MCP 解释器绝对路径：配置优先，其次插件目录 venv，最后 None。"""
     if mcp_python_env and Path(mcp_python_env).is_file():
-        return str(Path(mcp_python_env).resolve())
+        # Preserve the venv launcher path even when it links to the base interpreter.
+        return str(Path(mcp_python_env).absolute())
     for candidate in (
         PLUGIN_ROOT / "venv" / "bin" / "python",
         PLUGIN_ROOT / "venv" / "Scripts" / "python.exe",

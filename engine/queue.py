@@ -211,10 +211,9 @@ def process_one(conn) -> bool:
         if not direct_wait and not remote_message and job['kind'] == 'work' and (job['trigger'] == 'scan:task' or job['trigger'].startswith('retry:task:')) and bound_task is None:
             _mark(conn, job['id'], 'cancelled', 'No published complete task remains eligible')
             return True
-        if job['kind'] == 'work' and job['trigger'] == 'scan:req' and bound_task is None:
-            requirement_signal = wake._requirement_signal(conn, job['profile'], 'work', _proj)
+        if job['kind'] == 'work' and job['trigger'] in ('scan:req', '@msg', 'scan:group') and bound_task is None:
             pending = wake._snapshot_pending(conn, job['profile'], 'work', _tid, _proj)
-            if not requirement_signal and not pending:
+            if not pending and not wake._requirement_signal(conn, job['profile'], 'work', _proj):
                 _mark(conn, job['id'], 'cancelled', 'No actionable requirement, unread message or eligible task remains')
                 return True
         result = wake.deliver(job["profile"], job["kind"], thread_id=_tid, project=_proj,

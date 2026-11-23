@@ -107,17 +107,19 @@ class FirstJoinPage:
         self.click('relay-pairing-parse')
         path = f'/relay/nodes/{member}/switch'
         assert self.post(path, lambda: self.click('relay-pairing-confirm')).ok
+        self.click('relay-direction-close')
 
     def finish(self, a, b):
         self.cards_online(a, b)
         for member in (a, b):
             expect(self.page.locator(f'article[data-relay-member="{member}"] .relay-node-meta')).to_contain_text('本机连云端')
-        self.page.locator(f'article[data-relay-member="{a}"] button[data-action="direction"]').click()
         self.el('relay-node-list').evaluate('el => el.scrollTop = 0')
         self.page.set_viewport_size({'width': 390, 'height': 844})
         for theme in ('dark', 'light'):
             self.page.evaluate('(theme) => applyTheme(theme)', theme)
-            for element in ('relay-nodes-dialog', 'relay-listen-dialog', 'relay-join-dialog'):
+            for element in ('relay-nodes-dialog', 'relay-direction', 'relay-listen-dialog', 'relay-join-dialog'):
+                if element == 'relay-direction':
+                    self.page.locator(f'article[data-relay-member="{a}"] button[data-action="direction"]').click()
                 if element == 'relay-listen-dialog':
                     self.click('relay-open-listen')
                 if element == 'relay-join-dialog':
@@ -126,6 +128,8 @@ class FirstJoinPage:
                 assert box and box['x'] >= 0 and box['x'] + box['width'] <= 390
                 assert self.el(element).evaluate('el => el.scrollWidth <= el.clientWidth')
                 self.shot(f'{element}-390-{theme}')
+                if element == 'relay-direction':
+                    self.click('relay-direction-close')
                 if element == 'relay-listen-dialog':
                     self.click('relay-listen-close')
                 if element == 'relay-join-dialog':

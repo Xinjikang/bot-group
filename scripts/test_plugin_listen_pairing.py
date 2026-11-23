@@ -1133,6 +1133,7 @@ class EntryIdentityAndProxyTests(unittest.TestCase):
         mcpproxy = plg["mcpproxy"]
         import tempfile
         tmp_dir = Path(tempfile.mkdtemp(prefix="bgrelay-proxy-"))
+        self.enterContext(patch.object(plg["pairing"], "_state_dir", return_value=tmp_dir))
         self.addCleanup(lambda: __import__("shutil").rmtree(tmp_dir, ignore_errors=True))
         self.addCleanup(mcpproxy.stop_proxy)
         with patch.object(listen_mod, "STATE_DIR", tmp_dir), \
@@ -1261,6 +1262,32 @@ class EntryIdentityAndProxyTests(unittest.TestCase):
                 with patch.object(relay_config, "platform_mcp_python",
                                   return_value=""):
                     self.assertEqual(server._mcp_python(), sys.executable)
+
+    def test_snapshot_preserves_the_same_venv_launcher_as_verification(self):
+        from unittest.mock import Mock
+        plugin = _plugin()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base_dir = root / 'tools'
+            base_dir.mkdir()
+            base = base_dir / 'python'
+            base.touch()
+            launcher = root / 'venv' / 'bin' / 'python'
+            launcher.parent.parent.mkdir()
+            if os.name == 'nt':
+                import _winapi
+                _winapi.CreateJunction(str(base_dir), str(launcher.parent))
+            else:
+                launcher.parent.mkdir()
+                launcher.symlink_to(base)
+            server = plugin['listen'].ListenServer(address='127.0.0.1', port=0, cert_path='', key_path='',
+                advertise='127.0.0.1', member=REMOTE, home=tmp, mcp_python='')
+            ws = Mock()
+            with patch.object(plugin['mcp_digest'], 'PLUGIN_ROOT', root), patch.dict(os.environ, BOT_GROUP_MCP_PYTHON=''):
+                server._route_inbound(ws, {'relay': {'kind': 'mcp_snapshot_request', 'generation': 1}}, 1)
+                self.assertEqual(server._mcp_python(), str(launcher))
+                self.assertEqual(json.loads(ws.send.call_args.args[0])['mcp_python'], str(launcher))
+                self.assertNotEqual(launcher, launcher.resolve())
 
     def test_proxy_releases_waiter_when_channel_unavailable(self):
         """manager node2092：转发失败（通道未认证）→ 502 且释放注册位，

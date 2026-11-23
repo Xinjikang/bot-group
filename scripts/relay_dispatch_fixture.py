@@ -77,6 +77,8 @@ class DispatchGateway:
         snapshot = session['snapshot']
         if method == 'session.resume':
             return snapshot.copy()
+        if method == 'session.export' and args['format'] == 'json':
+            return {'content': json.dumps({'messages': snapshot['messages']})}
         if method == 'session.mutate':
             op, payload = args['operation'], args['payload']
             assert op in ('editor_mcp', 'workspace', 'edit_policy', 'model', 'reasoning'), op

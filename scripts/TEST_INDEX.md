@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+远端点对点唤醒使用项目 Python 执行 `python -X utf8 -B -m unittest scripts.test_relay_message_wake scripts.test_plugin_listen_pairing.EntryIdentityAndProxyTests`。临时数据库验证撤回、合并排队、投递与已读分离、失败再投，并用文件系统链接核对会话上报的 venv 解释器路径。
+
 远程 Hermes 单文件安装器使用 `python -X utf8 -B -m unittest scripts.test_relay_installer`。从真实插件构建归档和 `install-relay.pyz`，验证资产摘要、文件清单、损坏包拒绝、目标 profile、首次安装、依赖失败、启用失败回滚、重试与配对保留。测试使用临时 profile 和模拟的 Hermes、依赖安装命令；Windows 测试替代 Linux 文件锁和符号链接。发布时另在 Linux ECS 验证实际依赖安装和网关加载。
 
 远程协作根目录使用 `python -X utf8 -B -m unittest scripts.test_remote_workspaces`。在临时 Git 仓库验证共享 master、独立具名 worktree、重复准备、基线未发布、分叉与保留未提交文件，以及远端分支推送并在办公机合并。下文的 `scripts.verify_relay_first_join_network` 使用隔离 bare 仓库验证缺少基线时的话题回复、点对点收发与已读、领取受阻，以及发布基线后同一会话进入 worktree 并领取任务。`scripts.test_relay_nodes_browser` 在 1280px 和 390px 下检查协作根目录标签、输入框和按钮同排占满卡片内容宽度，并验证节点卡的保存、错误回显和不同节点的值。
@@ -94,7 +96,7 @@ Hermes 旧版唤醒分流（Issue #28）：使用 `python -X utf8 -B -m scripts.
 
 引擎指定网卡监听（req#172 #321）：`env -u PYTHONPATH .venv/Scripts/python.exe -X utf8 -B scripts/verify_remote_listen_live.py --evidence <主目录报告下的新绝对目录>`。隔离数据目录 + 分配端口 18042，回环 Server 提供页面/API；真实登录设置页登记隔离成员并绑定本机 IPv4，界面保存该网卡后 `listen_control` 另起 lifespan=off Server。脚本断言监听仅回环+所选地址（psutil LISTEN 集合，无 0.0.0.0/::）、所选地址 `/health` 200、跨远程监听 `ws://<addr>:18042/relay/ws` 真实 hello_ok、界面在线；停用后远程地址不可连、回环 `/health` 200、监听集合只剩回环。后端监听核心另由 `env -u PYTHONPATH .venv/Scripts/python.exe -X utf8 -B -m unittest scripts.test_listen_control -q` 覆盖（9 项，含枚举/校验/绑定先就绪/端口占用回滚/重启恢复）。
 
-节点方向回归使用 `python -X utf8 -B -m scripts.test_relay_direction_browser --evidence <报告目录>`。合成管理员 API 配合 Chrome，从已有节点卡展开方向，覆盖端点预检、认证、切换、断线重试、MCP 验证及失败恢复、旧回执和 390px 主题。
+节点方向回归使用 `python -X utf8 -B -m scripts.test_relay_direction_browser --evidence <报告目录>`。合成管理员 API 配合 Chrome，从已有节点卡打开独立弹窗，核对焦点返回、选方向后显式确认、端点预检、认证、切换、断线重试、MCP 验证及失败恢复、旧回执和 390px 主题。
 
 消息上屏竞态：`python -X utf8 -B scripts/test_message_visibility_browser.py --evidence <主目录报告下的新绝对目录>`。需要 Playwright 与 Chrome，所有 HTTP 使用合成响应。覆盖发送回执主动刷新、旧列表响应期间合并新消息补拉、已读确认挂起时上屏，以及换话题后旧响应与补拉隔离。
 

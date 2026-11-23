@@ -502,13 +502,13 @@ def _snapshot_pending(conn, profile, kind, thread_id, project):
     按稳定 message_id 正序（chat 的 seq 即 message_id，分页游标统一用它）。
     每条消息附当前接收者的有效回复要求（effective_need_reply 逐条算）。
     """
-    from .delivery import effective_need_reply
+    from .delivery import AWAITING_DELIVERY, effective_need_reply
     if kind == "chat":
         rows = conn.execute(
             "SELECT m.id AS message_id, m.ts, m.sender, m.sender_type, m.content, "
             "m.mentions, m.need_reply, m.thread_id "
             "FROM inbox i JOIN messages m ON m.id = i.message_id "
-            "WHERE i.profile=? AND i.status='pending' AND m.thread_id=? AND m.project=? "
+            "WHERE i.profile=? AND i.status='pending' AND m.retract_by IS NULL AND m.thread_id=? AND m.project=? "
             "ORDER BY m.id ASC",
             (profile, thread_id, project),
         ).fetchall()
@@ -517,7 +517,8 @@ def _snapshot_pending(conn, profile, kind, thread_id, project):
             "SELECT m.id AS message_id, m.ts, m.sender, m.sender_type, m.content, "
             "m.mentions, m.need_reply, m.thread_id "
             "FROM inbox i JOIN messages m ON m.id = i.message_id "
-            "WHERE i.profile=? AND i.status='pending' AND m.thread_id IS NULL AND m.project=? "
+            "WHERE i.profile=? AND i.status='pending' AND m.retract_by IS NULL AND m.thread_id IS NULL AND m.project=? "
+            f"AND {AWAITING_DELIVERY} "
             "ORDER BY m.id ASC",
             (profile, project),
         ).fetchall()
@@ -599,7 +600,7 @@ def _requirement_signal(conn, profile, kind, project):
 
 
 def _finalize_injection_signal(profile, kind, thread_id, project, trigger_msg_id,
-                                bound_task, cmd_without_q):
+                                bound_task, cmd_without_q, *, snapshot=None):
     """spawn 前一刻读快照拼装注入正文；超预算整段退化纯信号。
 
     注入 = 未读全量一次性塞进 -q（正文+id+发送者+need_reply+seq）。禁止静默截断、
@@ -610,7 +611,8 @@ def _finalize_injection_signal(profile, kind, thread_id, project, trigger_msg_id
     """
     conn = db.get_connection()
     try:
-        snapshot = _snapshot_pending(conn, profile, kind, thread_id, project)
+        if snapshot is None:
+            snapshot = _snapshot_pending(conn, profile, kind, thread_id, project)
         requirement_signal = _requirement_signal(conn, profile, kind, project)
     finally:
         conn.close()
@@ -865,7 +867,7 @@ def enqueue(
             "SELECT ?, ?, ?, ?, ?, ?, 'queued', ? WHERE EXISTS "
             "(SELECT 1 FROM projects WHERE name=? AND archived=0 AND readiness_status='ready') AND EXISTS "
             "(SELECT 1 FROM project_members pm JOIN members m ON m.profile=pm.profile "
-            "WHERE pm.project=? AND pm.profile=? AND pm.active=1)",
+            "WHERE pm.project=? AND pm.profile=? AND pm.active=1) ON CONFLICT DO NOTHING",
             (profile, project, kind, trigger, trigger_msg_id, thread_id, db.now_iso(), project, project, profile),
         )
         if commit:

@@ -402,6 +402,13 @@ def exercise(args, evidence):
             row = conn.execute('SELECT task_id,workdir FROM hermes_executions WHERE submission_id=?',
                                (admission['submission_id'],)).fetchone()
             assert row['task_id'] is None and Path(row['workdir']) == hb
+            from engine import scanner
+            assert conn.execute("SELECT 1 FROM inbox i JOIN hermes_executions e ON e.execution_id=i.relay_execution_id "
+                                "WHERE i.message_id=? AND i.profile=? AND i.status='pending' AND e.submission_id=?",
+                                (direct, b, admission['submission_id'])).fetchone()
+            scanner.scan_inbox(conn)
+            assert not conn.execute("SELECT 1 FROM wake_jobs WHERE profile=? AND project='alpha' AND kind='work' "
+                                    "AND status='queued' AND trigger='scan:group'", (b,)).fetchone()
             reply = send_mcp(gateway_b, admission, lb['proxy_url'], '@user 已收到仓库说明', seen_id=direct)
             reply_id = worker.submit(asyncio.run, reply).result() if ui else asyncio.run(reply)
             assert conn.execute('SELECT sender FROM messages WHERE id=? AND thread_id IS NULL', (reply_id,)).fetchone()[0] == b
@@ -409,6 +416,20 @@ def exercise(args, evidence):
             wait(lambda: conn.execute("SELECT 1 FROM hermes_executions WHERE submission_id=? AND state='terminal' AND cleanup_pending=0",
                                       (admission['submission_id'],)).fetchone())
             assert conn.execute('SELECT status FROM tasks WHERE id=?', (task,)).fetchone()[0] == 'pending'
+            from engine import hermes_session_auth
+            withdrawn = result(api.post('/msg', json={'sender': 'user', 'project': 'alpha',
+                'text': f'@{b} withdrawn during setup', 'need_reply': True}))['message_id']
+            configure = hermes_session_auth.configure
+            def withdraw_after_configure(*params, **options):
+                snapshot = configure(*params, **options)
+                result(api.post(f'/message/{withdrawn}/retract', json={}))
+                return snapshot
+            before = len(gateway_b.submissions)
+            with patch.object(hermes_session_auth, 'configure', side_effect=withdraw_after_configure):
+                assert queue.process_one(conn)
+            assert conn.execute('SELECT retract_at FROM messages WHERE id=?', (withdrawn,)).fetchone()[0]
+            assert len(gateway_b.submissions) == before
+            evidence['withdrawn_before_submit'] = {'message_id': withdrawn, 'new_submissions': 0}
         evidence['missing_baseline'] = dict(task_claim=claim['reason'], direct_message=direct, direct_reply=reply_id)
         orig = relay_server.active_link(b)
         assert orig is not None

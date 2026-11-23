@@ -213,13 +213,25 @@ def main():
         page.screenshot(path=str(evidence / 'direction-empty-1280-dark.png'))
         new_node()
         page.locator('#relay-refresh').click()
-        page.locator('article[data-relay-member="hermes-remote"] button[data-action="direction"]').click()
+        opener = page.locator('article[data-relay-member="hermes-remote"] button[data-action="direction"]')
+        modal = page.locator('#relay-direction')
+        def refresh_direction():
+            page.locator('#relay-direction-close').click()
+            with page.expect_response(lambda r: urlparse(r.url).path == '/relay/nodes'):
+                page.locator('#relay-refresh').click()
+            opener.click()
+        opener.click()
+        assert modal.evaluate("el => el.matches(':modal') && !el.closest('article')")
+        page.keyboard.press('Escape')
+        assert opener.evaluate('el => el === document.activeElement')
+        opener.click()
         assert page.locator('#relay-direction-listen').get_attribute('aria-pressed') == 'true'
         assert '等待连接' in page.locator('#relay-direction-status').inner_text()
-        assert '未开启远程监听' in page.locator('#relay-direction-local').inner_text()
+        assert '未开启远程监听' in page.locator('#relay-direction-local').text_content()
         page.screenshot(path=str(evidence / 'direction-listen-offline-1280-dark.png'))
 
         # Enable the engine listener and mark the node online: three stages complete.
+        page.locator('#relay-direction-close').click()
         page.locator('#relay-open-listen').click()
         page.locator('#relay-listen-address').select_option('100.64.0.10')
         page.locator('#relay-listen-save').click()
@@ -227,12 +239,13 @@ def main():
         page.locator('#relay-listen-close').click()
         state['node'].update({'state': 'online', 'mcp_fingerprint': 'abcdef0123456789'})
         page.locator('#relay-refresh').click()
+        opener.click()
         page.wait_for_function('document.querySelector("#relay-direction-badge").textContent.includes("已连接")')
         assert page.locator('#relay-stage-listen').get_attribute('class') == 'relay-stage-done'
         assert page.locator('#relay-stage-auth').get_attribute('class') == 'relay-stage-done'
         assert page.locator('#relay-stage-mcp').get_attribute('class') != 'relay-stage-done'
-        assert 'MCP 待只读验证' in page.locator('#relay-direction-status').inner_text()
-        assert '已测通 · 推荐' in page.locator('#relay-direction-listen').inner_text()
+        assert page.locator('#relay-stage-mcp').get_attribute('class') == 'relay-stage-current'
+        assert '当前方向' in page.locator('#relay-direction-listen').inner_text()
         assert page.locator('#relay-direction-dial').is_enabled()
 
         # Direction B without a pairing import is refused, and the form is displayed.
@@ -271,15 +284,15 @@ def main():
         state['switch_mode'] = 'success'
         page.locator('#relay-pairing-confirm').click()
         page.wait_for_function('document.querySelector("#relay-pairing-status").textContent.includes("导入完成")')
-        page.wait_for_function('document.querySelector("#relay-direction-status").textContent.includes("已连通")')
+        page.wait_for_function('document.querySelector("#relay-direction-badge").textContent === "已连接"')
         page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-done"')
         assert len(state['mcp_verify_posts']) == 1
-        assert 'MCP 只读验证已通过' in page.locator('#relay-direction-status').inner_text()
+        assert page.locator('#relay-stage-mcp').get_attribute('class') == 'relay-stage-done'
         assert len(state['probe_posts']) == 2
         assert len(state['endpoint_posts']) == 1
         assert state['endpoint_posts'][0]['pairing_token'] == 'ONE-SHOT-SECRET'
         assert state['endpoint_posts'][0]['fingerprint'] == FINGERPRINT
-        assert 'wss://cloud.example:18443' in page.locator('#relay-direction-remote').inner_text()
+        assert 'wss://cloud.example:18443' in page.locator('#relay-direction-remote').text_content()
         assert page.locator('#relay-pairing-preview').is_hidden()
         assert page.locator('#relay-pairing-url').input_value() == ''
         page.screenshot(path=str(evidence / 'direction-dial-online-1280-dark.png'))
@@ -287,6 +300,8 @@ def main():
         # Switch back through a transient state: the page shows 切换中 without a timer verdict.
         state['switch_mode'] = 'transition'
         page.locator('#relay-direction-listen').click()
+        assert len(state['switch_posts']) == 1
+        page.locator('#relay-direction-apply').click()
         page.wait_for_function('document.querySelector("#relay-direction-badge").textContent === "切换中"')
         assert '切换中' in page.locator('#relay-direction-status').inner_text()
         state['node'].update({'direction': 'listen', 'switch_state': '', 'switch_target': '',
@@ -299,15 +314,16 @@ def main():
         state['switch_mode'] = 'fail'
         state['node']['direction'] = 'listen'
         page.locator('#relay-direction-dial').click()
+        page.locator('#relay-direction-apply').click()
         page.wait_for_function('document.querySelector("#relay-direction-failure").textContent.includes("TLS")')
         assert '切换失败' in page.locator('#relay-direction-status').inner_text()
-        assert page.locator('#relay-direction-retry').is_visible()
-        assert page.locator('#relay-direction-back').is_visible()
+        assert page.locator('#relay-direction-apply').is_visible()
+        assert page.locator('#relay-direction-listen').is_enabled()
         page.screenshot(path=str(evidence / 'direction-failed-1280-dark.png'))
         assert '导入完成' not in page.locator('#relay-pairing-status').inner_text()
         state['switch_mode'] = 'success'
-        page.locator('#relay-direction-retry').click()
-        page.wait_for_function('document.querySelector("#relay-direction-status").textContent.includes("已连通")')
+        page.locator('#relay-direction-apply').click()
+        page.wait_for_function('document.querySelector("#relay-direction-badge").textContent === "已连接"')
         assert page.locator('#relay-direction-dial').get_attribute('aria-pressed') == 'true'
         page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-done"')
 
@@ -317,23 +333,24 @@ def main():
                               'switch_state': '', 'switch_target': '', 'switch_error': '',
                               'dial_state': 'abandoned', 'dial_failure': None,
                               'mcp_verify_state': '', 'mcp_verify_error': ''})
-        page.locator('#relay-refresh').click()
+        refresh_direction()
         page.wait_for_function('document.querySelector("#relay-direction-badge").textContent === "拨号已停止"')
         with page.expect_request(lambda request: request.method == 'POST'
                                  and request.url.endswith('/switch')) as switch_request:
-            page.locator('#relay-direction-retry').click()
+            page.locator('#relay-direction-apply').click()
         assert switch_request.value, '同方向离线重试必须实际发出 /switch'
-        page.wait_for_function('document.querySelector("#relay-direction-status").textContent.includes("已连通")')
+        page.wait_for_function('document.querySelector("#relay-direction-badge").textContent === "已连接"')
         page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-done"')
 
         # A fingerprint alone is not enough: a failed scoped read shows the failure
         # and never marks the MCP stage complete.
         state['mcp_verify_ok'] = False
         state['node'].update({'mcp_verify_state': '', 'mcp_verify_error': ''})
-        page.locator('#relay-refresh').click()
+        refresh_direction()
         page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-failed"')
         assert 'MCP 只读验证失败' in page.locator('#relay-direction-status').inner_text()
         assert '权限拒绝(403)' in page.locator('#relay-direction-failure').inner_text()
+        page.locator('#relay-direction-detail summary').click()
         assert page.locator('#relay-direction-verify').is_visible()
         # Recovery is a normal page action: keep the failed state and click re-verify.
         state['mcp_verify_ok'] = True
@@ -342,39 +359,39 @@ def main():
         page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-done"')
         assert len(state['mcp_verify_posts']) == before + 1
         assert page.locator('#relay-direction-verify').is_hidden()
-        assert 'MCP 只读验证已通过' in page.locator('#relay-direction-status').inner_text()
+        assert page.locator('#relay-stage-mcp').get_attribute('class') == 'relay-stage-done'
 
         # A stale success reply must not light the current connection: the page
         # reloads the node state and keeps MCP pending when the row is still empty.
         state['mcp_verify_stale'] = True
         state['node'].update({'mcp_verify_state': '', 'mcp_verify_error': ''})
         with page.expect_response(lambda response: response.url.endswith('/mcp-verify')) as stale:
-            page.locator('#relay-refresh').click()
+            refresh_direction()
         assert stale.value.ok
         page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-current"')
-        assert 'MCP 待只读验证' in page.locator('#relay-direction-status').inner_text()
+        assert page.locator('#relay-stage-mcp').get_attribute('class') == 'relay-stage-current'
         state['mcp_verify_stale'] = False
         state['node'].update({'state': 'offline', 'offline_reason': 'unexpected',
                               'switch_state': '', 'switch_target': '', 'switch_error': '',
                               'dial_state': 'idle', 'dial_failure': None})
-        page.locator('#relay-refresh').click()
+        refresh_direction()
         page.wait_for_function('document.querySelector("#relay-direction-status").textContent.includes("连接已中断")')
         assert page.locator('#relay-direction-badge').inner_text() == '异常掉线'
         state['node'].update({'state': 'online', 'offline_reason': '',
                               'dial_state': 'connected', 'mcp_fingerprint': 'abcdef0123456789'})
-        page.locator('#relay-refresh').click()
+        refresh_direction()
         page.wait_for_function('document.querySelector("#relay-direction-badge").textContent.includes("已连接")')
 
         # 390px dark/light with the direction and pairing panes visible, no horizontal overflow.
         page.set_viewport_size({'width': 390, 'height': 844})
         for theme in ('dark', 'light'):
             page.evaluate('(theme) => applyTheme(theme)', theme)
-            box = page.locator('#relay-nodes-dialog').bounding_box()
+            box = modal.bounding_box()
             assert box['x'] >= 0 and box['x'] + box['width'] <= 390
-            overflow = page.locator('#relay-nodes-dialog').evaluate('(el) => el.scrollWidth - el.clientWidth')
+            overflow = modal.evaluate('(el) => el.scrollWidth - el.clientWidth')
             assert overflow <= 0, (theme, overflow)
             assert page.locator('#relay-direction-badge').is_visible()
-            assert page.locator('#relay-pairing').is_visible()
+            assert page.locator('#relay-pairing').is_hidden()
             page.screenshot(path=str(evidence / f'direction-390-{theme}.png'))
         page.set_viewport_size({'width': 1280, 'height': 900})
         page.evaluate("applyTheme('dark')")

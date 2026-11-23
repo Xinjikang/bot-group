@@ -222,7 +222,8 @@ CREATE TABLE IF NOT EXISTS inbox (
     profile     TEXT NOT NULL,              -- 待看者（跳过 sender 自己）
     status      TEXT NOT NULL DEFAULT 'pending', -- pending / seen / expired / failed（req#82 R2 整组陈旧显式失败终态）
     closed_by   INTEGER,                    -- 收口消息 id（expired 时记录溯源）
-    seen_at     TEXT
+    seen_at     TEXT,
+    relay_execution_id TEXT                 -- 处理该点对点消息的远端 Hermes 执行
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_profile_pending ON inbox(profile, status);
 
