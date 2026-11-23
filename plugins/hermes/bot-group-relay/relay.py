@@ -46,6 +46,9 @@ class RelayClient:
         self._streams = streams_mod.StreamRegistry(cfg.home, on_event=self._on_local_event)
         self._send_queue: queue.Queue = queue.Queue()
         self._stop = threading.Event()
+        self._retry = threading.Event()
+        self._listener = None
+        self._listener_lock = threading.Lock()
         self._thread = threading.Thread(target=self._run, name="bot-group-relay-outbound",
                                         daemon=True)
 
@@ -72,7 +75,27 @@ class RelayClient:
 
     def stop(self) -> None:
         self._stop.set()
+        self._retry.set()
+        self._close_listener()
         self._streams.close_all()
+
+    def _open_listener(self):
+        from . import listen
+        with self._listener_lock:
+            if self._stop.is_set():
+                raise ValueError("网关正在停止")
+            if self._listener is None:
+                self._listener = listen.restore_listener(self.cfg)
+                self._listener.wake_outbound = self._retry.set
+
+    def _close_listener(self):
+        from . import mcpproxy
+        with self._listener_lock:
+            if self._listener is not None:
+                self._listener.stop()
+                if getattr(mcpproxy._ACTIVE_SERVER, "listener", None) is self._listener:
+                    mcpproxy.stop_proxy()
+                self._listener = None
 
     @property
     def generation(self) -> int:
@@ -89,6 +112,25 @@ class RelayClient:
         from . import pairing
         backoff = RECONNECT_BASE
         while not self._stop.is_set():
+            if self._listener is None and pairing.listener_selected(self.cfg.member):
+                try:
+                    self._open_listener()
+                except (OSError, ValueError, RuntimeError) as exc:
+                    logger.warning("relay listener restore failed: %s", type(exc).__name__)
+            if (pairing.listener_selected(self.cfg.member, confirmed=True)
+                    and not pairing.outbound_requested(self.cfg.member)):
+                self._retry.wait(timeout=2)
+                self._retry.clear()
+                continue
+            if not self.cfg.engine_url:
+                cfg = relay_config.load()
+                if cfg and cfg.engine_url and cfg.member == self.cfg.member:
+                    self.cfg = cfg
+                    self._credential = cfg.credential
+                else:
+                    self._retry.wait(timeout=2)
+                    self._retry.clear()
+                    continue
             if self._follow_saved and (not self.cfg.invite or self._credential):
                 saved = pairing.load_register_credential(self.cfg.member, engine_url=self.cfg.engine_url)
                 if saved:
@@ -112,6 +154,8 @@ class RelayClient:
                             continue
                         return
                     backoff = RECONNECT_BASE
+                    pairing.select_role(self.cfg.member, "dial")
+                    self._close_listener()
                     self._on_status("online")
                     self._recv_loop(ws)
             except Exception as exc:  # noqa: BLE001 断线重连
@@ -122,8 +166,8 @@ class RelayClient:
             self._on_status("offline")
             self._streams.close_all()
             self._generation = 0
-            if self._stop.wait(timeout=backoff):
-                return
+            self._retry.wait(timeout=backoff)
+            self._retry.clear()
             backoff = min(backoff * 2, RECONNECT_CAP)
 
     def _handshake(self, ws, *, pairing_only=False) -> bool | None:
@@ -213,6 +257,27 @@ class RelayClient:
         if kind not in ("hello_ok",) and frame_gen != self._generation:
             logger.warning("bot-group relay stale frame dropped member=%s kind=%s gen=%s",
                            self.cfg.member, kind, frame_gen)
+            return
+        if kind == "direction_cancel_listen":
+            if self._listener is not None and self._listener._active_ws is None:
+                self._close_listener()
+            return
+        if kind == "direction_listen":
+            from . import pairing
+            try:
+                saved = pairing.saved_listener(self.cfg.member)
+                requested = envelope.get("direction") or {}
+                if any(requested.get(k) != saved[k] for k in ("fingerprint", "port")):
+                    raise ValueError("引擎保存的端点与云端配对记录不一致")
+                self._open_listener()
+                result = {"ready": True}
+            except Exception as exc:
+                logger.warning("relay listener preparation failed: %s", type(exc).__name__)
+                result = {"error": str(exc)[:220]}
+            ws.send(json.dumps({"relay": {"kind": "direction_result",
+                                         "generation": self._generation,
+                                         "request_id": meta.get("request_id")},
+                                "direction": result}))
             return
         if kind == 'workspace_request':
             from . import workspaces

@@ -1,4 +1,4 @@
-"""req#173 方向 B：引擎出站拨号器（先断后建、动作驱动、单活动通道）。
+"""req#173 方向 B：引擎出站拨号器（按成员认证并接替活动通道）。
 
 按配对记录（relay_nodes.dial_endpoint）向插件监听端点拨入 WSS：
 - TLS/证书指纹校验（配对记录 fingerprint，自签证书必填指纹）；
@@ -9,8 +9,7 @@
   重试/切回；不设计时器、不做 draining/双通道。
 
 切换状态机（relay.begin_switch/complete_switch）：用户点切换 → 记意图+目标
-方向（持久化）→ 暂停派发（queue._relay_node_gate 看 switch_state）→ 断旧 →
-建新 → 认证通过清切换态（relay_ws 或本模块握手成功时 complete_switch）。
+方向（持久化）→ 暂停派发（queue._relay_node_gate 看 switch_state）→ 新方向认证接管 → 清切换态（relay_ws 或本模块握手成功时 complete_switch）。
 offline 原因动作驱动：切换中=switch（不告警不重试任务），其余=unexpected。
 """
 from __future__ import annotations
@@ -427,13 +426,34 @@ def verify_first_pairing(member: str, endpoint: dict):
     }, probe=True)
 
 
+def connect_endpoint(conn, member, endpoint):
+    row = relay.read_node(conn, member)
+    payload = _hello_payload(conn, member)
+    if not payload or not payload["credential"]:
+        _record_failure(member, "auth", _endpoint_address(endpoint),
+                        "缺少配对凭据，请重新导入配对链接")
+        return None
+    has_ticket = bool(endpoint.get('activation_ticket'))
+    if has_ticket and not payload.get('pairing_ticket'):
+        relay.discard_dial_activation_ticket(conn, member, endpoint, row['dial_endpoint'])
+        has_ticket = False
+    authenticated = _authenticate_dial(member, endpoint, payload)
+    if authenticated is None:
+        return None
+    ws, remote_generation, persistent_credential = authenticated
+    if has_ticket:
+        relay.discard_dial_activation_ticket(conn, member, endpoint, row['dial_endpoint'])
+    if persistent_credential:
+        relay.update_dial_pairing_token(conn, member, persistent_credential)
+    return ws, remote_generation
+
+
 def dial_once(member: str, *, initial=None) -> bool:
     """Authenticate or reuse a first-join connection, then run the frame loop."""
     conn = db.get_connection()
     try:
         endpoint = relay.read_dial_endpoint(conn, member)
         row = relay.read_node(conn, member)
-        payload = _hello_payload(conn, member) if initial is None else None
     finally:
         conn.close()
     if endpoint is None or row is None or row["credential_revoked"]:
@@ -443,30 +463,12 @@ def dial_once(member: str, *, initial=None) -> bool:
                         "未配置拨号端点或凭据已吊销")
         return False
     if initial is None:
-        if not payload or not payload["credential"]:
-            _record_failure(member, "auth", _endpoint_address(endpoint),
-                            "缺少配对凭据，请重新导入配对链接")
+        with closing(db.get_connection()) as conn:
+            initial = connect_endpoint(conn, member, endpoint)
+        if initial is None:
             return False
-        has_ticket = bool(endpoint.get('activation_ticket'))
-        if has_ticket and not payload.get('pairing_ticket'):
-            with closing(db.get_connection()) as conn:
-                relay.discard_dial_activation_ticket(conn, member, endpoint, row['dial_endpoint'])
-            has_ticket = False
-        authenticated = _authenticate_dial(member, endpoint, payload)
-        if authenticated is None:
-            return False
-        ws, remote_generation, persistent_credential = authenticated
-        if has_ticket:
-            with closing(db.get_connection()) as conn:
-                relay.discard_dial_activation_ticket(conn, member, endpoint, row['dial_endpoint'])
-        if persistent_credential:
-            conn = db.get_connection()
-            try:
-                relay.update_dial_pairing_token(conn, member, persistent_credential)
-            finally:
-                conn.close()
-    else:
-        ws, remote_generation = initial
+    ws, remote_generation = initial
+
 
     # 注册前复核（动作驱动，防切回竞态）：切换目标已不是 dial（用户切回
     # listen）或非切换时方向已回 listen → 本连接不再被需要，主动关闭不接管。
@@ -567,6 +569,10 @@ def dial_loop(member: str, task: dict, initial=None) -> None:
         else:
             ok = dial_once(member)
         if ok:
+            with closing(db.get_connection()) as conn:
+                row = relay.read_node(conn, member)
+            if row is None or (row["switch_target"] or row["direction"]) != "dial":
+                return
             attempt = 0  # 曾认证成功：下次断链从最小退避重新开始
         else:
             attempt += 1

@@ -234,10 +234,14 @@ class ListenServer:
             else:
                 conn.close(code=4001, reason="pairing token invalid")
                 return
+            # The reverse path can reuse the presented credential only when the
+            # engine confirms that it also belongs to the inbound member identity.
+            pairing.select_role(self.member, "listen")
             # 接替旧连接：单活动通道（新连接认证成功才接管）
             with self._ws_lock:
                 previous = self._active_ws
                 self._active_ws = conn
+                self._return_key = credential if self.scheme == "wss" else ""
                 self._active_generation += 1
                 generation = self._active_generation
             if previous is not None and previous is not conn:
@@ -298,6 +302,25 @@ class ListenServer:
         if kind not in ("hello",) and frame_gen != generation:
             logger.warning("bot-group relay stale dial frame dropped kind=%s gen=%s",
                            kind, frame_gen)
+            return
+        if kind == "direction_dial":
+            # The gateway owns the outgoing client. A CLI-owned listener can
+            # coexist with it; the gateway's ordinary retry covers that case.
+            with self._ws_lock:
+                if self._active_ws is not ws:
+                    return
+                port = envelope.get("return_port")
+                if type(port) is int and 0 < port < 65536 and self._return_key:
+                    import ipaddress
+                    peer = ipaddress.ip_address(ws.remote_address[0])
+                    host = f"[{peer}]" if peer.version == 6 else str(peer)
+                    if not pairing.saved_register(self.member)[0]:
+                        pairing.save_register_credential(self.member, self._return_key,
+                                                        engine_url=f"http://{host}:{port}")
+            pairing.request_outbound(self.member)
+            wake = getattr(self, "wake_outbound", None)
+            if wake:
+                wake()
             return
         if kind == 'workspace_request':
             from . import workspaces
@@ -531,6 +554,28 @@ class ListenServer:
         }, ensure_ascii=False))
 
 
+def restore_listener(cfg):
+    """Reopen the local pairing endpoint with its original identity and proxy."""
+    from . import mcpproxy
+    offer = pairing.saved_listener(cfg.member)
+    local = offer.get("listener") or {}
+    address = validate_bind_address(local.get("address") or offer["advertise"])
+    cert = local.get("cert") or str(STATE_DIR / "cert.pem")
+    key = local.get("key") or str(STATE_DIR / "key.pem")
+    if certificate_fingerprint(cert) != offer["fingerprint"]:
+        raise ValueError("云端监听证书与原配对指纹不一致")
+    server = ListenServer(address=address, port=offer["port"], cert_path=cert,
+                          key_path=key, advertise=offer["advertise"], member=cfg.member,
+                          home=cfg.home, mcp_python=cfg.mcp_python)
+    server.start()
+    try:
+        mcpproxy.start_proxy(server)
+    except Exception:
+        server.stop()
+        raise
+    return server
+
+
 def listen_serve(*, address: str, port: int, advertise: str = "",
                  member: str = "", home: str = "", mcp_python: str = "",
                  cert_path: str | None = None, key_path: str | None = None,
@@ -565,7 +610,8 @@ def listen_serve(*, address: str, port: int, advertise: str = "",
         server.start()  # 绑定失败抛 RuntimeError，保持原状
         issued = pairing.issue_pairing(member=member, advertise=server.advertise,
                                        port=server.bound_port(),
-                                       fingerprint=fingerprint, scheme=scheme)
+                                       fingerprint=fingerprint, scheme=scheme,
+                                       listener={"address": bind, "cert": cert, "key": key})
         proxy = None
         if not no_proxy:
             # 随包 MCP loopback 代理（manager node2060 ②）：正常路径必启动

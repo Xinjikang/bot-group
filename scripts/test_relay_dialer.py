@@ -1,4 +1,4 @@
-"""req#173 task#323 出站拨号与成员级切换状态机（先断后建）隔离测试。
+"""req#173 task#323 出站拨号与成员级切换状态机隔离测试。
 
 覆盖：方向 B 实际拨通插件监听（TLS/指纹校验、重连退避、单活动通道）、
 切换全链 A→B→A（暂停派发、同点名单次执行、切换中不告警）、重启恢复、
@@ -1083,7 +1083,7 @@ class SwitchFullChainTests(DialerBase):
         with closing(db.get_connection()) as c:
             relay.begin_switch(c, REMOTE, "dial")
             self.assertEqual(queue_module._relay_node_gate(c, candidate)[0], "hold")
-        # 用户点切换（真实 /switch 端点）：断旧 + 起拨号
+        # 用户点切换（真实 /switch 端点）：认证目标后接替旧连接
         plugin = FakePlugin(tls=True)
         self.addCleanup(plugin.stop)
         with closing(db.get_connection()) as c:
@@ -1099,7 +1099,7 @@ class SwitchFullChainTests(DialerBase):
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and not link_a.closed:
             time.sleep(0.05)
-        self.assertTrue(link_a.closed, "先断旧：A 连接必须主动关闭")
+        self.assertTrue(link_a.closed, "新连接接管后应释放旧连接")
         # 拨号认证成功 → 切换完成（恢复线程异步清切换态，manager node2073）
         self.assertTrue(self._wait_connected(10), "拨号应接通")
         self.assertTrue(self._wait_switch_clear(REMOTE),
@@ -1116,8 +1116,8 @@ class SwitchFullChainTests(DialerBase):
         response = self.client.post(f"/relay/nodes/{REMOTE}/switch",
                                     json={"direction": "listen"})
         self.assertEqual(response.status_code, 200)
-        self.assertIsNone(relay_server.active_link(REMOTE),
-                          "切回后拨号连接必须关闭")
+        self.assertIsInstance(relay_server.active_link(REMOTE), relay_dialer.DialLink,
+                              "新方向认证前保留拨号连接")
         with self.client.websocket_connect("/relay/ws") as ws:
             ws.send_json({"relay": {"kind": "hello"}, "member": REMOTE,
                           "credential": CREDENTIAL, "code_version": self.RELEASE,

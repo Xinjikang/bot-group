@@ -1311,7 +1311,7 @@
       const result = await api(`/relay/nodes/${encodeURIComponent(node.member)}/switch`, {
         method: 'POST',
         body: JSON.stringify({direction: target}),
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(45000),
       });
       if (!result || result.direction !== target) throw new Error('切换响应格式异常');
       await reload(true);

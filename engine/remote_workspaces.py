@@ -1,5 +1,5 @@
 """Host-side Git workspace preparation over an authenticated relay link."""
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 import json
 import os
@@ -8,55 +8,19 @@ import subprocess
 import threading
 import time
 from urllib.parse import urlsplit
-import uuid
 
 from fastapi import HTTPException
-from . import db, relay_server
+from . import db, relay_server, relay_control
 
 _lock = threading.Lock()
-_requests = {}
 _preparing = {}
 _pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix='remote-workspace')
 
 
-def receive(link, request_id, result):
-    if not isinstance(request_id, str) or not isinstance(result, dict):
-        return
-    with _lock:
-        future = _requests.pop((link, request_id), None)
-    if future is not None:
-        future.set_result(result)
-
-
 def _request(member, spec, timeout):
-    link = relay_server.active_link(member)
-    if link is None or link.closed:
-        raise HTTPException(409, '远程节点离线，请连接后重试')
-    rid, future = uuid.uuid4().hex, Future()
-    with _lock:
-        _requests[link, rid] = future
-    try:
-        link.send_text(json.dumps({'relay': {'kind': 'workspace_request', 'generation': link.generation,
-                                             'request_id': rid}, 'workspace': spec}))
-        deadline = time.monotonic() + timeout
-        while not future.done():
-            if link.closed or time.monotonic() >= deadline:
-                raise HTTPException(504, '远程工作区未应答，请检查连接和插件版本后重试')
-            try:
-                future.result(timeout=0.5)
-            except TimeoutError:
-                continue
-        result = future.result()
-        if link is not relay_server.active_link(member):
-            raise HTTPException(409, '远程节点已重新连接，请重试')
-        if result.get('error'):
-            raise HTTPException(409, str(result['error'])[:300])
-        return result
-    except ConnectionError:
-        raise HTTPException(409, '远程节点连接中断，请重试') from None
-    finally:
-        with _lock:
-            _requests.pop((link, rid), None)
+    return relay_control.request(relay_server.active_link(member), kind='workspace_request',
+                                 field='workspace', spec=spec, timeout=timeout,
+                                 timeout_message='远程工作区未应答，请检查连接和插件版本后重试')
 
 
 def root_for(conn, member):
