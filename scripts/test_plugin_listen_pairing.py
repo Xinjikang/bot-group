@@ -2459,6 +2459,128 @@ class FirstJoinTests(unittest.TestCase):
 
     # ---------------- req#175 验收 4：双节点同时在线，切换 A 后 B 不受影响 ----------------
 
+    def test_gateway_restores_listen_only_pairing(self):
+        from engine import listen_control
+        from types import SimpleNamespace
+        config, listen, pairing = (self.plg[k] for k in ("config", "listen", "pairing"))
+        member, node = "remoteA", "remote-remoteA"
+        port = self._api_client()
+        with patch.object(config, "plugin_version", return_value=relay_server._engine_release_version() or ""), \
+                patch.object(config, "host_member", return_value=member), \
+                patch.object(config, "_env", return_value=""), \
+                patch.object(listen, "STATE_DIR", Path(self._tmpdir.name)), \
+                patch.object(listen, "validate_bind_address", return_value="127.0.0.1"):
+            original = listen.listen_serve(address="127.0.0.1", port=0, member=member, no_proxy=True)
+            self.addCleanup(original["_server"].stop)
+            body = {"pairing_url": original["pairing_url"]}
+            status, preview = self._admin_post("/relay/pairings/preview", body)
+            self.assertEqual(status, 200, preview)
+            status, view = self._admin_post(f"/relay/pairings/{preview['pairing_id']}/confirm", body)
+            self.assertEqual(status, 200, view)
+            self.assertTrue(self._wait_dial_connected(node))
+            original["_server"].stop()
+            self.assertEqual(pairing.saved_register(member), ("", ""))
+            # Simulate the earlier on-disk format with no role or bind metadata.
+            state = pairing._load_state()
+            state["pairing"].pop("listener", None)
+            state["pairing"].pop("role", None)
+            pairing._save_state(state)
+            cfg = config.load(SimpleNamespace(extra={"home": self._tmpdir.name}))
+            self.assertEqual(cfg.engine_url, "")
+            client = self._load_relay_module().RelayClient(cfg)
+            client.start()
+            try:
+                deadline = time.monotonic() + 15
+                while not (client._listener and client._listener._active_ws):
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(0.05)
+                with patch.object(listen_control, "status", return_value={
+                        "remote_enabled": True, "remote_port": port}):
+                    status, view = self._admin_post(f"/relay/nodes/{node}/switch", {"direction": "listen"})
+                self.assertEqual(status, 200, view)
+                self._wait_direction(node, "listen")
+                self.assertEqual(pairing.saved_register(member)[0], f"http://127.0.0.1:{port}")
+                self.assertFalse(pairing.listener_selected(member))
+            finally:
+                relay_dialer.stop_dial(node)
+                client.stop()
+                client._thread.join(5)
+
+    def test_gateway_direction_roundtrip(self):
+        """A stopped paired TLS listener must come back through the live outgoing link."""
+        plugin = self._load_relay_module()
+        config, listen, pairing = (self.plg[k] for k in ("config", "listen", "pairing"))
+        member = "remoteA"
+        node = "remote-remoteA"
+        status, invite = self._admin_post("/relay/invitations")
+        self.assertEqual(status, 200)
+        cfg = config.RelayConfig(f"http://127.0.0.1:{self._api_client()}", member,
+                                 "", "", self._tmpdir.name, invite["invite_token"])
+        with patch.object(config, "plugin_version", return_value=relay_server._engine_release_version() or ""), \
+                patch.object(listen, "STATE_DIR", Path(self._tmpdir.name)), \
+                patch.object(listen, "validate_bind_address", return_value="127.0.0.1"):
+            setup = listen.listen_serve(address="127.0.0.1", port=0, member=member, no_proxy=True)
+            setup["_server"].stop()
+            token = pairing.issue_persistent(member)
+            client = plugin.RelayClient(cfg)
+            client.start()
+            try:
+                self._confirm_invite(invite, member)
+                self._wait_direction(node, "listen")
+                with closing(db.get_connection()) as conn:
+                    relay.set_dial_endpoint(conn, node, dict(host="127.0.0.1", port=setup["port"],
+                        tls=True, fingerprint=setup["fingerprint"], pairing_token=token))
+                import socket
+                old = relay_server.active_link(node)
+                with socket.socket() as occupied:
+                    occupied.bind(("127.0.0.1", setup["port"]))
+                    status, body = self._admin_post(f"/relay/nodes/{node}/switch", {"direction": "dial"})
+                    self.assertEqual(status, 409, body)
+                    self.assertIs(relay_server.active_link(node), old)
+                    self.assertTrue(old.request_mcp_snapshot(3))
+                from engine import relay_switch
+                for target in ("dial", "listen", "dial"):
+                    status, body = self._admin_post(f"/relay/nodes/{node}/switch", {"direction": target})
+                    self.assertEqual(status, 200, body)
+                    self._wait_direction(node, target)
+                    if target == "dial":
+                        self.assertTrue(pairing.listener_selected(member))
+                        self.assertTrue(self.plg["mcpproxy"]._ACTIVE_SERVER.port)
+                # Block the return dial until the deadline and check the old TLS link.
+                old = relay_server.active_link(node)
+                with patch.object(pairing, "outbound_requested", return_value=False), \
+                        patch.object(relay_switch, "RETURN_TIMEOUT", 0.25):
+                    status, body = self._admin_post(f"/relay/nodes/{node}/switch", {"direction": "listen"})
+                    self.assertEqual(status, 200, body)
+                    self._wait_direction(node, "dial")
+                    self.assertIs(relay_server.active_link(node), old)
+                    self.assertTrue(old.request_mcp_snapshot(3))
+                # Restart the gateway with only its persisted pairing and credentials.
+                client.stop()
+                client._thread.join(5)
+                client = plugin.RelayClient(cfg)
+                client.start()
+                deadline = time.monotonic() + 15
+                while not (client._listener and client._listener._active_ws):
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(0.05)
+                self._wait_direction(node, "dial")
+            finally:
+                relay_dialer.stop_dial(node)
+                client.stop()
+                client._thread.join(5)
+
+    def _wait_direction(self, node, expected):
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            with closing(db.get_connection()) as conn:
+                row = relay.read_node(conn, node)
+            if (row and row["direction"] == expected and row["state"] == "online"
+                    and not row["switch_state"] and relay_server.active_link(node)):
+                return
+            time.sleep(0.05)
+        self.fail(f"relay failed to become online in {expected} direction")
+
     def test_dual_online_and_switch_a_keeps_b(self):
         """req#175 验收 2/4：同一空列表接入两个独立远端——A（remoteA）
         主动连电脑（邀请兑换，direction=listen）、电脑主动连 B（remoteB，
@@ -2526,7 +2648,7 @@ class FirstJoinTests(unittest.TestCase):
         status, switched = self._admin_post(
             "/relay/nodes/remote-remoteA/switch",
             {"direction": "dial"})
-        self.assertEqual(status, 200, f"A 切换失败: {switched}")
+        self.assertEqual(status, 409, switched)
         # --- B 不受影响 ---
         time.sleep(0.5)
         conn = db.get_connection()
@@ -2542,8 +2664,7 @@ class FirstJoinTests(unittest.TestCase):
         conn = db.get_connection()
         try:
             row_a = relay.read_node(conn, "remote-remoteA")
-            self.assertEqual(row_a["switch_target"], "dial",
-                             "A 自身进入目标切换态（先断后建）")
+            self.assertEqual((row_a["switch_target"], row_a["state"]), ("", "online"))
         finally:
             conn.close()
 

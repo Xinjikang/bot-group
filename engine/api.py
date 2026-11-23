@@ -641,48 +641,10 @@ class _SwitchBody(BaseModel):
 
 @router_api.post('/relay/nodes/{member}/switch')
 def relay_node_switch(member: str, body: _SwitchBody, identity=Depends(_resolve_identity)):
-    """切换连接方向（req#173 先断后建）：记切换意图+目标方向（持久化）→
-    暂停派发 → 断旧连接 → 建新连接（dial 由拨号器拨入，认证成功后自动清
-    切换态恢复派发；listen 等插件重连，relay_ws 认证成功时清切换态）。
-    新方向失败：切换态保持、失败原因可读、可重试/切回。"""
+    """Coordinate the new transport while the previous authenticated link is usable."""
     _admin_only(identity, 'relay 方向切换仅限管理员')
-    from . import relay, relay_dialer, relay_server
-    conn = db.get_connection()
-    try:
-        if relay.read_node(conn, member) is None:
-            raise HTTPException(404, '节点不存在')
-        current = relay.read_node(conn, member)["direction"]
-        if body.direction not in ("listen", "dial"):
-            raise HTTPException(400, 'direction 必须是 listen 或 dial')
-        if body.direction == current and relay.read_node(conn, member)["switch_state"] != "switching":
-            # 无切换（目标=当前方向）：在线幂等返回现状；同方向离线/退避
-            # 耗尽时是显式重试——实际启动拨号（manager node2102：曾在线
-            # 意外掉线耗尽后点同方向重试必须发起请求，不能静默不动作）。
-            if body.direction == "dial" and relay_dialer._task_state(member) != "connected":
-                relay_dialer.start_dial(member)
-                return {'member': member, 'direction': current,
-                        'switch_state': '', 'dial_state': relay_dialer._task_state(member)}
-            return {'member': member, 'direction': current,
-                    'switch_state': '', 'dial_state': relay_dialer._task_state(member)}
-        if body.direction == "dial":
-            if relay.read_dial_endpoint(conn, member) is None:
-                raise HTTPException(400, '拨号方向必须先保存插件监听端点（dial-endpoint）')
-        relay.begin_switch(conn, member, body.direction)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from None
-    finally:
-        conn.close()
-    # 断旧连接（单活动通道：旧连接主动关闭不留孤儿）
-    link = relay_server.active_link(member)
-    if link is not None:
-        link.close()
-    if body.direction == "dial":
-        relay_dialer.start_dial(member)   # 建新：拨号器按退避拨入
-    else:
-        relay_dialer.stop_dial(member)    # 目标 listen：停拨号，等插件重连
-    return {'member': member, 'direction': body.direction,
-            'switch_state': 'switching',
-            'dial_state': relay_dialer._task_state(member)}
+    from . import relay_switch
+    return relay_switch.switch(member, body.direction)
 
 
 def _verify_error_reason(status, body: str) -> str:

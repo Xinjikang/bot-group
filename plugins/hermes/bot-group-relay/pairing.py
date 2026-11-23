@@ -63,7 +63,7 @@ def _save_state(state: dict) -> None:
 
 
 def issue_pairing(*, member: str, advertise: str, port: int, fingerprint: str,
-                  scheme: str = "wss") -> dict:
+                  scheme: str = "wss", listener: dict | None = None) -> dict:
     """签发一次性配对：替换旧未用凭据（旧链接即刻失效），返回
     {pairing_url, pairing_token, fingerprint_short, expires_at}。
 
@@ -83,6 +83,8 @@ def issue_pairing(*, member: str, advertise: str, port: int, fingerprint: str,
             "expires_at": now + PAIRING_TTL_SECONDS,
             "redeemed": False,
         }
+        if listener:
+            state["pairing"]["listener"] = listener
         _save_state(state)
     pairing_url = (f"{scheme}://{advertise}:{port}?pairing_token={token}"
                    f"&fingerprint={fingerprint}&member={member}")
@@ -195,6 +197,55 @@ def clear_persistent(member: str | None = None) -> None:
         state.pop("persistent", None)
         _save_state(state)
     logger.info("bot-group relay persistent identity cleared member=%s", member)
+
+
+def listener_selected(member, *, confirmed=False):
+    if not member:
+        return False
+    with _LOCK:
+        state = _load_state()
+    offer = state.get("pairing") or {}
+    identity = state.get("persistent") or {}
+    return (identity.get("member") == member and offer.get("member") == member
+            and bool(identity.get("token_hash")) and offer.get("scheme") == "wss"
+            and bool(offer.get("fingerprint"))
+            and offer.get("role", "" if confirmed else "listen") == "listen")
+
+
+def select_role(member, role):
+    with _LOCK:
+        state = _load_state()
+        offer = state.get("pairing") or {}
+        if offer.get("member") == member and offer.get("role") != role:
+            offer.pop("dial_until", None)
+            offer["role"] = role
+            _save_state(state)
+
+
+def request_outbound(member):
+    with _LOCK:
+        state = _load_state()
+        offer = state.get("pairing") or {}
+        if offer.get("member") == member:
+            offer["dial_until"] = time.time() + 45
+            _save_state(state)
+
+
+def outbound_requested(member):
+    with _LOCK:
+        offer = _load_state().get("pairing") or {}
+    return offer.get("member") == member and offer.get("dial_until", 0) > time.time()
+
+
+def saved_listener(member):
+    """Only a locally paired TLS endpoint may be reopened by its gateway."""
+    with _LOCK:
+        state = _load_state()
+    offer = state.get("pairing") or {}
+    if (offer.get("member") != member or offer.get("scheme") != "wss"
+            or not offer.get("fingerprint")):
+        raise ValueError("当前 profile 缺少已配对的 TLS 监听配置")
+    return offer
 
 
 def pairing_metadata() -> dict:

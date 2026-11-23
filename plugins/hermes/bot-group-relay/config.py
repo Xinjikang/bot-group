@@ -92,6 +92,8 @@ def load(config=None) -> RelayConfig | None:
             engine_url = saved_url
             credential = saved_key or credential
     if not engine_url or not member or not (credential or invite):
+        if not invite and pairing.listener_selected(member):
+            return RelayConfig("", member, "", mcp_python, home)
         return None
     parsed = urlsplit(engine_url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.path not in ("", "/"):

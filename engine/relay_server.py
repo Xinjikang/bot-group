@@ -280,9 +280,10 @@ def _route_inbound(link: NodeLink, envelope: dict) -> bool:
         logger.warning("relay generation-mismatch frame dropped member=%s kind=%s gen=%s",
                        link.member, kind, frame_gen)
         return True
-    if kind == 'workspace_result':
-        from . import remote_workspaces
-        remote_workspaces.receive(link, meta.get('request_id'), envelope.get('workspace'))
+    if kind in ('workspace_result', 'direction_result'):
+        from . import relay_control
+        field = 'workspace' if kind == 'workspace_result' else 'direction'
+        relay_control.receive(link, meta.get('request_id'), envelope.get(field))
         return True
     if kind == "heartbeat":
         # 心跳只判存活（写 online 以当前代为准——上方代次校验已保证，SQL 再带
@@ -462,6 +463,8 @@ async def relay_ws(websocket: WebSocket) -> None:
             server = websocket.scope.get('server')
             _LAST_INBOUND[member] = (peer, server[0] if server else None)
     if previous is not None and not previous.closed:
+        if getattr(previous, "return_timer", None):
+            previous.return_timer.cancel()
         previous.close()
     try:
         hello_ok = {"relay": {"kind": "hello_ok", "generation": generation},
