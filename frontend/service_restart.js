@@ -12,9 +12,11 @@
   const save = operation => { try { sessionStorage.setItem(key, JSON.stringify(operation)); } catch {} };
   const clear = () => { try { sessionStorage.removeItem(key); } catch {} };
 
-  async function request(path, method = 'GET') {
+  async function request(path, method = 'GET', payload) {
     const headers = S.token ? {Authorization: 'Bearer ' + S.token} : {};
-    const response = await fetch(path, {method, headers, cache: 'no-store', signal: AbortSignal.timeout(5000)});
+    if (payload) headers['Content-Type'] = 'application/json';
+    const response = await fetch(path, {method, headers, body: JSON.stringify(payload),
+      cache: 'no-store', signal: AbortSignal.timeout(method === 'POST' ? 30000 : 5000)});
     const data = await response.json();
     if (!response.ok) {
       const error = new Error(data.detail || `请求失败：${response.status}`);
@@ -37,15 +39,52 @@
     S.restarting = true;
     button.disabled = true;
     S.es?.close();
-    save(operation);
-    progress('正在重启…');
+    progress(operation ? '正在核对重启回执…' : '正在连接服务，准备重启…');
     let failure = '';
     let reloading = false;
     try {
-      const deadline = operation.deadline || Date.now() + 300000;
+      const deadline = Date.now() + 300000;
       while (Date.now() < deadline) {
         try {
-          const receipt = await request('/admin/restart');
+          let receipt = await request('/admin/restart');
+          if (!operation) {
+            if (['starting', 'restarting'].includes(receipt.state)) {
+              operation = {id: receipt.id, instance_id: receipt.instance_id};
+            } else {
+              const id = Array.from(crypto.getRandomValues(new Uint8Array(16)),
+                n => n.toString(16).padStart(2, '0')).join('');
+              operation = {id, previous_id: receipt.id || '', instance_id: receipt.current_instance_id,
+                attempts: 0, retry_until: Date.now() + 60000};
+            }
+            save(operation);
+          }
+          if ('previous_id' in operation && (receipt.id || '') === operation.previous_id) {
+            const keyed = !!operation.instance_id;
+            if (keyed && receipt.current_instance_id !== operation.instance_id)
+              throw Object.assign(new Error('服务实例已变更，请查看当前服务状态。'), {terminal: true});
+            const canRetry = keyed && operation.attempts === 1 && Date.now() < operation.retry_until;
+            if (operation.attempts === 0 || canRetry) {
+              operation.attempts++;
+              save(operation);
+              progress('正在提交重启请求…');
+              try {
+                receipt = await request('/admin/restart', 'POST', keyed ? {
+                  request_id: operation.id, instance_id: operation.instance_id, previous_id: operation.previous_id
+                } : undefined);
+              } catch (error) {
+                if ((error.status >= 400 && error.status < 500 && ![408, 409, 429].includes(error.status)) ||
+                    error.status === 503) error.terminal = true;
+                throw error;
+              }
+            }
+          }
+          if ('previous_id' in operation && receipt.id && receipt.id !== operation.previous_id) {
+            // Older engines allocate their own ID; keyed engines must echo ours.
+            if (operation.instance_id && (operation.id !== receipt.id || operation.instance_id !== receipt.instance_id))
+              throw Object.assign(new Error('服务已有其他重启回执，请查看当前服务状态。'), {terminal: true});
+            operation = {id: receipt.id, instance_id: receipt.instance_id};
+            save(operation);
+          }
           if (receipt.id === operation.id) {
             if (receipt.state === 'failed') throw Object.assign(new Error(
               `重启失败：${receipt.error || '未知原因'}。详情见 logs/service-restart.log。`), {terminal: true});
@@ -54,7 +93,7 @@
               progress('服务已启动，正在校验实例…');
               const health = await request('/health');
               if (health.status === 'ok' && health.instance_id === receipt.new_instance_id &&
-                  health.instance_id !== operation.instance_id &&
+                  health.instance_id !== receipt.instance_id &&
                   health.program_root === receipt.program_root && health.db_path === receipt.db_path) {
                 clear();
                 reloading = true;
@@ -63,16 +102,21 @@
                 return;
               }
             }
+          } else if ('previous_id' in operation) {
+            progress('正在等待本次重启的受理回执…');
           } else if (receipt.id) {
             throw Object.assign(new Error('重启请求已变更，请查看服务状态'), {terminal: true});
           }
         } catch (error) {
           if (error.terminal || error.status === 401 || error.status === 403) throw error;
-          progress('等待服务启动…');
+          progress(!operation ? '正在连接服务，准备重启…' :
+            'previous_id' in operation ? '正在核对重启请求是否已受理…' : '等待服务启动…');
         }
         await pause(1000);
       }
-      throw new Error('等待重启结果超时（5 分钟）：服务可能仍在启动或启动失败。刷新页面可继续核对回执；详情见 logs/service-restart.log。');
+      if (!operation) throw new Error('连接服务超时，重启请求尚未提交。请检查连接后重试。');
+      if ('previous_id' in operation) throw new Error('5 分钟内未取得本次重启的受理回执。刷新页面可继续核对回执。');
+      throw new Error('等待重启结果超时（5 分钟）：刷新页面可继续核对回执；详情见 logs/service-restart.log。');
     } catch (error) {
       failure = error.message;
       if (error.terminal) clear();
@@ -95,17 +139,7 @@
     button.disabled = true;
     try {
       if (!await showConfirm('重启服务？Hermes 网关中的执行会继续运行，服务启动后接回原执行。Codex 等本地执行最多等待 120 秒收尾，超时后停止。重启期间暂停新任务派发和工具写入，服务恢复后自动刷新界面；失败原因保留在回执中。')) return;
-      let operation;
-      try { operation = await request('/admin/restart', 'POST'); }
-      catch (error) {
-        // A lost POST response can still have started the restart. Reconcile
-        // once through its receipt; never repeat a destructive request blindly.
-        if (error.status) throw error;
-        operation = await request('/admin/restart');
-        if (!['starting', 'restarting'].includes(operation.state)) throw error;
-      }
-      operation.deadline = Date.now() + 300000;
-      await monitor(operation);
+      await monitor(null);
     } catch (error) { showAlert(error.message); }
     finally { button.disabled = monitoring; }
   });
@@ -114,7 +148,7 @@
     button.hidden = !S.isUserIdentity || !document.querySelector('#login').hidden;
     if (!button.hidden && !monitoring) {
       const operation = read();
-      if (operation) monitor({...operation, deadline: Date.now() + 300000});
+      if (operation) monitor(operation);
     }
   }
   document.addEventListener('service-auth-changed', update);

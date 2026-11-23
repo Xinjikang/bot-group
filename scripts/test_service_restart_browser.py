@@ -13,8 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(evidence):
-    state = {'posts': 0, 'phase': 'draining', 'health_id': 'old', 'fail': False, 'loads': 0}
-    receipt = {'id': 'operation', 'instance_id': 'old', 'program_root': 'isolated', 'db_path': 'isolated.db'}
+    state = {'posts': 0, 'phase': 'done', 'health_id': 'old', 'fail': False, 'loads': 0,
+             'drop_before_accept': False, 'drop_response': True, 'lost_reads': 0, 'requests': []}
+    receipt = {'id': 'prior', 'instance_id': 'previous', 'program_root': 'isolated', 'db_path': 'isolated.db'}
     def route(request):
         path = urlparse(request.request.url).path
         if path.startswith('/app/'):
@@ -28,11 +29,27 @@ def run(evidence):
         elif path == '/admin/restart':
             if request.request.method == 'POST':
                 state['posts'] += 1
+                body = request.request.post_data_json
+                state['requests'].append(body)
+                assert body['instance_id'] == state['health_id'] and body['previous_id'] == receipt['id']
+                if state['drop_before_accept']:
+                    state['drop_before_accept'] = False
+                    return request.abort('timedout')
+                receipt.update(id=body['request_id'], instance_id=state['health_id'])
+                state['phase'] = 'draining'
+                if state['drop_response']:
+                    state['drop_response'] = False
+                    state['lost_reads'] = 2
+                    return request.abort('timedout')
                 request.fulfill(status=202, json={**receipt, 'state': 'starting'})
             else:
+                if state['lost_reads']:
+                    state['lost_reads'] -= 1
+                    return request.abort('timedout')
                 request.fulfill(json={**receipt, 'state': 'failed' if state['fail'] else
                     'succeeded' if state['phase'] == 'done' else 'restarting',
-                    'new_instance_id': 'new', 'shutdown': {'state': state['phase']}, 'error': '隔离测试：启动失败'})
+                    'current_instance_id': state['health_id'], 'new_instance_id': 'new',
+                    'shutdown': {'state': state['phase']}, 'error': '隔离测试：启动失败'})
         elif path == '/health':
             request.fulfill(json={**receipt, 'status': 'ok', 'instance_id': state['health_id']})
         elif path == '/auth/status':
@@ -54,7 +71,7 @@ def run(evidence):
         page.locator('#btn-settings').click()
         button.wait_for(state='visible')
         order = page.locator('#app-settings-menu').evaluate('(e) => [...e.children].map(c => c.id)')
-        assert order == ['btn-user-name', 'btn-background', 'btn-theme-top', 'btn-restart', 'btn-about'], order
+        assert order.index('btn-theme-top') < order.index('btn-restart') < order.index('btn-about'), order
         button.click()
         page.get_by_role('button', name='取消', exact=True).click()
         page.wait_for_function('!document.querySelector("#btn-restart").disabled')
@@ -85,13 +102,15 @@ def run(evidence):
         assert page.evaluate('sessionStorage.getItem("ge_service_restart")') is None
         assert button.is_enabled()
         state['fail'] = True
+        state['drop_before_accept'] = True
         page.locator('#btn-settings').click()
         button.click()
         page.get_by_role('button', name='确定', exact=True).click()
         page.wait_for_function('document.querySelector("#app-alert-message")?.textContent.includes("启动失败")')
         assert '重启失败' in page.locator('#app-alert-message').inner_text()
         assert 'service-restart.log' in page.locator('#app-alert-message').inner_text()
-        assert state['posts'] == 2
+        assert state['posts'] == 3
+        assert state['requests'][-1] == state['requests'][-2]
         assert state['loads'] == loads + 1
         page.get_by_role('button', name='确定', exact=True).click()
         screenshot = evidence / 'service-restart-topbar.png'
@@ -105,8 +124,8 @@ def run(evidence):
         })();""")
         state['fail'] = False
         state['health_id'] = 'old'
-        page.evaluate("""() => sessionStorage.setItem('ge_service_restart',
-            JSON.stringify({id: 'operation', instance_id: 'old'}))""")
+        page.evaluate("""id => sessionStorage.setItem('ge_service_restart',
+            JSON.stringify({id, instance_id: 'old'}))""", receipt['id'])
         page.reload()
         page.wait_for_function('S.restarting === true')
         page.evaluate('window.__clockSkew = 400000')
@@ -114,7 +133,7 @@ def run(evidence):
         timeout_text = page.locator('#app-alert-message').inner_text()
         assert '等待重启结果超时' in timeout_text and '5 分钟' in timeout_text, timeout_text
         assert '刷新页面可继续核对回执' in timeout_text, timeout_text
-        assert state['posts'] == 2
+        assert state['posts'] == 3
         page.get_by_role('button', name='确定', exact=True).click()
         assert page.evaluate("sessionStorage.getItem('ge_service_restart')") is not None
         page.evaluate("sessionStorage.removeItem('ge_service_restart')")

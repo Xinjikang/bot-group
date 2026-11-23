@@ -154,6 +154,18 @@ class RestartTests(unittest.TestCase):
             self.assertEqual(client.get('/admin/restart', headers=headers).json()['shutdown']['state'], 'running')
             self.assertEqual(client.get('/admin/restart').status_code, 401)
             spawn.assert_called_once()
+            old_id = first.json()['id']
+            restart.write_receipt({**first.json(), 'state': 'succeeded', 'new_instance_id': 'old'})
+            payload = {'request_id': 'a' * 32, 'previous_id': old_id, 'instance_id': 'old'}
+            self.assertEqual(client.get('/admin/restart', headers=headers).json()['current_instance_id'], 'old')
+            self.assertEqual(client.post('/admin/restart', headers=headers, json=payload).json()['id'], payload['request_id'])
+            restart.write_receipt({**restart.status(), 'state': 'succeeded', 'new_instance_id': 'new'})
+            controller.instance_id = 'new'
+            self.assertEqual(client.post('/admin/restart', headers=headers, json=payload).json()['state'], 'succeeded')
+            for instance in ('old', 'new'):
+                stale = {**payload, 'request_id': 'b' * 32, 'instance_id': instance}
+                self.assertEqual(client.post('/admin/restart', headers=headers, json=stale).status_code, 409)
+            self.assertEqual(spawn.call_count, 2)
             client.close()
 
     def test_shutdown_heartbeat_keeps_topic_turn_for_restart(self):
