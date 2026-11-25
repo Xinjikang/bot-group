@@ -18,11 +18,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 logger = logging.getLogger(__name__)
 
-# request_id → 响应队列（等待引擎 http_response 帧）
-_PENDING: dict[str, queue.Queue] = {}
-_PENDING_LOCK = threading.Lock()
-_ACTIVE_SERVER: "MCPProxyServer | None" = None
-
 # 透传的请求头白名单（去 hop-by-hop 与宿主无关头）
 _FORWARD_HEADERS = ("content-type", "accept", "user-agent", "authorization",
                     "x-group-key", "x-group-profile")
@@ -49,14 +44,15 @@ class _Handler(BaseHTTPRequestHandler):
         # waiter 即丢响应、本线程空等超时；发帧失败（ConnectionError）时
         # 释放注册位，避免残留。
         waiter: queue.Queue = queue.Queue(maxsize=1)
-        with _PENDING_LOCK:
-            _PENDING[request_id] = waiter
+        proxy = self.server.proxy
+        with proxy.lock:
+            proxy.pending[request_id] = waiter
         try:
             self.server.listener.forward_http_request(
                 request_id, self.command, path, headers, body)
         except ConnectionError as exc:
-            with _PENDING_LOCK:
-                _PENDING.pop(request_id, None)
+            with proxy.lock:
+                proxy.pending.pop(request_id, None)
             self.send_response(502)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -66,8 +62,8 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             status, resp_headers, resp_body = waiter.get(timeout=300)
         except queue.Empty:
-            with _PENDING_LOCK:
-                _PENDING.pop(request_id, None)
+            with proxy.lock:
+                proxy.pending.pop(request_id, None)
             self.send_response(504)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -93,6 +89,9 @@ class MCPProxyServer:
         # self.server 是 _httpd（ThreadingHTTPServer 实例），listener 必须挂在
         # 它上面而不是仅存 MCPProxyServer 外层，否则 handler 抛 AttributeError。
         self._httpd.listener = listener
+        self._httpd.proxy = self
+        self.pending = {}
+        self.lock = threading.Lock()
         self.port = self._httpd.server_address[1]
         self._thread = threading.Thread(target=self._httpd.serve_forever,
                                         name="bot-group-mcpproxy", daemon=True)
@@ -104,28 +103,22 @@ class MCPProxyServer:
     def stop(self) -> None:
         self._httpd.shutdown()
         self._httpd.server_close()
+        with self.lock:
+            for waiter in self.pending.values():
+                waiter.put_nowait((502, {}, '{"error":"relay proxy stopped"}'))
+            self.pending.clear()
 
 
-def deliver_http_response(request_id: str, status, headers: dict, body: str) -> None:
-    """listen 通道收到 http_response 帧：交还对应代理请求的等待线程。"""
-    with _PENDING_LOCK:
-        waiter = _PENDING.pop(request_id, None)
-    if waiter is not None:
-        waiter.put((status, headers or {}, body or ""))
+    def deliver_http_response(self, request_id, status, headers, body):
+        with self.lock:
+            waiter = self.pending.pop(request_id, None)
+        if waiter is not None:
+            waiter.put((status, headers or {}, body or ""))
 
 
 def start_proxy(listener, port: int = 0) -> MCPProxyServer:
     """启动 loopback 代理；port=0 自动分配。"""
-    global _ACTIVE_SERVER
-    if _ACTIVE_SERVER is not None:
-        _ACTIVE_SERVER.stop()
-    _ACTIVE_SERVER = MCPProxyServer(listener, port)
-    _ACTIVE_SERVER.start()
-    return _ACTIVE_SERVER
-
-
-def stop_proxy() -> None:
-    global _ACTIVE_SERVER
-    if _ACTIVE_SERVER is not None:
-        _ACTIVE_SERVER.stop()
-        _ACTIVE_SERVER = None
+    proxy = MCPProxyServer(listener, port)
+    proxy.start()
+    listener.proxy = proxy
+    return proxy

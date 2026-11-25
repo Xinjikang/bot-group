@@ -1,9 +1,7 @@
 """bot-group relay 插件入口（req#168 task#316）。
 
 随 Hermes gateway 加载（$HERMES_HOME/plugins/bot-group-relay/）：
-register(ctx) 注册一个平台适配器；适配器在 connect() 时启动一条主动
-出站 WSS 后台线程连 bot-group 引擎 /relay/ws，职责收窄为「传令」——
-不解析会话语义、不复制引擎逻辑（设计第 2/3 章）。
+register(ctx) 注册一个平台适配器；适配器按配对记录分别维护各引擎的通道。
 """
 
 from __future__ import annotations
@@ -36,7 +34,7 @@ def validate_config(config) -> bool:
     """校验持久凭据或首次邀请所需的连接配置。"""
     from . import config as relay_config
     try:
-        return bool(relay_config.load(config))
+        return bool(relay_config.peer_configs(config))
     except Exception:
         logger.warning("bot-group relay config invalid", exc_info=True)
         return False

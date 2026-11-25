@@ -137,6 +137,8 @@ class ListenServer:
         self.mcp_python = mcp_python
         self.mcp_entry = mcp_entry
         self.scheme = scheme
+        self.peer = pairing.current_peer()
+        self.proxy = None
         self._stop = threading.Event()
         self._server = None
         self._thread: threading.Thread | None = None
@@ -156,7 +158,7 @@ class ListenServer:
             ssl_context.load_cert_chain(self.cert_path, self.key_path)
         try:
             # 绑定失败（地址不可用/端口占用）抛异常：保持原状，不残留监听
-            self._server = ws_serve(self._handler, self.address, self.port,
+            self._server = ws_serve(self._peer_handler, self.address, self.port,
                                     ssl=ssl_context, max_size=8 * 1024 * 1024)
         except OSError as exc:
             raise RuntimeError(f"监听绑定失败 {self.address}:{self.port}：{exc}") from exc
@@ -178,6 +180,13 @@ class ListenServer:
                 pass
         if self._server is not None:
             self._server.shutdown()
+        if self.proxy is not None:
+            self.proxy.stop()
+            self.proxy = None
+
+    def _peer_handler(self, conn):
+        with pairing.using_peer(self.peer):
+            self._handler(conn)
 
     def bound_port(self) -> int:
         if self._server is None:
@@ -194,27 +203,27 @@ class ListenServer:
             member = (hello.get("member") or "").strip()
             credential = hello.get("credential") or ""
             fingerprint = hello.get("fingerprint") or ""
-            protocol_version = hello.get("protocol_version")
+            protocol_version = relay_config.relay_protocol.negotiate(hello)
             if hello.get("direction") != "dial":
                 conn.close(code=4005, reason="wrong direction")
                 return
             if member != self.member:
                 conn.close(code=4001, reason="unknown member")
                 return
-            if protocol_version != relay_config.RELAY_PROTOCOL_VERSION:
-                conn.close(code=4003, reason="protocol mismatch")
+            if protocol_version is None:
+                conn.close(code=4003, reason=relay_config.relay_protocol.REJECTION)
                 return
             kind = (hello.get('relay') or {}).get('kind')
             if kind == 'pairing_probe':
-                version = relay_config.plugin_version()
-                if credential or hello.get('commitment') or (version and hello.get('code_version') != version):
-                    conn.close(code=4003, reason='version mismatch')
+                if credential or hello.get('commitment'):
+                    conn.close(code=4001, reason='invalid pairing probe')
                     return
                 expiry = pairing.verify_dial_offer(self.member, hello.get('pairing_ticket'), fingerprint)
                 if expiry is None:
                     conn.close(code=4001, reason='pairing not available')
                     return
                 conn.send(json.dumps({'relay': {'kind': 'pairing_verified', 'member': self.member,
+                                                 'protocol_version': protocol_version,
                                                  'expires_at': expiry, 'activation_mode': 'after_confirm'}}))
                 return
             # No first-join credential becomes active during the independent probe.
@@ -250,13 +259,14 @@ class ListenServer:
             # 宿主实际成员（HERMES_PROFILE）主动上报（req#175 验收 5/6）：
             # 引擎核验与 dial_endpoint 归属一致（防旧连接冒名点亮新节点）。
             hello_ok = {"relay": {"kind": "hello_ok", "generation": generation,
-                                  "member": self.member}}
+                                  "member": self.member, "protocol_version": protocol_version}}
             if persistent:
                 hello_ok["relay"]["credential"] = persistent
             conn.send(json.dumps(hello_ok, ensure_ascii=False))
             logger.info("bot-group relay dial link up member=%s generation=%d",
                         member, generation)
-            streams = streams_mod.StreamRegistry(self.home, conn)
+            streams = streams_mod.StreamRegistry(self.home, conn, protocol_version,
+                                                  legacy="protocol_versions" not in hello)
             try:
                 self._serve_loop(conn, generation, streams)
             finally:
@@ -324,9 +334,7 @@ class ListenServer:
             # manager node2084：随包 MCP 的 GROUP_ENGINE_URL 必须指向本次
             # loopback 代理实际端口——快照带上当前代理端口，引擎侧落库后
             # 按节点方向渲染。
-            from . import mcpproxy
-            proxy_port = (mcpproxy._ACTIVE_SERVER.port
-                          if mcpproxy._ACTIVE_SERVER is not None else 0)
+            proxy_port = self.proxy.port if self.proxy is not None else 0
             ws.send(json.dumps({
                 "relay": {"kind": "mcp_report", "request_id": meta.get("request_id"),
                           "generation": generation},
@@ -339,8 +347,9 @@ class ListenServer:
             return
         if kind == "http_response":
             # loopback MCP 代理的应答：交还代理线程
-            from . import mcpproxy
-            mcpproxy.deliver_http_response(meta.get("request_id"),
+            if self.proxy is None:
+                return
+            self.proxy.deliver_http_response(meta.get("request_id"),
                                            envelope.get("status"),
                                            envelope.get("headers") or {},
                                            envelope.get("body") or "")
@@ -392,8 +401,7 @@ class ListenServer:
         request_id = meta.get("request_id") or ""
         status = 502
         body = '{"error": "proxy not running"}'
-        from . import mcpproxy
-        proxy = mcpproxy._ACTIVE_SERVER
+        proxy = self.proxy
         entry = self._mcp_entry()
         if proxy is not None and entry and os.path.isfile(entry):
             try:
@@ -551,7 +559,14 @@ def restore_listener(cfg):
     return server
 
 
-def listen_serve(*, address: str, port: int, advertise: str = "",
+def listen_serve(*, address, port, engine_url="", **options):
+    member = options.get("member") or relay_config.host_member()
+    peer = pairing.select_peer(member, engine_url=engine_url, port=port)
+    with pairing.using_peer(peer):
+        return _listen_serve(address=address, port=port, **options)
+
+
+def _listen_serve(*, address: str, port: int, advertise: str = "",
                  member: str = "", home: str = "", mcp_python: str = "",
                  cert_path: str | None = None, key_path: str | None = None,
                  tls: bool = True, link_to_file: bool = False,
@@ -596,9 +611,6 @@ def listen_serve(*, address: str, port: int, advertise: str = "",
             link_file = pairing.write_link_file(issued["pairing_url"])
     except Exception:
         # 任何一步失败都清理已建资源（server/代理），保持原状如实报错
-        from . import mcpproxy
-        if not no_proxy:
-            mcpproxy.stop_proxy()
         server.stop()
         raise
     result = {

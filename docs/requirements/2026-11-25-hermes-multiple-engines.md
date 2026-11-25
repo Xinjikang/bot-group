@@ -1,6 +1,6 @@
 # 同一 Hermes profile 同时接入多个 Bot-group
 
-状态：需求已确认，待实现。
+接入方法与旧配对升级见[安装指南](../guides/BOT-GROUP-RELAY-INSTALL.md)。
 
 同一个 Hermes 网关中的同一个 profile 应能同时接入两个独立的 Bot-group 引擎。两台引擎各自完成配对，分别决定连接方向。管理员在第二台引擎确认配对后，第一台引擎上的现有对话应能继续收发。
 

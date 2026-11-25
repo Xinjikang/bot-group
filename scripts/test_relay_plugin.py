@@ -488,7 +488,7 @@ class RelayClientTests(unittest.TestCase):
             self.assertEqual(hello["credential"], CREDENTIAL)
             self.assertEqual(hello["plugin_version"], PACKAGE_VERSION)
             self.assertEqual(hello["code_version"], PACKAGE_VERSION)
-            self.assertEqual(hello["protocol_version"], RELAY_PROTOCOL_VERSION)
+            self.assertIn(RELAY_PROTOCOL_VERSION, hello["protocol_versions"])
             self.assertTrue(hello["mcp_fingerprint"])
             self.assertIn("mcp_python", hello)
             self.assertIn("mcp_entry", hello)

@@ -53,8 +53,6 @@ def host_env(member, home):
 def listener(plg, home, lan, stack, proxy):
     stack.enter_context(patch.object(plg['listen'], 'STATE_DIR', home))
     obj = plg['listen'].listen_serve(address=lan, port=0, no_proxy=not proxy, mcp_python=sys.executable)
-    if proxy:
-        stack.callback(plg['mcpproxy'].stop_proxy)
     stack.callback(obj['_server'].stop)
     return obj
 

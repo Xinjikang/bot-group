@@ -97,7 +97,7 @@ def bot_group_relay_status(args: dict, **kwargs) -> str:
     if not _check_authorized(kwargs):
         return _tool_result(False, "仅授权管理员可通过私聊操作（BOT_GROUP_RELAY_ADMIN）")
     from . import pairing
-    return _tool_result(True, "状态查询成功", **pairing.pairing_metadata())
+    return _tool_result(True, "状态查询成功", **pairing.status())
 
 
 def bot_group_listen(args: dict, **kwargs) -> str:
@@ -109,6 +109,7 @@ def bot_group_listen(args: dict, **kwargs) -> str:
             address=str(args.get("address") or ""),
             port=int(args.get("port") or 0),
             advertise=str(args.get("advertise") or ""),
+            engine_url=str(args.get("engine_url") or ""),
             tls=not bool(args.get("no_tls")),
             proxy_port=int(args.get("proxy_port") or 0),
             # 私聊上下文：链接绝不进入对话历史——写 0600 文件
@@ -140,9 +141,25 @@ def bot_group_register(args: dict, **kwargs) -> str:
         engine_url=engine_url, member=member, credential=credential,
         invite=invite, mcp_python="",
         home=relay_config.host_home())
-    client = relay_mod.RelayClient(cfg)
+    from . import pairing
+    peer = pairing.select_peer(member, engine_url=engine_url)
+    client = relay_mod.RelayClient(cfg, peer=peer, follow_saved=False)
+    def activate():
+        from dataclasses import replace
+        with pairing.using_peer(peer):
+            if invite:
+                client.pair_invitation()
+            else:
+                client.confirm_credential()
+            _, key = pairing.saved_register(member)
+        relay_mod.gateway_client(replace(cfg, invite="", credential=key), peer)
+
     try:
-        client.start()
+        if invite:
+            import threading
+            threading.Thread(target=activate, daemon=True, name="relay-pair").start()
+        else:
+            activate()
     except Exception as exc:  # noqa: BLE001 启动失败清理资源后如实报错
         try:
             client.stop()
@@ -161,6 +178,7 @@ def register_tools(ctx) -> None:
          {"address": {"type": "string", "description": "绑定的本机网卡单播地址"},
           "port": {"type": "integer", "description": "监听端口"},
           "advertise": {"type": "string", "description": "对端可达地址/域名（可选）"},
+          "engine_url": {"type": "string", "description": "为已注册引擎准备反向监听时指定其地址"},
           "no_tls": {"type": "boolean", "description": "禁用 TLS（仅隔离测试）"}},
          ["address", "port"]),
         ("bot_group_register", bot_group_register,
