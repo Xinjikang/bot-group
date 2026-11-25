@@ -2,6 +2,8 @@
 
 远程 Hermes 可从空节点列表按两个方向配对。部署与排障见 [ECS 插件安装指南](guides/BOT-GROUP-RELAY-INSTALL.md)，协议与身份确认见 [接入设计](design/2026-11-18-remote-hermes-adapter.md)，双节点派发和安装包验证见 [首次接入测试](../scripts/TEST_INDEX.md#远程-hermes-首次接入)。
 
+同一个 Hermes profile 同时连接多个 Bot-group 的配对、会话隔离与回信验收见[多引擎接入需求](requirements/2026-11-25-hermes-multiple-engines.md)。
+
 DSH 0.2.2 启动和凭据权限修复见 [兼容设计](design/2026-11-14-dsh-v022-compatibility.md)，版本变更见 [v0.2.15](releases/v0.2.15.md)。
 
 清晨首条消息卡顿的现场证据、取连接四段分解三档方案与清晨窗口探针设计见 [清晨卡顿探针设计](design/2026-11-12-morning-probe-design.md)；11-17 下午复现后的检测口径最小增补（三阈值、触发原因、结论三态、两例回归）见 [探针检测口径增补](design/2026-11-17-probe-detection-patch.md)；三次现场后收敛的引擎内分步计时与写事务起止埋点方案（定位 prepare 落点与锁持有者）见 [慢发送引擎内分步计时方案](design/2026-11-18-slow-send-instrumentation.md)；发送回执与选人/唤醒拆分的评估（短写事务硬约束、每话题顺序、崩溃幂等、验证场景）见 [发送路径异步拆分评估](design/2026-11-18-async-send-split.md)。
