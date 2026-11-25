@@ -301,11 +301,9 @@ def _shutdown_link(link: NodeLink, reason: str) -> None:
             # 带代条件写 offline：本函数锁外执行，清理期间可能已被新连接接替，
             # 旧代清理不得覆盖新代状态（manager node1981 ②跨代窗口）。
             # 状态写库用本地状态代（manager node2057 ②：本地代贯穿离线写入）。
-            relay.mark_offline(conn, link.member, generation=_db_generation(link))
+            relay.mark_offline(conn, link.member, generation=_db_generation(link), reason=reason)
         finally:
             conn.close()
-    logger.warning("relay link down member=%s generation=%d reason=%s",
-                   link.member, link.generation, reason)
     try:
         if link.loop is not None:
             asyncio.run_coroutine_threadsafe(link.ws.close(code=1000), link.loop)

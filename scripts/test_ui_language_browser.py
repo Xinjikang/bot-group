@@ -148,6 +148,36 @@ def run(evidence):
             assert_zh(page)
             assert '原文消息：切换语言不能改变我' in page.locator('[data-message-id="10"] .msg-content').inner_text()
 
+            # Exercise the installed SSE handlers and both language passes in one browser turn.
+            states = page.evaluate("""() => {
+                const stream = S.es;
+                stream.close();
+                const snapshot = () => [$('#conn').dataset.state, $('#conn-text').textContent];
+                const bothLanguages = () => {
+                    setUILanguage('en');
+                    const en = snapshot();
+                    setUILanguage('zh-CN');
+                    return [en, snapshot()];
+                };
+                setConn('connecting');
+                const connecting = bothLanguages();
+                stream.onopen();
+                const connected = bothLanguages();
+                Object.defineProperty(stream, 'readyState', {value: EventSource.CONNECTING, configurable: true});
+                stream.onerror();
+                const reconnecting = bothLanguages();
+                delete stream.readyState;
+                stream.onerror();
+                return [connecting, connected, reconnecting, bothLanguages()];
+            }""")
+            assert states == [
+                [['connecting', 'Connecting to engine…'], ['connecting', '引擎连接中…']],
+                [['connected', 'Engine connected'], ['connected', '引擎已连接']],
+                [['connecting', 'Reconnecting to engine…'], ['connecting', '引擎断线重连中…']],
+                [['disconnected', 'Engine disconnected'], ['disconnected', '引擎已断开']],
+            ], states
+            results.append({'case': 'sse_state_survives_language_refresh', 'result': 'passed'})
+
             # 2) 双语入口 + 选择 English 立即生效
             open_language_dialog(page)
             assert text_of(page, '#language-title') == '语言设置'

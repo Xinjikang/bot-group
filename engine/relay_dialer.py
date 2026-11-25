@@ -556,13 +556,14 @@ def dial_once(member: str, *, initial=None) -> bool:
     # 帧循环：收插件帧（heartbeat/mcp_report/frame/mcp_snapshot 响应），
     # 每 HEARTBEAT_INTERVAL 发心跳；断链返回 False 由退避调度接管。
     last_sent = time.time()
+    close_reason = "dial connection closed"
     while True:
         try:
             raw = ws.recv(timeout=RECV_TIMEOUT)
         except TimeoutError:
             raw = None
         except Exception as exc:  # noqa: BLE001 断链
-            logger.info("relay dial link down member=%s err=%s", member, exc)
+            close_reason = f"dial receive failed: {type(exc).__name__}"
             break
         if raw is not None:
             try:
@@ -581,7 +582,7 @@ def dial_once(member: str, *, initial=None) -> bool:
                 last_sent = time.time()
             except ConnectionError:
                 break
-    relay_server._shutdown_link(link, "dial connection closed")
+    relay_server._shutdown_link(link, close_reason)
     return True
 
 

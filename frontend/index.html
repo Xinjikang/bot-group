@@ -1691,16 +1691,24 @@ async function connectSSE() {
     setConn("connected"); loadThinking();
     if (!S.currentThread) refreshAfterMessageChange();
   };
-  es.onerror = () => setConn(es.readyState === EventSource.CLOSED ? "disconnected" : "connecting", t("engine_reconnecting"));
+  es.onerror = () => setConn(es.readyState === EventSource.CLOSED ? "disconnected" : "connecting", "engine_reconnecting");
   es.onmessage = (ev) => {
     let evt; try { evt = JSON.parse(ev.data); } catch { return; }
     handleEvent(evt);
   };
 }
-function setConn(state, connectingText = t("engine_connecting")) {
-  if (S.restarting) { state = 'connecting'; connectingText = S.restartMessage || t('restarting'); }
+function setConn(state, connectingKey = "engine_connecting") {
+  if (S.restarting) state = "connecting";
   $("#conn").dataset.state = state;
-  $("#conn-text").textContent = state === "connected" ? t("engine_connected") : state === "disconnected" ? t("engine_disconnected") : connectingText;
+  const label = $("#conn-text");
+  if (S.restarting && S.restartMessage) {
+    delete label.dataset.i18n;
+    label.textContent = S.restartMessage;
+  } else {
+    const key = S.restarting ? "restarting" : state === "connecting" ? connectingKey : "engine_" + state;
+    label.dataset.i18n = key;
+    label.textContent = t(key);
+  }
   window.HermesGatewayStatus?.engineConnection(state);
 }
 

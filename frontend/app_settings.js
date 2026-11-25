@@ -152,7 +152,7 @@
     const progress = (message, failed = false) => {
       showProgress(message, failed);
       S.restartMessage = message;
-      setConn('connecting', message);
+      setConn('connecting');
     };
     progress(initialMessage);
     try {

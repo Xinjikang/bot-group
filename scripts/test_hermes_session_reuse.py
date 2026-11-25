@@ -191,6 +191,38 @@ class SessionReuseTests(unittest.TestCase):
             grants.maintain()
         connect.assert_not_called()
 
+    def test_remote_maintenance_waits_for_relay_and_resumes_pending_work(self):
+        from engine import relay, relay_server
+        relay.register_node(self.conn, 'default', 'fixture')
+        self.remote.rpc.return_value = {**self.snapshot, 'subscription_id': 'sub'}
+        with patch.object(auth, 'signing_keys', return_value=(2, {1: b'old', 2: b'new'})), \
+             patch.object(relay_server, 'active_link', return_value=None) as link, \
+             patch.object(gateway, 'connection', return_value=(self.remote, '', [])) as connect, \
+             patch.object(grants, 'configure') as configure, self.assertNoLogs(grants.LOG):
+            grants.maintain()
+            grants.maintain()
+            link.assert_not_called()
+            relay.mark_online(self.conn, 'default', code_version='', mcp_fingerprint='', generation=1)
+            grants.maintain()  # Persisted online state alone cannot open a stream after restart.
+            connect.assert_not_called()
+            link.return_value = object()
+            connect.side_effect = gateway.RelayOffline('disconnected during lease acquisition')
+            grants.maintain()
+            configure.assert_not_called()
+            connect.side_effect = None
+            grants.maintain()
+            configure.assert_called_once()
+            relay.mark_offline(self.conn, 'default')
+            self.conn.execute('UPDATE hermes_session_grants SET revoked=1')
+            self.conn.commit()
+            connect.reset_mock()
+            grants.maintain()
+            connect.assert_not_called()
+            self.assertEqual(self.conn.execute('SELECT detached FROM hermes_session_grants').fetchone()[0], 0)
+            relay.mark_online(self.conn, 'default', code_version='', mcp_fingerprint='', generation=1)
+            grants.maintain()
+            self.assertEqual(self.conn.execute('SELECT detached FROM hermes_session_grants').fetchone()[0], 1)
+
     def test_mcp_stable_context_drives_message_and_task_calls(self):
         import importlib.util
         source = Path(__file__).resolve().parents[1] / 'mcp/server.py'

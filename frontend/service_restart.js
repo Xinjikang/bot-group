@@ -29,7 +29,7 @@
     S.restartMessage = message;
     button.querySelector('.settings-label').textContent = window.t('restarting');
     button.title = message;
-    setConn('connecting', message);
+    setConn('connecting');
   }
 
   async function monitor(operation) {

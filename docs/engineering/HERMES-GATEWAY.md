@@ -48,6 +48,8 @@ MCP 初始化失败恢复使用现有终态结果与 `session.mutate editor_mcp`
 
 换证派发与后台维护警告记录操作阶段、profile、project、引擎会话、原生 session ID、home、签名代、异常类型、HTTP 状态及脱敏原因。后台维护分别标记 connect、resume、configure 或 detach，以区分连接故障、远端恢复失败和本地授权校验。维护诊断只记录运行身份及经过脱敏的错误信息。
 
+远程成员离线期间，后台保留待换证和待释放的授权记录。成员恢复在线且引擎持有活动 relay 连接后，下一轮维护继续处理。节点由在线转为离线时记录一次 INFO，包含成员、连接代及断开原因。心跳过期与连接关闭同时发生时共用这一状态变更。
+
 ## 会话、MCP 和原生审批
 
 新会话使用 `source=acp`，首次通过 `session.mutate editor_mcp` 注入会话级 task_queue。配置指纹按 profile/session/project 持久化。后续相同配置通过 `session.resume(editor=...)` 恢复私有传输参数，保留原生 agent 与 MCP 连接。推理强度按指定值变化更新，工作目录和编辑策略按会话快照比较。实际工具发现和调用由 Hermes 原生机制完成。

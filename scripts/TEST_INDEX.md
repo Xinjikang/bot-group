@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+引擎状态栏语言回归复用 `scripts/test_ui_language_browser.py --evidence <新证据目录绝对路径>`（项目 Python、Playwright、Chrome、合成路由），覆盖中英文切换时首次连接、已连接、重连和已断开的状态与文字。远程成员离线维护回归用项目 Python 运行 `-X utf8 -B -m scripts.run_isolated_tests --report <项目主目录 reports/tests 下的新绝对目录> scripts.test_hermes_session_reuse scripts.test_relay_gateway`，覆盖离线跳过、在线但无活动链路、上线后继续换证或释放订阅、心跳过期与断链只记录一次。出站拨号使用自带随机回环端点的 `-X utf8 -B -m unittest scripts.test_relay_dialer`。
+
 ## 消息界面
 
 以下浏览器用例在安装了 Playwright 和 Chrome 的项目 Python 环境中运行，使用隔离消息数据。

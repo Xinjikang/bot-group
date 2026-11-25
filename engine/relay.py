@@ -536,28 +536,36 @@ def heartbeat(conn, member: str, *, generation: int, now=None) -> None:
     conn.commit()
 
 
-def mark_offline(conn, member: str, *, generation=None, now=None) -> None:
+def mark_offline(conn, member: str, *, generation=None, now=None, reason="connection closed",
+                 heartbeat_before=None) -> None:
     """断链标离线。generation 给定时按代条件写（旧代清理不覆盖新代 online）；
     不给定时按当前行代写（TTL 过期场景，与读到的行同代）。"""
     row = read_node(conn, member)
     if row is None:
         return
     target_gen = row["generation"] if generation is None else generation
-    conn.execute("UPDATE relay_nodes SET state='offline',updated_at=? "
-                 "WHERE member=? AND generation=?",
-                 (_now() if now is None else now, member, target_gen))
+    sql = "UPDATE relay_nodes SET state='offline',updated_at=? WHERE member=? AND generation=? AND state='online'"
+    args = [_now() if now is None else now, member, target_gen]
+    if heartbeat_before is not None:
+        sql += " AND last_heartbeat<?"
+        args.append(heartbeat_before)
+    changed = conn.execute(sql, args).rowcount
     conn.commit()
+    if changed:
+        logger.info("relay offline member=%s generation=%d reason=%s", member, target_gen, reason)
 
 
 def is_online(conn, member: str) -> bool:
     row = read_node(conn, member)
-    if row is None:
+    if row is None or row["state"] != "online":
         return False
     # 心跳 TTL：90s 内无心跳即离线（只判存活）。
-    if row["last_heartbeat"] is not None and time.time() - row["last_heartbeat"] > HEARTBEAT_TTL_SECONDS:
-        mark_offline(conn, member, generation=row["generation"])
-        return False
-    return row["state"] == "online"
+    cutoff = time.time() - HEARTBEAT_TTL_SECONDS
+    if row["last_heartbeat"] is not None and row["last_heartbeat"] < cutoff:
+        mark_offline(conn, member, generation=row["generation"], reason="heartbeat expired", heartbeat_before=cutoff)
+        current = read_node(conn, member)
+        return current is not None and current["state"] == "online"
+    return True
 
 
 def capacity_used(conn, member: str) -> int:

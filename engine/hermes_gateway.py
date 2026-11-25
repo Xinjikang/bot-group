@@ -27,6 +27,10 @@ def enabled():
     return hermes_runtime.gateway_source(hermes_runtime.source_directory(_hermes_home()))
 
 
+class RelayOffline(GatewayUnavailable):
+    """The remote member has no live relay connection."""
+
+
 def _relay_lease(profile, *, on_event=None):
     """远程 relay 成员：从活跃插件连接开一条流，包装成 Lease 兼容接口。"""
     from . import relay_server
@@ -37,10 +41,10 @@ def _relay_lease(profile, *, on_event=None):
     finally:
         conn.close()
     if not online:
-        raise GatewayUnavailable('remote member relay offline: ' + profile)
+        raise RelayOffline('remote member relay offline: ' + profile)
     transport = relay_server.open_transport(profile)
     if transport is None:
-        raise GatewayUnavailable('remote member relay link absent: ' + profile)
+        raise RelayOffline('remote member relay link absent: ' + profile)
     endpoint = {'profile_id': profile, 'instance_id': 'relay-' + profile,
                 'runtime_protocol': 1, 'api_origin': '', 'control_home': '',
                 'code_sha': '', 'authority_epoch': 1}
