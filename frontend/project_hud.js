@@ -1,7 +1,7 @@
 // Project-scoped maintenance UI. Group messages and task conversations stay independent.
 (() => {
   const host = document.createElement('section');
-  host.id = 'project-hud'; host.setAttribute('aria-label', '项目助手');
+  host.id = 'project-hud'; host.setAttribute('aria-label', '项目助手'); host.setAttribute('data-i18n-aria-label', 'hud_assistant_aria');
   host.innerHTML = `<div class="hud-shell">
     <button class="hud-toggle" id="hud-toggle" aria-expanded="false" aria-controls="hud-panel"><span class="hud-light" aria-hidden="true"></span><span class="hud-caption"><span class="hud-name" data-i18n="hud_name">项目助手</span><span class="hud-status" data-i18n="hud_ready">准备就绪</span></span><span class="hud-chevron" data-i18n="hud_expand">展开</span></button>
     <div class="hud-panel" id="hud-panel" hidden>
@@ -234,7 +234,7 @@
           if(field)field.value=text;
         }
       };
-      for(const option of question.options||[])options.append(action(option,()=>send([option,input.value.trim()].filter(Boolean).join('\n补充：')),'hud-option'));
+      for(const option of question.options||[])options.append(action(option,()=>send([option,input.value.trim()].filter(Boolean).join('\n' + window.t('hud_supplement'))),'hud-option'));
       const submit=action(window.t('hud_send_answer'),()=>send(input.value),'hud-primary');submit.disabled=busy||state==='running'||state==='queued';
       box.append(options,input,submit);todos.append(box);
     }
@@ -395,7 +395,7 @@
   el('compose').addEventListener('submit',async e=>{
     e.preventDefault();if(el('send').disabled)return;
     const original=el('input').value,sid=current.id,q=current.state.question;
-    const text=[selected,original.trim()].filter(Boolean).join('\n补充：');
+    const text=[selected,original.trim()].filter(Boolean).join('\n' + window.t('hud_supplement'));
     followNext=true;
     const data=await mutate('/answer',{text,question_id:q?.id||null});
     if(current?.id===sid){

@@ -1,6 +1,6 @@
 # 测试脚本索引
 
-界面中英文切换（req#178 task#333）用项目环境运行 `env -u PYTHONPATH py -3.10 -X utf8 -B scripts/test_ui_language_browser.py --evidence <报告绝对目录>`（Playwright 与 Chrome）。合成路由隔离验证：设置菜单「语言 / Language」双语入口、切换英文后聊天/设置/管理页文案立即跟进、重开记住选择、切回中文恢复、已发送消息原文不变、任务面板与成员管理对照、无消息空态英文、390px 窄屏不溢出、英文模式弹窗/HUD/懒创建路径（项目详情成员 tab、移出成员弹窗、composer 图片按钮）无 CJK 残留，截图写入证据目录。vm 用例执行 index.html 内联脚本片段时共用 `scripts/i18n_vm_stub.cjs` 提供的词表桩，与浏览器 zh-CN 行为一致；新增依赖全局 t()/getUILanguage 的片段用例在 ctx 中挂 `ctx.t`、`ctx.window = {t}`、`ctx.getUILanguage`。
+界面中英文切换（req#178 task#333）的提交前静态检查运行 `py -3.10 -X utf8 -B scripts/check_ui_cjk.py`：扫描 frontend 全部 JS 与 index.html 的硬编码中文，豁免注释、词表、已接 t()/data-i18n 的行、双语语言入口与服务器数据，有命中退出码 1。界面中英文切换（req#178 task#333）用项目环境运行 `env -u PYTHONPATH py -3.10 -X utf8 -B scripts/test_ui_language_browser.py --evidence <报告绝对目录>`（Playwright 与 Chrome）。合成路由隔离验证：设置菜单「语言 / Language」双语入口、切换英文后聊天/设置/管理页文案立即跟进、重开记住选择、切回中文恢复、已发送消息原文不变、任务面板与成员管理对照、无消息空态英文、390px 窄屏不溢出、英文模式弹窗/HUD/懒创建路径（项目详情成员 tab、移出成员弹窗、composer 图片按钮）无 CJK 残留，截图写入证据目录。vm 用例执行 index.html 内联脚本片段时共用 `scripts/i18n_vm_stub.cjs` 提供的词表桩，与浏览器 zh-CN 行为一致；新增依赖全局 t()/getUILanguage 的片段用例在 ctx 中挂 `ctx.t`、`ctx.window = {t}`、`ctx.getUILanguage`。
 
 同一 Hermes profile 连接多台引擎使用 `python -X utf8 -B -m unittest scripts.test_relay_multiple_engines`。两套临时数据库和引擎进程、随机回环端口、TLS 监听及替身 Hermes 网关验证双向切换、同名会话、并发回信、重连与适配器重启。历史兼容用例读取本地 Git 标签 v0.3.3 和 v0.3.4 的原版插件执行握手与 RPC，需有这两个标签。相关安装与单节点回归见 `scripts.test_relay_installer`、`scripts.test_relay_plugin`、`scripts.test_relay_gateway`、`scripts.test_relay_dialer` 和 `scripts.test_plugin_listen_pairing`。
 

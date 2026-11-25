@@ -3,8 +3,9 @@
   const box = document.querySelector('#msg-list');
   const row = document.createElement('div');
   row.id = 'message-navigation';
-  row.setAttribute('aria-label', '消息导航');
-  row.innerHTML = '<button type="button" id="message-bottom" hidden>回到底部</button>'
+  row.setAttribute('aria-label', window.t('mn_nav_aria'));
+  row.setAttribute('data-i18n-aria-label', 'mn_nav_aria');
+  row.innerHTML = `<button type="button" id="message-bottom" data-i18n="mn_back_bottom" hidden>${window.t('mn_back_bottom')}</button>`
     + '<button type="button" id="message-mentions" hidden></button>';
   box.after(row);
   const bottom = row.querySelector('#message-bottom');
@@ -120,8 +121,8 @@
     const count = pendingForView().length;
     mentions.hidden = count === 0;
     mentions.disabled = navigating;
-    mentions.textContent = `有人 @你 · ${count}`;
-    mentions.title = `还有 ${count} 条 @你的消息，点击查看下一条`;
+    mentions.textContent = window.t('mn_mentions_badge', [count]);
+    mentions.title = window.t('mn_mentions_hint', [count]);
     mentions.setAttribute('aria-label', mentions.title);
     readVisible();
   }
@@ -223,7 +224,7 @@
       renderMessages();
       const node = box.querySelector(`[data-message-id="${target.id}"]`);
       if (!node || !node.getClientRects().length) {
-        throw new Error('消息暂未加载或话题已隐藏，请展开对应话题后重试');
+        throw new Error(window.t('mn_not_loaded'));
       }
       box.scrollTop += node.getBoundingClientRect().top - box.getBoundingClientRect().top
         - Math.max(0, (box.clientHeight - node.offsetHeight) / 2);
@@ -232,7 +233,7 @@
       state.pending.delete(target.id);
       save(project, state);
     } catch (error) {
-      if (current()) showAlert('定位 @消息失败：' + error.message);
+      if (current()) showAlert(window.t('mn_locate_failed', [error.message]));
     } finally {
       navigating = false;
       update();
@@ -246,6 +247,7 @@
   // Topic refreshes and folding may change visibility without scrolling.
   new MutationObserver(update).observe(box, {childList: true, subtree: true, attributes: true});
   document.addEventListener('visibilitychange', update);
+  document.addEventListener('ui-language-changed', update);
   window.addEventListener('focus', update);
   window.addEventListener('blur', () => { visibleSince.clear(); clearTimeout(readTimer); });
   window.addEventListener('storage', event => {

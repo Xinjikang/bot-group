@@ -59,6 +59,10 @@ class Fixture:
         if path.endswith('/removal'):
             route.fulfill(json={'can_remove': True, 'blockers': []})
             return
+        if path == '/local/directory-list':
+            route.fulfill(json={'path': '', 'parent': None, 'entries': [], 'total': 0,
+                                'offset': 0, 'limit': 200, 'has_more': False})
+            return
         data = {
             '/auth/status': {'configured': False},
             '/projects': {'projects': [{'name': 'p', 'display_name': '隔离项目'}]},
@@ -267,6 +271,55 @@ def run(evidence):
             assert add.get_attribute('title') == 'Add image'
             assert add.get_attribute('aria-label') == 'Add image'
             results.append({'case': 'lazy_rendered_paths_english', 'result': 'passed'})
+
+            # 10) 三轮返修组件：消息导航 / SOUL 模板弹窗 / 目录选择 / 授权面板 / 命令弹层 / 策略弹窗
+            page.evaluate("""() => {
+              const row = document.querySelector('[aria-label="Message navigation"]');
+              const btn = document.getElementById('message-bottom');
+              if (btn) btn.hidden = false;
+              return row ? row.innerText : '';
+            }""")
+            assert 'Back to bottom' in page.locator('#message-navigation').inner_text()
+            assert page.evaluate("document.querySelector('#message-navigation').getAttribute('aria-label')") == 'Message navigation'
+            # SOUL 模板弹窗（懒创建内容按打开时语言刷新）
+            page.evaluate("""() => {
+              const host = document.createElement('dialog');
+              host.id = 'soul-host';
+              const container = document.createElement('div');
+              host.append(container);
+              document.body.append(host);
+              window.mountProjectSoulTemplates(container, {project: 'p', isActive: () => true,
+                maxLength: 100000, getValue: () => '', setValue: () => {},
+                status: {textContent: ''}});
+              host.showModal();
+              container.querySelector('.profile-soul-template-open').click();
+            }""")
+            page.wait_for_function("document.getElementById('dlg-profile-soul-template')?.open")
+            soul_text = page.locator('#dlg-profile-soul-template').inner_text()
+            assert 'SOUL templates for this project' in soul_text
+            assert 'Apply template' in soul_text
+            assert 'Reload' in soul_text
+            page.evaluate("document.getElementById('dlg-profile-soul-template').close(); document.getElementById('soul-host').close()")
+            # 目录选择弹窗（懒创建，英文构建）
+            page.evaluate("""() => {
+              const input = document.createElement('input');
+              const button = document.createElement('button');
+              document.body.append(input, button);
+              selectProjectDirectory(input, button);
+            }""")
+            page.wait_for_function("document.querySelector('#dir-picker-title')")
+            dir_text = page.locator('#dir-picker-title').inner_text()
+            assert dir_text == 'Select directory (server directory)', dir_text
+            assert 'Select this directory' in page.locator('dialog[dir-picker-layer]').inner_text()
+            page.evaluate("document.querySelector('dialog[dir-picker-layer]').close()")
+            # 授权面板 / 命令弹层 aria（data-i18n-aria-label 已由 applyStatic 更新）
+            assert page.evaluate("document.querySelector('#hermes-approvals').getAttribute('aria-label')") == 'Hermes operation approvals'
+            assert page.evaluate("document.querySelector('#command-pop').getAttribute('aria-label')") == 'Supported commands'
+            # 策略弹窗静态文案
+            page.evaluate("document.querySelector('#dlg-edit-policy').showModal()")
+            assert page.locator('#dlg-edit-policy h3').inner_text() == 'Smart approval policy'
+            page.evaluate("document.querySelector('#dlg-edit-policy').close()")
+            results.append({'case': 'round3_components_english', 'result': 'passed'})
         finally:
             browser.close()
 

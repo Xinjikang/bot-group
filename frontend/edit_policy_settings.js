@@ -19,7 +19,7 @@
   };
   function apply(data) {
     const input = [...form.elements.policy].find(input => input.value === data.policy);
-    if (!input) throw new Error('策略读取失败，请确认引擎已更新并重启');
+    if (!input) throw new Error(window.t('ep_read_failed'));
     input.checked = true;
   }
   function visibility() {
@@ -34,7 +34,7 @@
     const request = ++epoch;
     for (const input of form.elements.policy) input.checked = false;
     fields.disabled = save.disabled = true;
-    report('正在读取全局策略…');
+    report(window.t('ep_loading'));
     openDialogAnchored(dialog, anchor);
     try {
       const data = await api('/system/edit-approval-policy', {cache: 'no-store', signal: AbortSignal.timeout(10000)});
@@ -44,7 +44,7 @@
       report('');
       form.querySelector('input:checked').focus();
     } catch (error) {
-      if (request === epoch && dialog.open) report(`读取失败：${error.message}。请关闭后重试。`, true);
+      if (request === epoch && dialog.open) report(window.t('ep_read_failed_retry', [error.message]), true);
     }
   });
   document.querySelector('#edit-policy-cancel').onclick = () => closeDialogAnchored(dialog);
@@ -63,17 +63,17 @@
     const policy = form.elements.policy.value, request = ++epoch;
     saving = true;
     fields.disabled = save.disabled = true;
-    report('正在保存…');
+    report(window.t('ep_saving'));
     try {
       const data = await api('/system/edit-approval-policy', {
         method: 'PATCH', body: JSON.stringify({policy}), signal: AbortSignal.timeout(10000),
       });
       if (request !== epoch || !dialog.open || !allowed()) return;
       apply(data);
-      report('已保存，将在各 Bot 下一轮执行前应用。');
+      report(window.t('ep_saved'));
     } catch (error) {
       if (request === epoch && dialog.open)
-        report(`保存结果未确认：${error.message}。选择已保留，可重试或重新打开查看。`, true);
+        report(window.t('ep_save_unconfirmed', [error.message]), true);
     } finally {
       saving = false;
       if (request === epoch) fields.disabled = save.disabled = false;

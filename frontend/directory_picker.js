@@ -17,16 +17,16 @@ async function selectProjectDirectory(input, button) {
   dlg.setAttribute('dir-picker-layer', ''); // req#110 #189：标记为子弹层弹窗，宿主 outside-closer 对它豁免
   dlg.style.cssText = 'width:520px;max-width:calc(100vw - 24px);box-sizing:border-box;max-height:calc(100dvh - 24px);overflow:auto;';
   dlg.innerHTML = `
-    <h3 id="dir-picker-title">选择目录（服务器目录）</h3>
-    <p class="profile-help" style="margin:0 0 8px;">浏览引擎所在机器的目录并选择；只列子目录。</p>
-    <nav id="dir-picker-crumbs" aria-label="目录层级" style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-bottom:8px;font-size:12.5px;"></nav>
-    <div id="dir-picker-list" role="listbox" aria-label="子目录列表" tabindex="0"
+    <h3 id="dir-picker-title">${window.t('dp_title')}</h3>
+    <p class="profile-help" style="margin:0 0 8px;">${window.t('dp_hint')}</p>
+    <nav id="dir-picker-crumbs" aria-label="${window.t('dp_crumbs_aria')}" style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-bottom:8px;font-size:12.5px;"></nav>
+    <div id="dir-picker-list" role="listbox" aria-label="${window.t('dp_list_aria')}" tabindex="0"
       style="min-height:180px;max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:4px;"></div>
     <p id="dir-picker-more" role="status" style="margin:6px 0 0;font-size:12px;color:var(--fg-2);"></p>
     <p id="dir-picker-status" role="status" style="overflow-wrap:anywhere;"></p>
     <div class="dlg-btns">
-      <button id="dir-picker-cancel" type="button">取消</button>
-      <button id="dir-picker-ok" type="button" class="primary">选择此目录</button>
+      <button id="dir-picker-cancel" type="button">${window.t('dp_cancel')}</button>
+      <button id="dir-picker-ok" type="button" class="primary">${window.t('dp_select')}</button>
     </div>`;
   document.body.appendChild(dlg);
 
@@ -50,14 +50,14 @@ async function selectProjectDirectory(input, button) {
     // 任何时候都能一键回到磁盘根目录换盘符（如 E:/ → C:/）——不再依赖面包屑逐级回退
     const rootChip = document.createElement('button');
     rootChip.type = 'button';
-    rootChip.textContent = '服务器根目录';
+    rootChip.textContent = window.t('dp_server_root');
     rootChip.style.cssText = 'border:none;background:transparent;color:var(--accent-2);cursor:pointer;padding:2px 4px;border-radius:4px;';
     rootChip.addEventListener('click', () => { pageOffset = 0; navigate(''); });
     crumbs.append(rootChip);
     const norm = String(path || '').replace(/\\/g, '/');
     if (!path) {
       const here = document.createElement('span');
-      here.textContent = '› 磁盘根目录';
+      here.textContent = window.t('dp_disk_root');
       here.setAttribute('aria-current', 'page');
       crumbs.append(here);
       return;
@@ -98,11 +98,11 @@ async function selectProjectDirectory(input, button) {
   function renderRows(entries, startIndex = 0) {
     if (!startIndex) list.replaceChildren();
     if (!entries.length && !startIndex) {
-      if (statusText.textContent.includes('无权限')) return; // 无权限已提示，不再叠加空目录文案
+      if (statusText.textContent.includes(window.t('dp_err_permission'))) return; // 无权限已提示，不再叠加空目录文案
       const empty = document.createElement('p');
       empty.className = 'profile-help';
       empty.style.cssText = 'text-align:center;padding:14px;margin:0;';
-      empty.textContent = '（无子目录）';
+      empty.textContent = window.t('dp_no_subdirs');
       list.append(empty);
       return;
     }
@@ -123,14 +123,14 @@ async function selectProjectDirectory(input, button) {
   }
 
   const ERR_TEXT = {
-    permission_denied: '该目录无权限访问，请选择其他目录。',
-    not_found: '目录不存在，可能已被移动或删除。',
-    not_directory: '该路径不是目录。',
+    permission_denied: window.t('dp_err_permission'),
+    not_found: window.t('dp_err_not_found'),
+    not_directory: window.t('dp_err_not_directory'),
   };
 
   async function navigate(path, {append = false} = {}) {
     const v = ++version;
-    statusText.textContent = '正在读取…';
+    statusText.textContent = window.t('dp_loading');
     try {
       let data = null;
       try {
@@ -138,11 +138,11 @@ async function selectProjectDirectory(input, button) {
           '&offset=' + pageOffset + '&limit=' + PAGE_SIZE);
       } catch (err) {
         if (v !== version) return;
-        statusText.textContent = '读取失败：' + err.message + '。请重试或直接输入路径。';
+        statusText.textContent = window.t('dp_read_failed', [err.message]);
         return;
       }
       if (v !== version || !dlg.open) return;
-      statusText.textContent = data.error ? ERR_TEXT[data.error] || ('读取失败：' + data.error) : '';
+      statusText.textContent = data.error ? ERR_TEXT[data.error] || window.t('dp_read_failed_short', [data.error]) : '';
       currentPath = data.path || '';
       currentEntries = append ? currentEntries.concat(data.entries || []) : (data.entries || []);
       renderCrumbs(data.path, data.parent);
@@ -157,7 +157,7 @@ async function selectProjectDirectory(input, button) {
       if (data.has_more) {
         const next = document.createElement('button');
         next.type = 'button';
-        next.textContent = `加载更多（第 ${data.offset + (data.entries || []).length + 1} - ${Math.min(data.total, data.offset + data.limit)} 项，共 ${data.total}）`;
+        next.textContent = window.t('dp_load_more', [data.offset + (data.entries || []).length + 1, Math.min(data.total, data.offset + data.limit), data.total]);
         next.style.cssText = 'width:100%;margin-top:4px;border:1px dashed var(--border);background:transparent;color:var(--fg-2);cursor:pointer;padding:6px;border-radius:6px;';
         next.addEventListener('click', () => { pageOffset += data.limit; navigate(data.path, {append: true}); });
         moreEl.replaceChildren(next);
@@ -205,7 +205,7 @@ async function selectProjectDirectory(input, button) {
     if (dlg.open) recenter();
   } catch (err) {
     dlg.remove();
-    showAlert('选择目录失败：' + err.message);
+    showAlert(window.t('dp_select_failed', [err.message]));
   } finally {
     button.disabled = false;
     button.removeAttribute('aria-busy');

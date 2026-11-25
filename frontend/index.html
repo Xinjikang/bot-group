@@ -541,10 +541,10 @@ details.req-block>summary:focus-visible{outline:2px solid var(--accent-2);outlin
 .msg-line.msg-closed-hl{background:rgba(75,200,138,.05)}
 .msg-failed{background:rgba(224,92,106,.08)}
 .msg-failed .msg-content{border-left:3px solid var(--danger)}
-.msg-failed .msg-meta::after{content:"⚠ 投递失败/挂死";color:var(--danger);font-size:11px;margin-left:4px;white-space:nowrap}
+.msg-failed .msg-meta::after{content:attr(data-label);color:var(--danger);font-size:11px;margin-left:4px;white-space:nowrap}
 .msg-task-update{background:rgba(111,214,224,.05)}
 .msg-task-update .msg-content{border-left:3px solid var(--accent)}
-.msg-task-update .msg-meta::after{content:"✎ 任务修订";color:var(--accent-2);font-size:11px;margin-left:4px}
+.msg-task-update .msg-meta::after{content:attr(data-label);color:var(--accent-2);font-size:11px;margin-left:4px}
 
 /* 话题分组（小样已有 .msg-group 系列，这里只补充标题字体与间距微调已在小样覆盖） */
 
@@ -1056,10 +1056,10 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
       </div>
       <div class="col-body" id="msg-list"></div>
       <div id="think-bubbles"></div>
-      <section id="hermes-approvals" aria-label="Hermes 操作授权" hidden></section>
+      <section id="hermes-approvals" aria-label="Hermes 操作授权" data-i18n-aria-label="ha_panel_aria" hidden></section>
       <div id="mention-pop" hidden></div>
-      <div id="command-pop" role="listbox" aria-label="支持的命令" hidden></div>
-      <div id="command-receipt" hidden><div class="command-receipt-text" role="status" aria-live="polite"></div><button type="button" aria-label="关闭命令回执">×</button></div>
+      <div id="command-pop" role="listbox" aria-label="支持的命令" data-i18n-aria-label="cmd_pop_aria" hidden></div>
+      <div id="command-receipt" hidden><div class="command-receipt-text" role="status" aria-live="polite"></div><button type="button" aria-label="关闭命令回执" data-i18n-aria-label="cmd_receipt_close">×</button></div>
       <form id="composer">
         <!-- 单条消息长度上限为 2000 UTF-16 码元。
              textarea maxlength 按 UTF-16 码元计数，与引擎 post_msg 校验口径统一。 -->
@@ -1190,8 +1190,8 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 <dialog id="dlg-project-detail" style="width:560px;max-width:calc(100vw - 24px);box-sizing:border-box;max-height:calc(100dvh - 24px);overflow:auto;">
   <div style="position:relative;">
     <h3 style="font-size:15px;margin-bottom:12px;" id="pj-detail-title" data-i18n="project_detail">项目详情</h3>
-    <button type="button" id="dlg-pj-detail-close" title="关闭" aria-label="关闭" style="position:absolute;top:-8px;right:-8px;width:26px;height:26px;border:1px solid var(--border);border-radius:50%;background:var(--card);color:var(--fg-2);cursor:pointer;font-size:14px;line-height:1;padding:0;">×</button>
-    <div class="profile-tabs" role="tablist" aria-label="项目配置" id="pj-detail-tabs">
+    <button type="button" id="dlg-pj-detail-close" title="关闭" data-i18n-title="close" aria-label="关闭" data-i18n-aria-label="close" style="position:absolute;top:-8px;right:-8px;width:26px;height:26px;border:1px solid var(--border);border-radius:50%;background:var(--card);color:var(--fg-2);cursor:pointer;font-size:14px;line-height:1;padding:0;">×</button>
+    <div class="profile-tabs" role="tablist" aria-label="项目配置" data-i18n-aria-label="pj_detail_tabs_aria" id="pj-detail-tabs">
       <button type="button" id="pj-tab-basic" role="tab" aria-controls="pj-panel-basic" aria-selected="true" data-tab="basic" data-i18n="basic_info">基本信息</button>
       <button type="button" id="pj-tab-agents" role="tab" aria-controls="pj-panel-agents" aria-selected="false" tabindex="-1" data-tab="agents" hidden>AGENTS.md</button>
       <button type="button" id="pj-tab-members" role="tab" aria-controls="pj-panel-members" aria-selected="false" tabindex="-1" data-tab="members" hidden data-i18n="members_dirs">成员与目录</button>
@@ -1211,7 +1211,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
       <label style="font-size:12px;color:var(--fg-2);margin:0;" data-i18n="root_label">项目主目录</label>
       <div style="display:flex;gap:8px;min-width:0;">
         <input id="pj-d-root" required style="flex:1;min-width:0;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit;background:var(--card);color:var(--fg);">
-        <button class="directory-picker-button" type="button" title="打开文件夹选择器" aria-label="选择项目主目录" onclick="selectProjectDirectory(document.getElementById('pj-d-root'), this)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v2M3 7v12a1 1 0 0 0 1 1h15l3-10H7L4 20"/></svg></button>
+        <button class="directory-picker-button" type="button" title="打开文件夹选择器" data-i18n-title="dp_open_title" aria-label="选择项目主目录" data-i18n-aria-label="dp_root_aria" onclick="selectProjectDirectory(document.getElementById('pj-d-root'), this)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v2M3 7v12a1 1 0 0 0 1 1h15l3-10H7L4 20"/></svg></button>
       </div>
       <label id="pj-mode-label" data-i18n="directory_mode">成员目录模式</label>
       <input type="hidden" id="pj-d-mode" value="shared">
@@ -1285,7 +1285,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 </dialog>
 <dialog id="dlg-workspace" aria-labelledby="workspace-title" style="width:520px;max-width:calc(100vw - 24px);max-height:85dvh;overflow:auto;padding:20px">
   <h3 id="workspace-title" data-i18n="workspace">工作区</h3>
-  <div class="project-mode-options" style="margin-top:14px" role="radiogroup" aria-label="成员目录模式">
+  <div class="project-mode-options" style="margin-top:14px" role="radiogroup" aria-label="成员目录模式" data-i18n-aria-label="pj_mode_aria">
     <label><input type="radio" name="member-directory-mode" value="shared"><span data-i18n="project_root_opt">项目主目录</span></label>
     <label><input type="radio" name="member-directory-mode" value="worktree"><span data-i18n="worktree_mode">独立 worktree</span></label>
   </div>
@@ -1310,7 +1310,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
   <form id="profile-form" autocomplete="off">
     <h3 id="profile-title" data-i18n="edit_member">编辑成员</h3>
     <p id="profile-plugin-status" class="profile-help" role="status" hidden></p>
-    <div class="profile-tabs" id="profile-tabs" role="tablist" aria-label="Profile 配置">
+    <div class="profile-tabs" id="profile-tabs" role="tablist" aria-label="Profile 配置" data-i18n-aria-label="profile_tabs_aria">
       <button type="button" id="profile-tab-description" role="tab" aria-controls="profile-panel-description" aria-selected="true" data-tab="description" data-i18n="description_tab">描述</button>
       <button type="button" id="profile-tab-soul" role="tab" aria-controls="profile-panel-soul" aria-selected="false" tabindex="-1" data-tab="soul">SOUL.md</button>
       <button type="button" id="profile-tab-env" role="tab" aria-controls="profile-panel-env" aria-selected="false" tabindex="-1" data-tab="env">.env</button>
@@ -3110,7 +3110,7 @@ function renderMsg(m, thinking = []) {
     div.innerHTML = `
       <div class="avatar av-orchestrator">⚙</div>
       <div class="msg-body">
-        <div class="msg-meta">
+        <div class="msg-meta" data-label="${t("task_revision")}">
           <span class="sender">${t("task_revision")}</span>
           <span>${esc(fmtTs(m.ts))}</span>
           ${threadTag}
@@ -3130,7 +3130,7 @@ function renderMsg(m, thinking = []) {
   div.innerHTML = `
     <div class="avatar ${AV_CLASS(m.sender)}">${esc(Array.from(NAME_OF(m.sender))[0])}</div>
     <div class="msg-body">
-      <div class="msg-meta">
+      <div class="msg-meta" ${failed.delivery_failed ? `data-label="${t("msg_delivery_failed")}"` : ""}>
         <span class="sender">${esc(m.sender_type === "engine" ? t("system_notice") : NAME_OF(m.sender))}</span>
         <span>${esc(fmtTs(m.ts))}</span>
         ${m.sender === "user" && m.thread_id && !isClose && !failed.delivery_failed ? `<span>${t("sent")}</span>` : ""}
