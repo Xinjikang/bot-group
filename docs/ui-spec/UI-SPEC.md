@@ -79,6 +79,7 @@ Hermes 网关模式在顶栏引擎状态旁显示只读状态点和 12px 文字�
 
 - 界面文案统一从 `frontend/i18n.js` 集中词表取。静态元素用 `data-i18n`（及 `data-i18n-placeholder`、`data-i18n-title`、`data-i18n-aria-label`）标记；动态文案在渲染时调用 `t("<key>")`。聊天、设置、管理页的按钮、标签、提示、空态、状态文案均随语言切换立即更新。
 - 已发送的消息正文、话题/需求/任务标题、成员显示名等服务器数据保留原文，不参与翻译；消息协议标记（如 `[收口]`）按数据对待，不随语言改变。
+- 思考气泡停止按钮（`.tb-stop`）留在气泡头部原位（margin-left:auto 靠右），可见文字「停止 / Stop」+ 图标，红色（--danger）高对比、600 字重、12px、带描边与 hover 红色底，点击区不小于 40×26px；title/aria 用「停止 {名字}」（stop_member）。
 - 消息正文中的 @ 点名（`.msg-content .mention`）青色加粗加淡青底色；点到当前用户（mentions 含 `user`）的消息在 meta 行渲染「提到我」徽章（`.tag-mentions-you`，青底深字），文字随语言（提到我 / Mentions you），只按 mentions 数据判断、不改动正文。
 - 切换语言触发 `ui-language-changed` 事件，各动态面板按当前语言重新渲染；消息区在语言变化时整体重建界面文案，同时继续保留正文与思考内容。打开中的弹窗在切换时关闭，重新打开按当前语言构建，避免一次性渲染的旧文案残留。
 - 懒创建元素（切 tab 才渲染的卡片、点击才创建的弹窗、composer 工具栏等）在模板中直接用 `t()` 按当前语言求值，不能依赖 `data-i18n` 默认值；切语言后由 `ui-language-changed` 触发其刷新（如 `refreshImageEditors()`）。

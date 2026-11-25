@@ -292,9 +292,9 @@ body::before{
 
 /* 思考条 */
 
-.tb-stop{background:none;border:0;padding:4px;font:inherit;color:var(--fg-2);cursor:pointer;margin-left:auto;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+.tb-stop{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.16);padding:5px 10px;font-size:12px;font-weight:600;color:var(--danger);cursor:pointer;margin-left:auto;display:inline-flex;align-items:center;justify-content:center;gap:5px;border-radius:6px;flex-shrink:0;line-height:1}
 .tb-stop:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.tb-stop:hover{color:var(--danger)}
+.tb-stop:hover{background:rgba(255,59,59,.16);border-color:var(--danger)}
 .tb-dots{display:flex;gap:4px}
 .tb-dots span{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:tb 1.2s infinite}
 .tb-dots span:nth-child(2){animation-delay:.15s}
@@ -5113,7 +5113,7 @@ function renderThinkBubble(bubble, attached = false) {
     <span class="tb-name">${esc(name)}</span>
     <span class="tb-state">${state}</span>
     ${bubble.status === "thinking" || stalled ? `<button type="button" class="tb-stop" title="${t("stop_member", [esc(name)])}" aria-label="${t("stop_member", [esc(name)])}">
-      <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8.5" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="6.5" y="6.5" width="7" height="7" rx=".5" fill="currentColor"/></svg>
+      <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8.5" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="6.5" y="6.5" width="7" height="7" rx=".5" fill="currentColor"/></svg><span class="tb-stop-label">${t("stop_bot")}</span>
     </button>` : ""}`;
   if (stalled) {
     // 状态标签即事实；停止入口保留，是否再次点击由用户决定。

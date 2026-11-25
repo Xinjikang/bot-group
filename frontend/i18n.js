@@ -1402,6 +1402,7 @@
     "hud_supplement": { zh: "补充：", en: "supplement:" },
     "new_role_aria": { zh: "新角色名称", en: "New role name" },
     "mentions_you": { zh: "提到我", en: "Mentions you" },
+    "stop_bot": { zh: "停止", en: "Stop" },
     "pj_display_name_placeholder": { zh: "例如：小夏", en: "e.g. Summer" },
 
   };
