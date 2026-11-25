@@ -1,7 +1,17 @@
 # 测试脚本索引
 
-思考气泡停止按钮（req#178 task#335）运行 `env -u PYTHONPATH py -3.10 -X utf8 -B scripts/test_stop_button_browser.py --evidence <报告绝对目录>`：真实 Chrome 合成路由渲染 thinking 气泡，断言停止按钮原位、可见文字停止/Stop 跟随语言、12px/600 字重/描边/点击区 ≥40×26px computed、点击经确认后 POST /stop 载荷正确，截图写入证据目录。
-界面中英文切换（req#178 task#333）的提交前静态检查运行 `py -3.10 -X utf8 -B scripts/check_ui_cjk.py`：扫描 frontend 全部 JS 与 index.html 的硬编码中文，豁免注释、词表、已接 t()/data-i18n 的行、双语语言入口与服务器数据；title/aria-label/placeholder 属性值含 CJK 时同元素必须带对应 data-i18n-* 标记，有命中退出码 1。@点名与提到我标记（req#178 task#334）运行 `node scripts/test_mentions_you.cjs`（vm 渲染片段：点到 current user 出 mentions-you 徽章、中英文标签、非本人/无点名不出、撤回与断链消息行为）与 `env -u PYTHONPATH py -3.10 -X utf8 -B scripts/test_mentions_you_browser.py --evidence <报告绝对目录>`（真实 Chrome 合成路由：徽章中英文跟随语言、点名文字加粗且背景透明、正文原文不变、非本人无徽章）。
+## 消息界面
+
+以下浏览器用例在安装了 Playwright 和 Chrome 的项目 Python 环境中运行，使用隔离消息数据。
+
+| 控件 | 验证方法 | 验收要点 |
+| --- | --- | --- |
+| @ 点名与「提到我」徽章 | `node scripts/test_mentions_you.cjs` 和 `python -B -X utf8 scripts/test_mentions_you_browser.py --evidence <报告目录>` | 点名文字加粗、背景透明；本人被点名时显示中英文徽章；撤回、断链及其他成员被点名时不显示本人徽章。 |
+| 撤回 | 浏览器手动检查：以用户身份打开有消息的隔离页面，将鼠标移到消息行上，检查按钮尺寸并点击「撤回」，看到确认框后取消。 | 字号 13px，按钮高度至少 28px，左右内边距各 10px。 |
+| 停止 | `python -B -X utf8 scripts/test_stop_button_browser.py --evidence <报告目录>` | 按钮留在气泡头部，显示「停止 / Stop」；默认和悬停背景均透明，字号 12px、字重 600，点击区至少 40 × 26px。模拟确认后核对 `POST /stop` 的成员、项目与话题。 |
+
+**中英文界面检查**
+
 界面中英文切换（req#178 task#333）的提交前静态检查运行 `py -3.10 -X utf8 -B scripts/check_ui_cjk.py`：扫描 frontend 全部 JS 与 index.html 的硬编码中文与 CJK/全角标点，豁免注释、词表、t() 词条 key、data-i18n 属性及元素 fallback、双语语言入口与服务器数据；title/aria-label/placeholder 属性值含 CJK 或全角标点时同元素必须带对应 data-i18n-* 标记，有命中退出码 1。界面中英文切换（req#178 task#333）用项目环境运行 `env -u PYTHONPATH py -3.10 -X utf8 -B scripts/test_ui_language_browser.py --evidence <报告绝对目录>`（Playwright 与 Chrome）。合成路由隔离验证：设置菜单「语言 / Language」双语入口、切换英文后聊天/设置/管理页文案立即跟进、重开记住选择、切回中文恢复、已发送消息原文不变、任务面板与成员管理对照、无消息空态英文、390px 窄屏不溢出、英文模式弹窗/HUD/懒创建路径（项目详情成员 tab、移出成员弹窗、composer 图片按钮）无 CJK 残留、属性层扫描（全部 aria-label/title/placeholder 属性含隐藏元素，豁免服务器数据/协议标记/双语入口）无 CJK 残留、时间线与权限入口（撤回消息半角括号、任务修订事件半角标点、权限 tab 选择器空态英文），截图写入证据目录。vm 用例执行 index.html 内联脚本片段时共用 `scripts/i18n_vm_stub.cjs` 提供的词表桩，与浏览器 zh-CN 行为一致；新增依赖全局 t()/getUILanguage 的片段用例在 ctx 中挂 `ctx.t`、`ctx.window = {t}`、`ctx.getUILanguage`。
 
 同一 Hermes profile 连接多台引擎使用 `python -X utf8 -B -m unittest scripts.test_relay_multiple_engines`。两套临时数据库和引擎进程、随机回环端口、TLS 监听及替身 Hermes 网关验证双向切换、同名会话、并发回信、重连与适配器重启。历史兼容用例读取本地 Git 标签 v0.3.3 和 v0.3.4 的原版插件执行握手与 RPC，需有这两个标签。相关安装与单节点回归见 `scripts.test_relay_installer`、`scripts.test_relay_plugin`、`scripts.test_relay_gateway`、`scripts.test_relay_dialer` 和 `scripts.test_plugin_listen_pairing`。

@@ -5,7 +5,7 @@
 同一个 Hermes profile 同时连接多个 Bot-group 的配对、会话隔离与回信验收见[多引擎接入需求](requirements/2026-11-25-hermes-multiple-engines.md)。
 跨发布版本的握手、可选能力和旧端升级边界见[远程通信协议版本设计](design/2026-11-25-relay-protocol-compatibility.md)。
 
-成员发言规则、中英文界面切换、@ 点名与停止按钮的改善见[需求](requirements/2026-11-25-member-speech-ui-i18n.md)与[设计](design/2026-11-25-member-speech-ui-i18n.md)。
+成员发言规则和中英文界面切换见[需求](requirements/2026-11-25-member-speech-ui-i18n.md)与[设计](design/2026-11-25-member-speech-ui-i18n.md)。消息中的 @ 点名、撤回按钮和思考气泡停止按钮的样式见 [UI 规范](ui-spec/UI-SPEC.md)，验证方法见[消息界面测试](../scripts/TEST_INDEX.md#消息界面)。
 
 DSH 0.2.2 启动和凭据权限修复见 [兼容设计](design/2026-11-14-dsh-v022-compatibility.md)，版本变更见 [v0.2.15](releases/v0.2.15.md)。
 
