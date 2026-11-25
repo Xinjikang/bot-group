@@ -46,6 +46,25 @@ def strip_trailing_comments(line):
     return out
 
 
+# Attribute-level check: title/aria-label/placeholder values containing CJK
+# must carry the matching data-i18n marker on the same element (same line for
+# static HTML; JS dynamic attributes are covered by the line-level t() rule).
+ATTR_RULES = (
+    (re.compile(r'\btitle="([^"]*)"'), 'data-i18n-title'),
+    (re.compile(r'\baria-label="([^"]*)"'), 'data-i18n-aria-label'),
+    (re.compile(r'\bplaceholder="([^"]*)"'), 'data-i18n-placeholder'),
+)
+
+
+def attribute_hits(line):
+    found = []
+    for pattern, marker in ATTR_RULES:
+        for match in pattern.finditer(line):
+            if CJK.search(match.group(1)) and marker not in line:
+                found.append(f'{marker} missing for value: {match.group(1)[:60]}')
+    return found
+
+
 def is_comment_only(line):
     stripped = line.strip()
     return (stripped.startswith('//') or stripped.startswith('/*')
@@ -79,7 +98,11 @@ def main():
             if not CJK.search(strip_trailing_comments(line)):
                 continue  # CJK only in trailing comments
             if re.search(r'\bt\s*\(', line) or 'data-i18n' in line:
-                continue  # routed through the dictionary already
+                # Text routed through the dictionary; still check attribute
+                # values that carry CJK without their own data-i18n marker.
+                for detail in attribute_hits(line):
+                    hits.append(f'{path.name}:{lineno}: [{detail}] {line.strip()[:100]}')
+                continue
             hits.append(f'{path.name}:{lineno}: {line.strip()[:120]}')
     if hits:
         print(f'{len(hits)} candidate line(s) with hardcoded CJK copy:')

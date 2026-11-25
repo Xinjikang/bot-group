@@ -34,6 +34,8 @@
     "settings": { zh: "设置", en: "Settings" },
     "my_display_name": { zh: "我的称呼", en: "My name" },
     "background": { zh: "背景", en: "Background" },
+    "change_background": { zh: "更换舷窗背景", en: "Change background" },
+    "toggle_theme_title": { zh: "切换深色 / 浅色", en: "Toggle dark / light theme" },
     "toggle_light_theme": { zh: "切换浅色", en: "Light theme" },
     "toggle_dark_theme": { zh: "切换深色", en: "Dark theme" },
     "approval_policy": { zh: "智能审批策略", en: "Approval policy" },
@@ -444,6 +446,7 @@
     "refresh_status": { zh: "刷新状态", en: "Refresh status" },
     "create_role": { zh: "创建角色", en: "Create role" },
     "new_role_placeholder": { zh: "新角色名称（如 发布协调）", en: "New role name (e.g. release-coord)" },
+    "new_role_name": { zh: "新角色名称", en: "New role name" },
     "discard_changes": { zh: "放弃修改", en: "Discard changes" },
     "save_permissions": { zh: "保存权限", en: "Save permissions" },
     "save_agents": { zh: "保存 AGENTS.md", en: "Save AGENTS.md" },
@@ -1398,6 +1401,8 @@
     "cmd_receipt_close": { zh: "关闭命令回执", en: "Close command receipt" },
     "hud_assistant_aria": { zh: "项目助手", en: "Project assistant" },
     "hud_supplement": { zh: "补充：", en: "supplement:" },
+    "new_role_aria": { zh: "新角色名称", en: "New role name" },
+    "pj_display_name_placeholder": { zh: "例如：小夏", en: "e.g. Summer" },
 
   };
   const stored = (() => { try { return localStorage.getItem("ge_ui_language"); } catch { return null; } })();

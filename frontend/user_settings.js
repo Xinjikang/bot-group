@@ -51,6 +51,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ++userNameRequest;
       closeDialogAnchored(dialog);
       S.userDisplayName = window.t('user');
+      button.title = window.t('my_display_name');
     }
   }
   button.addEventListener('click', async () => {
@@ -102,5 +103,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
   document.addEventListener('service-auth-changed', updateVisibility);
+  document.addEventListener('ui-language-changed', () => {
+    // 按钮 title 是动态文案（成功=称呼、失败=错误前缀）：按当前语言重设。
+    updateVisibility();
+    refreshUserDisplayName();
+  });
   updateVisibility();
 });

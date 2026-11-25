@@ -149,7 +149,7 @@ function renderMemberCreate(steps) {
   const dsh = memberAdd.host === 'dsh';
   const form = document.createElement('div');
   form.className = 'member-create-fields';
-  form.innerHTML = `<label for="member-create-name" data-i18n="pj_display_name">显示名称</label><input id="member-create-name" maxlength="100" placeholder="例如：小夏">
+  form.innerHTML = `<label for="member-create-name" data-i18n="pj_display_name">显示名称</label><input id="member-create-name" maxlength="100" placeholder="例如：小夏" data-i18n-placeholder="pj_display_name_placeholder">
     <label for="member-create-profile"><span data-i18n="pj_profile_id">Profile 标识</span> <span class="profile-help" data-i18n="required">必填</span></label>
     <input id="member-create-profile" required maxlength="64" placeholder="例如：dev-01" data-i18n-placeholder="pj_profile_placeholder" autocomplete="off" spellcheck="false" aria-describedby="member-create-profile-help">
     <p class="profile-help" id="member-create-profile-help" data-i18n="pj_profile_help">使用 1–64 位小写英文字母、数字、短横线或下划线，以小写英文字母或数字开头。系统会自动准备独立目录。</p>

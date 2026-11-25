@@ -320,6 +320,26 @@ def run(evidence):
             assert page.locator('#dlg-edit-policy h3').inner_text() == 'Smart approval policy'
             page.evaluate("document.querySelector('#dlg-edit-policy').close()")
             results.append({'case': 'round3_components_english', 'result': 'passed'})
+
+            # 11) 属性级扫描：aria-label / title / placeholder（按钮提示与读屏标签，含隐藏元素）。
+            # 服务器数据、协议标记与双语语言入口豁免。
+            attr_exempt = {'隔离项目', '隔离话题', '示例需求', '示例任务',
+                           '原文消息：切换语言不能改变我', '语言 / Language', '简体中文',
+                           'English', 'Bot'}
+            attr_leaks = page.evaluate("""() => {
+              const out = [];
+              for (const el of document.querySelectorAll('[aria-label],[title],[placeholder]')) {
+                for (const a of ['aria-label', 'title', 'placeholder']) {
+                  const v = el.getAttribute(a);
+                  if (v && /[\\u4e00-\\u9fff]/.test(v)) out.push(`${el.tagName}#${el.id || ''} ${a}="${v}"`);
+                }
+              }
+              return out;
+            }""")
+            attr_leaks = [x for x in attr_leaks
+                          if not any(e in x for e in attr_exempt) and '[收口]' not in x]
+            assert not attr_leaks, f'English UI attributes still contain CJK: {attr_leaks}'
+            results.append({'case': 'attrs_english_no_cjk', 'result': 'passed'})
         finally:
             browser.close()
 

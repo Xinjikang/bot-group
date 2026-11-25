@@ -1000,11 +1000,11 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
       <div id="app-settings">
       <button id="btn-settings" type="button" aria-expanded="false" aria-controls="app-settings-menu">⚙ <span data-i18n="settings">设置</span></button>
       <div id="app-settings-menu" hidden>
-      <button id="btn-user-name" type="button" title="我的称呼" aria-haspopup="dialog" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span data-i18n="my_display_name">我的称呼</span></button>
-      <button id="btn-background" type="button" title="更换舷窗背景" aria-label="更换舷窗背景"><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 5-5 4 4 4-6 5 7"/></svg><span data-i18n="background">背景</span></button>
-      <button id="btn-theme-top" type="button" title="切换深色 / 浅色"><svg class="settings-icon theme-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg><svg class="settings-icon theme-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/></svg><span class="settings-label" data-i18n="toggle_light_theme">切换浅色</span></button>
+      <button id="btn-user-name" type="button" title="我的称呼" data-i18n-title="my_display_name" aria-haspopup="dialog" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span data-i18n="my_display_name">我的称呼</span></button>
+      <button id="btn-background" type="button" title="更换舷窗背景" aria-label="更换舷窗背景" data-i18n-title="change_background" data-i18n-aria-label="change_background"><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 5-5 4 4 4-6 5 7"/></svg><span data-i18n="background">背景</span></button>
+      <button id="btn-theme-top" type="button" title="切换深色 / 浅色" data-i18n-title="toggle_theme_title"><svg class="settings-icon theme-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg><svg class="settings-icon theme-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/></svg><span class="settings-label" data-i18n="toggle_light_theme">切换浅色</span></button>
       <button id="btn-edit-policy" type="button" aria-haspopup="dialog" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6z"/><path d="m8 12 3 3 5-6"/></svg><span data-i18n="approval_policy">智能审批策略</span></button>
-      <button id="btn-restart" type="button" title="重启服务" aria-label="重启服务" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2.3 5.7"/></svg><span class="settings-label" data-i18n="restart_service">重启服务</span></button>
+      <button id="btn-restart" type="button" title="重启服务" aria-label="重启服务" data-i18n-title="restart_service" data-i18n-aria-label="restart_service" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2.3 5.7"/></svg><span class="settings-label" data-i18n="restart_service">重启服务</span></button>
       <button id="btn-engine-logs" type="button" aria-haspopup="dialog" hidden><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 12h8M8 17h5"/></svg><span data-i18n="view_logs">查看日志</span></button>
       <button id="btn-relay-nodes" type="button" aria-haspopup="dialog"><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/></svg><span data-i18n="remote_nodes">远程节点</span></button>
       <button id="btn-language" type="button" aria-haspopup="dialog" title="语言 / Language" aria-label="语言 / Language"><svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg><span>语言 / Language</span></button>
@@ -1246,7 +1246,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
         <!-- req#96 #165：角色实体化前端——项目级角色 CRUD（GET/POST/PATCH/DELETE /projects/{name}/roles） -->
         <p class="profile-help" data-i18n="roles_hint">角色是本项目的固定实体，改用稳定 ID 关联：改角色名不会断成员关联和授权。成员卡片选角色的候选来自这里定义的角色。</p>
         <div style="display:flex;gap:8px;align-items:center;">
-          <input id="pj-role-new-name" type="text" maxlength="100" placeholder="新角色名称（如 发布协调）" data-i18n-placeholder="new_role_placeholder" aria-label="新角色名称"
+          <input id="pj-role-new-name" type="text" maxlength="100" placeholder="新角色名称（如 发布协调）" data-i18n-placeholder="new_role_placeholder" aria-label="新角色名称" data-i18n-aria-label="new_role_aria" data-i18n-aria-label="new_role_name"
                  style="flex:1;min-width:0;border:1px solid var(--border);border-radius:10px;padding:0 11px;height:36px;font-size:13px;outline:none;background:var(--bg);color:var(--fg);">
           <button type="button" id="pj-role-create" class="primary" data-i18n="create_role">创建角色</button>
         </div>
@@ -5108,7 +5108,7 @@ function renderThinkBubble(bubble, attached = false) {
     ${dots}
     <span class="tb-name">${esc(name)}</span>
     <span class="tb-state">${state}</span>
-    ${bubble.status === "thinking" || stalled ? `<button type="button" class="tb-stop" title="${t("stop_member", [esc(name)])}" aria-label="停止 ${esc(name)}">
+    ${bubble.status === "thinking" || stalled ? `<button type="button" class="tb-stop" title="${t("stop_member", [esc(name)])}" aria-label="${t("stop_member", [esc(name)])}">
       <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8.5" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="6.5" y="6.5" width="7" height="7" rx=".5" fill="currentColor"/></svg>
     </button>` : ""}`;
   if (stalled) {
