@@ -3,6 +3,7 @@
 远程 Hermes 可从空节点列表按两个方向配对。部署与排障见 [ECS 插件安装指南](guides/BOT-GROUP-RELAY-INSTALL.md)，协议与身份确认见 [接入设计](design/2026-11-18-remote-hermes-adapter.md)，双节点派发和安装包验证见 [首次接入测试](../scripts/TEST_INDEX.md#远程-hermes-首次接入)。
 
 同一个 Hermes profile 同时连接多个 Bot-group 的配对、会话隔离与回信验收见[多引擎接入需求](requirements/2026-11-25-hermes-multiple-engines.md)。
+跨发布版本的握手、可选能力和旧端升级边界见[远程通信协议版本设计](design/2026-11-25-relay-protocol-compatibility.md)。
 
 DSH 0.2.2 启动和凭据权限修复见 [兼容设计](design/2026-11-14-dsh-v022-compatibility.md)，版本变更见 [v0.2.15](releases/v0.2.15.md)。
 
