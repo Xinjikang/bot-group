@@ -1401,6 +1401,7 @@
     "hud_assistant_aria": { zh: "项目助手", en: "Project assistant" },
     "hud_supplement": { zh: "补充：", en: "supplement:" },
     "new_role_aria": { zh: "新角色名称", en: "New role name" },
+    "mentions_you": { zh: "提到我", en: "Mentions you" },
     "pj_display_name_placeholder": { zh: "例如：小夏", en: "e.g. Summer" },
 
   };

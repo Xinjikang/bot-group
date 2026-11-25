@@ -257,7 +257,7 @@ body::before{
   border-radius:2px 12px 12px 12px;padding:9px 14px;line-height:1.75;font-size:13.5px;
   white-space:pre-wrap;word-break:break-word;color:var(--fg);
 }
-.msg-content .mention{color:var(--cyan);font-weight:600}
+.msg-content .mention{color:var(--cyan);font-weight:600;background:rgba(111,214,224,.16);padding:0 3px;border-radius:3px}
 .msg-closed-hl .msg-content{border-left:3px solid var(--ok);background:rgba(75,200,138,.07)}
 /* req#41 task#78：撤回态样式 */
 .recovery-notice-state{margin:4px 0 0;padding:4px 8px;border-left:2px solid var(--border);font-size:12px;color:var(--fg-2);overflow-wrap:anywhere}
@@ -529,6 +529,7 @@ details.req-block>summary:focus-visible{outline:2px solid var(--accent-2);outlin
 .tag{font-size:10px;padding:1px 7px;border-radius:4px;white-space:nowrap}
 .tag-point{color:var(--cyan);border:1px solid rgba(111,214,224,.35)}
 .tag-at{color:var(--warn);border:1px solid rgba(217,161,60,.35)}
+.tag-mentions-you{color:var(--cyan);background:rgba(111,214,224,.16);border:1px solid rgba(111,214,224,.45)}
 .tag-close{color:var(--ok);border:1px solid rgba(75,200,138,.35)}
 .tag-kind{background:rgba(255,255,255,.05);color:var(--fg-2);border:none}
 .tag-work{background:rgba(201,162,75,.14);color:var(--accent-2)}
@@ -3094,6 +3095,9 @@ function renderMsg(m, thinking = []) {
   // 话题内显示 @点名；散聊不显示（@谁看内容就够）
   const atTag = (m.thread_id && mentions.length) ? `<span class="tag tag-at">${t("at_mention")}</span>` : "";
   const closeTag = isClose ? `<span class="tag tag-close">${t("settle_tag")}</span>` : "";
+  // req#178 task#334：点到当前用户的消息旁显示对应语言标记
+  const mentionsYouTag = mentions.includes("user")
+    ? `<span class="tag tag-mentions-you">${t("mentions_you")}</span>` : "";
   // 话题内：显示 @点名（谁在叫我）；话题外散聊：显示 点对点（这条不在话题里）；收口=独立
   const kindTag = "";
 
@@ -3134,7 +3138,7 @@ function renderMsg(m, thinking = []) {
         <span class="sender">${esc(m.sender_type === "engine" ? t("system_notice") : NAME_OF(m.sender))}</span>
         <span>${esc(fmtTs(m.ts))}</span>
         ${m.sender === "user" && m.thread_id && !isClose && !failed.delivery_failed ? `<span>${t("sent")}</span>` : ""}
-        ${threadTag}${atTag}${closeTag}
+        ${threadTag}${atTag}${mentionsYouTag}${closeTag}
         ${S.isUserIdentity ? `<button type="button" class="msg-retract-btn" data-retract="${m.id}" title="${t("retract_message_title")}">${t("retract")}</button>` : ""}
       </div>
       <div class="msg-content">${content}</div>
