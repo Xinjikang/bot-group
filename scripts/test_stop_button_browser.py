@@ -94,7 +94,10 @@ def main():
         assert style['fontSize'] == '12px', style
         assert int(style['fontWeight']) >= 600, style
         assert style['border'] == '1px', style
+        assert style['background'] == 'rgba(0, 0, 0, 0)', style
         assert style['width'] >= 40 and style['height'] >= 26, style
+        btn.hover()
+        assert btn.evaluate('el => getComputedStyle(el).backgroundColor') == 'rgba(0, 0, 0, 0)'
 
         if evidence:
             page.screenshot(path=str(evidence / 'stop_button_zh.png'), full_page=True)
