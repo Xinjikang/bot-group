@@ -446,7 +446,6 @@
     "refresh_status": { zh: "刷新状态", en: "Refresh status" },
     "create_role": { zh: "创建角色", en: "Create role" },
     "new_role_placeholder": { zh: "新角色名称（如 发布协调）", en: "New role name (e.g. release-coord)" },
-    "new_role_name": { zh: "新角色名称", en: "New role name" },
     "discard_changes": { zh: "放弃修改", en: "Discard changes" },
     "save_permissions": { zh: "保存权限", en: "Save permissions" },
     "save_agents": { zh: "保存 AGENTS.md", en: "Save AGENTS.md" },
