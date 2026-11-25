@@ -494,7 +494,15 @@ def _write_new_manifest(backup_dir: Path, landed: set[str]) -> None:
         json.dump({"program_files": sorted(landed)}, stream, ensure_ascii=False, indent=2)
         stream.flush()
         os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    # Windows readers can briefly hold the file without delete sharing.
+    for attempt in range(8):
+        try:
+            os.replace(temporary, path)
+            return
+        except OSError as exc:
+            if getattr(exc, "winerror", None) not in (5, 32, 33) or attempt == 7:
+                raise
+            time.sleep(min(0.05 * 2**attempt, 0.8))
 
 
 def _new_program_files(src_root: Path) -> set[str]:

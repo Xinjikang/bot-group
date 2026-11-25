@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+升级文件清单原子替换：运行 `python -X utf8 -B -m unittest scripts.test_upgrade.ManifestReplaceTest`。使用临时目录和模拟的 Windows 文件占用错误，覆盖占用解除后继续升级、重试耗尽和其他错误保留上一份清单。
+
 远程长历史分块传输使用项目 Python 运行 `python -X utf8 -B -m unittest scripts.test_relay_gateway.RelayFrameTests scripts.test_plugin_listen_pairing.DirectionBDialTests.test_streamed_history_engine_dials`。使用临时数据库、随机回环端口和合成历史，验证两种拨号方向、原会话恢复、完整导出、分片提前到达、连接释放、中断及另开流发送。无需 ECS 或模型。
 
 远端点对点唤醒使用项目 Python 执行 `python -X utf8 -B -m unittest scripts.test_relay_message_wake scripts.test_plugin_listen_pairing.EntryIdentityAndProxyTests`。临时数据库验证撤回、合并排队、投递与已读分离、失败再投，并用文件系统链接核对会话上报的 venv 解释器路径。

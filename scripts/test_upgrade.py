@@ -436,6 +436,44 @@ class WalBackupTest(UpgradeTestBase):
         check.close()
 
 
+class ManifestReplaceTest(unittest.TestCase):
+    def test_retry_publishes_new_manifest_after_windows_reader_releases_it(self):
+        replace = os.replace
+        with tempfile.TemporaryDirectory() as directory:
+            backup = Path(directory)
+            upgrade._write_new_manifest(backup, {"old"})
+            manifest = backup / "new_manifest.json"
+            errors = iter((5, 32, 33))
+
+            def replace_after_conflicts(src, dst):
+                code = next(errors, None)
+                if code is None:
+                    return replace(src, dst)
+                self.assertEqual(json.loads(manifest.read_bytes())["program_files"], ["old"])
+                error = PermissionError("busy")
+                error.winerror = code
+                raise error
+
+            with mock.patch.object(os, "replace", side_effect=replace_after_conflicts), mock.patch.object(time, "sleep"):
+                upgrade._write_new_manifest(backup, {"old", "new"})
+            self.assertEqual(json.loads(manifest.read_bytes())["program_files"], ["new", "old"])
+
+    def test_failed_replace_preserves_previous_manifest(self):
+        for winerror, attempts in ((5, 8), (112, 1), (None, 1)):
+            with self.subTest(winerror=winerror), tempfile.TemporaryDirectory() as directory:
+                backup = Path(directory)
+                upgrade._write_new_manifest(backup, {"old"})
+                error = OSError("cannot replace")
+                if winerror is not None:
+                    error.winerror = winerror
+                with mock.patch.object(os, "replace", side_effect=error) as replace, mock.patch.object(time, "sleep"):
+                    with self.assertRaises(OSError) as raised:
+                        upgrade._write_new_manifest(backup, {"new"})
+                self.assertIs(raised.exception, error)
+                self.assertEqual(replace.call_count, attempts)
+                self.assertEqual(json.loads((backup / "new_manifest.json").read_bytes())["program_files"], ["old"])
+
+
 class RollbackTest(UpgradeTestBase):
     def _rollback_mocks(self):
         stack = ExitStack()
