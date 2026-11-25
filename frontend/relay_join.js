@@ -1,7 +1,7 @@
 function relayDirectionChoices(prefix) {
-  return `<div class="relay-direction-choices" id="${prefix}-choices" role="group" aria-label="连接方向">
-    <button type="button" id="${prefix}-dial">本机连云端<span class="relay-direction-flag" data-flag="dial" hidden></span></button>
-    <button type="button" id="${prefix}-listen">云端连本机<span class="relay-direction-flag" data-flag="listen" hidden></span></button>
+  return `<div class="relay-direction-choices" id="${prefix}-choices" role="group" aria-label="连接方向" data-i18n-aria-label="relay_direction_group">
+    <button type="button" id="${prefix}-dial"><span data-i18n="relay_direction_dial">本机连云端</span><span class="relay-direction-flag" data-flag="dial" hidden></span></button>
+    <button type="button" id="${prefix}-listen"><span data-i18n="relay_direction_listen">云端连本机</span><span class="relay-direction-flag" data-flag="listen" hidden></span></button>
   </div>`;
 }
 
@@ -10,7 +10,7 @@ function createRelayDirectionDialog(parent, prefix, {id = prefix, title, badge =
   dialog.id = id;
   dialog.setAttribute('aria-labelledby', prefix + '-title');
   dialog.innerHTML = `
-    <div class="relay-direction-head"><h3 id="${prefix}-title">${title}</h3>${badge}</div>
+    <div class="relay-direction-head"><h3 id="${prefix}-title" data-i18n="${title}">${window.t(title)}</h3>${badge}</div>
     ${relayDirectionChoices(prefix)}
     ${content}
     <div class="dlg-btns">${actions}</div>`;
@@ -20,25 +20,25 @@ function createRelayDirectionDialog(parent, prefix, {id = prefix, title, badge =
 
 function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy}) {
   const dialog = createRelayDirectionDialog(parent, 'relay-join', {
-    id: 'relay-join-dialog', title: '添加远程 Hermes',
+    id: 'relay-join-dialog', title: 'relay_add',
     content: `<form id="relay-join-form" hidden>
-      <label for="relay-join-url">云端 Hermes 配对链接</label>
+      <label for="relay-join-url" data-i18n="relay_cloud_pairing_url">云端 Hermes 配对链接</label>
       <div class="relay-pairing-line">
-        <input id="relay-join-url" type="password" autocomplete="off" required placeholder="粘贴配对链接">
-        <button class="primary">核验身份</button>
+        <input id="relay-join-url" type="password" autocomplete="off" required placeholder="粘贴配对链接" data-i18n-placeholder="relay_paste_pairing">
+        <button class="primary" data-i18n="relay_verify_identity">核验身份</button>
       </div>
     </form>
     <div id="relay-join-invite" hidden>
-      <label id="relay-join-guide" for="relay-join-command">复制命令，发给远程 Hermes 执行。</label>
+      <label id="relay-join-guide" for="relay-join-command" data-i18n="relay_join_guide">复制命令，发给远程 Hermes 执行。</label>
       <div class="relay-copy-row">
         <input id="relay-join-command" readonly type="password" autocomplete="off">
-        <button id="relay-join-copy">复制命令</button>
+        <button id="relay-join-copy" data-i18n="relay_copy_command">复制命令</button>
       </div>
     </div>
     <p id="relay-join-identity" class="relay-pairing-preview" hidden></p>
     <p id="relay-join-status" class="profile-help" role="status" aria-live="polite"></p>`,
-    actions: `<button id="relay-join-cancel">取消</button>
-      <button id="relay-join-confirm" class="primary" hidden>确认添加</button>`,
+    actions: `<button id="relay-join-cancel" data-i18n="cancel">取消</button>
+      <button id="relay-join-confirm" class="primary" data-i18n="relay_confirm_add" hidden>确认添加</button>`,
   });
   const $ = id => dialog.querySelector('#relay-join-' + id);
   let attempt = null, timer = 0, version = 0, busy = false;
@@ -61,9 +61,9 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
     clearTimeout(timer);
     attempt = null;
     renewal = null;
-    $('title').textContent = '添加远程 Hermes';
-    $('guide').textContent = '复制命令，发给远程 Hermes 执行。';
-    $('cancel').textContent = '取消';
+    $('title').textContent = window.t('relay_add');
+    $('guide').textContent = window.t('relay_join_guide');
+    $('cancel').textContent = window.t('cancel');
     lock(false);
     $('choices').hidden = false;
     for (const id of ['form', 'invite', 'identity', 'confirm']) $(id).hidden = true;
@@ -80,17 +80,17 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
     attempt = null;
     $('invite').hidden = true;
     $('command').value = '';
-    $('cancel').textContent = '关闭';
+    $('cancel').textContent = window.t('close');
     status(message, true);
   }
   function failure(view) {
-    const device = view.host || view.member || '云端 Hermes';
-    if (view.state === 'expired') return '本次配对已过期。请重新核验有效链接，或重新生成邀请。';
-    if (view.reason === 'name_conflict') return `${device} 的配对记录已存在，请核对已有远程节点或重新生成邀请。`;
-    const guidance = {dns: '地址解析失败，请检查云端域名。', tcp: '连接失败，请检查云端监听地址和端口。',
-      tls: '证书核验失败，请从云端 Hermes 重新复制配对链接。', identity: '成员身份不匹配，请核对云端 Hermes。',
-      auth: '配对认证失败，请核对插件版本并重新获取链接。', confirmation: '确认失败，请重新核验配对链接。'};
-    return `${device} ${guidance[view.stage] || '配对失败，请重新获取链接或邀请。'}`;
+    const device = view.host || view.member || window.t('relay_cloud_hermes');
+    if (view.state === 'expired') return window.t('relay_join_expired');
+    if (view.reason === 'name_conflict') return window.t('relay_join_name_conflict', [device]);
+    const guidance = {dns: window.t('relay_join_dns'), tcp: window.t('relay_join_tcp'),
+      tls: window.t('relay_join_tls'), identity: window.t('relay_join_identity'),
+      auth: window.t('relay_join_auth'), confirmation: window.t('relay_join_confirmation')};
+    return `${device} ${guidance[view.stage] || window.t('relay_join_generic_failed')}`;
   }
   async function display(view, token) {
     if (!current(token)) return;
@@ -103,12 +103,12 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
     }
     if (!['waiting', 'pending_confirmation'].includes(view.state)) {
       if (renewal) {
-        endRenewal(view.state === 'expired' ? '换发命令已过期，请关闭后重新签发。'
-          : view.state === 'cancelled' ? '本次换发已取消，请使用最新签发的命令。' : '换发失败，请关闭后重新签发。');
+        endRenewal(view.state === 'expired' ? window.t('relay_renew_expired')
+          : view.state === 'cancelled' ? window.t('relay_renew_cancelled') : window.t('relay_renew_failed'));
         return;
       }
       reset();
-      status(view.state === 'cancelled' ? '本次配对已取消。' : failure(view), true);
+      status(view.state === 'cancelled' ? window.t('relay_join_cancelled') : failure(view), true);
       return;
     }
     const pending = view.state === 'pending_confirmation';
@@ -117,11 +117,11 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
     if (pending) {
       $('invite').hidden = true;
       $('command').value = '';
-      const endpoint = view.peer_ip || `${view.host}:${view.port} · 指纹 ${view.fingerprint_short}`;
-      $('identity').textContent = `已核验成员　${view.member}（远程）　·　${endpoint}`;
-      status('请核对远端身份后确认添加。');
+      const endpoint = view.peer_ip || `${view.host}:${view.port} · ${window.t('relay_short_fingerprint')} ${view.fingerprint_short}`;
+      $('identity').textContent = window.t('relay_verified_member', [view.member, endpoint]);
+      status(window.t('relay_verify_before_confirm'));
     } else {
-      status(renewal ? '等待远程 Hermes 执行。引擎接受命令后，旧凭据即失效。' : '等待云端 Hermes 连接。');
+      status(renewal ? window.t('relay_renew_waiting') : window.t('relay_waiting_connect'));
     }
     poll(token);
   }
@@ -137,13 +137,13 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
         if (!current(token) || busy) return;
         if (error.status === 404 || error.status === 403) {
           if (renewal) {
-            endRenewal('无法读取换发结果，请关闭窗口后核对管理员身份和节点状态。');
+            endRenewal(window.t('relay_renew_result_unreadable'));
             return;
           }
           reset();
-          status('本机无法读取配对记录，请核对管理员身份并重新配对。', true);
+          status(window.t('relay_join_read_failed'), true);
         } else {
-          status('本机读取配对状态失败，正在重试。', true);
+          status(window.t('relay_join_status_retry'), true);
           poll(token);
         }
       }
@@ -155,7 +155,7 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
     const base = inbound ? '/relay/invitations' : '/relay/pairings';
     const link = $('url').value.trim();
     lock(true);
-    status(renewal ? '正在生成换发命令…' : inbound ? '正在生成邀请…' : '正在核验云端 Hermes…');
+    status(renewal ? window.t('relay_renew_generating') : inbound ? window.t('relay_invite_generating') : window.t('relay_verifying_cloud'));
     try {
       const path = renewal ? '/relay/nodes/' + encodeURIComponent(renewal.member) + '/renewal'
         : inbound ? base : base + '/preview';
@@ -175,10 +175,10 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
       }
       await display(inbound ? {state: 'waiting'} : view, token);
     } catch (error) {
-      if (current(token)) status(renewal ? '换发命令生成失败，请核对节点连接方向和监听状态后重试。'
-        : error.status === 400 ? '本机无法解析配对链接，请从云端 Hermes 重新复制。'
+      if (current(token)) status(renewal ? window.t('relay_renew_generate_failed')
+        : error.status === 400 ? window.t('relay_join_bad_link')
         : error.pairing?.state ? failure(error.pairing)
-        : inbound ? '本机生成邀请失败，请重新选择云端连本机。' : '本机核验失败，请检查云端配对链接并重试。', true);
+        : inbound ? window.t('relay_invite_generate_failed') : window.t('relay_join_verify_failed'), true);
     } finally {
       if (current(token)) lock(false);
     }
@@ -199,7 +199,7 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
       if (!current(token)) return;
       if (error.pairing?.state) await display(error.pairing, token);
       else {
-        status('本机尚未取得操作结果，正在核对配对状态。', true);
+        status(window.t('relay_join_pending_verify'), true);
         poll(token);
       }
     } finally {
@@ -214,7 +214,7 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
   };
   $('listen').onclick = () => requireListen(() => start(true));
   $('form').onsubmit = event => { event.preventDefault(); start(false); };
-  $('copy').onclick = () => copy($('command').value, '连接命令', $('status'));
+  $('copy').onclick = () => copy($('command').value, window.t('relay_connect_command'), $('status'));
   $('confirm').onclick = () => decide(true);
   $('cancel').onclick = () => decide(false);
   dialog.addEventListener('cancel', event => { event.preventDefault(); decide(false); });
@@ -224,10 +224,9 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
         if (!allowed() || !parent.open) return;
         reset();
         renewal = node;
-        $('title').textContent = '换发凭据 · ' + label;
+        $('title').textContent = window.t('relay_renew_credential') + ' · ' + label;
         $('choices').hidden = true;
-        $('guide').textContent = '复制命令，发给远程 Hermes 在 ' + (node.host_profile || node.member)
-          + ' profile 下执行。插件会保存新凭据。';
+        $('guide').textContent = window.t('relay_renew_guide', [node.host_profile || node.member]);
         dialog.showModal();
         start(true);
       });

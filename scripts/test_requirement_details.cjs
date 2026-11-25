@@ -12,7 +12,8 @@ class Element {
   close() { this.open = false; this.events.close?.(); }
 }
 const body = new Element(), calls = [], pending = [];
-const ctx = {document:{body, createElement:() => new Element()}, window:{}, encodeURIComponent,
+const t = require('./i18n_vm_stub.cjs');
+const ctx = {document:{body, createElement:() => new Element()}, window:{t}, getUILanguage:() => 'zh-CN', encodeURIComponent,
   api:url => { calls.push(url); return new Promise((resolve,reject) => pending.push({resolve,reject})); },
   openTaskHistory:() => {}};
 vm.runInNewContext(fs.readFileSync('frontend/requirement_details.js','utf8'), ctx);

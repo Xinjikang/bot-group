@@ -42,6 +42,7 @@ const ctx = {S: {currentThread: null, currentProject: null},
   sendImageMessage: async (body) => { posted.push(body); return true; },
   api(url, options) { posted.push({url, options}); return Promise.resolve({}); },
 };
+ctx.t = require('./i18n_vm_stub.cjs');
 vm.createContext(ctx);
 vm.runInContext(fs.readFileSync('frontend/member_identity.js', 'utf8'), ctx);
 ctx.mentionCandidates = () => [];

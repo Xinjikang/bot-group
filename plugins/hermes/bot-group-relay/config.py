@@ -11,16 +11,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
+if (Path(__file__).resolve().parent / "engine" / "relay_protocol.py").is_file():
+    from .engine import relay_protocol
+else:
+    from engine import relay_protocol
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parent
 PACKAGE_VERSION = "1.0.0"  # 源码开发模式兜底；发布包以 VERSION 文件为准（单一事实源）
-RELAY_PROTOCOL_VERSION = 1  # 与引擎 engine/relay_server.py RELAY_PROTOCOL_VERSION 一致
+RELAY_PROTOCOL_VERSION = relay_protocol.CURRENT
 
 
 def plugin_version() -> str:
     """插件包版本（单一事实源）：随包 VERSION 文件（打包时注入实际发布版本）
-    > BOT_GROUP_RELAY_VERSION 环境变量 > 源码常量（开发模式兜底）。
-    引擎按此值与自身发布版本同 tag 配套校验，不符 4003。"""
+    > BOT_GROUP_RELAY_VERSION 环境变量 > 源码常量（开发模式兜底）。"""
     version_file = PLUGIN_ROOT / "VERSION"
     try:
         content = version_file.read_text(encoding="utf-8").strip()
@@ -101,6 +105,30 @@ def load(config=None) -> RelayConfig | None:
     return RelayConfig(engine_url=engine_url.rstrip("/"), member=member,
                        credential=credential, invite=invite, mcp_python=mcp_python,
                        home=home)
+
+
+def peer_configs(config=None, *, reserve=False):
+    from . import pairing
+    primary = load(config)
+    result = {}
+    extra = getattr(config, "extra", {}) or {}
+    member = primary.member if primary else host_member() or extra.get("member") or _env("BOT_GROUP_RELAY_MEMBER")
+    for peer in pairing.peer_ids():
+        with pairing.using_peer(peer):
+            url, key = pairing.saved_register(member)
+            if (url and key) or pairing.listener_selected(member):
+                result[peer] = RelayConfig(url, member, key, platform_mcp_python(config),
+                                           extra.get("home") or host_home())
+    if primary:
+        same_peer = next((peer for peer, cfg in result.items()
+                          if cfg.engine_url == primary.engine_url), None)
+        if same_peer is not None:
+            result[same_peer] = primary
+        elif primary.engine_url:
+            result[pairing.select_peer(primary.member, engine_url=primary.engine_url, reserve=reserve)] = primary
+        else:
+            result[""] = primary
+    return result
 
 
 def ws_url(engine_url: str) -> str:

@@ -11,7 +11,7 @@ window.refreshProjectSettingsFromAssistant = (project) => {
   if(tab==='permissions'&&projectPermissionsEditor){
     const dirty=[...$('#pj-permissions-list').querySelectorAll('[data-permission]')].some(row=>
       [...row.querySelectorAll('input')].some(input=>input.checked!==(projectPermissionsEditor.grants[row.dataset.permission]||[]).includes(input.value)));
-    if(dirty)$('#pj-permissions-status').textContent='助手已更新服务端配置，当前未保存的权限选择已保留。';
+    if(dirty)$('#pj-permissions-status').textContent=window.t('pj_permissions_hud_updated');
     else loadProjectPermissions(true);
   }
 };
@@ -28,16 +28,16 @@ async function loadProjectPermissions(force = false) {
   if (!project || (!force && projectPermissionsEditor?.project === project)) return;
   const version = ++projectPermissionsVersion;
   $('#pj-permissions-save').disabled = true;
-  $('#pj-permissions-status').textContent = '正在读取权限…';
+  $('#pj-permissions-status').textContent = window.t('pj_permissions_loading');
   try {
     const data = await api(`/projects/${encodeURIComponent(project)}/permissions`);
     if (version !== projectPermissionsVersion || $('#pj-detail-form').dataset.origName !== project) return;
     projectPermissionsEditor = data;
     renderProjectPermissions(data);
     $('#pj-permissions-save').disabled = false;
-    $('#pj-permissions-status').textContent = '未勾选的成员无对应权限。';
+    $('#pj-permissions-status').textContent = window.t('pj_permissions_hint');
   } catch (err) {
-    if (version === projectPermissionsVersion) $('#pj-permissions-status').textContent = '读取失败：' + err.message;
+    if (version === projectPermissionsVersion) $('#pj-permissions-status').textContent = window.t('read_failed') + ': ' + err.message;
   }
 }
 function renderProjectPermissions(data) {
@@ -62,35 +62,35 @@ function renderProjectPermissions(data) {
     for (const member of members) {
       const label = document.createElement('label'), input = document.createElement('input'), text = document.createElement('span');
       input.type = 'checkbox'; input.value = member.profile; input.checked = selected.includes(member.profile);
-      text.textContent = `${memberLabel(member)}${member.missing ? ' · 已删除' : !member.active ? ' · 已停用' : ''}`;
+      text.textContent = `${memberLabel(member)}${member.missing ? ' · ' + window.t('deleted') : !member.active ? ' · ' + window.t('pj_disabled_mark') : ''}`;
       label.append(input, text); options.appendChild(label);
     }
     for (const role of roles) {
       const label = document.createElement('label'), input = document.createElement('input'), text = document.createElement('span');
       input.type = 'checkbox'; input.value = `role:${role.id}`; input.checked = selected.includes(`role:${role.id}`);
       input.addEventListener('change', () => {
-        if (!input.checked && selected.includes(input.value)) showAlert(`准备撤销角色「${role.name}」的「${permission.label}」授权。保存后，依赖此权限的职责可能缺少有权限的执行人，请核对项目协作正文与角色授权。`);
+        if (!input.checked && selected.includes(input.value)) showAlert(window.t('pj_revoke_perm_warning', [role.name, permission.label]));
       });
-      text.textContent = `角色：${role.name}（${role.member_count} 名成员）`;
+      text.textContent = window.t('pj_role_members', [role.name, role.member_count]);
       label.append(input, text); options.appendChild(label);
     }
     const updateSummary = () => {
       const chosen = [...options.querySelectorAll('input:checked')].map(input => {
         const role = roles.find(r => `role:${r.id}` === input.value);
-        if (role) return `角色：${role.name}`;
+        if (role) return window.t('pj_role_label', [role.name]);
         const member = members.find(m => m.profile === input.value);
         return member ? memberDisplayName(member) : input.value;
       });
-      summary.textContent = chosen.length ? `${chosen.slice(0, 2).join('、')}${chosen.length > 2 ? ' 等' + chosen.length + '项' : ''}` : '选择成员或角色…';
+      summary.textContent = chosen.length ? `${chosen.slice(0, 2).join(window.t('workspace_sep'))}${chosen.length > 2 ? ' ' + window.t('pj_etc', [chosen.length]) : ''}` : window.t('pj_permission_pick_hint');
     };
     options.addEventListener('change', updateSummary);
     updateSummary();
-    if (!members.length) options.textContent = '暂无成员';
+    if (!members.length) options.textContent = window.t('pj_no_members');
     row.appendChild(picker); box.appendChild(row);
   }
 }
 $('#pj-permissions-reload').addEventListener('click', async () => {
-  if (projectPermissionsEditor && !await showConfirm('放弃尚未保存的权限修改，恢复服务端最新配置？')) return;
+  if (projectPermissionsEditor && !await showConfirm(window.t('pj_discard_permissions'))) return;
   loadProjectPermissions(true);
 });
 $('#pj-permissions-form').addEventListener('submit', async e => {
@@ -105,16 +105,16 @@ $('#pj-permissions-form').addEventListener('submit', async e => {
   $('#pj-permissions-save').disabled = true;
   $('#pj-permissions-reload').disabled = true;
   $('#pj-permissions-list').querySelectorAll('input').forEach(input => input.disabled = true);
-  $('#pj-permissions-status').textContent = '正在保存…';
+  $('#pj-permissions-status').textContent = window.t('saving');
   try {
     const result = await api(`/projects/${encodeURIComponent(editor.project)}/permissions`, {
       method: 'PUT', body: JSON.stringify({grants, revision: editor.revision})});
     if (version !== projectPermissionsVersion) return;
     projectPermissionsEditor = result;
     renderProjectPermissions(result);
-    $('#pj-permissions-status').textContent = '权限已保存，下次工具调用时生效。';
+    $('#pj-permissions-status').textContent = window.t('pj_permissions_saved');
   } catch (err) {
-    if (version === projectPermissionsVersion) $('#pj-permissions-status').textContent = '保存失败：' + err.message + '（选择已保留）';
+    if (version === projectPermissionsVersion) $('#pj-permissions-status').textContent = window.t('save_failed') + ': ' + err.message + window.t('open_paren') + window.t('pj_selection_kept') + window.t('close_paren');
   } finally {
     if (version === projectPermissionsVersion) {
       $('#pj-permissions-save').disabled = false;
@@ -137,9 +137,9 @@ function memberAddReset(options) {
     requestId: [...crypto.getRandomValues(new Uint8Array(16))].map(n => n.toString(16).padStart(2, '0')).join('')};
 }
 function memberProfileError(value) {
-  if (!value) return '请填写 Profile 标识。';
-  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(value)) return 'Profile 标识须为 1–64 位小写英文字母、数字、短横线或下划线，并以小写英文字母或数字开头，例如 dev-01。';
-  if (['default', 'user', 'profiles'].includes(value) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/.test(value)) return '该 Profile 标识为系统保留名称，请换一个标识。';
+  if (!value) return window.t('pj_profile_required');
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(value)) return window.t('pj_profile_format');
+  if (['default', 'user', 'profiles'].includes(value) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/.test(value)) return window.t('pj_profile_reserved');
   return '';
 }
 function memberCreateValid() {
@@ -149,32 +149,32 @@ function renderMemberCreate(steps) {
   const dsh = memberAdd.host === 'dsh';
   const form = document.createElement('div');
   form.className = 'member-create-fields';
-  form.innerHTML = `<label for="member-create-name">显示名称</label><input id="member-create-name" maxlength="100" placeholder="例如：小夏">
-    <label for="member-create-profile">Profile 标识 <span class="profile-help">必填</span></label>
-    <input id="member-create-profile" required maxlength="64" placeholder="例如：dev-01" autocomplete="off" spellcheck="false" aria-describedby="member-create-profile-help">
-    <p class="profile-help" id="member-create-profile-help">使用 1–64 位小写英文字母、数字、短横线或下划线，以小写英文字母或数字开头。系统会自动准备独立目录。</p>
+  form.innerHTML = `<label for="member-create-name" data-i18n="pj_display_name">显示名称</label><input id="member-create-name" maxlength="100" placeholder="例如：小夏" data-i18n-placeholder="pj_display_name_placeholder">
+    <label for="member-create-profile"><span data-i18n="pj_profile_id">Profile 标识</span> <span class="profile-help" data-i18n="required">必填</span></label>
+    <input id="member-create-profile" required maxlength="64" placeholder="例如：dev-01" data-i18n-placeholder="pj_profile_placeholder" autocomplete="off" spellcheck="false" aria-describedby="member-create-profile-help">
+    <p class="profile-help" id="member-create-profile-help" data-i18n="pj_profile_help">使用 1–64 位小写英文字母、数字、短横线或下划线，以小写英文字母或数字开头。系统会自动准备独立目录。</p>
     <div id="member-create-source-block">
-      <label for="member-create-source">配置来源</label><select id="member-create-source"><option value="">使用默认设置</option></select>
+      <label for="member-create-source" data-i18n="pj_config_source">配置来源</label><select id="member-create-source"><option value="" data-i18n="pj_use_defaults">使用默认设置</option></select>
     </div>
     <p class="profile-help" id="member-create-auth-help"></p>
-    <details><summary>更多设置</summary>
+    <details><summary data-i18n="pj_more_settings">更多设置</summary>
     <div class="member-create-route${memberAdd.host === 'codex' ? ' single' : ''}">
-      <div><label for="member-create-model">模型</label>
-        <input id="member-create-model" maxlength="200" placeholder="留空沿用来源或运行时默认模型"></div>
-      <div id="member-create-provider-block"><label for="member-create-provider">供应商</label>
-        <input id="member-create-provider" maxlength="200" placeholder="留空沿用来源或运行时默认供应商"></div>
+      <div><label for="member-create-model" data-i18n="model">模型</label>
+        <input id="member-create-model" maxlength="200" placeholder="留空沿用来源或运行时默认模型" data-i18n-placeholder="pj_model_placeholder"></div>
+      <div id="member-create-provider-block"><label for="member-create-provider" data-i18n="provider">供应商</label>
+        <input id="member-create-provider" maxlength="200" placeholder="留空沿用来源或运行时默认供应商" data-i18n-placeholder="pj_provider_placeholder"></div>
     </div>
-    <p class="profile-help" id="member-create-route-help">模型和供应商均可选；留空沿用配置来源或宿主默认值，填写后覆盖对应项。</p>
+    <p class="profile-help" id="member-create-route-help" data-i18n="pj_route_help">模型和供应商均可选；留空沿用配置来源或宿主默认值，填写后覆盖对应项。</p>
       <div class="profile-soul-heading">
-        <label for="member-create-instructions">个人指令 · ${dsh ? '人格' : memberAdd.host === 'codex' ? 'AGENTS.md' : 'SOUL.md'}</label>
+        <label for="member-create-instructions">${window.t('pj_personal_instructions')} · ${dsh ? window.t('persona') : memberAdd.host === 'codex' ? 'AGENTS.md' : 'SOUL.md'}</label>
         <div id="member-create-soul-templates"></div>
       </div>
-      <textarea id="member-create-instructions" rows="4" maxlength="32000" placeholder="填写性格、专长或工作偏好；项目职责在加入后设置。"></textarea>
+      <textarea id="member-create-instructions" rows="4" maxlength="32000" placeholder="填写性格、专长或工作偏好；项目职责在加入后设置。" data-i18n-placeholder="pj_instructions_placeholder"></textarea>
     </details>`;
   const draft = memberAdd.draft;
   form.querySelector('#member-create-profile-help').textContent = dsh
-    ? '使用 1–64 位小写英文字母、数字、短横线或下划线，以小写英文字母或数字开头。系统会在 DSH HOME 下创建独立 profile 目录。'
-    : '使用 1–64 位小写英文字母、数字、短横线或下划线，以小写英文字母或数字开头。系统会自动准备独立目录。';
+    ? window.t('pj_profile_help_dsh')
+    : window.t('pj_profile_help');
   const profileInput = form.querySelector('#member-create-profile');
   profileInput.dialogValidation = memberProfileError;
   const paired = memberAdd.host !== 'codex';
@@ -194,18 +194,18 @@ function renderMemberCreate(steps) {
   }
   const source = form.querySelector('#member-create-source');
   memberAdd.sources.forEach((p, i) => source.add(new Option(
-    `${p.display_name || p.profile}（${p.profile}）`, String(i))));
+    `${p.display_name || p.profile}${window.t('open_paren')}${p.profile}${window.t('close_paren')}`, String(i))));
   source.value = draft.source;
   const updateAuth = () => {
     if (memberAdd.host === 'dsh') {
-      form.querySelector('#member-create-auth-help').textContent = '新 profile 继承配置来源；“使用默认设置”继承 desktop 主 profile。凭据沿用同一 DSH HOME 的共享配置，个人指令保存到该 profile 的人格配置。';
+      form.querySelector('#member-create-auth-help').textContent = window.t('pj_auth_help_dsh');
       return;
     }
     if (memberAdd.host === 'codex') {
-      form.querySelector('#member-create-auth-help').textContent = '自动使用主账户认证；新 Bot 统一开启智能审批（帮我审批）和沙箱，加入项目时获得项目目录授权。';
+      form.querySelector('#member-create-auth-help').textContent = window.t('pj_auth_help_default');
       return;
     }
-    form.querySelector('#member-create-auth-help').textContent = '自动继承来源的模型配置与凭证；使用默认设置时读取主 profile。消息渠道独立配置，OAuth 登录需单独完成。';
+    form.querySelector('#member-create-auth-help').textContent = window.t('pj_auth_help_inherit');
   };
   source.addEventListener('change', () => {
     draft.source = source.value;
@@ -232,15 +232,15 @@ function renderMemberAdd() {
   status.dataset.error = String(!!memberAdd.error);
   const join = $('#member-add-join');
   join.disabled = memberAdd.busy || memberAdd.scanning || !memberCreateValid();
-  join.textContent = '创建 profile';
+  join.textContent = window.t('pj_create_profile');
   steps.replaceChildren();
-  $('#member-add-title').textContent = '创建 profile';
-  if (memberAdd.scanning) status.textContent = '正在读取配置来源…';
+  $('#member-add-title').textContent = window.t('pj_create_profile');
+  if (memberAdd.scanning) status.textContent = window.t('pj_scanning_sources');
   else if (memberAdd.error) status.textContent = memberAdd.error;
   else status.textContent = '';
   const host = document.createElement('div');
   host.className = 'project-mode-options';
-  host.setAttribute('role', 'radiogroup'); host.setAttribute('aria-label', '宿主类型');
+  host.setAttribute('role', 'radiogroup'); host.setAttribute('aria-label', window.t('pj_host_type'));
   for (const [value, label] of [['hermes', 'Hermes'], ['codex', 'Codex'], ['dsh', 'DSH']]) {
     const choice = document.createElement('label'), input = document.createElement('input');
     input.type = 'radio'; input.name = 'member-add-host'; input.value = value;
@@ -283,7 +283,7 @@ async function loadMemberCreateSources() {
     current.draft.source = defaultSource >= 0 ? String(defaultSource) : current.sources.length ? '0' : '';
   } catch (err) {
     if (memberAdd === current && current.scanVersion === scanVersion) {
-      current.error = `配置来源读取失败：${err.message}。可切换宿主重试，或使用默认设置。`;
+      current.error = window.t('pj_sources_failed', [err.message]);
     }
   } finally {
     if (memberAdd === current && current.scanVersion === scanVersion) {
@@ -300,7 +300,7 @@ async function submitMemberCreate() {
   current.busy = true;
   const dialog = $('#dlg-member-add');
   dialog.querySelectorAll('input, select, textarea, button').forEach(el => el.disabled = true);
-  $('#member-add-status').textContent = '正在创建 profile…';
+  $('#member-add-status').textContent = window.t('pj_creating_profile');
   $('#member-add-status').dataset.error = 'false';
   const draft = current.draft, source = current.sources[Number(draft.source)];
   const payload = {host_type: current.host, profile: draft.profile,
@@ -315,11 +315,11 @@ async function submitMemberCreate() {
     dialog.close();
     await current.onCreated({...result, display_name: draft.display_name.trim(), bound: true});
     if (result.setup_command) {
-      await showAlert(`${result.notice}\n\n在引擎所在电脑的终端执行：\n${result.setup_command}\n\nProfile 目录：${result.home}`);
+      await showAlert(window.t('pj_setup_notice', [result.notice, result.setup_command, result.home]));
     }
   } catch (err) {
     if (memberAdd !== current) return;
-    current.error = `创建失败：${err.message}。填写内容已保留，可修改后重试。`;
+    current.error = window.t('pj_create_failed', [err.message]);
     current.busy = false;
     renderMemberAdd();
   } finally {
@@ -348,16 +348,16 @@ function markDshBindings(data, available) {
 
 const remoteSessionRequests = new Map();
 function remoteSessionLabel(member) {
-  if (member.remote_session_pending) return '正在查询远程工作会话…';
-  if (member.work_session_exists == null) return '远程工作会话状态未知，可刷新重试';
-  return member.work_session_exists ? '已有远程工作会话' : '暂无远程工作会话';
+  if (member.remote_session_pending) return window.t('pj_session_querying');
+  if (member.work_session_exists == null) return window.t('pj_session_unknown');
+  return member.work_session_exists ? window.t('pj_session_exists') : window.t('pj_session_none');
 }
 
 function workspaceStatus(state, remote) {
-  if (!state.valid) return state.error || '目录不可用';
-  if (!state.head) return '目录可用';
+  if (!state.valid) return state.error || window.t('pj_dir_unavailable');
+  if (!state.head) return window.t('pj_dir_available');
   const head = (state.detached ? 'detached' : state.branch) + ' · ' + state.head.slice(0, 12);
-  return (remote ? '上次远端核验　' : '') + head + (state.dirty ? ' · 有未提交改动' : ' · 工作区干净');
+  return (remote ? window.t('pj_last_remote_check') : '') + head + (state.dirty ? ' · ' + window.t('pj_uncommitted') : ' · ' + window.t('pj_clean'));
 }
 
 async function refreshRemoteSessions(project, members) {
@@ -387,7 +387,7 @@ async function refreshRemoteSessions(project, members) {
       if (member.remote_workspace && result?.workspace && !row.querySelector('.workspace').disabled) {
         member.workspace = result.workspace;
         const path = row.querySelector('.project-member-path');
-        path.textContent = path.title = member.workspace.path || '尚未取得远程路径';
+        path.textContent = path.title = member.workspace.path || window.t('pj_no_remote_path');
         const status = row.querySelector('.project-member-workspace .project-member-state');
         status.textContent = workspaceStatus(member.workspace, true);
         status.classList.toggle('valid', member.workspace.valid);
@@ -408,8 +408,8 @@ async function loadProjectMembers(options = {}) {
   if (!project) return;
   const cached = projectMembersCache.get(project);
   if (cached) renderProjectMembers(project, cached);
-  else $('#pj-member-list').textContent = '正在读取成员…';
-  $('#pj-members-status').textContent = cached ? '正在更新状态…' : '正在校验目录…';
+  else $('#pj-member-list').textContent = window.t('pj_loading_members');
+  $('#pj-members-status').textContent = cached ? window.t('pj_updating_status') : window.t('pj_checking_dirs');
   if (!options.profile && projectMembersPending.has(project)) return projectMembersPending.get(project);
   const version = (projectMembersVersions.get(project) || 0) + 1;
   projectMembersVersions.set(project, version);
@@ -426,12 +426,12 @@ async function loadProjectMembers(options = {}) {
       projectMembersCache.set(project, merged);
       if ($('#pj-detail-form').dataset.origName !== project) return;
       renderProjectMembers(project, merged);
-      $('#pj-members-status').textContent = merged.members.some(m => m.remote_session_pending) ? '成员已加载' : '状态已更新';
+      $('#pj-members-status').textContent = merged.members.some(m => m.remote_session_pending) ? window.t('pj_members_loaded') : window.t('pj_status_updated');
       void refreshRemoteSessions(project, merged.members);
     } catch (err) {
       if ($('#pj-detail-form').dataset.origName === project && projectMembersVersions.get(project) === version) {
-        $('#pj-members-status').textContent = '刷新失败：' + err.message;
-        if (!projectMembersCache.has(project)) $('#pj-member-list').textContent = '暂时无法读取成员，请重试。';
+        $('#pj-members-status').textContent = window.t('refresh_failed') + ': ' + err.message;
+        if (!projectMembersCache.has(project)) $('#pj-member-list').textContent = window.t('pj_members_unavailable');
       }
     } finally {
       if (projectMembersPending.get(project) === request) projectMembersPending.delete(project);
@@ -443,10 +443,10 @@ async function loadProjectMembers(options = {}) {
 
 function sessionResetButton(member) {
   if (member.work_session_exists === true)
-    return {disabled:false, label:'重置会话', title:'重置本项目已有工作会话，保持成员启停状态'};
+    return {disabled:false, label:window.t('pj_reset_session'), title:window.t('pj_reset_session_title')};
   if (member.work_session_exists === false)
-    return {disabled:true, label:'暂无会话', title:'本项目暂无工作会话'};
-  return {disabled:true, label:'状态待确认', title:'请刷新成员列表后重试'};
+    return {disabled:true, label:window.t('pj_no_session'), title:window.t('pj_no_session_title')};
+  return {disabled:true, label:window.t('pj_session_pending_label'), title:window.t('pj_session_pending_title')};
 }
 
 function bindMemberNameEditor(row, member) {
@@ -457,10 +457,10 @@ function bindMemberNameEditor(row, member) {
     input.className = 'member-name-input';
     input.type = 'text'; input.maxLength = 200;
     input.value = member.display_name || member.host_profile || member.profile;
-    input.setAttribute('aria-label', '显示名（所有项目共用）');
+    input.setAttribute('aria-label', window.t('pj_display_name_shared'));
     const status = document.createElement('p');
     status.className = 'project-member-state'; status.setAttribute('role', 'status');
-    status.textContent = '所有项目共用 · Enter 保存 · Esc 取消';
+    status.textContent = window.t('pj_name_edit_hint');
     row.appendChild(status);
     button.hidden = true; button.after(input);
     let saving = false, finished = false;
@@ -471,13 +471,13 @@ function bindMemberNameEditor(row, member) {
       if (saving || finished) return;
       const name = input.value.trim();
       if (!name || /[\r\n\0]/.test(name)) {
-        status.textContent = '请输入非空的单行显示名';
+        status.textContent = window.t('pj_name_required');
         status.dataset.error = 'true';
         input.setAttribute('aria-invalid', 'true'); return;
       }
       if (name === member.display_name) { finish(); return; }
       saving = true; input.disabled = true;
-      status.textContent = '正在保存显示名…';
+      status.textContent = window.t('pj_saving_name');
       status.dataset.error = 'false';
       try {
         const result = await api(`/members/${encodeURIComponent(member.profile)}/display-name`,
@@ -495,7 +495,7 @@ function bindMemberNameEditor(row, member) {
         _lastRenderSignature = null;
         renderMessages();
       } catch (err) {
-        status.textContent = `显示名保存失败：${err.message}`;
+        status.textContent = window.t('pj_name_save_failed', [err.message]);
         status.dataset.error = 'true';
         input.disabled = false;
       } finally { saving = false; }
@@ -521,24 +521,24 @@ function renderProjectMembers(project, data) {
     const reset = sessionResetButton(member);
     const state = member.workspace;
     const independent = member.directory_mode === 'worktree';
-    const path = state.path || (member.remote_workspace ? '尚未取得远程路径' : `${data.project.worktree_root || ''}/${member.profile}`);
+    const path = state.path || (member.remote_workspace ? window.t('pj_no_remote_path') : `${data.project.worktree_root || ''}/${member.profile}`);
     const row = document.createElement('div');
     row.className = 'project-member-card';
     row.dataset.profile = member.profile;
     row.innerHTML = `<div class="project-member-header"><div class="project-member-identity">
-      <div class="project-member-name"><button type="button" class="member-name-edit" title="点击编辑显示名（所有项目共用）">${esc(memberDisplayName(member))}</button><small>${esc(memberHostProfile(member))}</small>
-      <button type="button" role="switch" aria-checked="${!!member.active}" aria-label="成员启用状态" title="${member.active ? '点击停用' : '点击启用'}" class="project-member-badge ${member.active ? 'enabled' : ''}">${member.active ? '启用' : '停用'}</button></div></div>
-      <div class="project-member-actions"><button type="button" class="workspace">工作区</button>
-      <button type="button" class="member-more" aria-label="成员更多操作" aria-haspopup="menu" aria-expanded="false">⋯</button>
+      <div class="project-member-name"><button type="button" class="member-name-edit" title="${window.t('pj_name_edit_title')}" data-i18n-title="pj_name_edit_title">${esc(memberDisplayName(member))}</button><small>${esc(memberHostProfile(member))}</small>
+      <button type="button" role="switch" aria-checked="${!!member.active}" aria-label="${window.t('pj_member_state')}" data-i18n-aria-label="pj_member_state" title="${member.active ? window.t('pj_disable_click') : window.t('pj_enable_click')}" class="project-member-badge ${member.active ? 'enabled' : ''}">${member.active ? window.t('pj_enabled') : window.t('pj_disabled')}</button></div></div>
+      <div class="project-member-actions"><button type="button" class="workspace">${window.t('pj_workspace')}</button>
+      <button type="button" class="member-more" aria-label="${window.t('pj_member_more')}" data-i18n-aria-label="pj_member_more" aria-haspopup="menu" aria-expanded="false">⋯</button>
       <div class="project-member-menu" popover="auto" role="menu">
-      <button type="button" role="menuitem" class="edit" title="修改将影响共用此 profile 的项目">编辑 profile</button>
-      ${member.profile !== 'user' ? `<button type="button" role="menuitem" class="reset-session" title="${reset.title}" ${reset.disabled ? 'disabled' : ''}>${reset.label}</button><button type="button" role="menuitem" class="member-remove">移出项目</button>` : ''}
+      <button type="button" role="menuitem" class="edit" title="${window.t('pj_edit_profile_title')}" data-i18n-title="pj_edit_profile_title" data-i18n="pj_edit_profile">${window.t('pj_edit_profile')}</button>
+      ${member.profile !== 'user' ? `<button type="button" role="menuitem" class="reset-session" title="${reset.title}" ${reset.disabled ? 'disabled' : ''}>${reset.label}</button><button type="button" role="menuitem" class="member-remove">${window.t('pj_remove_member')}</button>` : ''}
       </div></div></div>
-      <div class="project-member-workspace ${state.valid && !state.head ? 'compact-status' : ''}"><span class="project-member-caption">${member.remote_workspace ? '远程' : ''}${independent ? '独立 worktree' : '项目主目录'}</span>
+      <div class="project-member-workspace ${state.valid && !state.head ? 'compact-status' : ''}"><span class="project-member-caption">${member.remote_workspace ? window.t('pj_remote_mark') : ''}${independent ? window.t('pj_worktree_independent') : window.t('pj_worktree_root')}</span>
       <div class="project-member-path" title="${esc(path)}">${esc(path)}</div>
       <p class="project-member-state ${state.valid ? 'valid' : 'invalid'}">${esc(workspaceStatus(state, member.remote_workspace))}</p></div>
       ${member.remote_session_pending !== undefined ? `<p class="project-member-state remote-session-status" role="status">${remoteSessionLabel(member)}</p>` : ''}
-      ${member.binding_invalid ? '<p class="project-member-state invalid" data-binding-invalid="true">宿主绑定失效：DSH HOME 目录或 profile 配置不可用；成员与历史保留。</p>' : ''}`;
+      ${member.binding_invalid ? '<p class="project-member-state invalid" data-binding-invalid="true">' + window.t('pj_binding_invalid', [member.binding_invalid]) + '</p>' : ''}`;
     bindMemberNameEditor(row, member);
     row.querySelector('.edit').addEventListener('click', () => {
       profileProjectReturn = project;
@@ -547,11 +547,11 @@ function renderProjectMembers(project, data) {
     });
     const workspaceButton = row.querySelector('.workspace');
     if (member.remote_workspace) {
-      workspaceButton.textContent = '准备远程工作区';
+      workspaceButton.textContent = window.t('pj_prepare_workspace');
       workspaceButton.onclick = async () => {
         workspaceButton.disabled = true;
         const status = row.querySelector('.project-member-workspace .project-member-state');
-        status.textContent = '远程节点正在核验仓库和工作目录…';
+        status.textContent = window.t('pj_remote_checking');
         try {
           await api(`/projects/${encodeURIComponent(project)}/members/${encodeURIComponent(member.profile)}/prepare-workspace`, {method: 'POST'});
           await loadProjectMembers({profile: member.profile});
@@ -575,10 +575,10 @@ function renderProjectMembers(project, data) {
         member.active = active;
         const latest = projectMembersCache.get(project)?.members.find(m => m.profile === member.profile);
         if (latest) latest.active = active;
-        button.textContent = active ? '启用' : '停用';
+        button.textContent = active ? window.t('enable') : window.t('disable');
         button.classList.toggle('enabled', active);
         button.setAttribute('aria-checked', String(active));
-        button.title = active ? '点击停用' : '点击启用';
+        button.title = active ? window.t('pj_disable_click') : window.t('pj_enable_click');
         await loadMembers();
         if ($('#pj-detail-form').dataset.origName === project) await loadProjectMembers({profile: member.profile});
         await loadThreads();
@@ -592,9 +592,9 @@ function renderProjectMembers(project, data) {
     const roleBtn = document.createElement('button');
     roleBtn.type = 'button';
     roleBtn.className = 'project-member-role-btn';
-    roleBtn.textContent = member.role ? member.role : '设置角色';
+    roleBtn.textContent = member.role ? member.role : window.t('pj_set_role');
     roleBtn.setAttribute('aria-haspopup', 'menu');
-    roleBtn.setAttribute('aria-label', `${member.display_name || member.profile}的项目角色${member.role ? `：${member.role}` : '（未设置）'}`);
+    roleBtn.setAttribute('aria-label', window.t('pj_role_aria', [member.display_name || member.profile, member.role ? window.t('colon') + member.role : window.t('pj_role_unset')]));
     // 角色按钮位于 .project-member-name 内，紧接启停胶囊。
     row.querySelector('.project-member-badge').after(roleBtn);
     roleBtn.addEventListener('click', e => {
@@ -650,9 +650,9 @@ function openMemberRemoval(project, member) {
   if (document.querySelector('#dlg-member-remove')) return;
   const dialog = document.createElement('dialog');
   dialog.id = 'dlg-member-remove'; dialog.setAttribute('aria-labelledby', 'member-remove-title');
-  dialog.innerHTML = '<h3 id="member-remove-title">移出项目</h3><p class="member-remove-summary"></p><p class="profile-help">移出后将解除本项目成员关系、角色与权限，并退出话题参与名单。历史消息、任务记录、profile 和工作目录保留，其他项目中的成员关系保持原样。后续可通过“添加成员”重新加入，并重新配置角色与权限。</p><p class="profile-help">请根据剩余成员的角色分工调整协作流程，明确相关职责的承担者。</p><p class="member-remove-status" role="status"></p><div class="member-remove-blockers"></div><div class="dlg-btns"><button type="button" class="cancel">取消</button><button type="button" class="recheck">重新检查</button><button type="button" class="confirm" disabled>移出项目</button></div>';
+  dialog.innerHTML = `<h3 id="member-remove-title">${window.t('pj_remove_member')}</h3><p class="member-remove-summary"></p><p class="profile-help">${window.t('pj_remove_member_hint')}</p><p class="profile-help">${window.t('pj_remove_member_role_hint')}</p><p class="member-remove-status" role="status"></p><div class="member-remove-blockers"></div><div class="dlg-btns"><button type="button" class="cancel">${window.t('cancel')}</button><button type="button" class="recheck">${window.t('pj_recheck')}</button><button type="button" class="confirm" disabled>${window.t('pj_remove_member')}</button></div>`;
   const projectName = S.projects.find(item => item.name === project)?.display_name || project;
-  dialog.querySelector('.member-remove-summary').textContent = `将「${memberLabel(member)}」移出「${projectName}」？`;
+  dialog.querySelector('.member-remove-summary').textContent = window.t('pj_remove_member_summary', [memberLabel(member), projectName]);
   const status = dialog.querySelector('.member-remove-status'), blockers = dialog.querySelector('.member-remove-blockers');
   const confirm = dialog.querySelector('.confirm'), cancel = dialog.querySelector('.cancel'), recheck = dialog.querySelector('.recheck');
   const endpoint = `/projects/${encodeURIComponent(project)}/members/${encodeURIComponent(member.profile)}`;
@@ -664,7 +664,7 @@ function openMemberRemoval(project, member) {
       line.className = 'member-remove-blocker'; text.textContent = item.title; line.append(text);
       if (item.kind !== 'session') {
         const action = document.createElement('button'); action.type = 'button';
-        action.textContent = item.kind === 'runtime' ? '停止运行' : item.kind === 'owner' ? '更换负责人' : '查看并处理';
+        action.textContent = item.kind === 'runtime' ? window.t('pj_stop_runtime') : item.kind === 'owner' ? window.t('pj_change_owner') : window.t('pj_view_handle');
         action.addEventListener('click', async () => {
           dialog.close();
           if (item.kind === 'owner') { selectProjectTab('basic'); $('#pj-d-owner')?.focus(); }
@@ -682,14 +682,14 @@ function openMemberRemoval(project, member) {
     }
   }
   async function check() {
-    confirm.disabled = true; recheck.disabled = true; status.textContent = '正在检查职责与运行状态…';
+    confirm.disabled = true; recheck.disabled = true; status.textContent = window.t('pj_checking_roles');
     try {
       const result = await api(endpoint + '/removal');
       if (!dialog.isConnected) return;
       showBlockers(result.blockers);
       confirm.disabled = !result.can_remove;
-      status.textContent = result.can_remove ? '检查通过，可以移出项目。' : '请先处理以下事项，再重新检查：';
-    } catch (error) { if (dialog.isConnected) status.textContent = `检查失败：${error.message}`; }
+      status.textContent = result.can_remove ? window.t('pj_check_ok') : window.t('pj_check_items_first');
+    } catch (error) { if (dialog.isConnected) status.textContent = window.t('check_failed') + ': ' + error.message; }
     finally { recheck.disabled = false; }
   }
   cancel.addEventListener('click', () => dialog.close()); recheck.addEventListener('click', check);
@@ -697,7 +697,7 @@ function openMemberRemoval(project, member) {
   dialog.addEventListener('close', () => dialog.remove());
   confirm.addEventListener('click', async () => {
     busy = true; confirm.disabled = cancel.disabled = recheck.disabled = true;
-    status.textContent = '正在移出项目…';
+    status.textContent = window.t('pj_removing_member');
     try {
       await api(endpoint, {method: 'DELETE'});
       projectMembersVersions.set(project, (projectMembersVersions.get(project) || 0) + 1);
@@ -712,10 +712,10 @@ function openMemberRemoval(project, member) {
         await loadProjectMembers();
         const failed = !projectMembersCache.has(project) || refreshed.some(result => result.status === 'rejected');
         $('#pj-members-status').textContent = failed
-          ? '已移出项目，工作目录已保留。部分列表刷新失败，请刷新状态。' : '已移出项目，工作目录已保留。';
+          ? window.t('pj_removed_partial') : window.t('pj_removed');
       }
     } catch (error) {
-      status.textContent = `移出失败：${error.message}`;
+      status.textContent = window.t('pj_remove_failed', [error.message]);
       if (Array.isArray(error.detail?.blockers)) showBlockers(error.detail.blockers);
     } finally { busy = false; cancel.disabled = recheck.disabled = false; }
   });
@@ -746,7 +746,7 @@ function renderMemberRoleMenu(row, project, member, roleBtn, resetStatus) {
   // 菜单骨架先挂上（异步填充候选），保证点击即有反馈
   const note = document.createElement('div');
   note.className = 'project-member-role-empty';
-  note.textContent = '正在读取角色…';
+  note.textContent = window.t('pj_loading_roles');
   menu.appendChild(note);
   row.appendChild(menu);
   menu.showPopover();
@@ -762,7 +762,7 @@ function renderMemberRoleMenu(row, project, member, roleBtn, resetStatus) {
     if (!roles.length) {
       const empty = document.createElement('div');
       empty.className = 'project-member-role-empty';
-      empty.textContent = '本项目尚未定义角色（到「角色」tab 创建）';
+      empty.textContent = window.t('pj_no_roles');
       menu.appendChild(empty);
       positionMenu();
       return;
@@ -781,11 +781,11 @@ function renderMemberRoleMenu(row, project, member, roleBtn, resetStatus) {
             {method: 'PATCH', body: JSON.stringify({role: role.name})});
           member.role = result.role;
           member.role_id = result.role_id ?? null;
-          roleBtn.textContent = result.role || '设置角色';
+          roleBtn.textContent = result.role || window.t('pj_set_role');
           closeMenu();
-          resetStatus.hidden = false; resetStatus.textContent = '本项目角色已保存';
+          resetStatus.hidden = false; resetStatus.textContent = window.t('pj_role_saved');
           await loadMembers();
-        } catch (err) { resetStatus.hidden = false; resetStatus.textContent = `角色保存失败：${err.message}`; item.disabled = false; }
+        } catch (err) { resetStatus.hidden = false; resetStatus.textContent = window.t('pj_role_save_failed', [err.message]); item.disabled = false; }
       });
       menu.appendChild(item);
     });
@@ -795,7 +795,7 @@ function renderMemberRoleMenu(row, project, member, roleBtn, resetStatus) {
     menu.replaceChildren();
     const empty = document.createElement('div');
     empty.className = 'project-member-role-empty';
-    empty.textContent = `角色列表读取失败：${err.message}`;
+    empty.textContent = window.t('pj_roles_load_failed', [err.message]);
     menu.appendChild(empty);
     positionMenu();
   });
@@ -811,7 +811,7 @@ async function loadProjectRoles() {
   const project = $('#pj-detail-form').dataset.origName;
   if (!project) return;
   const box = $('#pj-role-list');
-  box.textContent = '正在读取角色…';
+  box.textContent = window.t('pj_loading_roles');
   try {
     const data = await api(`/projects/${encodeURIComponent(project)}/roles`);
     if ($('#pj-detail-form').dataset.origName !== project) return;
@@ -820,7 +820,7 @@ async function loadProjectRoles() {
     roleStatus('');
   } catch (err) {
     if ($('#pj-detail-form').dataset.origName !== project) return;
-    box.textContent = '角色列表读取失败，请重试。';
+    box.textContent = window.t('pj_roles_retry');
     roleStatus(err.message, true);
   }
 }
@@ -828,7 +828,7 @@ function renderProjectRoles(project, roles) {
   const box = $('#pj-role-list');
   box.replaceChildren();
   if (!roles.length) {
-    box.textContent = '本项目还没有角色。在上方输入名称创建第一个角色。';
+    box.textContent = window.t('pj_no_roles_create');
     return;
   }
   for (const role of roles) {
@@ -839,59 +839,59 @@ function renderProjectRoles(project, roles) {
     nameBtn.type = 'button';
     nameBtn.className = 'project-member-role-btn';
     nameBtn.textContent = role.name;
-    nameBtn.title = `改名「${role.name}」（稳定 ID ${role.id}，改名家属成员关联不断）`;
+    nameBtn.title = window.t('pj_rename_title', [role.name, role.id]);
     const count = document.createElement('span');
     count.className = 'profile-help';
     count.style.margin = '0';
-    count.textContent = `${role.member_count} 名成员`;
+    count.textContent = window.t('pj_member_count', [role.member_count]);
     const edit = document.createElement('button');
-    edit.type = 'button'; edit.textContent = '改名';
+    edit.type = 'button'; edit.textContent = window.t('pj_rename');
     const del = document.createElement('button');
-    del.type = 'button'; del.textContent = '删除';
+    del.type = 'button'; del.textContent = window.t('pj_delete');
     row.append(nameBtn, count, edit);
-    if (!(role.is_owner ?? role.name === '项目负责人')) row.append(del);
+    if (!(role.is_owner ?? role.name === window.t('pj_owner_role'))) row.append(del);
     del.disabled = role.member_count > 0;
-    if (role.member_count > 0) del.title = '仍有成员使用此角色，先改派成员后再删';
+    if (role.member_count > 0) del.title = window.t('pj_role_in_use');
     box.appendChild(row);
     nameBtn.addEventListener('click', () => startRoleRename(project, role, row, nameBtn));
     edit.addEventListener('click', () => startRoleRename(project, role, row, nameBtn));  // req#96 #165：改名按钮此前漏绑监听
     del.addEventListener('click', async () => {
-      if (!await showConfirm(`确认删除角色「${role.name}」？删除后，派工、审查、验收等职责可能缺少执行人。请在项目详情的 AGENTS.md 中根据调整后的角色分工修改协作流程，重新明确各项职责的承担者，并同步更新角色引用与职责。`)) return;
+      if (!await showConfirm(window.t('pj_role_delete_confirm', [role.name]))) return;
       del.disabled = true;
       try {
         await api(`/projects/${encodeURIComponent(project)}/roles/${role.id}`, {method: 'DELETE'});
         await loadProjectRoles();
-        roleStatus('角色已删除');
-      } catch (err) { roleStatus(`删除失败：${err.message}`, true); del.disabled = false; }
+        roleStatus(window.t('pj_role_deleted'));
+      } catch (err) { roleStatus(window.t('pj_role_delete_failed', [err.message]), true); del.disabled = false; }
     });
   }
 }
 async function startRoleRename(project, role, row, nameBtn) {
   if (row.querySelector('.pj-role-rename')) return;
-  await showAlert('角色改名后，请自行核对项目协作正文中的角色引用，确保派工、审查和验收职责对应的执行人清晰。');
+  await showAlert(window.t('pj_role_renamed_hint'));
   if (!row.isConnected || row.querySelector('.pj-role-rename')) return;
   const input = document.createElement('input');
   input.className = 'pj-role-rename';
   input.type = 'text'; input.maxLength = 100;
   input.value = role.name;
-  input.setAttribute('aria-label', `改名角色 ${role.name}`);
+  input.setAttribute('aria-label', window.t('pj_rename_aria', [role.name]));
   const finish = () => { input.remove(); nameBtn.hidden = false; };
   let saving = false;
   const save = async () => {
     if (saving) return;
     const name = input.value.trim();
-    if (!name) { roleStatus('角色名不能为空', true); return; }
+    if (!name) { roleStatus(window.t('pj_role_name_required'), true); return; }
     if (name === role.name) { finish(); return; }
     saving = true; input.disabled = true;
-    roleStatus('正在保存角色名…');
+    roleStatus(window.t('pj_saving_role_name'));
     try {
       await api(`/projects/${encodeURIComponent(project)}/roles/${role.id}`,
         {method: 'PATCH', body: JSON.stringify({name})});
       await loadProjectRoles();
       // 状态提示放在重载之后（loadProjectRoles 会先清状态）：改名结果稳定可见
-      roleStatus('角色已改名（成员关联保持）');
+      roleStatus(window.t('pj_role_renamed'));
     } catch (err) {
-      roleStatus(`角色改名失败：${err.message}`, true);
+      roleStatus(window.t('pj_role_rename_failed', [err.message]), true);
       input.disabled = false; saving = false; return;
     } finally { saving = false; }
   };
@@ -909,15 +909,15 @@ $('#pj-role-create').addEventListener('click', async () => {
   if (!project) return;
   const input = $('#pj-role-new-name');
   const name = input.value.trim();
-  if (!name) { roleStatus('请输入角色名', true); return; }
+  if (!name) { roleStatus(window.t('pj_role_name_required'), true); return; }
   const btn = $('#pj-role-create');
   btn.disabled = true;
   try {
       await api(`/projects/${encodeURIComponent(project)}/roles`, {method: 'POST', body: JSON.stringify({name})});
       input.value = '';
       await loadProjectRoles();
-      roleStatus('角色已创建');
-    } catch (err) { roleStatus(`创建失败：${err.message}`, true); }
+      roleStatus(window.t('pj_role_created'));
+    } catch (err) { roleStatus(window.t('pj_role_create_failed', [err.message]), true); }
   finally { btn.disabled = false; }
 });
 $('#pj-role-new-name').addEventListener('keydown', event => {
@@ -931,22 +931,22 @@ async function resetMemberSession(project, profile, button, status) {
   if (resettingMemberSessions.has(key)) return;
   resettingMemberSessions.add(key);
   button.disabled = true;
-  button.textContent = '重置中…';
-  if (status) { status.hidden = false; status.textContent = '正在重置工作会话…'; }
+  button.textContent = window.t('pj_resetting');
+  if (status) { status.hidden = false; status.textContent = window.t('pj_resetting_session'); }
   const notify = async message => {
     if (status?.isConnected) status.textContent = message;
     else await showAlert(message);
   };
   try {
     const result = await api(`/projects/${encodeURIComponent(project)}/members/${encodeURIComponent(profile)}/reset-session`, {method: 'POST'});
-    if (!result.handled || !result.ok) throw new Error(result.detail || '会话重置失败');
-    await notify(result.detail || `@${profile} 的工作会话已切换。`);
+    if (!result.handled || !result.ok) throw new Error(result.detail || window.t('pj_session_reset_failed'));
+    await notify(result.detail || window.t('pj_session_switched', [profile]));
   } catch (err) {
     await notify(err.message);
   } finally {
     resettingMemberSessions.delete(key);
     button.disabled = false;
-    button.textContent = '重置会话';
+    button.textContent = window.t('pj_reset_session');
   }
 }
 
@@ -964,13 +964,13 @@ function openWorkspaceEditor(project, member) {
   workspaceEditor = {project, profile: member.profile, member, root: config.root,
     mode: member.directory_mode, savedMode: member.directory_mode,
     path: member.assigned_workspace_path || member.independent_path || `${config.worktree_root}/${member.profile}`, saving: false};
-  $('#workspace-title').textContent = `工作区 · ${member.display_name || member.profile}`;
+  $('#workspace-title').textContent = window.t('pj_workspace') + ' · ' + (member.display_name || member.profile);
   document.querySelectorAll('[name="member-directory-mode"]').forEach(radio => radio.checked = radio.value === workspaceEditor.mode);
   $('#workspace-path').value = workspaceEditor.path;
   let resourcesButton = $('#workspace-resources');
   if (!resourcesButton) {
     resourcesButton = document.createElement('button'); resourcesButton.id = 'workspace-resources'; resourcesButton.type = 'button';
-    resourcesButton.textContent = '资源配置'; $('#workspace-current').after(resourcesButton);
+    resourcesButton.textContent = window.t('pj_resources'); $('#workspace-current').after(resourcesButton);
   }
   resourcesButton.onclick = () => openWorkspaceResources(project, member.profile);
   $('#workspace-remove').hidden = !member.workspace_assigned;
@@ -994,11 +994,11 @@ function renderWorkspaceMode() {
   }
   resourceHint.hidden = !resourcesUnavailable;
   resourceHint.textContent = !shared && !assigned
-    ? '创建工作区或使用已有工作区后，即可配置资源。'
-    : '保存工作区模式后，即可配置资源。';
+    ? window.t('pj_resources_after_create')
+    : window.t('pj_resources_after_mode');
   $('#workspace-current').textContent = shared
-    ? `项目主目录：${editor.root}${assigned ? '\n已有 worktree 保留：' + editor.path : ''}`
-    : assigned ? `已分配 worktree：${editor.path}` : '尚未分配工作区。选择创建新目录或使用已有 worktree。';
+    ? window.t('pj_workspace_root_info', [editor.root, assigned ? '\n' + window.t('pj_worktree_kept') + ': ' + editor.path : ''])
+    : assigned ? window.t('pj_worktree_assigned', [editor.path]) : window.t('pj_no_workspace');
   $('#workspace-options').hidden = shared || !!assigned;
   $('#workspace-save-mode').hidden = editor.mode === editor.savedMode || (!shared && !assigned);
   $('#workspace-form').hidden = true;
@@ -1018,10 +1018,10 @@ function chooseWorkspaceAction(action) {
   $('#workspace-path-field').hidden = action === 'remove';
   $('#workspace-path').required = action !== 'remove';
   $('#workspace-remove-confirm').hidden = action !== 'remove';
-  $('#workspace-help').textContent = action === 'create' ? '从项目主目录当前 HEAD 创建 detached worktree，并分配给该成员。'
-    : action === 'adopt' ? '验证并使用已有 worktree，保留其分支、提交和文件。'
-    : `将删除工作目录：${workspaceEditor.path}。Git 分支保留；有未提交改动或未受分支保护的提交时拒绝移除。`;
-  $('#workspace-submit').textContent = {create: '确认创建', adopt: '确认接管', remove: '确认移除工作区'}[action];
+  $('#workspace-help').textContent = action === 'create' ? window.t('pj_workspace_create_help')
+    : action === 'adopt' ? window.t('pj_workspace_adopt_help')
+    : window.t('pj_workspace_remove_help', [workspaceEditor.path]);
+  $('#workspace-submit').textContent = {create: window.t('pj_confirm_create'), adopt: window.t('pj_confirm_adopt'), remove: window.t('pj_confirm_remove')}[action];
   $('#workspace-submit').classList.toggle('workspace-danger', action === 'remove');
   $('#workspace-result').textContent = '';
 }
@@ -1044,7 +1044,7 @@ async function saveWorkspace() {
   if (!editor?.action || editor.saving) return;
   editor.saving = true;
   $('#dlg-workspace').querySelectorAll('button, input').forEach(el => el.disabled = true);
-  $('#workspace-result').textContent = '正在执行…';
+  $('#workspace-result').textContent = window.t('pj_executing');
   try {
     const result = await api(`/projects/${encodeURIComponent(editor.project)}/workspaces/${encodeURIComponent(editor.profile)}`, {
       method: 'POST', body: JSON.stringify(editor.action === 'set_mode'
@@ -1060,7 +1060,7 @@ async function saveWorkspace() {
       $('#dlg-workspace').querySelectorAll('button, input').forEach(el => el.disabled = false);
       $('#workspace-remove').hidden = false;
       renderWorkspaceMode();
-      $('#workspace-result').textContent = `${action === 'create' ? '工作区已创建' : '已使用已有工作区'}，可继续查看和调整资源配置。`;
+      $('#workspace-result').textContent = window.t('pj_workspace_done', [action === 'create' ? window.t('pj_workspace_created') : window.t('pj_workspace_adopted')]);
       $('#workspace-resources').focus();
     } else $('#dlg-workspace').close();
     if ($('#pj-detail-form').dataset.origName === editor.project) await loadProjectMembers({profile: editor.profile});

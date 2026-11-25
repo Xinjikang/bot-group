@@ -250,7 +250,8 @@ def main():
 
                 # With the plugin listener still open but its MCP proxy stopped,
                 # the page must show the failed scoped read, not a completed MCP stage.
-                plugin_mcpproxy.stop_proxy()
+                plugin_server['_server'].proxy.stop()
+                plugin_server['_server'].proxy = None
                 page.locator('#relay-direction-dial').click()
                 page.wait_for_function('document.querySelector("#relay-direction-status").textContent.includes("已连通")')
                 page.wait_for_function('document.querySelector("#relay-stage-mcp").className === "relay-stage-failed"')
@@ -286,10 +287,6 @@ def main():
                 except Exception:
                     pass
             if plugin_server is not None:
-                try:
-                    plugin_mcpproxy.stop_proxy()
-                except Exception:
-                    pass
                 try:
                     plugin_server['_server'].stop()
                 except Exception:

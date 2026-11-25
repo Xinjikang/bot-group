@@ -11,7 +11,7 @@ function memberDisplayName(member) {
 }
 function memberLabel(member) {
   const name = memberDisplayName(member), profile = memberHostProfile(member);
-  return name === profile ? profile : `${name}（${profile}）`;
+  return name === profile ? profile : `${name}${window.t('open_paren')}${profile}${window.t('close_paren')}`;
 }
 
 // Textareas display the shared member label and retain each selected handle.
@@ -86,7 +86,7 @@ function serializeMemberMentions(ta, project, members) {
   let text = ta.value;
   for (const mention of [...draft.mentions].reverse()) {
     if (mention.project !== project || !members.some(m => m.profile === mention.profile))
-      throw new Error('点名成员已不在当前范围，请重新选择 @ 成员');
+      throw new Error(window.t('mention_out_of_scope'));
     text = text.slice(0, mention.start) + '@' + mention.profile + text.slice(mention.end);
   }
   return text.trim();

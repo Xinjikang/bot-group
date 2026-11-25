@@ -893,9 +893,12 @@ class DirectionBDialTests(unittest.TestCase):
         plg_proxy = self.plg["mcpproxy"]
         import queue as queue_mod
         waiter = queue_mod.Queue(maxsize=1)
-        with plg_proxy._PENDING_LOCK:
-            plg_proxy._PENDING["req-x"] = waiter
-        plg_proxy.deliver_http_response("req-x", 200, {"content-type": "application/json"},
+        from types import SimpleNamespace
+        proxy = plg_proxy.start_proxy(SimpleNamespace())
+        self.addCleanup(proxy.stop)
+        with proxy.lock:
+            proxy.pending["req-x"] = waiter
+        proxy.deliver_http_response("req-x", 200, {"content-type": "application/json"},
                                         '{"ok": true}')
         status, headers, body = waiter.get(timeout=2)
         self.assertEqual(status, 200)
@@ -1144,7 +1147,6 @@ class EntryIdentityAndProxyTests(unittest.TestCase):
         tmp_dir = Path(tempfile.mkdtemp(prefix="bgrelay-proxy-"))
         self.enterContext(patch.object(plg["pairing"], "_state_dir", return_value=tmp_dir))
         self.addCleanup(lambda: __import__("shutil").rmtree(tmp_dir, ignore_errors=True))
-        self.addCleanup(mcpproxy.stop_proxy)
         with patch.object(listen_mod, "STATE_DIR", tmp_dir), \
                 patch.object(listen_mod, "validate_bind_address",
                              return_value="127.0.0.1"):
@@ -1162,7 +1164,6 @@ class EntryIdentityAndProxyTests(unittest.TestCase):
         probe.close()
         # 清理：server+代理停止（资源清理路径）
         result["_server"].stop()
-        mcpproxy.stop_proxy()
         # no_proxy 跳过：proxy_port=0
         with patch.object(listen_mod, "STATE_DIR", tmp_dir), \
                 patch.object(listen_mod, "validate_bind_address",
@@ -1186,12 +1187,12 @@ class EntryIdentityAndProxyTests(unittest.TestCase):
         class Listener:
             def forward_http_request(self, request_id, method, path, headers, body):
                 # 模拟引擎同步快速回帧（发帧后立即回 http_response）
-                mcpproxy.deliver_http_response(request_id, 200,
+                self.proxy.deliver_http_response(request_id, 200,
                                                {"content-type": "application/json"},
                                                '{"projects": ["alpha"]}')
 
         server = mcpproxy.start_proxy(Listener(), port=0)
-        self.addCleanup(mcpproxy.stop_proxy)
+        self.addCleanup(server.stop)
         self.assertIs(server._httpd.listener, server.listener,
                       "listener 必须挂在实际 HTTP server 上供 handler 取用")
         conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
@@ -1200,7 +1201,7 @@ class EntryIdentityAndProxyTests(unittest.TestCase):
         self.assertEqual(resp.status, 200, "快速回帧不得丢失")
         self.assertIn("alpha", resp.read().decode())
         conn.close()
-        self.assertEqual(mcpproxy._PENDING, {}, "请求完成后无残留等待位")
+        self.assertEqual(server.pending, {}, "请求完成后无残留等待位")
 
     def test_cli_mount_contract_parser_add_subparsers(self):
         """manager 12801：宿主 _attach_plugin_cli_command 已建插件专属
@@ -1310,13 +1311,13 @@ class EntryIdentityAndProxyTests(unittest.TestCase):
                 raise ConnectionError("relay channel not authenticated")
 
         server = mcpproxy.start_proxy(Listener(), port=0)
-        self.addCleanup(mcpproxy.stop_proxy)
+        self.addCleanup(server.stop)
         conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
         conn.request("GET", "/members?project=alpha")
         resp = conn.getresponse()
         self.assertEqual(resp.status, 502)
         conn.close()
-        self.assertEqual(mcpproxy._PENDING, {}, "失败时释放注册位，无残留")
+        self.assertEqual(server.pending, {}, "失败时释放注册位，无残留")
 
 
 
@@ -2497,20 +2498,30 @@ class FirstJoinTests(unittest.TestCase):
             cfg = config.load(SimpleNamespace(extra={"home": self._tmpdir.name}))
             self.assertEqual(cfg.engine_url, "")
             client = self._load_relay_module().RelayClient(cfg)
+            authenticated = threading.Event()
+            publish = threading.Event()
+            connect_endpoint = relay_dialer.connect_endpoint
+            def hold_publication(*args):
+                result = connect_endpoint(*args)
+                if result:
+                    authenticated.set()
+                    if not publish.wait(8):
+                        raise TimeoutError("test handoff did not release authenticated connection")
+                return result
+            self.enterContext(patch.object(relay_dialer, "connect_endpoint", side_effect=hold_publication))
             client.start()
             try:
-                deadline = time.monotonic() + 15
-                while not (client._listener and client._listener._active_ws):
-                    self.assertLess(time.monotonic(), deadline)
-                    time.sleep(0.05)
+                self.assertTrue(authenticated.wait(15))
                 with patch.object(listen_control, "status", return_value={
                         "remote_enabled": True, "remote_port": port}):
                     status, view = self._admin_post(f"/relay/nodes/{node}/switch", {"direction": "listen"})
-                self.assertEqual(status, 200, view)
-                self._wait_direction(node, "listen")
+                    publish.set()
+                    self.assertEqual(status, 200, view)
+                    self._wait_direction(node, "listen")
                 self.assertEqual(pairing.saved_register(member)[0], f"http://127.0.0.1:{port}")
                 self.assertFalse(pairing.listener_selected(member))
             finally:
+                publish.set()
                 relay_dialer.stop_dial(node)
                 client.stop()
                 client._thread.join(5)
@@ -2554,7 +2565,7 @@ class FirstJoinTests(unittest.TestCase):
                     self._wait_direction(node, target)
                     if target == "dial":
                         self.assertTrue(pairing.listener_selected(member))
-                        self.assertTrue(self.plg["mcpproxy"]._ACTIVE_SERVER.port)
+                        self.assertTrue(client._listener.proxy.port)
                 # Block the return dial until the deadline and check the old TLS link.
                 old = relay_server.active_link(node)
                 with patch.object(pairing, "outbound_requested", return_value=False), \

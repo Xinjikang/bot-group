@@ -48,14 +48,14 @@ async function detectCommand(ta, threadId) {
   commandPicker.threadId = threadId;
   commandPicker.selected = 0;
   mpHide();
-  renderCommandPicker('正在读取命令…');
+  renderCommandPicker(window.t('cmd_loading'));
   try {
     const catalog = await loadCommandCatalog();
     if (version !== commandPicker.version || !ta.isConnected || ta.value !== text) return;
     commandPicker.items = catalog.filter(item => item.name.startsWith(text.trim().toLowerCase()));
-    renderCommandPicker(commandPicker.items.length ? '' : '没有匹配的命令');
+    renderCommandPicker(commandPicker.items.length ? '' : window.t('cmd_no_match'));
   } catch (err) {
-    if (version === commandPicker.version) renderCommandPicker('命令读取失败，请重新输入 /');
+    if (version === commandPicker.version) renderCommandPicker(window.t('cmd_read_failed'));
   }
 }
 

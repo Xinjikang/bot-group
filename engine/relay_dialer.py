@@ -24,6 +24,7 @@ import threading
 import time
 import urllib.parse
 from contextlib import closing
+from websockets.exceptions import ConnectionClosed
 
 from . import db, relay, relay_server
 
@@ -158,6 +159,8 @@ class DialLink:
     双代（manager node2057 ②）：generation=插件 hello_ok 下发的帧代
     （帧路由/心跳出站用）；db_generation=引擎本地 generation_advance 后的
     状态代（心跳/mcp_report/离线写库用，本地代贯穿状态写入）。"""
+
+    protocol_version = relay_server.RELAY_PROTOCOL_VERSION
 
     def __init__(self, member: str, ws, generation: int, peer_ip: str | None,
                  db_generation: int = 0):
@@ -336,7 +339,7 @@ def _hello_payload(conn, member: str) -> dict | None:
         "credential": str(endpoint.get("pairing_token") or ""),
         **activation,
         "code_version": relay_server._engine_release_version() or "",
-        "protocol_version": relay_server.RELAY_PROTOCOL_VERSION,
+        **relay_server.relay_protocol.offer(),
         "direction": "dial",
     }
 
@@ -378,6 +381,7 @@ def _authenticate_dial(member: str, endpoint: dict, payload: dict, *, probe=Fals
         stage = "auth"
         ws.send(json.dumps(payload, ensure_ascii=False))
         meta = json.loads(ws.recv(timeout=8))["relay"]
+        ws.relay_protocol_version = relay_server.relay_protocol.selected(meta)
         if probe:
             import math
             expiry = meta.get('expires_at')
@@ -401,6 +405,13 @@ def _authenticate_dial(member: str, endpoint: dict, payload: dict, *, probe=Fals
     except Exception as exc:  # network, protocol or authentication failure
         if ws is not None:
             ws.close()
+        closed = getattr(exc, "rcvd", None)
+        if getattr(closed, "code", None) == relay_server.CLOSE_BAD_PROTOCOL:
+            reason = relay_server.relay_protocol.refusal(closed.reason)
+            if probe:
+                raise PairingProbeError("protocol", reason) from None
+            _record_failure(member, "protocol", uri, reason)
+            return None
         if stage == "tcp":
             stage = _classify_connect_error(exc)
         if probe:
@@ -422,7 +433,7 @@ def verify_first_pairing(member: str, endpoint: dict):
         "pairing_ticket": endpoint["pairing_token"], "fingerprint": endpoint['fingerprint'],
         "direction": "dial",
         "code_version": relay_server._engine_release_version() or "",
-        "protocol_version": relay_server.RELAY_PROTOCOL_VERSION,
+        **relay_server.relay_protocol.offer(),
     }, probe=True)
 
 
@@ -482,8 +493,17 @@ def dial_once(member: str, *, initial=None) -> bool:
         conn.close()
     if _switching:
         if _target != "dial":
-            ws.close(code=4005, reason="switched back")
-            return False
+            try:
+                if _direction == "dial" and _target == "listen":
+                    from . import relay_switch
+                    with closing(db.get_connection()) as conn:
+                        relay_switch.send_return(conn, member, remote_generation, ws.send)
+                    return True
+                return False
+            except (OSError, ConnectionClosed):
+                return False
+            finally:
+                ws.close()
     elif _direction != "dial":
         ws.close(code=4005, reason="direction is listen")
         return False
@@ -501,6 +521,7 @@ def dial_once(member: str, *, initial=None) -> bool:
     _clear_failure(member)
     link = DialLink(member, ws, remote_generation, peer_ip=endpoint["host"],
                     db_generation=db_generation)
+    link.protocol_version = ws.relay_protocol_version
     with relay_server._LINKS_LOCK:
         previous = relay_server._LINKS.get(member)
         relay_server._LINKS[member] = link
@@ -522,18 +543,27 @@ def dial_once(member: str, *, initial=None) -> bool:
     if switching:
         relay.restore_switch_after_handshake(
             member, target="dial", generation=db_generation)
+    elif _row and _row["switch_state"] == "switching" and _row["switch_target"] == "listen":
+        # The request arrived between the pre-registration check and publication.
+        from . import relay_switch
+        try:
+            with closing(db.get_connection()) as conn:
+                relay_switch.send_return(conn, member, remote_generation, link.send_text)
+        except ConnectionError:
+            pass
     logger.info("relay dial link up member=%s frame_generation=%d db_generation=%d",
                 member, remote_generation, db_generation)
     # 帧循环：收插件帧（heartbeat/mcp_report/frame/mcp_snapshot 响应），
     # 每 HEARTBEAT_INTERVAL 发心跳；断链返回 False 由退避调度接管。
     last_sent = time.time()
+    close_reason = "dial connection closed"
     while True:
         try:
             raw = ws.recv(timeout=RECV_TIMEOUT)
         except TimeoutError:
             raw = None
         except Exception as exc:  # noqa: BLE001 断链
-            logger.info("relay dial link down member=%s err=%s", member, exc)
+            close_reason = f"dial receive failed: {type(exc).__name__}"
             break
         if raw is not None:
             try:
@@ -552,7 +582,7 @@ def dial_once(member: str, *, initial=None) -> bool:
                 last_sent = time.time()
             except ConnectionError:
                 break
-    relay_server._shutdown_link(link, "dial connection closed")
+    relay_server._shutdown_link(link, close_reason)
     return True
 
 
@@ -644,6 +674,8 @@ def restore_on_startup() -> None:
                     conn.close()
             elif row["switch_target"] == "dial":
                 start_dial(member)
-            # switch_target=='listen'：等插件 register 连上（relay_ws 清切换态）
+            elif row["direction"] == "dial":
+                from . import relay_switch
+                relay_switch.switch(member, "listen")
         elif row["direction"] == "dial":
             start_dial(member)

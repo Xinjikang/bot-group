@@ -1,19 +1,16 @@
 """bot-group relay 平台适配器（req#168 task#316）。
 
 数据面为 no-op（引擎会话回复经随包 MCP 的群聊工具走引擎 HTTP API，
-不经平台 send）；平台角色 = 随 gateway 加载时启动/停止一条出站 WSS。
+不经平台 send）；适配器随 gateway 加载和停止各引擎的连接。
 """
 
 from __future__ import annotations
 
-import logging
+import asyncio
 from typing import Any, Optional
 
 from . import config as relay_config
 from . import relay as relay_mod
-
-logger = logging.getLogger(__name__)
-
 
 def create_adapter(config):
     from gateway.config import Platform
@@ -30,31 +27,43 @@ class RelayAdapter:
 
     def __init__(self, config: Any, platform: Any = None):
         super().__init__(config, platform)
-        self._client: relay_mod.RelayClient | None = None
-        self._cfg = relay_config.load(config)
-        if self._cfg is None:
-            logger.warning("bot-group relay: configuration missing; adapter idle")
+        self._platform_config = config
+        self._clients = {}
+        self._watcher = None
 
     # ---------- 生命周期（gateway 调用） ----------
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        if self._cfg is None:
+        self._refresh()
+        if not self._clients:
             return False
-        if self._client is None:
-            self._client = relay_mod.RelayClient(self._cfg, on_status=self._on_status)
-            self._client.start()
+        if self._watcher is None:
+            self._watcher = asyncio.create_task(self._watch())
         self._mark_connected()
         return True
 
     async def disconnect(self) -> None:
-        if self._client is not None:
-            self._client.stop()
-            self._client = None
+        if self._watcher is not None:
+            self._watcher.cancel()
+            try:
+                await self._watcher
+            except asyncio.CancelledError:
+                pass
+            self._watcher = None
+        await asyncio.gather(*(asyncio.to_thread(relay_mod.stop_gateway_client, client)
+                               for client in self._clients.values()))
+        self._clients.clear()
         self._mark_disconnected()
 
-    def _on_status(self, state: str) -> None:
-        logger.info("bot-group relay member=%s status=%s",
-                    self._cfg.member if self._cfg else "?", state)
+    def _refresh(self):
+        for peer, cfg in relay_config.peer_configs(self._platform_config, reserve=True).items():
+            if peer not in self._clients:
+                self._clients[peer] = relay_mod.gateway_client(cfg, peer)
+
+    async def _watch(self):
+        while True:
+            await asyncio.sleep(2)
+            self._refresh()
 
     # ---------- 数据面 no-op ----------
 

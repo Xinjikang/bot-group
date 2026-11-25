@@ -2,6 +2,11 @@
 
 远程 Hermes 可从空节点列表按两个方向配对。部署与排障见 [ECS 插件安装指南](guides/BOT-GROUP-RELAY-INSTALL.md)，协议与身份确认见 [接入设计](design/2026-11-18-remote-hermes-adapter.md)，双节点派发和安装包验证见 [首次接入测试](../scripts/TEST_INDEX.md#远程-hermes-首次接入)。
 
+同一个 Hermes profile 同时连接多个 Bot-group 的配对、会话隔离与回信验收见[多引擎接入需求](requirements/2026-11-25-hermes-multiple-engines.md)。
+跨发布版本的握手、可选能力和旧端升级边界见[远程通信协议版本设计](design/2026-11-25-relay-protocol-compatibility.md)。
+
+成员发言规则和中英文界面切换见[需求](requirements/2026-11-25-member-speech-ui-i18n.md)与[设计](design/2026-11-25-member-speech-ui-i18n.md)。消息中的 @ 点名、撤回按钮和思考气泡停止按钮的样式见 [UI 规范](ui-spec/UI-SPEC.md)，验证方法见[消息界面测试](../scripts/TEST_INDEX.md#消息界面)。
+
 DSH 0.2.2 启动和凭据权限修复见 [兼容设计](design/2026-11-14-dsh-v022-compatibility.md)，版本变更见 [v0.2.15](releases/v0.2.15.md)。
 
 清晨首条消息卡顿的现场证据、取连接四段分解三档方案与清晨窗口探针设计见 [清晨卡顿探针设计](design/2026-11-12-morning-probe-design.md)；11-17 下午复现后的检测口径最小增补（三阈值、触发原因、结论三态、两例回归）见 [探针检测口径增补](design/2026-11-17-probe-detection-patch.md)；三次现场后收敛的引擎内分步计时与写事务起止埋点方案（定位 prepare 落点与锁持有者）见 [慢发送引擎内分步计时方案](design/2026-11-18-slow-send-instrumentation.md)；发送回执与选人/唤醒拆分的评估（短写事务硬约束、每话题顺序、崩溃幂等、验证场景）见 [发送路径异步拆分评估](design/2026-11-18-async-send-split.md)。
@@ -60,7 +65,7 @@ Codex 与 Hermes 连续唤醒的规则正文、原生系统文本和工具 schem
 
 Hermes 新旧会话接口、安装定位和兼容提示见 [Hermes 兼容性](engineering/HERMES-COMPATIBILITY.md) 与 [设计依据](design/2026-10-27-hermes-compatibility.md)。
 
-当前正式版本为 [v0.3.4](releases/v0.3.4.md)，支持远程会话长历史分块传输与后台读取。历史版本见 [v0.3.3](releases/v0.3.3.md)、 [v0.3.2](releases/v0.3.2.md)、 [v0.3.1](releases/v0.3.1.md)、[v0.3.0](releases/v0.3.0.md)、[v0.2.16](releases/v0.2.16.md)、[v0.2.15](releases/v0.2.15.md)、[v0.2.14](releases/v0.2.14.md)、[v0.2.13](releases/v0.2.13.md)、[v0.2.12](releases/v0.2.12.md)、[v0.2.11](releases/v0.2.11.md)、[v0.2.10](releases/v0.2.10.md)、[v0.2.9](releases/v0.2.9.md)、[v0.2.8](releases/v0.2.8.md)、[v0.2.7](releases/v0.2.7.md)、[v0.2.6](releases/v0.2.6.md)、[v0.2.5](releases/v0.2.5.md)、[v0.2.4](releases/v0.2.4.md)、[v0.2.3](releases/v0.2.3.md)、[v0.2.2](releases/v0.2.2.md)、[v0.2.1](releases/v0.2.1.md)、[v0.2.0](releases/v0.2.0.md)、[v0.1.9](releases/v0.1.9.md)、[v0.1.8](releases/v0.1.8.md)、[v0.1.7](releases/v0.1.7.md)、[v0.1.6](releases/v0.1.6.md)、[v0.1.5](releases/v0.1.5.md)、[v0.1.4](releases/v0.1.4.md)、[v0.1.3](releases/v0.1.3.md)、[v0.1.2](releases/v0.1.2.md)。
+当前正式版本为 [v0.3.5](releases/v0.3.5.md)，支持中英文界面及远程 Hermes 多引擎连接。历史版本见 [v0.3.4](releases/v0.3.4.md)、 [v0.3.3](releases/v0.3.3.md)、 [v0.3.2](releases/v0.3.2.md)、 [v0.3.1](releases/v0.3.1.md)、[v0.3.0](releases/v0.3.0.md)、[v0.2.16](releases/v0.2.16.md)、[v0.2.15](releases/v0.2.15.md)、[v0.2.14](releases/v0.2.14.md)、[v0.2.13](releases/v0.2.13.md)、[v0.2.12](releases/v0.2.12.md)、[v0.2.11](releases/v0.2.11.md)、[v0.2.10](releases/v0.2.10.md)、[v0.2.9](releases/v0.2.9.md)、[v0.2.8](releases/v0.2.8.md)、[v0.2.7](releases/v0.2.7.md)、[v0.2.6](releases/v0.2.6.md)、[v0.2.5](releases/v0.2.5.md)、[v0.2.4](releases/v0.2.4.md)、[v0.2.3](releases/v0.2.3.md)、[v0.2.2](releases/v0.2.2.md)、[v0.2.1](releases/v0.2.1.md)、[v0.2.0](releases/v0.2.0.md)、[v0.1.9](releases/v0.1.9.md)、[v0.1.8](releases/v0.1.8.md)、[v0.1.7](releases/v0.1.7.md)、[v0.1.6](releases/v0.1.6.md)、[v0.1.5](releases/v0.1.5.md)、[v0.1.4](releases/v0.1.4.md)、[v0.1.3](releases/v0.1.3.md)、[v0.1.2](releases/v0.1.2.md)。
 
 需求超时拆解、部分任务恢复和队列空唤醒抑制见 [需求恢复契约](engineering/REQUIREMENT-RECOVERY.md) 与 [设计依据](design/2026-10-27-requirement-recovery.md)。
 

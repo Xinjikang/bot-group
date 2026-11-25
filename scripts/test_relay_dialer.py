@@ -224,7 +224,7 @@ class DialerConnectionTests(DialerBase):
         hello = plugin.handshakes[0]
         self.assertEqual(hello["member"], REMOTE)
         self.assertEqual(hello["direction"], "dial")
-        self.assertEqual(hello["protocol_version"], relay_server.RELAY_PROTOCOL_VERSION)
+        self.assertIn(relay_server.RELAY_PROTOCOL_VERSION, hello["protocol_versions"])
         self.assertEqual(hello["credential"], "test-pairing-token",
                          "拨号 hello 必须出示一次性配对凭据（可验证配对身份证明）")
         # 帧代=插件 hello_ok 代（协议对称）；状态代=引擎本地 advance 后的代

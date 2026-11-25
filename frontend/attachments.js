@@ -29,7 +29,7 @@ async function uploadImageDraft(project, draft) {
 function createImageComposer(container, textarea, destination) {
   const toolbar = document.createElement('div');
   toolbar.className = 'image-toolbar';
-  toolbar.innerHTML = '<button type="button" class="image-add" title="添加图片" aria-label="添加图片">＋</button><input type="file" accept="image/png,image/jpeg,image/webp" multiple hidden><div class="image-drafts"></div>';
+  toolbar.innerHTML = `<button type="button" class="image-add" title="${window.t('att_add_image')}" aria-label="${window.t('att_add_image')}">＋</button><input type="file" accept="image/png,image/jpeg,image/webp" multiple hidden><div class="image-drafts"></div>`;
   container.appendChild(toolbar);
   const addButton = toolbar.querySelector('button');
   const inputWrap = document.createElement('div');
@@ -49,7 +49,8 @@ function createImageComposer(container, textarea, destination) {
     previews.replaceChildren();
     const key = imageDestinationKey(destination());
     addButton.disabled = imageSends.has(key);
-    addButton.title = imageSends.has(key) ? '发送中…' : '添加图片';
+    addButton.title = imageSends.has(key) ? window.t('att_sending') : window.t('att_add_image');
+    addButton.setAttribute('aria-label', addButton.title);
     toolbar.hidden = current().length === 0;
     current().forEach(item => {
       const chip = document.createElement('span');
@@ -59,7 +60,7 @@ function createImageComposer(container, textarea, destination) {
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.textContent = '×';
-      remove.title = '移除图片';
+      remove.title = window.t('att_remove_image');
       remove.onclick = e => {
         e.stopPropagation();
         if (imageSends.has(key)) return;
@@ -74,12 +75,12 @@ function createImageComposer(container, textarea, destination) {
   }
   function add(files) {
     const dest = destination();
-    if (!dest.project) return showAlert('请先选择项目');
+    if (!dest.project) return showAlert(window.t('att_select_project_first'));
     if (imageSends.has(imageDestinationKey(dest))) return;
     const selected = [...files];
-    if (current().length + selected.length > 4) return showAlert('每条消息最多 4 张图片');
+    if (current().length + selected.length > 4) return showAlert(window.t('att_max_four'));
     if (selected.some(f => !['image/png','image/jpeg','image/webp'].includes(f.type) || f.size > 10 * 1024 * 1024)) {
-      return showAlert('请选择 PNG、JPEG 或 WebP，每张最多 10 MiB');
+      return showAlert(window.t('att_type_limit'));
     }
     current().push(...selected.map(file => ({file, url: URL.createObjectURL(file)})));
     refreshImageEditors();
@@ -128,7 +129,7 @@ async function sendImageMessage(body) {
   imageSends.add(key);
   const isCommand = body.text?.trim().startsWith('/');
   let commandResultReceived = false;
-  if (isCommand) setCommandReceipt(body, '正在执行命令…', 'pending');
+  if (isCommand) setCommandReceipt(body, window.t('att_cmd_running'), 'pending');
   refreshImageEditors();
   try {
     const ids = [];
@@ -144,10 +145,10 @@ async function sendImageMessage(body) {
     const result = await api('/msg', {method: 'POST', body: JSON.stringify({...body, attachment_ids: ids})});
     if (result.handled) {
       commandResultReceived = true;
-      setCommandReceipt(body, result.detail || `${result.command} ${result.ok ? '已完成' : '执行失败'}`,
+      setCommandReceipt(body, result.detail || `${result.command} ${result.ok ? window.t('att_cmd_done') : window.t('att_cmd_failed')}`,
         result.ok ? 'success' : 'error');
-      if (!result.ok) throw new Error(result.detail || '命令执行失败');
-      await showAlert(result.detail || `${result.command} 已完成`);
+      if (!result.ok) throw new Error(result.detail || window.t('att_cmd_failed_msg'));
+      await showAlert(result.detail || window.t('att_cmd_completed', [result.command]));
     }
     draft.forEach(item => URL.revokeObjectURL(item.url));
     imageDrafts.delete(key);
@@ -178,7 +179,7 @@ async function loadChatImage(img) {
     const response = await fetch('/attachments/' + encodeURIComponent(img.dataset.attachmentId), {
       headers: S.token ? {Authorization: 'Bearer ' + S.token} : {}
     });
-    if (!response.ok) throw new Error('图片读取失败 (' + response.status + ')');
+    if (!response.ok) throw new Error(window.t('att_image_load_failed', [response.status]));
     const blob = await response.blob();
     if (!img.isConnected) return;
     const url = URL.createObjectURL(blob);
@@ -190,7 +191,7 @@ async function loadChatImage(img) {
       const original = document.createElement('img');
       original.src = URL.createObjectURL(blob);
       const close = document.createElement('button');
-      close.textContent = '关闭';
+      close.textContent = window.t('att_close');
       close.onclick = () => dialog.close();
       dialog.append(close, original);
       document.body.appendChild(dialog);
@@ -198,7 +199,7 @@ async function loadChatImage(img) {
       dialog.showModal();
     };
   } catch (error) {
-    img.alt = error.message + '，点击重试';
+    img.alt = window.t('att_click_retry', [error.message]);
     img.onclick = () => loadChatImage(img);
   }
 }
@@ -223,7 +224,7 @@ function renderChatImages(container, attachments) {
     const img = document.createElement('img');
     img.className = 'chat-image';
     img.alt = item.filename;
-    img.title = item.filename + ' · 点击查看原图';
+    img.title = item.filename + ' · ' + window.t('att_view_original');
     img.width = item.width;
     img.height = item.height;
     img.style.width = Math.min(item.width, 420, 320 * item.width / item.height) + 'px';

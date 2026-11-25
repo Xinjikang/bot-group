@@ -33,6 +33,9 @@ const ctx = {S: {msgs: [{id: 1}], currentThread: null, messageView: 0,
     renders++;
     return {};
   }};
+ctx.t = require('./i18n_vm_stub.cjs');
+ctx.window = {t: ctx.t};
+ctx.getUILanguage = () => 'zh-CN';
 vm.createContext(ctx);
 vm.runInContext(html.slice(html.indexOf('// req#40 task#77：渲染签名'), // renderSignature 定义在 renderMessages 之前（req#40 task#77），切片必须带上它
   html.indexOf('// 群聊总视图：话题消息')), ctx);

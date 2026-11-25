@@ -17,12 +17,15 @@ import secrets
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 PAIRING_TTL_SECONDS = 600.0   # 短时：10 分钟内兑换有效
 _LOCK = threading.Lock()
+_PEER = ContextVar("relay_peer", default="")
 
 
 def _state_dir() -> Path:
@@ -35,8 +38,78 @@ def _state_path() -> Path:
     return _state_dir() / "pairing.json"
 
 
+@contextmanager
+def using_peer(peer):
+    token = _PEER.set(peer)
+    try:
+        yield
+    finally:
+        _PEER.reset(token)
+
+
+def current_peer():
+    return _PEER.get()
+
+
+def _peer_file():
+    base = _state_path()
+    peer = current_peer()
+    return base.parent / "peers" / peer / base.name if peer else base
+
+
+def peer_ids():
+    base = _state_path()
+    return ["", *(p.parent.name for p in sorted((base.parent / "peers").glob("*/" + base.name)))]
+
+
+def select_peer(member, *, engine_url="", port=None, reserve=True):
+    """Keep a legacy binding in place and allocate independent state for new peers."""
+    url = engine_url.rstrip("/")
+    identity = "url:" + url if url else f"listen:{port or secrets.token_hex(16)}"
+    digest = hashlib.sha256(identity.encode()).hexdigest()
+    with _LOCK:
+        occupied = False
+        for peer in peer_ids():
+            with using_peer(peer):
+                state = _load_state()
+            register = state.get("register") or {}
+            scope = register.get("scope") or []
+            address = register.get("engine_url") or (scope[1] if len(scope) == 3 else "")
+            listener = state.get("pairing") or {}
+            if url and register.get("member") == member and url == address.rstrip("/"):
+                return peer
+            if not url and port and listener.get("member") == member and port == listener.get("port"):
+                return peer
+            if not peer:
+                occupied = bool(register or listener)
+        env_url = (os.environ.get("BOT_GROUP_ENGINE_URL") or "").rstrip("/")
+        if env_url and env_url != url:
+            occupied = True
+        if occupied:
+            return digest
+        # The CLI and the gateway can register different engines concurrently.
+        base = _state_path()
+        owner = base.with_suffix(".owner")
+        if owner.is_file():
+            return "" if owner.read_text(encoding="ascii") == digest else digest
+        if not reserve:
+            return ""
+        base.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=base.parent, delete=False, mode="w") as f:
+            f.write(digest)
+            temp = Path(f.name)
+        try:
+            try:
+                os.link(temp, owner)
+            except FileExistsError:
+                pass
+            return "" if owner.read_text(encoding="ascii") == digest else digest
+        finally:
+            temp.unlink(missing_ok=True)
+
+
 def _load_state() -> dict:
-    path = _state_path()
+    path = _peer_file()
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -44,7 +117,7 @@ def _load_state() -> dict:
 
 
 def _save_state(state: dict) -> None:
-    path = _state_path()
+    path = _peer_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=path.parent, encoding='utf-8', mode='w', delete=False) as handle:
         tmp = Path(handle.name)
@@ -62,13 +135,30 @@ def _save_state(state: dict) -> None:
         tmp.unlink(missing_ok=True)
 
 
+@contextmanager
+def _transaction():
+    """Serialize read-modify-replace across the gateway and its pairing CLI."""
+    with _LOCK:
+        path = _peer_file().with_suffix(".lock")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a+b") as lock:
+            if os.name == "nt":
+                import msvcrt
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
+
+
 def issue_pairing(*, member: str, advertise: str, port: int, fingerprint: str,
                   scheme: str = "wss", listener: dict | None = None) -> dict:
     """签发一次性配对：替换旧未用凭据（旧链接即刻失效），返回
     {pairing_url, pairing_token, fingerprint_short, expires_at}。
 
     日志只记签发事件，不记链接/凭据。"""
-    with _LOCK:
+    with _transaction():
         state = _load_state()
         token = secrets.token_urlsafe(32)
         now = time.time()
@@ -102,7 +192,7 @@ def issue_pairing(*, member: str, advertise: str, port: int, fingerprint: str,
 def redeem_pairing(*, member: str, token: str, fingerprint: str = "") -> bool:
     """原子兑换：凭据匹配、未过期、未兑换才通过；首次成功即作废（再次兑换
     失败）。调用方持锁场景（握手线程）由 _LOCK 串行保证。"""
-    with _LOCK:
+    with _transaction():
         state = _load_state()
         pairing = state.get("pairing") or {}
         if not pairing or pairing.get("redeemed"):
@@ -145,7 +235,7 @@ def activate_dial_offer(member: str, key: str, ticket: str, fingerprint: str) ->
     if not isinstance(key, str) or not key:
         return False
     digest = hashlib.sha256(key.encode()).hexdigest()
-    with _LOCK:
+    with _transaction():
         state = _load_state()
         offer = state.get('pairing') or {}
         now = time.time()
@@ -162,7 +252,7 @@ def issue_persistent(member: str) -> str:
     """配对兑换成功后签发持久身份凭据（manager node2057 ①）：重连不再
     用一次性配对票，改用持久凭据认证；吊销时 clear_persistent 才断。
     返回凭据明文（只在 hello_ok 帧下发一次，不落日志）。"""
-    with _LOCK:
+    with _transaction():
         state = _load_state()
         token = secrets.token_urlsafe(32)
         state["persistent"] = {
@@ -189,7 +279,7 @@ def verify_persistent(member: str, token: str) -> bool:
 
 def clear_persistent(member: str | None = None) -> None:
     """吊销持久身份（吊销才断：清态后该成员重连须重新配对）。"""
-    with _LOCK:
+    with _transaction():
         state = _load_state()
         persistent = state.get("persistent")
         if persistent is None or (member and persistent.get("member") != member):
@@ -213,7 +303,7 @@ def listener_selected(member, *, confirmed=False):
 
 
 def select_role(member, role):
-    with _LOCK:
+    with _transaction():
         state = _load_state()
         offer = state.get("pairing") or {}
         if offer.get("member") == member and offer.get("role") != role:
@@ -223,7 +313,7 @@ def select_role(member, role):
 
 
 def request_outbound(member):
-    with _LOCK:
+    with _transaction():
         state = _load_state()
         offer = state.get("pairing") or {}
         if offer.get("member") == member:
@@ -263,10 +353,30 @@ def pairing_metadata() -> dict:
         }
 
 
+def status():
+    from urllib.parse import urlsplit
+    result = pairing_metadata()
+    result["engines"] = []
+    for peer in peer_ids():
+        with using_peer(peer):
+            state = _load_state()
+            register = state.get("register") or {}
+            listener = state.get("pairing") or {}
+            member = register.get("member") or listener.get("member")
+            if not member:
+                continue
+            address, _ = saved_register(member)
+            host = urlsplit(address)
+            result["engines"].append({"member": member, "engine_host": host.hostname,
+                "engine_port": host.port, "listen_port": listener.get("port"),
+                "role": listener.get("role") or ("dial" if address else "listen")})
+    return result
+
+
 def register_offer(member: str, engine_url: str, invite: str) -> tuple[str, str]:
     """Derive separate proof and credential from a local seed scoped to one invitation."""
     scope = [member, engine_url, hashlib.sha256(invite.encode()).hexdigest()]
-    with _LOCK:
+    with _transaction():
         state = _load_state()
         pending = state.get('register_offer') or {}
         if pending.get('scope') != scope:
@@ -280,7 +390,7 @@ def register_offer(member: str, engine_url: str, invite: str) -> tuple[str, str]
 
 def save_register_credential(member: str, credential: str, *, engine_url: str = '', invite: str = '') -> None:
     """Persist confirmed credentials before opening a normal authenticated link."""
-    with _LOCK:
+    with _transaction():
         state = _load_state()
         state['register'] = {'member': member, 'credential': credential, 'saved_at': time.time()}
         if engine_url:
@@ -324,8 +434,8 @@ def write_link_file(pairing_url: str, *, path: str | None = None) -> str:
     manager node2060 ①：从创建时即限权（os.open O_CREAT 0600，非事后
     chmod——创建瞬间无宽权限窗口）；写失败如实抛 OSError（不吞）；
     写临时文件后原子 rename。path=None 时写到插件 state/pairing-link.txt。"""
-    target = Path(path) if path else _state_dir() / "pairing-link.txt"
-    _state_dir().mkdir(parents=True, exist_ok=True)
+    target = Path(path) if path else _peer_file().parent / "pairing-link.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(".tmp")
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     try:

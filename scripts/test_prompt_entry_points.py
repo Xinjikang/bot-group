@@ -62,6 +62,17 @@ class PromptEntryPointTests(unittest.TestCase):
         end = prompt.index("\n2. ", start)
         return prompt[start:end]
 
+    def test_member_speech_rule_reaches_both_modes(self):
+        """req#178 #332：共用成员发言段逐字出现在 work 与 chat 两版提示词中。"""
+        rule = ("成员之间用简洁、自然的工作语言，直接说具体的事。不甩词，不说套话，"
+                "不说黑话，不省略必要的文字，确保意思准确。用到专业词时，让旁观者从上下文就能读懂。")
+        for kind in ("work", "chat"):
+            with self.subTest(kind=kind):
+                prompt = wake.system_prompt_for(kind)
+                self.assertEqual(prompt.count(rule), 1)
+                self.assertIn("## 成员发言", prompt)
+                self.assertLess(prompt.index(rule), prompt.index("## 协作规则"))
+
     def test_work_rule1_three_entry_points(self):
         rule1 = self._rule1("work")
         self.assertIn("approved 续工", rule1)

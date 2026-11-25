@@ -240,15 +240,23 @@ def log_deferred(row, phase, exc):
 
 def maintain():
     """Retry durable revocations and restart handoffs without blocking engine startup."""
-    from . import hermes_gateway, hermes_gateway_ledger as ledger, signing_keys, wake
+    from . import hermes_gateway, hermes_gateway_ledger as ledger, relay, relay_server, signing_keys, wake
     if wake._shutting_down.is_set():
         return
     current = _signing_generation()
     conn = db.get_connection()
     try:
-        rows = conn.execute('SELECT * FROM hermes_session_grants WHERE (revoked=1 AND detached=0) OR '
-                            '(revoked=0 AND (signing_generation<>? OR pending_generation IS NOT NULL))', (current,)).fetchall()
+        rows = conn.execute("""
+            SELECT g.*, n.member AS relay_member FROM hermes_session_grants g
+            LEFT JOIN relay_nodes n ON n.member=g.profile
+            WHERE (n.member IS NULL OR n.state='online')
+              AND ((g.revoked=1 AND g.detached=0)
+                OR (g.revoked=0 AND (g.signing_generation<>? OR g.pending_generation IS NOT NULL)))
+        """, (current,)).fetchall()
         for row in rows:
+            member = row['relay_member']
+            if member is not None and (relay_server.active_link(member) is None or not relay.is_online(conn, member)):
+                continue
             guard = lock_for(row['session'])
             if not guard.acquire(blocking=False):
                 continue
@@ -269,6 +277,9 @@ def maintain():
                     snapshot = client.rpc('session.resume', session_id=row['session_id'])
                     phase = 'configure'
                     configure(conn, row, client, snapshot, refresh_model=False)
+            except hermes_gateway.RelayOffline:
+                # The link can close between the eligibility check and lease acquisition.
+                conn.rollback()
             except Exception as exc:
                 log_deferred(row, phase, exc)
                 conn.rollback()

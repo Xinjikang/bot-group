@@ -12,6 +12,8 @@
 
 引擎状态表示当前页面与 bot-group 引擎的 SSE 连接。相邻的 Hermes 网关状态表示引擎管理的网关连接池，所有状态文案均包含“Hermes 网关”对象名称。
 
+每次 SSE 状态变化同时更新指示灯和当前文案的翻译键。初次加载与切换语言时按当前键显示，区分首次连接和断线重连。重启或升级期间由操作进度提供状态文字。
+
 初始 HTML 和每次创建 EventSource 都进入 connecting；onopen 进入 connected；onerror 根据 readyState 区分自动重连与 CLOSED；退出登录主动关闭连接时进入 disconnected。
 
 验证时在隔离 Chrome 页面注入合成 EventSource 事件，检查两套主题的初始加载、刷新、连接、重连、关闭及替换连接，并核对计算后的背景色、动画与光晕。部署后刷新页面加载新资源。

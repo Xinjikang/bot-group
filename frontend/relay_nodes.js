@@ -8,100 +8,100 @@
   dialog.id = 'relay-nodes-dialog';
   dialog.setAttribute('aria-labelledby', 'relay-nodes-title');
   dialog.innerHTML = `
-    <h3 id="relay-nodes-title">远程节点管理</h3>
-    <p id="relay-readonly" class="profile-help" role="note" hidden>当前为 Bot 身份，仅可查看说明；远程节点管理需要管理员登录。</p>
+    <h3 id="relay-nodes-title" data-i18n="relay_title">远程节点管理</h3>
+    <p id="relay-readonly" class="profile-help" role="note" data-i18n="relay_readonly" hidden>当前为 Bot 身份，仅可查看说明；远程节点管理需要管理员登录。</p>
     <div id="relay-admin-body">
       <div class="relay-toolbar">
-        <button type="button" id="relay-add" class="primary">添加远程 Hermes</button>
-        <button type="button" id="relay-open-listen">本机监听配置</button>
-        <button type="button" id="relay-refresh">刷新</button>
+        <button type="button" id="relay-add" class="primary" data-i18n="relay_add">添加远程 Hermes</button>
+        <button type="button" id="relay-open-listen" data-i18n="relay_listen_config">本机监听配置</button>
+        <button type="button" id="relay-refresh" data-i18n="refresh">刷新</button>
         <span id="relay-nodes-status" class="profile-help" role="status" aria-live="polite"></span>
       </div>
       <dialog id="relay-listen-dialog" aria-labelledby="relay-listen-title">
       <section id="relay-listen" class="relay-listen" aria-labelledby="relay-listen-title">
         <div class="relay-listen-head">
-          <h4 id="relay-listen-title">本机监听配置</h4>
-          <span id="relay-listen-badge" class="relay-badge offline">读取中</span>
+          <h4 id="relay-listen-title" data-i18n="relay_listen_config">本机监听配置</h4>
+          <span id="relay-listen-badge" class="relay-badge offline" data-i18n="relay_reading">读取中</span>
         </div>
         <p id="relay-listen-summary" class="profile-help" role="status" aria-live="polite"></p>
         <div class="relay-listen-controls">
-          <label class="relay-field" for="relay-listen-address">本机网卡地址
+          <label class="relay-field" for="relay-listen-address"><span data-i18n="relay_interface">本机网卡地址</span>
             <select id="relay-listen-address"></select>
           </label>
-          <button type="button" id="relay-listen-save" class="primary" disabled>保存并开启监听</button>
-          <button type="button" id="relay-listen-disable" disabled>停用远程监听</button>
+          <button type="button" id="relay-listen-save" class="primary" data-i18n="relay_save_listen" disabled>保存并开启监听</button>
+          <button type="button" id="relay-listen-disable" data-i18n="relay_disable_listen" disabled>停用远程监听</button>
         </div>
         <div id="relay-listen-url-row" class="relay-copy-row" hidden>
           <input id="relay-listen-url" readonly autocomplete="off" spellcheck="false"
-                 aria-label="本机连接地址">
-          <button type="button" id="relay-listen-copy">复制地址</button>
+                 aria-label="本机连接地址" data-i18n-aria-label="relay_local_address">
+          <button type="button" id="relay-listen-copy" data-i18n="relay_copy_address">复制地址</button>
         </div>
         <p id="relay-listen-sources" class="profile-help"></p>
         <p id="relay-listen-status" class="profile-help" role="status" aria-live="polite"></p>
       </section>
-      <div class="dlg-btns"><button id="relay-listen-refresh">刷新</button><button id="relay-listen-close">关闭</button></div></dialog>
+      <div class="dlg-btns"><button id="relay-listen-refresh" data-i18n="refresh">刷新</button><button id="relay-listen-close" data-i18n="close">关闭</button></div></dialog>
       <div id="relay-node-list" aria-live="polite"></div>
       <section id="relay-credential" class="relay-credential" hidden aria-labelledby="relay-credential-title">
-        <h4 id="relay-credential-title">请立即保存凭据</h4>
-        <p class="profile-help" role="alert">凭据只显示这一次；关闭窗口、刷新页面或重新打开后无法再次查看。</p>
-        <label for="relay-issued-member">成员标识</label>
+        <h4 id="relay-credential-title" data-i18n="relay_save_credential">请立即保存凭据</h4>
+        <p class="profile-help" role="alert" data-i18n="relay_credential_once">凭据只显示这一次；关闭窗口、刷新页面或重新打开后无法再次查看。</p>
+        <label for="relay-issued-member" data-i18n="relay_member_id">成员标识</label>
         <div class="relay-copy-row">
-          <input id="relay-issued-member" readonly autocomplete="off" spellcheck="false" aria-label="成员标识">
-          <button type="button" id="relay-copy-member">复制</button>
+          <input id="relay-issued-member" readonly autocomplete="off" spellcheck="false" aria-label="成员标识" data-i18n-aria-label="relay_member_id">
+          <button type="button" id="relay-copy-member" data-i18n="copy">复制</button>
         </div>
-        <label for="relay-issued-credential">连接凭据</label>
+        <label for="relay-issued-credential" data-i18n="relay_credential">连接凭据</label>
         <div class="relay-copy-row">
-          <input id="relay-issued-credential" readonly autocomplete="off" spellcheck="false" aria-label="连接凭据">
-          <button type="button" id="relay-copy-credential">复制</button>
+          <input id="relay-issued-credential" readonly autocomplete="off" spellcheck="false" aria-label="连接凭据" data-i18n-aria-label="relay_credential">
+          <button type="button" id="relay-copy-credential" data-i18n="copy">复制</button>
         </div>
       </section>
     </div>
-    <div class="dlg-btns"><button type="button" id="relay-close">关闭</button></div>`;
+    <div class="dlg-btns"><button type="button" id="relay-close" data-i18n="close">关闭</button></div>`;
   document.body.append(dialog);
 
   const directionPanel = createRelayDirectionDialog(dialog, 'relay-direction', {
-    title: '切换连接方向',
+    title: 'relay_switch_direction',
     badge: '<span id="relay-direction-badge" class="relay-badge offline"></span>',
     content: `<p id="relay-direction-status" class="profile-help" role="status" aria-live="polite"></p>
         <p id="relay-direction-failure" class="profile-help" role="alert"></p>
         <details id="relay-direction-detail">
-          <summary>连接详情</summary>
+          <summary data-i18n="relay_connection_details">连接详情</summary>
           <div class="relay-direction-addresses">
-            <span><span class="relay-key">本机监听地址</span><span id="relay-direction-local">—</span></span>
-            <span><span class="relay-key">对端拨号地址</span><span id="relay-direction-remote">—</span></span>
-            <span><span class="relay-key">证书指纹</span><span id="relay-direction-fingerprint">—</span></span>
+            <span><span class="relay-key" data-i18n="relay_local_listen">本机监听地址</span><span id="relay-direction-local">—</span></span>
+            <span><span class="relay-key" data-i18n="relay_peer_dial">对端拨号地址</span><span id="relay-direction-remote">—</span></span>
+            <span><span class="relay-key" data-i18n="relay_fingerprint">证书指纹</span><span id="relay-direction-fingerprint">—</span></span>
           </div>
-          <ol class="relay-stages" aria-label="连接阶段">
-            <li id="relay-stage-listen"><span>已监听</span><em>未开始</em></li>
-            <li id="relay-stage-auth"><span>双方已认证</span><em>未开始</em></li>
-            <li id="relay-stage-mcp"><span>读取成员名单</span><em>未开始</em></li>
+          <ol class="relay-stages" aria-label="连接阶段" data-i18n-aria-label="relay_stages_aria">
+            <li id="relay-stage-listen"><span data-i18n="relay_listening">已监听</span><em data-i18n="relay_not_started">未开始</em></li>
+            <li id="relay-stage-auth"><span data-i18n="relay_authenticated">双方已认证</span><em data-i18n="relay_not_started">未开始</em></li>
+            <li id="relay-stage-mcp"><span data-i18n="relay_reading_members">读取成员名单</span><em data-i18n="relay_not_started">未开始</em></li>
           </ol>
           <div class="relay-direction-actions">
-            <button type="button" id="relay-direction-verify" hidden>重新验证 MCP</button>
-            <button type="button" id="relay-pairing-replace">更换配对链接</button>
+            <button type="button" id="relay-direction-verify" data-i18n="relay_reverify_mcp" hidden>重新验证 MCP</button>
+            <button type="button" id="relay-pairing-replace" data-i18n="relay_replace_pairing">更换配对链接</button>
           </div>
         </details>
-        <section id="relay-pairing" class="relay-pairing" aria-label="云端配对" hidden>
+        <section id="relay-pairing" class="relay-pairing" aria-label="云端配对" data-i18n-aria-label="relay_cloud_pairing" hidden>
           <div class="relay-pairing-line">
-            <label class="relay-field" for="relay-pairing-url">云端 Hermes 配对链接
+            <label class="relay-field" for="relay-pairing-url"><span data-i18n="relay_cloud_pairing_url">云端 Hermes 配对链接</span>
               <input id="relay-pairing-url" type="password" autocomplete="off" spellcheck="false"
-                     placeholder="粘贴配对链接">
+                     placeholder="粘贴配对链接" data-i18n-placeholder="relay_paste_pairing">
             </label>
-            <button type="button" id="relay-pairing-parse">解析</button>
+            <button type="button" id="relay-pairing-parse" data-i18n="relay_parse">解析</button>
           </div>
           <div id="relay-pairing-preview" class="relay-pairing-preview" hidden>
-            <p><span class="relay-key">设备</span><span id="relay-pairing-identity"></span></p>
-            <p><span class="relay-key">入口</span><span id="relay-pairing-address"></span></p>
-            <p><span class="relay-key">短指纹</span><span id="relay-pairing-fingerprint"></span></p>
+            <p><span class="relay-key" data-i18n="relay_device">设备</span><span id="relay-pairing-identity"></span></p>
+            <p><span class="relay-key" data-i18n="relay_entry">入口</span><span id="relay-pairing-address"></span></p>
+            <p><span class="relay-key" data-i18n="relay_short_fingerprint">短指纹</span><span id="relay-pairing-fingerprint"></span></p>
             <div class="relay-direction-actions">
-              <button type="button" id="relay-pairing-confirm" class="primary">确认配对并切换</button>
-              <button type="button" id="relay-pairing-cancel">取消</button>
+              <button type="button" id="relay-pairing-confirm" class="primary" data-i18n="relay_confirm_pairing">确认配对并切换</button>
+              <button type="button" id="relay-pairing-cancel" data-i18n="cancel">取消</button>
             </div>
           </div>
           <p id="relay-pairing-status" class="profile-help" role="status" aria-live="polite"></p>
         </section>`,
-    actions: `<button type="button" id="relay-direction-close">关闭</button>
-          <button type="button" id="relay-direction-apply" class="primary">确认切换</button>`,
+    actions: `<button type="button" id="relay-direction-close" data-i18n="close">关闭</button>
+          <button type="button" id="relay-direction-apply" class="primary" data-i18n="relay_apply_switch">确认切换</button>`,
   });
 
   const $ = selector => dialog.querySelector(selector);
@@ -170,10 +170,10 @@
     target.setAttribute('role', error ? 'alert' : 'status');
   }
   function message(error) {
-    if (error?.status === 403) return '当前身份无权管理远程节点（需要管理员登录）';
+    if (error?.status === 403) return window.t('relay_forbidden');
     const text = String(error?.message || '').trim();
     return text && !/^(Internal Server Error|Service Unavailable|Bad Gateway|Gateway Timeout)$/i.test(text)
-      ? text : '服务端处理请求失败，请稍后重试。';
+      ? text : window.t('relay_server_failed');
   }
   function fmtHeartbeat(value) {
     const ts = Number(value);
@@ -185,7 +185,7 @@
   }
   function remoteName(node) {
     if (node.host_profile && node.host_profile !== node.member) return node.display_name;
-    return `${node.display_name || node.member}（远程）`;
+    return `${node.display_name || node.member}${window.t('relay_remote_suffix')}`;
   }
   function addLocalBinding(member, ip) {
     if (!bindingFor(member).includes(ip)) {
@@ -234,7 +234,7 @@
     return [...seen].sort();
   }
   function directionLabel(direction) {
-    return direction === 'dial' ? '本机连云端' : '云端连本机';
+    return direction === 'dial' ? window.t('relay_direction_dial') : window.t('relay_direction_listen');
   }
   function selectedDirectionNode() {
     return nodes.find(node => node.member === selectedProfile) || null;
@@ -247,7 +247,7 @@
     item.querySelector('em').textContent = text;
   }
   function stageLabel(stage) {
-    return {dns: 'DNS 解析', tcp: 'TCP 连接', tls: 'TLS/证书', auth: '认证'}[stage] || '连接';
+    return {dns: window.t('relay_stage_dns'), tcp: window.t('relay_stage_tcp'), tls: window.t('relay_stage_tls'), auth: window.t('relay_stage_auth')}[stage] || window.t('relay_stage_conn');
   }
   function endpointText(endpoint) {
     if (!endpoint?.host || !endpoint?.port) return '';
@@ -260,7 +260,7 @@
       if (directionPanel.open) directionPanel.close();
       return;
     }
-    $('#relay-direction-title').textContent = '切换连接方向 · ' + remoteName(selected);
+    $('#relay-direction-title').textContent = window.t('relay_switch_direction') + ' · ' + remoteName(selected);
     const direction = directionView || nodeDirection(selected);
     const serverDirection = nodeDirection(selected);
     const revoked = !!selected.credential_revoked;
@@ -278,39 +278,39 @@
     directionDial.setAttribute('aria-pressed', String(direction === 'dial'));
     const listenFlag = directionListen.querySelector('[data-flag="listen"]');
     const dialFlag = directionDial.querySelector('[data-flag="dial"]');
-    listenFlag.textContent = serverDirection === 'listen' ? '当前方向' : '';
-    dialFlag.textContent = serverDirection === 'dial' ? '当前方向' : '';
+    listenFlag.textContent = serverDirection === 'listen' ? window.t('relay_current_direction') : '';
+    dialFlag.textContent = serverDirection === 'dial' ? window.t('relay_current_direction') : '';
     listenFlag.hidden = !listenFlag.textContent;
     dialFlag.hidden = !dialFlag.textContent;
 
     if (revoked) {
       directionBadge.className = 'relay-badge revoked';
-      directionBadge.textContent = '凭据已吊销';
+      directionBadge.textContent = window.t('relay_credential_revoked');
     } else if (online) {
       directionBadge.className = 'relay-badge online';
-      directionBadge.textContent = '已连接';
+      directionBadge.textContent = window.t('relay_connected');
     } else if (selected.switch_error) {
       directionBadge.className = 'relay-badge revoked';
-      directionBadge.textContent = '切换失败';
+      directionBadge.textContent = window.t('relay_switch_failed_badge');
     } else if (switching) {
       directionBadge.className = 'relay-badge offline';
-      directionBadge.textContent = '切换中';
+      directionBadge.textContent = window.t('relay_switching');
     } else if (selected.dial_state === 'connecting' || selected.dial_state === 'backoff') {
       directionBadge.className = 'relay-badge offline';
-      directionBadge.textContent = selected.dial_state === 'backoff' ? '拨号重试中' : '拨号中';
+      directionBadge.textContent = selected.dial_state === 'backoff' ? window.t('relay_dial_backoff') : window.t('relay_dialing');
     } else if (selected.dial_state === 'abandoned') {
       directionBadge.className = 'relay-badge revoked';
-      directionBadge.textContent = '拨号已停止';
+      directionBadge.textContent = window.t('relay_dial_stopped');
     } else if (selected.offline_reason === 'unexpected') {
       directionBadge.className = 'relay-badge offline';
-      directionBadge.textContent = '异常掉线';
+      directionBadge.textContent = window.t('relay_dropped');
     } else {
       directionBadge.className = 'relay-badge offline';
-      directionBadge.textContent = '离线';
+      directionBadge.textContent = window.t('relay_offline');
     }
 
-    directionLocal.textContent = local || '仅本机回环（未开启远程监听）';
-    directionRemote.textContent = remote || '未导入配对链接';
+    directionLocal.textContent = local || window.t('relay_loopback_only');
+    directionRemote.textContent = remote || window.t('relay_no_pairing');
     const fingerprint = endpoint?.fingerprint_short || endpoint?.fingerprint?.slice(0, 8) || '';
     directionFingerprint.textContent = fingerprint ? `${fingerprint}…` : '—';
 
@@ -323,68 +323,68 @@
     const mcpFailed = selected.mcp_verify_state === 'failed';
     const mcp = authenticated && mcpVerified;
     if (direction === 'dial' && !listening && endpoint) {
-      stageState(stageListen, 'current', '已配置，待拨通');
+      stageState(stageListen, 'current', window.t('relay_configured_waiting'));
     } else {
-      stageState(stageListen, listening ? 'done' : 'pending', listening ? '已完成' : '待开始');
+      stageState(stageListen, listening ? 'done' : 'pending', listening ? window.t('relay_done') : window.t('relay_pending'));
     }
     stageState(stageAuth, authenticated ? 'done' : listening ? 'current' : 'pending',
-      authenticated ? '已完成' : listening ? '进行中' : '待开始');
+      authenticated ? window.t('relay_done') : listening ? window.t('relay_in_progress') : window.t('relay_pending'));
     if (mcp) {
-      stageState(stageMcp, 'done', '已完成');
+      stageState(stageMcp, 'done', window.t('relay_done'));
     } else if (authenticated && mcpVerifying) {
-      stageState(stageMcp, 'current', '验证中');
+      stageState(stageMcp, 'current', window.t('relay_verifying'));
     } else if (authenticated && mcpFailed) {
-      stageState(stageMcp, 'failed', '验证失败');
+      stageState(stageMcp, 'failed', window.t('relay_verify_failed'));
     } else if (authenticated) {
-      stageState(stageMcp, 'current', '待验证');
+      stageState(stageMcp, 'current', window.t('relay_to_verify'));
     } else {
-      stageState(stageMcp, 'pending', '待开始');
+      stageState(stageMcp, 'pending', window.t('relay_pending'));
     }
 
     let status = '', statusError = false, failure = '', failureError = false;
     if (revoked) {
-      status = '凭据已吊销；重新签发后才能建立任一方向的连接。';
+      status = window.t('relay_revoked_hint');
       statusError = true;
     } else if (direction !== serverDirection && !switching && !selected.switch_error) {
-      if (direction === 'dial' && !endpoint) status = '请粘贴云端 Hermes 的配对链接。';
+      if (direction === 'dial' && !endpoint) status = window.t('relay_paste_pairing_hint');
     } else if (onlineForView && !switching) {
       if (mcpVerifying) {
-        status = `已连通：${directionLabel(direction)}；正在验证 MCP…`;
+        status = window.t('relay_connected_verifying', [directionLabel(direction)]);
       } else if (mcpFailed) {
-        status = '云端 Hermes 的 MCP 只读验证失败。';
+        status = window.t('relay_mcp_verify_failed');
       }
     } else if (selected.switch_error) {
-      status = `切换失败：${selected.switch_error}`;
+      status = window.t('relay_switch_failed', [selected.switch_error]);
       statusError = true;
     } else if (switching) {
-      status = `切换中：目标为${directionLabel(selected.switch_target || direction)}。请稍候。`;
+      status = window.t('relay_switching_target', [directionLabel(selected.switch_target || direction)]);
     } else if (selected.offline_reason === 'switch') {
-      status = `切换中断线：${directionLabel(direction)}尚未认证，等待新方向连接。`;
+      status = window.t('relay_switch_lost', [directionLabel(direction)]);
     } else if (selected.offline_reason === 'unexpected') {
-      status = '连接已中断，请检查网络后重试。';
+      status = window.t('relay_lost_retry');
       statusError = true;
     } else if (selected.dial_state === 'backoff' || selected.dial_state === 'connecting') {
-      status = `引擎正在向${remote || '云端监听地址'}拨号，失败会按退避重试。`;
+      status = window.t('relay_dialing_hint', [remote || window.t('relay_cloud_listen')]);
     } else if (selected.dial_state === 'abandoned') {
-      status = '拨号已停止：重试次数耗尽，请重试或切回另一方向。';
+      status = window.t('relay_dial_exhausted');
       statusError = true;
     } else {
-      status = `当前方向：${directionLabel(direction)}；等待连接。`;
+      status = window.t('relay_current_waiting', [directionLabel(direction)]);
     }
     report(directionStatus, status, statusError);
     if (onlineForView && mcpVerifying) {
       failure = '';
     } else if (onlineForView && mcpFailed) {
-      failure = `请核对云端 Hermes 的项目授权后重新验证。${selected.mcp_verify_error || '未知原因'}`;
+      failure = window.t('relay_verify_auth_failed', [selected.mcp_verify_error || window.t('unknown_reason')]);
       failureError = true;
     } else if (!online && selected.dial_failure?.stage) {
-      failure = `引擎拨号 ${selected.dial_failure.address || remote} 卡在${stageLabel(selected.dial_failure.stage)}：${selected.dial_failure.error || '未知错误'}`;
+      failure = window.t('relay_dial_stuck', [selected.dial_failure.address || remote, stageLabel(selected.dial_failure.stage), selected.dial_failure.error || window.t('unknown_error')]);
       failureError = true;
     } else if (!online && selected.switch_error) {
-      failure = `失败原因：${selected.switch_error}`;
+      failure = window.t('relay_failure_reason', [selected.switch_error]);
       failureError = true;
     } else if (!online && direction === 'listen' && !listenState?.remote_enabled) {
-      failure = '请打开本机监听配置，选择网卡并启用。';
+      failure = window.t('relay_open_listen_hint');
       failureError = true;
     }
     report(directionFailure, failure, failureError);
@@ -395,11 +395,11 @@
 
     directionVerify.hidden = !(direction === 'dial' && onlineForView && mcpFailed);
     directionVerify.disabled = busy || loading || directionBusy || revoked || mcpVerifying;
-    directionVerify.textContent = mcpVerifying ? 'MCP 验证中…' : '重新验证 MCP';
+    directionVerify.textContent = mcpVerifying ? window.t('relay_mcp_verifying') : window.t('relay_reverify_mcp');
     pairingSection.hidden = direction !== 'dial' || (!!endpoint && !replacePairing);
     $('#relay-pairing-replace').hidden = direction !== 'dial' || !endpoint || replacePairing;
     directionApply.hidden = !pairingSection.hidden || (onlineForView && !switching);
-    directionApply.textContent = direction === serverDirection && !switching ? '重试连接' : '确认切换';
+    directionApply.textContent = direction === serverDirection && !switching ? window.t('relay_retry_connect') : window.t('relay_apply_switch');
     pairingParse.disabled = busy || loading || directionBusy || pairingBusy || !nodesReady;
     pairingConfirm.disabled = busy || loading || directionBusy || pairingBusy || !pendingPairing;
     pairingPreview.hidden = !pendingPairing;
@@ -416,15 +416,15 @@
     const previous = listenAddress.value || listenState?.remote_address || '';
     listenAddress.replaceChildren();
     if (!interfacesReady) {
-      listenAddress.append(new Option('正在读取本机网卡地址…', ''));
+      listenAddress.append(new Option(window.t('relay_reading_interfaces'), ''));
       return;
     }
     const list = interfaces.filter(item => item && item.address);
     if (!list.length) {
-      listenAddress.append(new Option('未发现可用网卡地址', ''));
+      listenAddress.append(new Option(window.t('relay_no_interfaces'), ''));
       return;
     }
-    listenAddress.append(new Option('选择本机网卡地址', ''));
+    listenAddress.append(new Option(window.t('relay_select_interface'), ''));
     const values = new Set();
     for (const item of list) {
       values.add(item.address);
@@ -436,27 +436,27 @@
   function renderListen() {
     const enabled = !!(listenState?.remote_enabled && listenState.remote_address);
     listenBadge.className = `relay-badge ${enabled && !listenUncertain ? 'online' : 'offline'}`;
-    listenBadge.textContent = listenUncertain ? '结果未确认'
-      : listenLoading && !listenState ? '读取中' : enabled ? '已开启' : '仅本机';
+    listenBadge.textContent = listenUncertain ? window.t('relay_unconfirmed')
+      : listenLoading && !listenState ? window.t('relay_reading') : enabled ? window.t('relay_enabled') : window.t('relay_local_only');
     let summary = '', summaryError = false;
     if (listenUncertain) {
-      summary = '监听切换结果未确认；请点击刷新核对实际监听状态。';
+      summary = window.t('relay_listen_unconfirmed');
       summaryError = true;
     } else if (listenError) {
-      summary = `监听配置读取失败：${listenError}。请刷新重试。`;
+      summary = window.t('relay_listen_read_failed', [listenError]);
       summaryError = true;
     } else if (listenLoading && !listenState) {
-      summary = '正在读取监听状态…';
+      summary = window.t('relay_reading_listen');
     } else if (!listenState) {
-      summary = '监听状态未知，请刷新重试。';
+      summary = window.t('relay_listen_unknown');
       summaryError = true;
     } else if (enabled) {
       const network = listenNetwork(interfaces.find(item => item.address === listenState.remote_address));
-      summary = '实际监听 ' + [network, hostPort(listenState.remote_address, listenState.remote_port)].filter(Boolean).join(' · ');
+      summary = window.t('relay_listen_actual', [[network, hostPort(listenState.remote_address, listenState.remote_port)].filter(Boolean).join(' · ')]);
     } else {
-      summary = `未开启远程监听；本机回环 ${listenState.loopback || '127.0.0.1'} 可用。`;
+      summary = window.t('relay_listen_off_loopback', [listenState.loopback || '127.0.0.1']);
       if (listenState.error) {
-        summary = `未开启远程监听：${listenState.error}`;
+        summary = window.t('relay_listen_off_error', [listenState.error]);
         summaryError = true;
       }
     }
@@ -469,13 +469,13 @@
 
     if (!bindingsReady) {
       report(listenSources, bindingsError
-        ? `允许来源读取失败：${bindingsError}。`
-        : '允许来源：正在读取…', !!bindingsError);
+        ? window.t('relay_bindings_read_failed', [bindingsError])
+        : window.t('relay_bindings_reading'), !!bindingsError);
     } else {
       const ips = allowedSourceIps();
       report(listenSources, ips.length
-        ? `允许来源：${ips.join('、')}（本机回环始终放行）。`
-        : '首次接入时，确认节点后会绑定其来源 IP。', false);
+        ? window.t('relay_bindings_list', [ips.join(window.t('workspace_sep'))])
+        : window.t('relay_bindings_hint'), false);
     }
     renderListenOptions();
   }
@@ -530,7 +530,7 @@
     list.replaceChildren();
     const empty = document.createElement('p');
     empty.className = 'profile-help relay-empty';
-    empty.textContent = '节点列表暂不可用；请刷新重试。';
+    empty.textContent = window.t('relay_nodes_unavailable');
     list.append(empty);
   }
   function sourceSection(node) {
@@ -540,11 +540,11 @@
     head.className = 'relay-source-head';
     const title = document.createElement('span');
     title.className = 'relay-source-title';
-    title.textContent = '允许来源 IP';
+    title.textContent = window.t('relay_bindings_title');
     const add = document.createElement('button');
     add.type = 'button';
     add.dataset.action = 'add-ip';
-    add.textContent = '添加 IP';
+    add.textContent = window.t('relay_add_ip');
     head.append(title, add);
 
     const ips = bindingFor(node.member);
@@ -553,12 +553,12 @@
     if (!bindingsReady) {
       const note = document.createElement('span');
       note.className = 'profile-help';
-      note.textContent = bindingsError ? `来源 IP 读取失败：${bindingsError}` : '正在读取来源 IP…';
+      note.textContent = bindingsError ? window.t('relay_ip_read_failed', [bindingsError]) : window.t('relay_reading_ips');
       ipList.append(note);
     } else if (!ips.length) {
       const note = document.createElement('span');
       note.className = 'profile-help relay-source-empty';
-      note.textContent = '尚未绑定来源 IP。';
+      note.textContent = window.t('relay_no_ips');
       ipList.append(note);
     } else {
       for (const ip of ips) {
@@ -571,7 +571,7 @@
         remove.type = 'button';
         remove.dataset.action = 'remove-ip';
         remove.dataset.ip = ip;
-        remove.setAttribute('aria-label', `移除来源 IP ${ip}`);
+        remove.setAttribute('aria-label', window.t('relay_remove_ip_aria', [ip]));
         remove.textContent = '×';
         chip.append(text, remove);
         ipList.append(chip);
@@ -585,15 +585,15 @@
     const input = document.createElement('input');
     input.autocomplete = 'off';
     input.spellcheck = false;
-    input.placeholder = '来源 IP';
-    input.setAttribute('aria-label', `为 ${node.member} 添加来源 IP`);
+    input.placeholder = window.t('relay_source_ip');
+    input.setAttribute('aria-label', window.t('relay_add_ip_aria', [node.member]));
     const save = document.createElement('button');
     save.type = 'submit';
-    save.textContent = '保存';
+    save.textContent = window.t('save');
     const cancel = document.createElement('button');
     cancel.type = 'button';
     cancel.dataset.action = 'cancel-ip';
-    cancel.textContent = '取消';
+    cancel.textContent = window.t('cancel');
     const status = document.createElement('span');
     status.className = 'profile-help relay-source-status';
     status.dataset.role = 'ip-status';
@@ -610,7 +610,7 @@
       if (!nodesReady) return;
       const empty = document.createElement('p');
       empty.className = 'profile-help relay-empty';
-      empty.textContent = '暂无远程 Hermes。';
+      empty.textContent = window.t('relay_empty');
       list.append(empty);
       return;
     }
@@ -628,21 +628,21 @@
       const revoked = !!node.credential_revoked;
       const online = node.state === 'online' && !revoked;
       badge.className = `relay-badge ${revoked ? 'revoked' : online ? 'online' : 'offline'}`;
-      badge.textContent = revoked ? '离线 · 凭据已吊销' : online ? '在线' : '离线';
+      badge.textContent = revoked ? window.t('relay_offline_revoked') : online ? window.t('relay_online') : window.t('relay_offline');
       head.append(name, badge);
 
       const meta = document.createElement('div');
       meta.className = 'relay-node-meta';
       const fields = [
-        ['成员', node.member],
-        ['连接方向', directionLabel(nodeDirection(node))],
-        ['代次', node.generation ?? '—'],
-        ['最近心跳', fmtHeartbeat(node.last_heartbeat)],
-        ['占用', node.capacity_used ?? 0],
-        ['MCP 指纹', node.mcp_fingerprint || '未上报'],
-        ['实际连接 IP', node.peer_ip || '尚未连接'],
+        [window.t('relay_member'), node.member],
+        [window.t('relay_direction'), directionLabel(nodeDirection(node))],
+        [window.t('relay_generation'), node.generation ?? '—'],
+        [window.t('relay_last_heartbeat'), fmtHeartbeat(node.last_heartbeat)],
+        [window.t('relay_capacity'), node.capacity_used ?? 0],
+        [window.t('relay_mcp_fingerprint'), node.mcp_fingerprint || window.t('relay_not_reported')],
+        [window.t('relay_peer_ip'), node.peer_ip || window.t('relay_not_connected')],
       ];
-      if (node.code_version) fields.push(['版本', node.code_version]);
+      if (node.code_version) fields.push([window.t('relay_version'), node.code_version]);
       for (const [key, value] of fields) {
         const item = document.createElement('span');
         const label = document.createElement('span');
@@ -661,31 +661,31 @@
         revoke.type = 'button';
         revoke.className = 'relay-danger';
         revoke.dataset.action = 'revoke';
-        revoke.textContent = '吊销凭据';
+        revoke.textContent = window.t('relay_revoke');
         actions.append(revoke);
       }
       const reissue = document.createElement('button');
       reissue.type = 'button';
       reissue.dataset.action = 'reissue';
-      reissue.textContent = '重新签发';
+      reissue.textContent = window.t('relay_reissue');
       actions.append(reissue);
       const directionButton = document.createElement('button');
       directionButton.type = 'button';
       directionButton.dataset.action = 'direction';
-      directionButton.textContent = '切换方向';
+      directionButton.textContent = window.t('relay_switch_direction_btn');
       directionButton.setAttribute('aria-haspopup', 'dialog');
       actions.prepend(directionButton);
       const workspace = document.createElement('form');
       workspace.className = 'relay-copy-row';
       const rootLabel = document.createElement('label');
-      rootLabel.textContent = '协作根目录';
+      rootLabel.textContent = window.t('relay_root_dir');
       const rootInput = document.createElement('input');
       rootInput.value = node.workspace_root || '';
-      rootInput.placeholder = '远程绝对路径，如 /srv/projects';
+      rootInput.placeholder = window.t('relay_root_placeholder');
       rootInput.required = true;
       rootLabel.append(rootInput);
       const saveRoot = document.createElement('button');
-      saveRoot.textContent = '验证并保存';
+      saveRoot.textContent = window.t('relay_verify_save');
       const result = document.createElement('p');
       result.className = 'profile-help';
       result.setAttribute('role', 'status');
@@ -695,13 +695,13 @@
         if (!allowed() || saveRoot.disabled) return;
         saveRoot.disabled = true;
         rootInput.disabled = true;
-        report(result, '正在远程主机上核验目录…');
+        report(result, window.t('relay_verifying_root'));
         try {
           const saved = await api('/relay/nodes/' + encodeURIComponent(node.member) + '/workspace-root', {
             method: 'PUT', body: JSON.stringify({root: rootInput.value.trim()}),
           });
           rootInput.value = node.workspace_root = saved.root;
-          report(result, '远程目录已验证并保存。');
+          report(result, window.t('relay_root_saved'));
         } catch (error) { report(result, message(error), true); }
         finally { saveRoot.disabled = false; rootInput.disabled = false; }
       };
@@ -755,24 +755,24 @@
   }
   async function loadNodes(generation, quiet = false) {
     refresh.disabled = true;
-    if (!quiet) report(nodesStatus, '正在读取远程节点…');
+    if (!quiet) report(nodesStatus, window.t('relay_loading_nodes'));
     try {
       const data = await api('/relay/nodes', {cache: 'no-store', signal: AbortSignal.timeout(10000)});
       if (generation !== epoch || !dialog.open) return false;
-      if (!Array.isArray(data)) throw new Error('远程节点响应格式异常');
+      if (!Array.isArray(data)) throw new Error(window.t('relay_bad_nodes_response'));
       nodes = data;
       nodesReady = true;
       renderNodes();
       if (!quiet) report(nodesStatus, nodes.length
-        ? `已加载 ${nodes.length} 个节点 · 更新于 ${new Date().toLocaleTimeString()}`
-        : '暂无已登记节点。');
+        ? window.t('relay_nodes_loaded', [nodes.length, new Date().toLocaleTimeString()])
+        : window.t('relay_no_nodes'));
       return true;
     } catch (error) {
       if (generation !== epoch || !dialog.open) return false;
       nodes = [];
       nodesReady = false;
       renderNodesUnavailable();
-      report(nodesStatus, `读取远程节点失败：${message(error)}。点击刷新重试。`, true);
+      report(nodesStatus, window.t('relay_nodes_load_failed', [message(error)]), true);
       return false;
     } finally {
       if (generation === epoch) refreshControls();
@@ -782,7 +782,7 @@
     try {
       const data = await api('/admin/source-ips', {cache: 'no-store', signal: AbortSignal.timeout(10000)});
       if (generation !== epoch || !dialog.open) return false;
-      if (!Array.isArray(data.bindings)) throw new Error('来源 IP 绑定响应格式异常');
+      if (!Array.isArray(data.bindings)) throw new Error(window.t('relay_bad_bindings_response'));
       bindings = new Map();
       for (const item of data.bindings) {
         if (item && item.member && Array.isArray(item.ips)) {
@@ -813,9 +813,9 @@
         api('/admin/listen/status', {cache: 'no-store', signal: AbortSignal.timeout(12000)}),
       ]);
       if (generation !== epoch || !dialog.open) return false;
-      if (!Array.isArray(ifaceData?.interfaces)) throw new Error('网卡枚举响应格式异常');
+      if (!Array.isArray(ifaceData?.interfaces)) throw new Error(window.t('relay_bad_interfaces_response'));
       if (!statusData || typeof statusData !== 'object' || !('remote_enabled' in statusData)) {
-        throw new Error('监听状态响应格式异常');
+        throw new Error(window.t('relay_bad_listen_response'));
       }
       interfaces = ifaceData.interfaces.filter(item =>
         item && typeof item.address === 'string' && item.address);
@@ -831,7 +831,7 @@
       interfaces = [];
       listenState = null;
       listenError = message(error);
-      report(listenStatus, `读取监听配置失败：${listenError}。`, true);
+      report(listenStatus, window.t('relay_listen_config_failed', [listenError]), true);
       renderListen();
       return false;
     } finally {
@@ -916,21 +916,21 @@
   }
   async function revokeNode(member) {
     if (busy || !allowed() || !registrationReady() || !nodes.some(node => node.member === member)) return;
-    if (!await showConfirm(`吊销 ${member} 的连接凭据？当前在线连接会立即断开，节点需重新签发凭据才能上线。`)) return;
+    if (!await showConfirm(window.t('relay_revoke_confirm', [member]))) return;
     if (busy || !allowed() || !dialog.open || !registrationReady()) return;
     busy = true;
     refreshControls();
-    report(nodesStatus, `正在吊销 ${member} 的凭据…`);
+    report(nodesStatus, window.t('relay_revoking', [member]));
     try {
       await api(`/relay/nodes/${encodeURIComponent(member)}/revoke`, {method: 'POST'});
       writeUncertain = false;
       if (issued?.member === member) clearIssued();
-      if (dialog.open) report(nodesStatus, `已吊销 ${member} 的凭据；节点将离线，需重新签发才能上线。`);
+      if (dialog.open) report(nodesStatus, window.t('relay_revoked', [member]));
       await reload(true);
     } catch (error) {
       if (dialog.open) {
         if (!error.status) writeUncertain = true;
-        report(nodesStatus, `${error.status ? '吊销失败' : '吊销结果未确认'}：${message(error)}${error.status ? '' : '。请先刷新核对，勿直接重复操作'}。`, true);
+        report(nodesStatus, window.t('relay_revoke_result', [error.status ? window.t('relay_revoke_failed') : window.t('relay_revoke_unconfirmed'), message(error), error.status ? '' : window.t('relay_verify_before_retry')]), true);
       }
     } finally {
       busy = false;
@@ -944,29 +944,29 @@
       firstJoin.renew(node, remoteName(node));
       return;
     }
-    if (!await showConfirm(`重新签发 ${member} 的入站凭据？此凭据用于切换到「云端连本机」后的认证。当前「本机连云端」连接使用云端签发的配对链接。旧入站凭据立即失效。`)) return;
+    if (!await showConfirm(window.t('relay_reissue_confirm', [member]))) return;
     if (busy || !allowed() || !dialog.open || !registrationReady()) return;
     busy = true;
     refreshControls();
-    report(nodesStatus, `正在重新签发 ${member} 的凭据…`);
+    report(nodesStatus, window.t('relay_reissuing', [member]));
     try {
       const data = await api('/relay/nodes', {
         method: 'POST',
         body: JSON.stringify({member, display_name: node.display_name || member, rotate: true}),
       });
       if (!dialog.open || !allowed()) return;
-      if (data.member !== member || !data.credential) throw new Error('重新签发响应缺少凭据');
+      if (data.member !== member || !data.credential) throw new Error(window.t('relay_reissue_missing'));
       writeUncertain = false;
       showIssued(member, data.credential);
-      report(nodesStatus, `已重新签发 ${member} 的凭据；旧凭据立即失效，新凭据仅显示一次。`);
+      report(nodesStatus, window.t('relay_reissued', [member]));
       await reload(true);
     } catch (error) {
       if (dialog.open && allowed()) {
         const lost = !error.status;
         if (lost) writeUncertain = true;
         report(nodesStatus, lost
-          ? `重新签发结果未确认：${message(error)}。请先刷新节点列表核对，勿直接重复签发。`
-          : `重新签发失败：${message(error)}。`, true);
+          ? window.t('relay_reissue_unconfirmed', [message(error)])
+          : window.t('relay_reissue_failed', [message(error)]), true);
       }
     } finally {
       busy = false;
@@ -980,41 +980,41 @@
     const status = form.querySelector('[data-role="ip-status"]');
     const ip = input.value.trim();
     if (!ip) {
-      report(status, '请填写来源 IP。', true);
+      report(status, window.t('relay_ip_required'), true);
       input.focus();
       return;
     }
     if (!isIp(ip)) {
-      report(status, '来源 IP 格式不正确，请填写 IPv4 或 IPv6 地址。', true);
+      report(status, window.t('relay_ip_invalid'), true);
       input.focus();
       return;
     }
     if (isLoopback(ip)) {
-      report(status, '本机回环地址始终放行，无需登记。', true);
+      report(status, window.t('relay_ip_loopback'), true);
       input.focus();
       return;
     }
     const existing = bindingFor(member);
     if (existing.includes(ip)) {
-      report(status, '该来源 IP 已绑定到此节点。', true);
+      report(status, window.t('relay_ip_duplicate'), true);
       return;
     }
     busy = true;
     refreshControls();
-    report(status, '正在保存来源 IP…');
+    report(status, window.t('relay_ip_saving'));
     try {
       const data = await api('/admin/source-ips/add', {
         method: 'POST',
         body: JSON.stringify({member, ip}),
       });
-      if (data.member !== member || !data.ip) throw new Error('来源 IP 绑定响应格式异常');
+      if (data.member !== member || !data.ip) throw new Error(window.t('relay_bad_bindings_response'));
       addLocalBinding(member, data.ip);
       writeUncertain = false;
-      report(nodesStatus, `已为 ${member} 添加来源 IP ${data.ip}；立即生效。`);
+      report(nodesStatus, window.t('relay_ip_added', [member, data.ip]));
       await reload(true);
     } catch (error) {
       if (!error.status) writeUncertain = true;
-      report(status, `添加来源 IP 失败：${message(error)}。`, true);
+      report(status, window.t('relay_ip_add_failed', [message(error)]), true);
     } finally {
       busy = false;
       if (dialog.open) refreshControls();
@@ -1024,16 +1024,16 @@
     if (busy || !allowed() || !registrationReady()) return;
     busy = true;
     refreshControls();
-    report(nodesStatus, `正在移除 ${member} 的来源 IP ${ip}…`);
+    report(nodesStatus, window.t('relay_ip_removing', [member, ip]));
     try {
       await api(`/admin/source-ips/${encodeURIComponent(member)}/${encodeURIComponent(ip)}`, {method: 'DELETE'});
       bindings.set(member, {...bindings.get(member), ips: bindingFor(member).filter(item => item !== ip)});
       writeUncertain = false;
-      report(nodesStatus, `已移除 ${member} 的来源 IP ${ip}；立即生效。`);
+      report(nodesStatus, window.t('relay_ip_removed', [member, ip]));
       await reload(true);
     } catch (error) {
       if (!error.status) writeUncertain = true;
-      report(nodesStatus, `移除来源 IP 失败：${message(error)}。`, true);
+      report(nodesStatus, window.t('relay_ip_remove_failed', [message(error)]), true);
     } finally {
       busy = false;
       if (dialog.open) refreshControls();
@@ -1043,7 +1043,7 @@
     if (busy || !allowed() || !listenReady()) return;
     busy = true;
     refreshControls();
-    report(listenStatus, address ? `正在切换监听至 ${address}…` : '正在停用远程监听…');
+    report(listenStatus, address ? window.t('relay_switching_listen', [address]) : window.t('relay_disabling_listen'));
     try {
       const data = await api('/admin/listen', {
         method: 'POST',
@@ -1052,21 +1052,21 @@
       });
       if (!dialog.open || !allowed()) return;
       if (!data || typeof data !== 'object' || !('remote_enabled' in data)) {
-        throw new Error('监听响应格式异常');
+        throw new Error(window.t('relay_bad_listen_response'));
       }
       listenState = data;
       listenUncertain = false;
       listenError = '';
       if (address) {
         if (data.remote_enabled) {
-          report(listenStatus, `远程监听已开启：${hostPort(data.remote_address, data.remote_port)}。`);
+          report(listenStatus, window.t('relay_listen_enabled', [hostPort(data.remote_address, data.remote_port)]));
         } else {
-          report(listenStatus, `监听未开启：${data.error || '所选地址未能绑定，请检查网卡与端口。'}`, true);
+          report(listenStatus, window.t('relay_listen_bind_failed', [data.error || window.t('relay_bind_failed_hint')]), true);
         }
       } else if (data.remote_enabled) {
-        report(listenStatus, '停用未完成：引擎仍显示远程监听。请刷新核对。', true);
+        report(listenStatus, window.t('relay_disable_incomplete'), true);
       } else {
-        report(listenStatus, '远程监听已停用，回退回环；本机仍可用。');
+        report(listenStatus, window.t('relay_listen_disabled'));
       }
       renderListen();
       await reload(true);
@@ -1080,8 +1080,8 @@
     } catch (error) {
       if (!error.status) listenUncertain = true;
       report(listenStatus, !error.status
-        ? `监听切换结果未确认：${message(error)}。请先点击刷新核对。`
-        : `监听切换失败：${message(error)}。`, true);
+        ? window.t('relay_listen_switch_unconfirmed', [message(error)])
+        : window.t('relay_listen_switch_failed', [message(error)]), true);
       renderListen();
     } finally {
       busy = false;
@@ -1091,7 +1091,7 @@
   function saveListen() {
     if (busy || !allowed() || !listenReady()) return;
     if (!listenAddress.value) {
-      report(listenStatus, '请选择本机网卡地址。', true);
+      report(listenStatus, window.t('relay_select_interface_hint'), true);
       listenAddress.focus();
       return;
     }
@@ -1103,30 +1103,30 @@
   }
   function parsePairingLink(text) {
     const raw = String(text || '').trim();
-    if (!raw) throw new Error('请粘贴配对链接。');
+    if (!raw) throw new Error(window.t('relay_pairing_required'));
     let url;
     try {
       url = new URL(raw);
     } catch {
-      throw new Error('配对链接格式不正确。');
+      throw new Error(window.t('relay_pairing_bad_format'));
     }
-    if (url.protocol !== 'wss:') throw new Error('配对链接必须使用 wss://。');
-    if (url.username || url.password) throw new Error('配对链接不能包含用户名或密码。');
+    if (url.protocol !== 'wss:') throw new Error(window.t('relay_pairing_wss'));
+    if (url.username || url.password) throw new Error(window.t('relay_pairing_no_auth'));
     let host = url.hostname || '';
     if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
-    if (!host) throw new Error('配对链接缺少云端地址。');
-    if (host === '0.0.0.0' || host === '::') throw new Error('配对链接不能使用通配地址。');
+    if (!host) throw new Error(window.t('relay_pairing_no_host'));
+    if (host === '0.0.0.0' || host === '::') throw new Error(window.t('relay_pairing_wildcard'));
     const port = Number(url.port || 443);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('配对链接端口无效。');
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(window.t('relay_pairing_bad_port'));
     const params = url.searchParams;
     const token = params.get('pairing_token') || '';
-    if (!token) throw new Error('配对链接缺少一次性配对凭据。');
+    if (!token) throw new Error(window.t('relay_pairing_no_token'));
     const fingerprint = (params.get('fingerprint') || '').toLowerCase().replace(/:/g, '');
-    if (!/^[0-9a-f]{64}$/.test(fingerprint)) throw new Error('配对链接的证书指纹格式不正确。');
+    if (!/^[0-9a-f]{64}$/.test(fingerprint)) throw new Error(window.t('relay_pairing_bad_fingerprint'));
     const member = params.get('member') || '';
     const selected = selectedDirectionNode();
     if (member && selected && member !== (selected.host_profile || selected.member)) {
-      throw new Error(`链接属于成员 ${member}，与当前节点 ${selected.display_name || selected.member} 不一致。`);
+      throw new Error(window.t('relay_pairing_member_mismatch', [member, selected.display_name || selected.member]));
     }
     const displayHost = host.includes(':') ? `[${host}]` : host;
     return {host, displayHost, port, fingerprint, token, member};
@@ -1142,17 +1142,17 @@
     try {
       pendingPairing = parsePairingLink(pairingUrl.value);
       const selected = selectedDirectionNode();
-      if (!selected) throw new Error('请先选择节点。');
+      if (!selected) throw new Error(window.t('relay_select_node_first'));
       pairingPreview.hidden = false;
       pairingIdentity.textContent = remoteName(selected);
       pairingAddress.textContent = `wss://${pendingPairing.displayHost}:${pendingPairing.port}`;
       pairingFingerprint.textContent = `${pendingPairing.fingerprint.slice(0, 8)}…`;
-      report(pairingStatus, '链接有效。请核对设备身份与短指纹，确认后先做可达性和证书预检。');
+      report(pairingStatus, window.t('relay_pairing_valid'));
       refreshControls();
     } catch (error) {
       pendingPairing = null;
       pairingPreview.hidden = true;
-      report(pairingStatus, `配对链接无效：${error.message}`, true);
+      report(pairingStatus, window.t('relay_pairing_invalid', [error.message]), true);
       refreshControls();
     }
   }
@@ -1160,12 +1160,12 @@
     if (busy || loading || directionBusy || pairingBusy || !pendingPairing) return;
     const selected = selectedDirectionNode();
     if (!selected) {
-      report(pairingStatus, '请先选择节点。', true);
+      report(pairingStatus, window.t('relay_select_node_first'), true);
       return;
     }
     pairingBusy = true;
     refreshControls();
-    report(pairingStatus, '正在预检云端监听地址、TCP 和证书指纹…');
+    report(pairingStatus, window.t('relay_pairing_probing'));
     const member = selected.member;
     try {
       const probe = await api(`/relay/nodes/${encodeURIComponent(member)}/dial-endpoint/probe`, {
@@ -1175,7 +1175,7 @@
         signal: AbortSignal.timeout(15000),
       });
       if (!probe || probe.ok !== true) {
-        report(pairingStatus, `预检失败（${stageLabel(probe?.stage)}）：${probe?.error || '无法连接云端监听地址'}；未保存。`, true);
+        report(pairingStatus, window.t('relay_probe_failed', [stageLabel(probe?.stage), probe?.error || window.t('relay_probe_unreachable')]), true);
         return;
       }
       const saved = await api(`/relay/nodes/${encodeURIComponent(member)}/dial-endpoint`, {
@@ -1185,8 +1185,8 @@
                               pairing_token: pendingPairing.token}),
         signal: AbortSignal.timeout(15000),
       });
-      if (!saved?.saved) throw new Error('拨号端点保存响应异常');
-      report(pairingStatus, '预检通过，配对已保存；正在拨号并完成认证。');
+      if (!saved?.saved) throw new Error(window.t('relay_bad_dial_response'));
+      report(pairingStatus, window.t('relay_probe_ok'));
       pendingPairing = null;
       pairingPreview.hidden = true;
       pairingUrl.value = '';
@@ -1194,7 +1194,7 @@
       await reload(true);
       if (directionPanel.open && allowed()) await switchDirection('dial');
     } catch (error) {
-      report(pairingStatus, `导入失败：${message(error)}。${pendingPairing ? '可核对后重试。' : ''}`, true);
+      report(pairingStatus, window.t('relay_import_failed', [message(error), pendingPairing ? window.t('relay_retry_hint') : '']), true);
     } finally {
       pairingBusy = false;
       if (dialog.open) refreshControls();
@@ -1213,16 +1213,16 @@
         renderDirection();
         if (node.switch_state !== 'switching') {
           if (node.state === 'online' && nodeDirection(node) === target) {
-            report(directionStatus, `切换完成：${directionLabel(target)}；双方已认证。`);
+            report(directionStatus, window.t('relay_switch_done', [directionLabel(target)]));
             if (target === 'dial') {
-              report(pairingStatus, '配对导入完成：引擎已认证并连通云端监听。');
+              report(pairingStatus, window.t('relay_import_done'));
             }
             renderDirection();
             maybeVerifyMcp();
           } else {
-            report(directionStatus, `切换未完成：${node.switch_error || '新方向尚未认证'}`, true);
+            report(directionStatus, window.t('relay_switch_incomplete', [node.switch_error || window.t('relay_new_direction_unauth')]), true);
             if (target === 'dial') {
-              report(pairingStatus, `配对已保存，但拨号未连通：${node.switch_error || '新方向尚未认证'}`, true);
+              report(pairingStatus, window.t('relay_saved_not_connected', [node.switch_error || window.t('relay_new_direction_unauth')]), true);
             }
             renderDirection();
           }
@@ -1230,7 +1230,7 @@
         }
       }
       if (token === directionWatch && generation === epoch) {
-        report(directionStatus, '正在切换，请刷新查看进度。');
+        report(directionStatus, window.t('relay_switching_refresh'));
         renderDirection();
       }
     })();
@@ -1243,22 +1243,22 @@
     mcpVerifyInflight.add(member);
     if (dialog.open) renderDirection();
     try {
-      report(directionStatus, 'MCP 只读验证中：读取本项目名单…');
+      report(directionStatus, window.t('relay_mcp_reading_roster'));
       const result = await api(`/relay/nodes/${encodeURIComponent(member)}/mcp-verify`, {
         method: 'POST',
         signal: AbortSignal.timeout(30000),
       });
       if (!result || !['ok', 'failed'].includes(result.mcp_verify_state)) {
-        throw new Error('MCP 验证响应格式异常');
+        throw new Error(window.t('relay_bad_mcp_response'));
       }
       await reload(true);
       if (!dialog.open || !allowed()) return;
       const fresh = nodes.find(item => item.member === member);
       if (fresh?.mcp_verify_state === 'failed') {
-        report(directionFailure, `MCP 只读验证失败：${fresh.mcp_verify_error || '未知原因'}`, true);
+        report(directionFailure, window.t('relay_mcp_verify_failed_detail', [fresh.mcp_verify_error || window.t('unknown_reason')]), true);
       }
     } catch (error) {
-      report(directionStatus, `MCP 只读验证失败：${message(error)}。`, true);
+      report(directionStatus, window.t('relay_mcp_verify_failed_detail', [message(error)]), true);
     } finally {
       mcpVerifyInflight.delete(member);
       if (dialog.open) {
@@ -1277,11 +1277,11 @@
     if (busy || loading || directionBusy || !allowed()) return;
     const node = selectedDirectionNode();
     if (!node) {
-      report(directionStatus, '请先选择节点。', true);
+      report(directionStatus, window.t('relay_select_node_first'), true);
       return;
     }
     if (node.credential_revoked) {
-      report(directionStatus, '凭据已吊销，请先重新签发。', true);
+      report(directionStatus, window.t('relay_reissue_first'), true);
       return;
     }
     if (target === 'listen' && !listenState?.remote_enabled) {
@@ -1296,11 +1296,11 @@
     const current = nodeDirection(node);
     const online = node.state === 'online' && !node.credential_revoked;
     if (target === current && node.switch_state !== 'switching' && online) {
-      report(directionStatus, `当前已经是${directionLabel(target)}。`);
+      report(directionStatus, window.t('relay_already_direction', [directionLabel(target)]));
       return;
     }
     if (target === 'dial' && !node.dial_endpoint) {
-      report(directionStatus, '请粘贴云端 Hermes 的配对链接。', true);
+      report(directionStatus, window.t('relay_paste_pairing_hint'), true);
       pairingUrl.focus();
       return;
     }
@@ -1308,7 +1308,7 @@
     directionWatch += 1;
     const token = directionWatch;
     refreshControls();
-    report(directionStatus, `正在切换到${directionLabel(target)}：请稍候。`);
+    report(directionStatus, window.t('relay_switching_target2', [directionLabel(target)]));
     report(directionFailure, '');
     try {
       const result = await api(`/relay/nodes/${encodeURIComponent(node.member)}/switch`, {
@@ -1316,13 +1316,13 @@
         body: JSON.stringify({direction: target}),
         signal: AbortSignal.timeout(45000),
       });
-      if (!result || result.direction !== target) throw new Error('切换响应格式异常');
+      if (!result || result.direction !== target) throw new Error(window.t('relay_bad_switch_response'));
       await reload(true);
       if (!dialog.open || !allowed()) return;
       watchSwitch(node.member, target, token, epoch);
     } catch (error) {
       renderDirection();
-      report(directionStatus, `切换失败：${message(error)}。`, true);
+      report(directionStatus, window.t('relay_switch_failed', [message(error)]), true);
     } finally {
       directionBusy = false;
       if (dialog.open) refreshControls();
@@ -1331,7 +1331,7 @@
   async function copy(value, label, target = nodesStatus) {
     try {
       await navigator.clipboard.writeText(value);
-      report(target, `已复制${label}。`);
+      report(target, window.t('relay_copied', [label]));
     } catch {
       try {
         const area = document.createElement('textarea');
@@ -1344,9 +1344,9 @@
         const ok = document.execCommand('copy');
         area.remove();
         if (!ok) throw new Error('copy failed');
-        report(target, `已复制${label}。`);
+        report(target, window.t('relay_copied', [label]));
       } catch {
-        report(target, `复制${label}失败，请手动选择文本。`, true);
+        report(target, window.t('relay_copy_failed', [label]), true);
       }
     }
   }
@@ -1373,8 +1373,8 @@
       await reload(true);
       const node = nodes.find(item => item.member === member);
       if (dialog.open && allowed() && renewed) {
-        report(nodesStatus, (node ? remoteName(node) : member) + ' 的新凭据已在引擎生效。远端命令显示“配对已保存”即完成。');
-      } else if (dialog.open && allowed() && node) report(nodesStatus, '已添加 ' + remoteName(node) + '。');
+        report(nodesStatus, window.t('relay_credential_effective', [node ? remoteName(node) : member]));
+      } else if (dialog.open && allowed() && node) report(nodesStatus, window.t('relay_added', [remoteName(node)]));
     },
     copy,
   });
@@ -1389,7 +1389,7 @@
   listenSave.addEventListener('click', saveListen);
   listenDisable.addEventListener('click', disableListen);
   listenCopy.addEventListener('click', () => {
-    if (listenUrl.value) copy(listenUrl.value, '本机连接地址', listenStatus);
+    if (listenUrl.value) copy(listenUrl.value, window.t('relay_local_address'), listenStatus);
   });
   listenAddress.addEventListener('change', refreshControls);
   function chooseDirection(target) {
@@ -1494,10 +1494,10 @@
     if (card) addIp(card, form);
   });
   $('#relay-copy-member').addEventListener('click', () => {
-    if (issued) copy(issued.member, '成员标识');
+    if (issued) copy(issued.member, window.t('relay_member_id'));
   });
   $('#relay-copy-credential').addEventListener('click', () => {
-    if (issued) copy(issued.credential, '连接凭据');
+    if (issued) copy(issued.credential, window.t('relay_credential'));
   });
   dialog.addEventListener('cancel', event => {
     if (event.target === dialog && (busy || directionBusy || pairingBusy)) event.preventDefault();

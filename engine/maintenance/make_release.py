@@ -121,7 +121,7 @@ def _relay_asset_files(root: Path) -> dict[str, Path]:
                 path = Path(cur) / name
                 files[path.relative_to(root).as_posix()] = path
     # engine 最小子集：mcp/server.py 的 `from engine import mcp_http, process_query`
-    for name in ("__init__.py", "mcp_http.py", "process_query.py"):
+    for name in ("__init__.py", "mcp_http.py", "process_query.py", "relay_protocol.py"):
         files[f"engine/{name}"] = root / "engine" / name
     return files
 
@@ -129,10 +129,7 @@ def _relay_asset_files(root: Path) -> dict[str, Path]:
 def _make_relay_asset(root: Path, out_dir: Path, version: str) -> tuple[str, str]:
     """产 bot-group-relay-<version>.tar.gz + 随包 manifest（含文件级 SHA256）。
 
-    req#168 返修（manager 12223）：打包时把实际发布版本注入归档内 VERSION 文件
-    ——插件运行时优先读 VERSION（config.plugin_version 单一事实源），hello 上报
-    的 plugin_version/code_version 因此等于同批引擎发布版本，同 tag 配套校验通过；
-    不沿用 config.py 的源码常量（1.0.0）导致首连 4003。"""
+    VERSION 记录软件发布版本。引擎与插件从同一份 relay_protocol.py 读取通信协议。"""
     import tarfile
     files = _relay_asset_files(root)
     if not files:

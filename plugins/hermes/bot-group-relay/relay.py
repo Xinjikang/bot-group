@@ -1,7 +1,7 @@
 """出站 WSS 客户端：插件 ↔ bot-group 引擎（req#168 验收 1/4/5/6）。
 
 - hello 握手：member/credential/code_version/plugin_version/mcp_fingerprint/
-  protocol_version + 随包 MCP 解释器/入口路径；引擎不匹配即拒（同 tag 配套）。
+  protocol_version + 随包 MCP 解释器/入口路径。
 - generation fencing：引擎 hello_ok 下发连接代；此后收/发的帧都带当前代，
   旧代帧（晚到的旧连接数据）拒收；重连后只让当前连接接新消息。
 - 心跳保活（90s TTL 内至少一次）；断开后按退避重连，不自行重投任何帧。
@@ -17,6 +17,7 @@ import json
 import logging
 import threading
 import time
+from dataclasses import replace
 
 from . import config as relay_config
 from . import mcp_digest
@@ -28,13 +29,35 @@ HEARTBEAT_INTERVAL = 45.0      # 引擎 TTL 90s：45s 心跳留足余量
 RECONNECT_BASE = 1.0
 RECONNECT_CAP = 30.0
 CLOSE_BAD_PROTOCOL = 4003
+_GATEWAY_CLIENTS = {}
+_GATEWAY_LOCK = threading.Lock()
+
+
+def gateway_client(cfg, peer):
+    key = (cfg.home, cfg.member, peer)
+    with _GATEWAY_LOCK:
+        client = _GATEWAY_CLIENTS.get(key)
+        if client is None or not client._thread.is_alive():
+            client = RelayClient(cfg, peer=peer)
+            _GATEWAY_CLIENTS[key] = client
+            client.start()
+        return client
+
+
+def stop_gateway_client(client):
+    key = (client.cfg.home, client.cfg.member, client.peer)
+    with _GATEWAY_LOCK:
+        if _GATEWAY_CLIENTS.get(key) is client:
+            del _GATEWAY_CLIENTS[key]
+    client.stop()
 
 
 class RelayClient:
     """一条出站 WSS（一个成员一条连接）。"""
 
-    def __init__(self, cfg: relay_config.RelayConfig, *, on_status=None, follow_saved=True):
+    def __init__(self, cfg: relay_config.RelayConfig, *, on_status=None, follow_saved=True, peer=""):
         self.cfg = cfg
+        self.peer = peer
         self._follow_saved = follow_saved
         self._on_status = on_status or (lambda state: None)
         self._generation = 0
@@ -46,13 +69,18 @@ class RelayClient:
         self._retry = threading.Event()
         self._listener = None
         self._listener_lock = threading.Lock()
-        self._thread = threading.Thread(target=self._run, name="bot-group-relay-outbound",
+        self._thread = threading.Thread(target=self._run_for_peer, name="bot-group-relay-outbound",
                                         daemon=True)
 
     # ---------- 生命周期 ----------
 
     def start(self) -> None:
         self._thread.start()
+
+    def _run_for_peer(self):
+        from . import pairing
+        with pairing.using_peer(self.peer):
+            self._run()
 
     def pair_invitation(self) -> None:
         """Persist administrator confirmation without claiming the gateway's daily link."""
@@ -70,10 +98,24 @@ class RelayClient:
                 return
             time.sleep(1)
 
+    def confirm_credential(self):
+        """Save an explicitly supplied key only after an authenticated handshake."""
+        from . import pairing
+        from websockets.sync.client import connect
+        if pairing.saved_register(self.cfg.member) == (self.cfg.engine_url, self.cfg.credential):
+            return
+        with connect(relay_config.ws_url(self.cfg.engine_url), proxy=None,
+                     open_timeout=10, close_timeout=2) as ws:
+            if not self._handshake(ws):
+                raise ValueError("relay credential rejected")
+        pairing.save_register_credential(self.cfg.member, self.cfg.credential, engine_url=self.cfg.engine_url)
+
     def stop(self) -> None:
         self._stop.set()
         self._retry.set()
         self._close_listener()
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=12)
 
     def _open_listener(self):
         from . import listen
@@ -85,12 +127,9 @@ class RelayClient:
                 self._listener.wake_outbound = self._retry.set
 
     def _close_listener(self):
-        from . import mcpproxy
         with self._listener_lock:
             if self._listener is not None:
                 self._listener.stop()
-                if getattr(mcpproxy._ACTIVE_SERVER, "listener", None) is self._listener:
-                    mcpproxy.stop_proxy()
                 self._listener = None
 
     @property
@@ -119,14 +158,13 @@ class RelayClient:
                 self._retry.clear()
                 continue
             if not self.cfg.engine_url:
-                cfg = relay_config.load()
-                if cfg and cfg.engine_url and cfg.member == self.cfg.member:
-                    self.cfg = cfg
-                    self._credential = cfg.credential
-                else:
+                saved_url, key = pairing.saved_register(self.cfg.member)
+                if not saved_url or not key:
                     self._retry.wait(timeout=2)
                     self._retry.clear()
                     continue
+                self.cfg = replace(self.cfg, engine_url=saved_url, credential=key)
+                self._credential = key
             if self._follow_saved and (not self.cfg.invite or self._credential):
                 saved = pairing.load_register_credential(self.cfg.member, engine_url=self.cfg.engine_url)
                 if saved:
@@ -140,6 +178,8 @@ class RelayClient:
                                      ping_interval=20, ping_timeout=5,
                                      max_size=8 * 1024 * 1024) as ws:
                     handshake = self._handshake(ws)
+                    if self._stop.is_set():
+                        return
                     if handshake is None:  # Pending or approved; reconnect without opening any streams.
                         if self._stop.wait(1.0):
                             return
@@ -153,7 +193,8 @@ class RelayClient:
                     pairing.select_role(self.cfg.member, "dial")
                     self._close_listener()
                     self._on_status("online")
-                    streams = streams_mod.StreamRegistry(self.cfg.home, ws)
+                    streams = streams_mod.StreamRegistry(self.cfg.home, ws, self.protocol_version,
+                                                          legacy=self.legacy_engine)
                     try:
                         self._recv_loop(ws, streams)
                     finally:
@@ -184,7 +225,7 @@ class RelayClient:
                  "code_version": snapshot["code_version"],
                  "plugin_version": snapshot["code_version"],
                  "mcp_fingerprint": snapshot["mcp_fingerprint"],
-                 "protocol_version": relay_config.RELAY_PROTOCOL_VERSION,
+                 **relay_config.relay_protocol.offer(),
                  "mcp_python": snapshot["mcp_python"],
                  "mcp_entry": snapshot["mcp_entry"]}
         if not credential and self.cfg.invite:
@@ -199,13 +240,25 @@ class RelayClient:
             code = getattr(getattr(exc, "rcvd", None), "code", None)
             # 引擎按版本/凭据/摘要拒绝：重试无意义，结束出站循环
             if code in (4001, 4002, 4003):
+                if code == CLOSE_BAD_PROTOCOL:
+                    reason = relay_config.relay_protocol.refusal(exc.rcvd.reason)
+                    logger.warning("bot-group relay member=%s %s", self.cfg.member, reason)
+                    if pairing_only:
+                        raise relay_config.relay_protocol.ProtocolMismatch(reason) from None
                 if code == 4001 and credential and self._follow_saved and not pairing_only:
                     self._rejected_key = self._credential = credential
                 logger.warning("bot-group relay handshake rejected member=%s code=%s",
                                self.cfg.member, code)
                 return False
             raise
-        kind = reply.get('relay', {}).get('kind')
+        receipt = reply.get('relay') or {}
+        try:
+            self.protocol_version = relay_config.relay_protocol.selected(receipt)
+        except ValueError:
+            ws.close(code=CLOSE_BAD_PROTOCOL, reason=relay_config.relay_protocol.REJECTION)
+            return False
+        self.legacy_engine = "protocol_version" not in receipt
+        kind = receipt.get('kind')
         if candidate and kind == 'hello_pending':
             self._on_status('pending_confirmation')
             return None

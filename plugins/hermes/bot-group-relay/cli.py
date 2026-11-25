@@ -79,6 +79,7 @@ def register_cli(parser) -> None:
     p_listen.add_argument("--address", required=True, help="绑定的本机网卡单播地址")
     p_listen.add_argument("--port", type=int, required=True, help="监听端口")
     p_listen.add_argument("--advertise", default="", help="对端可达地址/域名（公网映射场景）")
+    p_listen.add_argument("--engine-url", default="", help="为已注册引擎准备反向监听时指定其地址")
     p_listen.add_argument("--cert", default="", help="TLS 证书 PEM（缺省自动生成自签）")
     p_listen.add_argument("--key", default="", help="TLS 私钥 PEM")
     p_listen.add_argument("--no-tls", action="store_true", help="禁用 TLS（仅隔离测试）")
@@ -130,7 +131,7 @@ def dispatch(args) -> int:
     _require_authorized()
     from . import pairing
     if args.command == "status":
-        print(json.dumps(pairing.pairing_metadata(), ensure_ascii=False, indent=2))
+        print(json.dumps(pairing.status(), ensure_ascii=False, indent=2))
         return 0
     if args.command == "listen":
         from . import listen as listen_mod
@@ -138,6 +139,7 @@ def dispatch(args) -> int:
         try:
             result = listen_mod.listen_serve(
                 address=args.address, port=args.port, advertise=args.advertise,
+                engine_url=getattr(args, "engine_url", ""),
                 cert_path=args.cert or None, key_path=args.key or None,
                 tls=not args.no_tls,
                 proxy_port=int(args.proxy_port or 0),
@@ -177,13 +179,18 @@ def dispatch(args) -> int:
                                        credential=credential, invite=invite,
                                        mcp_python="",
                                        home=relay_config.host_home())
-        client = relay_mod.RelayClient(cfg, follow_saved=False)
+        peer = pairing.select_peer(member, engine_url=engine_url)
+        client = relay_mod.RelayClient(cfg, follow_saved=False, peer=peer)
         if invite:
             print("正在向办公机提交邀请…", flush=True)
             try:
-                client.pair_invitation()
+                with pairing.using_peer(peer):
+                    client.pair_invitation()
             except KeyboardInterrupt:
                 return 130
+            except relay_config.relay_protocol.ProtocolMismatch as exc:
+                print(f"配对未完成：{exc}", file=sys.stderr)
+                return 1
             except Exception as exc:
                 print(f"配对未完成（{type(exc).__name__}），可核对节点状态后重试。", file=sys.stderr)
                 return 1

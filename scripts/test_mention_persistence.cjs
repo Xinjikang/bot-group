@@ -20,7 +20,7 @@ function tab(local, session = storage()) {
     document: {querySelector: () => box, createElement: () => ({
       setAttribute() {}, querySelector: s => buttons[s],
     }), addEventListener() {}},
-    window: {addEventListener(type, callback) { listeners[type] = callback; }},
+    window: {t: key => key, addEventListener(type, callback) { listeners[type] = callback; }},
     ResizeObserver: class { observe() {} }, MutationObserver: class { observe() {} },
     performance: {now: () => 0}, clearTimeout() {}, setTimeout() {},
     console: {warn() {}}, api: async () => ({messages: []}),

@@ -5,17 +5,16 @@
   dialog.setAttribute('aria-labelledby', 'requirement-details-title');
   dialog.style.cssText = 'width:760px;max-width:calc(100vw - 24px);max-height:85vh;overflow:auto;box-sizing:border-box';
   dialog.innerHTML = `<div class="task-detail-head">
-    <button type="button" data-refresh>刷新</button><button type="button" data-close>关闭</button></div>
-    <div class="task-detail-scroll"><h3 id="requirement-details-title">需求详情</h3>
+    <button type="button" data-refresh data-i18n="refresh">刷新</button><button type="button" data-close data-i18n="close">关闭</button></div>
+    <div class="task-detail-scroll"><h3 id="requirement-details-title" data-i18n="requirement_details_title">需求详情</h3>
     <div data-content aria-live="polite"></div></div>`;
   document.body.appendChild(dialog);
   const content = dialog.querySelector('[data-content]');
   content.style.fontSize = '12px';
   const title = dialog.querySelector('h3');
   let revision = 0, current;
-  const labels = {open:'进行中', pending:'待领取', in_progress:'执行中', blocked:'已阻塞',
-    done:'已完成', cancelled:'已取消', ready:'已发布', draft:'草稿', needs_details:'待补充', missing:'缺失', invalid:'无效'};
-  const label = value => labels[value] || value || '—';
+  const labelText = value => window.t('req_status_' + value);
+  const label = value => { const text = labelText(value); return text === 'req_status_' + value ? (value || '—') : text; };
   function text(tag, value, parent = content) {
     const node = document.createElement(tag);
     node.textContent = value;
@@ -25,33 +24,33 @@
   }
   function render(data) {
     const req = data.requirement;
-    title.textContent = `需求 #${req.id} · ${req.title}`;
+    title.textContent = window.t('requirement_pound_detail', [req.id, req.title]);
     content.replaceChildren();
-    text('p', `项目：${req.project}　版本：${req.version || '—'}　状态：${label(req.status)}${req.archived ? '（已归档）' : ''}`);
+    text('p', window.t('requirement_meta', [req.project, req.version || '—', label(req.status), req.archived ? window.t('open_paren') + window.t('archived') + window.t('close_paren') : '']));
     // req#111 task#191：未过拆解门禁的需求标「待拆解授权」+原因（gate_reason 由 scanner 落库，#192）
     if (req.gate_reason) {
-      const gate = text('p', `待拆解授权 · ${req.gate_reason}`);
+      const gate = text('p', window.t('requirement_gate', [req.gate_reason]));
       gate.style.color = 'var(--warn)';
       gate.setAttribute('data-requirement-gate', 'blocked');
     }
-    text('p', `创建：${req.created_at || '—'}　更新：${req.updated_at || '—'}`);
-    if (req.project_root) text('p', `项目目录：${req.project_root}`);
-    const fields = [['title', '标题'], ['background_goal', '背景与目标'], ['scope', '范围'],
-      ['approach_basis', '方案与依据'], ['acceptance', '验收标准'],
-      ['undecided', '未决事项'], ['source_ref', '来源关联']];
+    text('p', window.t('requirement_dates', [req.created_at || '—', req.updated_at || '—']));
+    if (req.project_root) text('p', window.t('requirement_root', [req.project_root]));
+    const fields = [['title', 'requirement_field_title'], ['background_goal', 'requirement_field_goal'], ['scope', 'requirement_field_scope'],
+      ['approach_basis', 'requirement_field_approach'], ['acceptance', 'requirement_field_acceptance'],
+      ['undecided', 'requirement_field_undecided'], ['source_ref', 'requirement_field_source']];
     for (const [key, heading] of fields) {
       const section = text('section', '');
       section.setAttribute('data-requirement-field', key);
-      text('h4', heading, section);
+      text('h4', window.t(heading), section);
       const value = typeof req[key] === 'string' ? req[key] : '';
-      text('div', value.trim() ? value : `暂未填写${heading}`, section).style.whiteSpace = 'pre-wrap';
+      text('div', value.trim() ? value : window.t('requirement_not_filled', [window.t(heading)]), section).style.whiteSpace = 'pre-wrap';
     }
     if (req.description) {
-      text('h4', '历史需求描述');
+      text('h4', window.t('requirement_legacy_desc'));
       text('div', req.description).style.whiteSpace = 'pre-wrap';
     }
-    text('h4', `关联任务 · ${data.tasks.length}`).style.marginTop = '20px';
-    if (!data.tasks.length) text('p', '等待拆解任务');
+    text('h4', window.t('requirement_linked_tasks', [data.tasks.length])).style.marginTop = '20px';
+    if (!data.tasks.length) text('p', window.t('requirement_waiting_tasks'));
     for (const task of data.tasks) {
       const row = text('section', '');
       row.style.cssText = 'display:flex;align-items:flex-start;gap:16px;border-top:1px solid var(--border);padding:12px 0';
@@ -59,13 +58,13 @@
       section.style.cssText = 'flex:1;min-width:0';
       text('strong', `#${task.id} ${task.title}`, section);
       const assignee = task.claimed_by || task.next_bot;
-      text('p', `${label(task.status)} · ${label(task.briefing_status)} · ${assignee ? memberLabelForProfile(assignee, S.members) : '待分配'}`, section);
+      text('p', `${label(task.status)} · ${label(task.briefing_status)} · ${assignee ? memberLabelForProfile(assignee, S.members) : window.t('unassigned')}`, section);
       let deps;
       try { deps = JSON.parse(task.prerequisites || '[]'); } catch { deps = null; }
-      text('p', `前置依赖：${Array.isArray(deps) ? (deps.map(id => '#' + id).join('、') || '无') : '数据无效'}`, section);
+      text('p', window.t('requirement_prereqs', [Array.isArray(deps) ? (deps.map(id => '#' + id).join(window.t('workspace_sep')) || window.t('none')) : window.t('invalid_data')]), section);
       const blockers = task.dependency_blockers || [];
-      if (blockers.length) text('p', '等待：' + blockers.map(dep => `${dep.id ? '#' + dep.id : ''} ${dep.title}（${label(dep.status)}）`).join('、'), section);
-      const button = text('button', '查看任务记录', row);
+      if (blockers.length) text('p', window.t('waiting') + ': ' + blockers.map(dep => `${dep.id ? '#' + dep.id : ''} ${dep.title}${window.t('open_paren')}${label(dep.status)}${window.t('close_paren')}`).join(window.t('workspace_sep')), section);
+      const button = text('button', window.t('requirement_view_task_log'), row);
       button.style.cssText = 'flex-shrink:0;white-space:nowrap';
       button.type = 'button';
       button.addEventListener('click', () => openTaskHistory(task.id, req.project));
@@ -74,9 +73,9 @@
   async function open(id, project) {
     current = {id, project};
     const request = ++revision;
-    title.textContent = `需求 #${id}`;
+    title.textContent = window.t('requirement_pound_short', [id]);
     content.replaceChildren();
-    text('p', '加载中…');
+    text('p', window.t('loading'));
     if (!dialog.open) dialog.showModal();
     try {
       const data = await api(`/requirements/${encodeURIComponent(id)}?project=${encodeURIComponent(project)}`);
@@ -84,7 +83,7 @@
     } catch (error) {
       if (request === revision && dialog.open) {
         content.replaceChildren();
-        text('p', `加载失败：${error.message || error}`);
+        text('p', window.t('requirement_load_failed', [error.message || error]));
       }
     }
   }

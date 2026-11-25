@@ -143,17 +143,16 @@ class RelayHandshakeTests(RelayBase):
         finally:
             ws.close()
 
-    def test_plugin_version_mismatch_rejected(self):
-        # manager node1981 ③：插件包版本必须与引擎同 tag 配套，不符按版本拒绝
+    def test_distinct_release_same_protocol_connects(self):
         ws = self._connect()
         try:
             ws.send(json.dumps({"relay": {"kind": "hello"}, "member": REMOTE,
                                 "credential": CREDENTIAL, "code_version": "v9.9.9",
                                 "protocol_version": 1}))
-            self.assertEqual(self._closed_code(ws), relay_server.CLOSE_BAD_PROTOCOL)
+            self.assertEqual(json.loads(ws.recv())["relay"]["protocol_version"], 1)
             conn = self.conn()
             try:
-                self.assertFalse(relay.is_online(conn, REMOTE))
+                self.assertTrue(relay.is_online(conn, REMOTE))
             finally:
                 conn.close()
         finally:
@@ -449,7 +448,12 @@ class RelayFrameTests(RelayBase):
         try:
             relay.mark_online(conn, REMOTE, code_version="v", mcp_fingerprint="",
                               generation=1, now=time.time() - 200)
-            self.assertFalse(relay.is_online(conn, REMOTE), "90s 无心跳必须判离线")
+            with self.assertLogs(relay.logger, level="INFO") as logs:
+                self.assertFalse(relay.is_online(conn, REMOTE), "90s 无心跳必须判离线")
+                relay.mark_offline(conn, REMOTE)
+                self.assertFalse(relay.is_online(conn, REMOTE))
+            self.assertEqual(len(logs.output), 1)
+            self.assertIn("reason=heartbeat expired", logs.output[0])
             self.assertEqual(relay.read_node(conn, REMOTE)["state"], "offline")
         finally:
             conn.close()

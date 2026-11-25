@@ -20,12 +20,11 @@ import time
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from . import db, relay
+from . import db, relay, relay_protocol
 
 logger = logging.getLogger(__name__)
 
-# relay 帧协议版本：hello 必须上报且与引擎一致，不一致按版本拒绝（验收 6）。
-RELAY_PROTOCOL_VERSION = 1
+RELAY_PROTOCOL_VERSION = relay_protocol.CURRENT
 
 # 握手/帧拒绝码（插件侧安装指引按码提示）。
 CLOSE_BAD_CREDENTIAL = 4001
@@ -55,7 +54,8 @@ class RelayTransport:
         self._used = True
         envelope = json.dumps({
             "relay": {"kind": "frame", "stream": self.stream,
-                      "generation": self._link.generation, "accept_chunks": True},
+                      "generation": self._link.generation,
+                      **({"accept_chunks": True} if self._link.protocol_version >= 2 else {})},
             "frame": json.loads(text),
         }, ensure_ascii=False)
         self._link.send_text(envelope)
@@ -128,7 +128,8 @@ class RelayTransport:
         with self._state_lock:
             if not self._closed:
                 self._finish()
-        if self._link.transports.pop(self.stream, None) is None or not self._used or self._link.closed:
+        if (self._link.transports.pop(self.stream, None) is None or not self._used
+                or self._link.closed or self._link.protocol_version < 2):
             return
         envelope = json.dumps({"relay": {"kind": "stream_release", "stream": self.stream,
                                           "generation": self._link.generation}})
@@ -155,8 +156,7 @@ _RELEASE_VERSION: str | None | object = _RELEASE_SENTINEL
 
 
 def _engine_release_version() -> str | None:
-    """引擎发布版本（插件必须与引擎同 tag 配套，设计 2.1）。惰性缓存：
-    version_info 在 git 树上要跑 git（握手路径不重复开销）。"""
+    """Cache the release label reported for diagnostics."""
     global _RELEASE_VERSION
     if _RELEASE_VERSION is _RELEASE_SENTINEL:
         from . import version
@@ -166,6 +166,7 @@ def _engine_release_version() -> str | None:
 
 class NodeLink:
     """一条成员连接的活跃状态（内存注册表项）。"""
+    protocol_version = RELAY_PROTOCOL_VERSION
 
     def __init__(self, member: str, ws: WebSocket, generation: int,
                  peer_ip: str | None = None):
@@ -300,11 +301,9 @@ def _shutdown_link(link: NodeLink, reason: str) -> None:
             # 带代条件写 offline：本函数锁外执行，清理期间可能已被新连接接替，
             # 旧代清理不得覆盖新代状态（manager node1981 ②跨代窗口）。
             # 状态写库用本地状态代（manager node2057 ②：本地代贯穿离线写入）。
-            relay.mark_offline(conn, link.member, generation=_db_generation(link))
+            relay.mark_offline(conn, link.member, generation=_db_generation(link), reason=reason)
         finally:
             conn.close()
-    logger.warning("relay link down member=%s generation=%d reason=%s",
-                   link.member, link.generation, reason)
     try:
         if link.loop is not None:
             asyncio.run_coroutine_threadsafe(link.ws.close(code=1000), link.loop)
@@ -411,7 +410,7 @@ def _route_inbound(link: NodeLink, envelope: dict) -> bool:
     stream = meta.get("stream")
     transport = link.transports.get(stream) if isinstance(stream, str) else None
     if kind in ("frame_chunk", "stream_closed"):
-        if transport is not None:
+        if transport is not None and link.protocol_version >= 2:
             if kind == "frame_chunk":
                 transport.push_part(envelope)
             else:
@@ -438,9 +437,8 @@ async def relay_ws(websocket: WebSocket) -> None:
         credential = hello.get("credential") or ""
         invite_token = (hello.get("invite") or "").strip()
         code_version = hello.get("code_version") or ""
-        plugin_version = hello.get("plugin_version") or code_version
         mcp_fingerprint = hello.get("mcp_fingerprint") or ""
-        protocol_version = hello.get("protocol_version")
+        protocol_version = relay_protocol.negotiate(hello)
         # req#171 第二层：凭据验证通过后核对 socket peer IP 属于该成员
         # 绑定集合——B 成员凭据从 A 成员已绑定 IP 连接被拒（防交换来源
         # 冒用）。回环恒放行。邀请路径（req#175）在兑换时把 peer 首绑进
@@ -454,10 +452,8 @@ async def relay_ws(websocket: WebSocket) -> None:
                 if credential or not member or not ip_allowlist._normalize(peer_raw or ''):
                     await websocket.close(code=CLOSE_BAD_CREDENTIAL)
                     return
-                engine_version = _engine_release_version()
-                if (protocol_version != RELAY_PROTOCOL_VERSION
-                        or (engine_version and plugin_version != engine_version)):
-                    await websocket.close(code=CLOSE_BAD_PROTOCOL)
+                if protocol_version is None:
+                    await websocket.close(code=CLOSE_BAD_PROTOCOL, reason=relay_protocol.REJECTION)
                     return
                 offer = relay.offer_invitation(conn, invite_token, member, peer,
                                                hello.get('join_proof', ''), hello.get('credential_commitment', ''))
@@ -466,7 +462,8 @@ async def relay_ws(websocket: WebSocket) -> None:
                     return
                 # No relay link is registered on a bootstrap connection, even after approval.
                 await websocket.send_json({'relay': {'kind': 'hello_confirmed' if offer['state'] == 'confirmed'
-                                                           else 'hello_pending'}})
+                                                           else 'hello_pending',
+                                                'protocol_version': protocol_version}})
                 await websocket.close()
                 return
             member = relay.authenticated_member(conn, member, credential)
@@ -477,18 +474,10 @@ async def relay_ws(websocket: WebSocket) -> None:
                 logger.warning("relay source not bound to member=%s peer=%s", member, peer)
                 await websocket.close(code=CLOSE_BAD_SOURCE)
                 return
-            if protocol_version != RELAY_PROTOCOL_VERSION:
+            if protocol_version is None:
                 logger.warning("relay protocol version mismatch member=%s got=%s",
-                               member, protocol_version)
-                await websocket.close(code=CLOSE_BAD_PROTOCOL)
-                return
-            # 插件包版本与引擎同 tag 配套（设计 2.1，manager node1981 ③）：
-            # 插件包版本必须等于引擎发布版本，否则按版本拒绝。
-            engine_version = _engine_release_version()
-            if engine_version and plugin_version != engine_version:
-                logger.warning("relay plugin version mismatch member=%s engine=%s got=%s",
-                               member, engine_version, plugin_version)
-                await websocket.close(code=CLOSE_BAD_PROTOCOL)
+                               member, hello.get("protocol_version"))
+                await websocket.close(code=CLOSE_BAD_PROTOCOL, reason=relay_protocol.REJECTION)
                 return
             row = relay.read_node(conn, member)
             # req#173 单活动通道：插件主动连入（方向 A）只在「方向为 listen」
@@ -528,6 +517,7 @@ async def relay_ws(websocket: WebSocket) -> None:
         return
 
     link = NodeLink(member, websocket, generation, peer_ip=peer)
+    link.protocol_version = protocol_version
     # 接替：先注册新连接（新连接成为当前代），旧连接的清理在锁外进行——
     # _shutdown_link 自取 _LINKS_LOCK，持锁调用会死锁；旧代清理因「非当前
     # 注册连接」不写 offline，不覆盖新连接状态（manager node1977 ①）。
@@ -542,9 +532,11 @@ async def relay_ws(websocket: WebSocket) -> None:
             previous.return_timer.cancel()
         previous.close()
     try:
-        hello_ok = {"relay": {"kind": "hello_ok", "generation": generation},
+        hello_ok = {"relay": {"kind": "hello_ok", "generation": generation, "protocol_version": protocol_version},
                     "engine_url": _engine_url()}
         await websocket.send_text(json.dumps(hello_ok, ensure_ascii=False))
+        from . import relay_switch
+        relay_switch.clear_deferred_return(member)
         logger.info("relay link up member=%s generation=%d", member, generation)
         if switching:
             # manager node2073：link 已注册且 hello_ok 已发（能收发帧），

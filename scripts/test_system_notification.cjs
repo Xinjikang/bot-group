@@ -10,6 +10,7 @@ const ctx = {
   NAME_OF: p => p === 'default' ? '蛇蛇' : p,
   AV_CLASS: () => '', fmtTs: x => x, S: {isUserIdentity:false},
 };
+ctx.t = require('./i18n_vm_stub.cjs');
 vm.createContext(ctx);
 vm.runInContext(source, ctx);
 const base = {id:1, sender:'engine', sender_type:'engine', mentions:'["default"]', ts:'now'};

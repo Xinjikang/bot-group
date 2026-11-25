@@ -13,7 +13,7 @@
       dialog.setAttribute('aria-describedby', 'app-alert-message');
       title = document.createElement('h3');
       title.id = 'app-alert-title';
-      title.textContent = '提示';
+      title.textContent = window.t('notice');
       message = document.createElement('div');
       message.id = 'app-alert-message';
       input = document.createElement('input');
@@ -29,12 +29,12 @@
       button = document.createElement('button');
       button.type = 'button';
       button.className = 'primary';
-      button.textContent = '确定';
+      button.textContent = window.t('confirm');
       button.autofocus = true;
       button.addEventListener('click', () => dialog.close('confirm'));
       cancel = document.createElement('button');
       cancel.type = 'button';
-      cancel.textContent = '取消';
+      cancel.textContent = window.t('cancel');
       cancel.addEventListener('click', () => dialog.close('cancel'));
       actions.append(cancel, button);
       dialog.append(title, message, input, actions);
@@ -56,7 +56,7 @@
     active = pending.shift();
     active.focus = document.activeElement;
     message.textContent = active.message;
-    title.textContent = active.kind === 'alert' ? '提示' : active.kind === 'confirm' ? '确认操作' : '请输入';
+    title.textContent = active.kind === 'alert' ? window.t('notice') : active.kind === 'confirm' ? window.t('confirm_action') : window.t('input_prompt');
     dialog.setAttribute('role', active.kind === 'alert' ? 'alertdialog' : 'dialog');
     input.hidden = active.kind !== 'prompt';
     input.value = active.defaultValue;
@@ -111,14 +111,14 @@
   window.validateDialogField = field => {
     if (!eligible(field) || field.disabled || field.closest('[hidden]')) return true;
     let message = field.dialogValidation?.(field.value) || '';
-    if (!message && field.required && !field.value.trim()) message = '此项为必填，请填写内容。';
-    if (!message && field.maxLength >= 0 && field.value.length > field.maxLength) message = `最多填写 ${field.maxLength} 个字符。`;
-    if (!message && field.minLength > 0 && field.value && field.value.length < field.minLength) message = `至少填写 ${field.minLength} 个字符。`;
+    if (!message && field.required && !field.value.trim()) message = window.t('field_required');
+    if (!message && field.maxLength >= 0 && field.value.length > field.maxLength) message = window.t('field_max', [field.maxLength]);
+    if (!message && field.minLength > 0 && field.value && field.value.length < field.minLength) message = window.t('field_min', [field.minLength]);
     if (!message && !field.validity.valid) {
       const validity = field.validity;
-      if (validity.badInput) message = '请输入有效数字。';
-      else if (validity.rangeUnderflow || validity.rangeOverflow) message = `请输入 ${field.min || '最小值'} 至 ${field.max || '最大值'} 范围内的数值。`;
-      else if (validity.stepMismatch) message = field.step === '1' || !field.step ? '请输入整数。' : `请按 ${field.step} 的步长填写数值。`;
+      if (validity.badInput) message = window.t('field_number');
+      else if (validity.rangeUnderflow || validity.rangeOverflow) message = window.t('field_range', [field.min || window.t('min_value'), field.max || window.t('max_value')]);
+      else if (validity.stepMismatch) message = field.step === '1' || !field.step ? window.t('field_integer') : window.t('field_step', [field.step]);
       else message = field.dataset.validationMessage || field.validationMessage;
     }
     return dialogFieldError(field, message);

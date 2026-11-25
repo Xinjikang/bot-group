@@ -6,6 +6,7 @@ import json
 import logging
 import queue
 import threading
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ class LocalGatewayStream:
         self.stream = meta["stream"]
         self.generation = meta["generation"]
         self.chunked = meta.get("accept_chunks") is True
+        self.protocol_version = meta.get("protocol_version", 1)
         self._outbound = queue.Queue(maxsize=256)
         self._closed = threading.Event()
         self._thread = threading.Thread(target=self._run, name=f"bot-group-stream-{self.stream}",
@@ -88,6 +90,8 @@ class LocalGatewayStream:
             code = getattr(getattr(exc, "rcvd", None), "code", None)
         logger.warning("relay gateway stream closed stream=%s cause=%s code=%s",
                        self.stream, type(exc).__name__, code)
+        if self.protocol_version < 2:
+            return
         try:
             self._send("stream_closed", code=code)
         except OSError:
@@ -113,16 +117,22 @@ class LocalGatewayStream:
 class StreamRegistry:
     """Only the receive loop for the owning authenticated socket mutates this registry."""
 
-    def __init__(self, home, ws):
+    def __init__(self, home, ws, protocol_version=2, *, legacy=False):
         self.home = home
         self.ws = ws
+        self.protocol_version = protocol_version
+        self.legacy = legacy
         self.streams = {}
+        from . import pairing
+        self.peer = pairing.current_peer()
 
     def route(self, meta, envelope):
         name = meta.get("stream")
         if not isinstance(name, str):
             return
         if meta["kind"] == "stream_release":
+            if self.protocol_version < 2 and not self.legacy:
+                return
             local = self.streams.pop(name, None)
             if local:
                 local.close()
@@ -130,8 +140,20 @@ class StreamRegistry:
         frame = envelope.get("frame")
         if frame is None:
             return
+        if self.peer and isinstance(frame, dict) and frame.get("method") in ("session.create", "session.list"):
+            # Host title lookups and idempotent creation share one Hermes database.
+            params = dict(frame.get("params") or {})
+            for key in ("title", "request_id"):
+                value = params.get(key)
+                if isinstance(value, str) and value:
+                    digest = hashlib.sha256(f"{self.peer}:{key}:{value}".encode()).hexdigest()
+                    params[key] = "bg-" + digest if key == "title" else digest[:32]
+            frame = {**frame, "params": params}
         if name not in self.streams:
-            self.streams[name] = LocalGatewayStream(self.home, self.ws, meta)
+            # v0.3.4 signalled chunk support per stream under the legacy v1 hello.
+            chunks = meta.get("accept_chunks") is True and (self.protocol_version >= 2 or self.legacy)
+            stream_meta = dict(meta, accept_chunks=chunks, protocol_version=2 if chunks else self.protocol_version)
+            self.streams[name] = LocalGatewayStream(self.home, self.ws, stream_meta)
         self.streams[name].send_text(json.dumps(frame, ensure_ascii=False))
 
     def close_all(self):

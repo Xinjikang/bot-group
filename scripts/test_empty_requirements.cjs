@@ -14,6 +14,9 @@ class Element {
 const box = new Element();
 const ctx = {S: {currentProject: 'cicp'}, $: () => box, esc: String,
   NAME_OF: String, document: {createElement: () => new Element(), createDocumentFragment: () => new Element()}};
+ctx.t = require('./i18n_vm_stub.cjs');
+ctx.window = {t: ctx.t};
+ctx.getUILanguage = () => 'zh-CN';
 vm.createContext(ctx);
 vm.runInContext(html.slice(html.indexOf('const STALE_MS ='), html.indexOf('async function adminTaskAction(')), ctx);
 const flatten = node => [node, ...node.children.flatMap(flatten)];

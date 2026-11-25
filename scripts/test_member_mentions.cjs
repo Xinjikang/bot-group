@@ -1,6 +1,6 @@
 // Selected labels retain the existing member.profile routing identity.
 const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
-const c = vm.createContext({});
+const c = vm.createContext({window: {t: () => '点名成员已不在当前范围，请重新选择 @ 成员'}});
 vm.runInContext(fs.readFileSync('frontend/member_identity.js', 'utf8'), c);
 const hermes = {profile: 'default', host_profile: 'default', display_name: 'Hermes'};
 const codex = {profile: 'bot-36', host_profile: 'default', display_name: 'Codex'};
