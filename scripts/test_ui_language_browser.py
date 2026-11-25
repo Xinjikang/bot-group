@@ -15,9 +15,19 @@ from playwright.sync_api import sync_playwright
 
 
 FRONTEND = Path(__file__).resolve().parents[1] / 'frontend'
+# CJK ideographs plus CJK/fullwidth punctuation (fullwidth plus sign used as
+# a button icon is excluded, mirroring scripts/check_ui_cjk.py).
+CJK_FULL = re.compile(r'[\u4e00-\u9fff\u3000-\u303f\uff01-\uff0a\uff0c-\uff0f'
+                      r'\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]')
 TOPICS = [dict(id=7, project='p', title='隔离话题', status='open', members=['bot'])]
 OLD = dict(id=10, project='p', thread_id=7, sender='bot', sender_type='bot',
            content='原文消息：切换语言不能改变我', ts='2026-11-11T12:00:00', mentions='[]', attachments=[])
+RETRACTED = dict(id=11, project='p', thread_id=7, sender='bot', sender_type='bot',
+                 content='这条消息后来被撤回', ts='2026-11-11T13:00:00', mentions='[]', attachments=[],
+                 retract_by='bot', retract_at='2026-11-11T14:00:00')
+TASK_UPDATE = dict(id=12, project='p', thread_id=7, sender='engine', sender_type='engine',
+                   content='{"task_id": 2, "by": "bot", "fields": {"status": "pending"}, "thread_id": 7}',
+                   ts='2026-11-11T15:00:00', mentions='[]', attachments=[])
 REQS = [dict(id=1, project='p', title='示例需求', status='open', archived=0)]
 TASKS = [dict(id=2, project='p', requirement_id=1, title='示例任务', status='pending',
               claimed_by='', next_bot='bot', briefing_status='ready', created_at='2026-11-25T10:00:00')]
@@ -40,7 +50,7 @@ class Fixture:
             return
         if path == '/messages':
             topic = int(parse_qs(url.query).get('thread_id', ['0'])[0])
-            route.fulfill(json={'messages': [OLD] if topic in (0, 7) else []})
+            route.fulfill(json={'messages': [TASK_UPDATE, RETRACTED, OLD] if topic in (0, 7) else []})
             return
         if path == '/msg':
             self.posts += 1
@@ -55,6 +65,13 @@ class Fixture:
                                              'active': 1, 'directory_mode': 'shared', 'remote_workspace': False,
                                              'remote_session_pending': False, 'binding_invalid': False,
                                              'workspace': {'path': 'E:/wt/bot', 'valid': True, 'head': 'abc123'}}]})
+            return
+        if path.endswith('/permissions'):
+            route.fulfill(json={'revision': 1, 'grants': {},
+                                'permissions': [{'key': 'task.create', 'label': 'Create tasks'}],
+                                'roles': [],
+                                'members': [{'profile': 'bot', 'display_name': 'Bot', 'host_profile': 'bot',
+                                             'active': 1}]})
             return
         if path.endswith('/removal'):
             route.fulfill(json={'can_remove': True, 'blockers': []})
@@ -200,10 +217,10 @@ def run(evidence):
             page.evaluate("applyTheme('light')")
             page.screenshot(path=str(evidence / 'empty-en-light-theme-1280.png'))
             results.append({'case': 'empty_state_en', 'result': 'passed'})
-            # 8) 英文模式逐个弹窗扫描：界面文案无 CJK（服务器数据豁免）
-            cjk = re.compile(r'[\u4e00-\u9fff]')
+            # 8) 英文模式逐个弹窗扫描：界面文案无 CJK/全角标点（服务器数据豁免）
+            cjk = CJK_FULL
             exempt = {'隔离项目', '隔离话题', '示例需求', '示例任务', '原文消息：切换语言不能改变我',
-                      '语言 / Language', '简体中文', 'English'}
+                      '这条消息后来被撤回', '语言 / Language', '简体中文', 'English'}
             dialogs = [
                 ('#dlg-background', "document.querySelector('#dlg-background').showModal()"),
                 ('#engine-logs', "document.querySelector('#engine-logs').showModal()"),
@@ -324,14 +341,14 @@ def run(evidence):
             # 11) 属性级扫描：aria-label / title / placeholder（按钮提示与读屏标签，含隐藏元素）。
             # 服务器数据、协议标记与双语语言入口豁免。
             attr_exempt = {'隔离项目', '隔离话题', '示例需求', '示例任务',
-                           '原文消息：切换语言不能改变我', '语言 / Language', '简体中文',
+                           '原文消息：切换语言不能改变我', '这条消息后来被撤回', '语言 / Language', '简体中文',
                            'English', 'Bot'}
             attr_leaks = page.evaluate("""() => {
               const out = [];
               for (const el of document.querySelectorAll('[aria-label],[title],[placeholder]')) {
                 for (const a of ['aria-label', 'title', 'placeholder']) {
                   const v = el.getAttribute(a);
-                  if (v && /[\\u4e00-\\u9fff]/.test(v)) out.push(`${el.tagName}#${el.id || ''} ${a}="${v}"`);
+                  if (v && /[\\u4e00-\\u9fff\\u3000-\\u303f\\uff01-\\uff0a\\uff0c-\\uff0f\\uff1a-\\uff20\\uff3b-\\uff40\\uff5b-\\uff65]/.test(v)) out.push(`${el.tagName}#${el.id || ''} ${a}="${v}"`);
                 }
               }
               return out;
@@ -340,6 +357,26 @@ def run(evidence):
                           if not any(e in x for e in attr_exempt) and '[收口]' not in x]
             assert not attr_leaks, f'English UI attributes still contain CJK: {attr_leaks}'
             results.append({'case': 'attrs_english_no_cjk', 'result': 'passed'})
+
+            # 12) 时间线撤回/任务修订事件与权限选择器空态：英文半角标点
+            retract_text = page.locator('[data-message-id="11"] .msg-content').inner_text()
+            assert retract_text.startswith('(Message retracted'), retract_text
+            assert retract_text.endswith(')'), retract_text
+            revision_text = page.locator('[data-message-id="12"] .msg-content').inner_text()
+            assert 'updated task' in revision_text, revision_text
+            assert 'status: pending' in revision_text, revision_text
+            assert '→' not in revision_text and '，' not in revision_text, revision_text
+            assert 'Topic #7' in revision_text and revision_text.count('(') == revision_text.count(')'), revision_text
+            # 权限 tab 选择器空态（未勾选任何角色/成员）
+            page.evaluate("openProjectDetail('p')")
+            page.wait_for_function("$('#dlg-project-detail').open")
+            page.evaluate("document.querySelector('#pj-tab-permissions').click()")
+            page.wait_for_function("document.querySelector('.project-permission-picker summary')",
+                                   timeout=5000)
+            summary_text = page.locator('.project-permission-picker summary').first.inner_text()
+            assert summary_text == 'Select members or roles…', summary_text
+            page.evaluate("document.querySelector('#dlg-project-detail').close()")
+            results.append({'case': 'timeline_and_permissions_english', 'result': 'passed'})
         finally:
             browser.close()
 

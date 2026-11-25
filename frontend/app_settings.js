@@ -44,7 +44,7 @@
     const message = String(error.message || '').trim();
     const reason = !message || /^(Internal Server Error|Service Unavailable|Bad Gateway|Gateway Timeout)$/i.test(message)
       ? t('server_error_retry') : message;
-    return `${error.status ? `HTTP ${error.status}：` : ''}${reason}`;
+    return `${error.status ? `HTTP ${error.status}${t('colon')}` : ''}${reason}`;
   }
   function close(focus = false) {
     menu.hidden = true;

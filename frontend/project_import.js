@@ -335,7 +335,7 @@ const extra = document.createElement('details'), title = document.createElement(
     for (const project of projects) {
       if (project.archived) {
 const note = document.createElement('p'); note.textContent = window.t('imp_project_archived', [project.display_name || project.name]); el('existing').append(note);
-      } else el('existing').append(button(`${project.display_name || project.name}（${project.name}）`, () => openProject(project.name)));
+      } else el('existing').append(button(`${project.display_name || project.name}${window.t('open_paren')}${project.name}${window.t('close_paren')}`, () => openProject(project.name)));
     }
   }
   window.openProjectInitialization = () => window.openProjectImport({mode: 'new'});
@@ -518,8 +518,7 @@ caption.textContent = plan.baseline === 'existing' ? window.t('imp_baseline_exis
 check.setAttribute('aria-label', window.t('imp_commit_file') + ' ' + file.path);
           check.addEventListener('click', event => event.stopPropagation());
           check.addEventListener('change', () => { if (check.checked) commitFiles.add(file.path); else commitFiles.delete(file.path); });
-label.append(check, document.createTextNode(' ' + file.path + (file.excluded ? '（' + window.t('imp_excluded') + '）' : '')));
-const diff = document.createElement('pre'); diff.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere'; diff.textContent = file.diff || window.t('imp_empty_or_binary');
+label.append(check, document.createTextNode(' ' + file.path + (file.excluded ? window.t('open_paren') + window.t('imp_excluded') + window.t('close_paren') : '')));
           row.append(label, diff); el('commit-files').append(row);
         }
       }
@@ -548,7 +547,7 @@ const current = ++version; lock(true); status(window.t('imp_loading_rules'));
           el('agents-content').value = hudAgents || agentsDraft.content;
           hudAgents='';
         }
-el('agents-roles').textContent = window.t('imp_current_roles', [roles.map(r => `${r.name}（${r.permissions.join(window.t('workspace_sep')) || window.t('imp_no_perms')}）`).join('；')]) + window.t('imp_agents_roles_hint');
+el('agents-roles').textContent = window.t('imp_current_roles', [roles.map(r => `${r.name}${window.t('open_paren')}${r.permissions.join(window.t('workspace_sep')) || window.t('imp_no_perms')}${window.t('close_paren')}`).join(window.t('workspace_sep'))]) + window.t('imp_agents_roles_hint');
 showStep(3); status(window.t('imp_roles_changed_hint'));
 } catch (err) { if (current === version) status(window.t('imp_rules_failed', [err.message]), true); }
       finally { if (current === version) lock(false); }
@@ -614,7 +613,7 @@ lines.push(gitPlan.initialize ? window.t('imp_review_git_init_main') : window.t(
 lines.push(gitPlan.baseline === 'existing' ? window.t('imp_review_baseline_existing', [gitPlan.head]) : window.t('imp_review_baseline_files', [gitPlan.selected.length, gitPlan.identity]));
 for (const path of gitPlan.selected) lines.push(window.t('imp_review_commit') + ': ' + path);
     }
-    const permissionNames = values => values.map(p => preview.permissions.find(v => v.key === p)?.label || p).join('、');
+    const permissionNames = values => values.map(p => preview.permissions.find(v => v.key === p)?.label || p).join(window.t('workspace_sep'));
     const memberName = member => {
       const bot = preview.bots.find(b => b.bot_id === member.bot_id);
       return bot?.display_name || bot?.host_profile || `Bot #${member.bot_id}`;
@@ -634,7 +633,7 @@ const item = document.createElement('p'); item.textContent = window.t('imp_revie
     }
     for (const file of checked.file_plan.files) {
       const item = document.createElement('details'), summary = document.createElement('summary');
-summary.textContent = `${({create: window.t('imp_fa_create'), replace: window.t('imp_fa_replace'), preserve: window.t('imp_fa_preserve')})[file.action]}：${file.path}`;
+summary.textContent = `${({create: window.t('imp_fa_create'), replace: window.t('imp_fa_replace'), preserve: window.t('imp_fa_preserve')})[file.action]}${window.t('colon')}${file.path}`;
       item.append(summary);
       if (file.action !== 'preserve') {
         const content = document.createElement('pre'); content.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere';
@@ -658,7 +657,7 @@ const resourceLines = [window.t('imp_review_resources')];
     for (const resource of resourceDrafts) {
       const bot = preview.bots.find(b => `bot-${b.bot_id}` === resource.key);
 resourceLines.push(resource.key === 'shared' ? window.t('imp_review_shared_root') : window.t('imp_worktree_of', [bot?.display_name || bot?.host_profile || resource.key]));
-for (const [name, service] of Object.entries(resource.config.services)) resourceLines.push(`  ${name}：${service.host}，${window.t('imp_review_port')} ${service.port}`);
+for (const [name, service] of Object.entries(resource.config.services)) resourceLines.push(`  ${name}${window.t('colon')}${service.host}${window.t('workspace_sep')}${window.t('imp_review_port')} ${service.port}`);
       const browser = resource.config.browser;
 resourceLines.push(browser ? window.t('imp_review_browser', [browser.host, browser.port, browser.data_directory]) : '  ' + window.t('imp_review_no_browser'));
 resourceLines.push(window.t('imp_review_test_data', [resource.config.test_data_directory]));

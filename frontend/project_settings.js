@@ -81,7 +81,7 @@ function renderProjectPermissions(data) {
         const member = members.find(m => m.profile === input.value);
         return member ? memberDisplayName(member) : input.value;
       });
-      summary.textContent = chosen.length ? `${chosen.slice(0, 2).join(window.t('workspace_sep'))}${chosen.length > 2 ? ' ' + window.t('pj_etc', [chosen.length]) : ''}` : '选择成员或角色…';
+      summary.textContent = chosen.length ? `${chosen.slice(0, 2).join(window.t('workspace_sep'))}${chosen.length > 2 ? ' ' + window.t('pj_etc', [chosen.length]) : ''}` : window.t('pj_permission_pick_hint');
     };
     options.addEventListener('change', updateSummary);
     updateSummary();
@@ -114,7 +114,7 @@ $('#pj-permissions-form').addEventListener('submit', async e => {
     renderProjectPermissions(result);
     $('#pj-permissions-status').textContent = window.t('pj_permissions_saved');
   } catch (err) {
-    if (version === projectPermissionsVersion) $('#pj-permissions-status').textContent = window.t('save_failed') + ': ' + err.message + '（' + window.t('pj_selection_kept') + '）';
+    if (version === projectPermissionsVersion) $('#pj-permissions-status').textContent = window.t('save_failed') + ': ' + err.message + window.t('open_paren') + window.t('pj_selection_kept') + window.t('close_paren');
   } finally {
     if (version === projectPermissionsVersion) {
       $('#pj-permissions-save').disabled = false;
@@ -139,7 +139,7 @@ function memberAddReset(options) {
 function memberProfileError(value) {
   if (!value) return window.t('pj_profile_required');
   if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(value)) return window.t('pj_profile_format');
-  if (['default', 'user', 'profiles'].includes(value) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/.test(value)) return window.t('pj_profile_reserved') || '该 Profile 标识为系统保留名称，请换一个标识。';
+  if (['default', 'user', 'profiles'].includes(value) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/.test(value)) return window.t('pj_profile_reserved');
   return '';
 }
 function memberCreateValid() {
@@ -194,7 +194,7 @@ function renderMemberCreate(steps) {
   }
   const source = form.querySelector('#member-create-source');
   memberAdd.sources.forEach((p, i) => source.add(new Option(
-    `${p.display_name || p.profile}（${p.profile}）`, String(i))));
+    `${p.display_name || p.profile}${window.t('open_paren')}${p.profile}${window.t('close_paren')}`, String(i))));
   source.value = draft.source;
   const updateAuth = () => {
     if (memberAdd.host === 'dsh') {
@@ -594,7 +594,7 @@ function renderProjectMembers(project, data) {
     roleBtn.className = 'project-member-role-btn';
     roleBtn.textContent = member.role ? member.role : window.t('pj_set_role');
     roleBtn.setAttribute('aria-haspopup', 'menu');
-    roleBtn.setAttribute('aria-label', window.t('pj_role_aria', [member.display_name || member.profile, member.role ? '：' + member.role : window.t('pj_role_unset')]));
+    roleBtn.setAttribute('aria-label', window.t('pj_role_aria', [member.display_name || member.profile, member.role ? window.t('colon') + member.role : window.t('pj_role_unset')]));
     // 角色按钮位于 .project-member-name 内，紧接启停胶囊。
     row.querySelector('.project-member-badge').after(roleBtn);
     roleBtn.addEventListener('click', e => {

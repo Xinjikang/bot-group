@@ -84,7 +84,8 @@ Hermes 网关模式在顶栏引擎状态旁显示只读状态点和 12px 文字�
 - 切换语言触发 `ui-language-changed` 事件，各动态面板按当前语言重新渲染；消息区在语言变化时整体重建界面文案，同时继续保留正文与思考内容。打开中的弹窗在切换时关闭，重新打开按当前语言构建，避免一次性渲染的旧文案残留。
 - 懒创建元素（切 tab 才渲染的卡片、点击才创建的弹窗、composer 工具栏等）在模板中直接用 `t()` 按当前语言求值，不能依赖 `data-i18n` 默认值；切语言后由 `ui-language-changed` 触发其刷新（如 `refreshImageEditors()`）。
 - 动态写入的属性同样属于界面文案：JS 直接赋值的 `title`/`aria-label`/`placeholder`（如按钮提示、读屏标签、错误前缀）不受 `data-i18n-*` 标记保护，写入方必须监听 `ui-language-changed` 按当前语言重设；静态 HTML 属性值含中文时必须带对应 `data-i18n-*` 标记。
-- 新增或修改界面文案后提交前必须跑静态兜底扫描 `py -3.10 -X utf8 -B scripts/check_ui_cjk.py`：对 frontend 全部 JS 与 index.html 检查未接词表的硬编码中文（豁免注释、词表、已接 t()/data-i18n 的行、双语语言入口与服务器数据），有命中不得提交。
+- 拼接点的标点也随语言：括号、冒号、句号、列表分隔等不得在拼接点写死全角；统一使用标点词条（`open_paren`/`close_paren`/`colon`/`sentence_end`）或 `workspace_sep` 列表分隔。英文下出现全角标点与出现中文等同，属未接词表残留。
+- 新增或修改界面文案后提交前必须跑静态兜底扫描 `py -3.10 -X utf8 -B scripts/check_ui_cjk.py`：对 frontend 全部 JS 与 index.html 检查未接词表的硬编码中文与 CJK/全角标点（豁免注释、词表、t() 词条 key、data-i18n 属性及元素 fallback、双语语言入口与服务器数据；属性值含中文或全角标点时须带对应 data-i18n-* 标记），有命中不得提交。
 - 语言选择按各浏览器本地保存；词表只收录 zh-CN 与 en，不扩展其他语言。
 - 界面修改验证中英文两套文案、切换立即生效、重开沿用与 390px 窄屏；已发送消息原文一致。
 

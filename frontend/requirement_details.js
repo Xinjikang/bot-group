@@ -26,7 +26,7 @@
     const req = data.requirement;
     title.textContent = window.t('requirement_pound_detail', [req.id, req.title]);
     content.replaceChildren();
-    text('p', window.t('requirement_meta', [req.project, req.version || '—', label(req.status), req.archived ? '（' + window.t('archived') + '）' : '']));
+    text('p', window.t('requirement_meta', [req.project, req.version || '—', label(req.status), req.archived ? window.t('open_paren') + window.t('archived') + window.t('close_paren') : '']));
     // req#111 task#191：未过拆解门禁的需求标「待拆解授权」+原因（gate_reason 由 scanner 落库，#192）
     if (req.gate_reason) {
       const gate = text('p', window.t('requirement_gate', [req.gate_reason]));
@@ -63,7 +63,7 @@
       try { deps = JSON.parse(task.prerequisites || '[]'); } catch { deps = null; }
       text('p', window.t('requirement_prereqs', [Array.isArray(deps) ? (deps.map(id => '#' + id).join(window.t('workspace_sep')) || window.t('none')) : window.t('invalid_data')]), section);
       const blockers = task.dependency_blockers || [];
-      if (blockers.length) text('p', window.t('waiting') + ': ' + blockers.map(dep => `${dep.id ? '#' + dep.id : ''} ${dep.title}（${label(dep.status)}）`).join(window.t('workspace_sep')), section);
+      if (blockers.length) text('p', window.t('waiting') + ': ' + blockers.map(dep => `${dep.id ? '#' + dep.id : ''} ${dep.title}${window.t('open_paren')}${label(dep.status)}${window.t('close_paren')}`).join(window.t('workspace_sep')), section);
       const button = text('button', window.t('requirement_view_task_log'), row);
       button.style.cssText = 'flex-shrink:0;white-space:nowrap';
       button.type = 'button';

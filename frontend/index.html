@@ -3086,7 +3086,7 @@ function renderMsg(m, thinking = []) {
           <span>${esc(fmtTs(m.ts))}</span>
           <span class="tag tag-retract">${t("retracted")}</span>
         </div>
-        <div class="msg-content msg-retracted-content">${t("retracted_body")}${m.retract_by === "user" ? "" : ` ${t("retracted_by")} ${esc(NAME_OF(m.retract_by))}`} · ${esc(fmtTs(m.retract_at))}）</div>
+        <div class="msg-content msg-retracted-content">${t("retracted_body")}${m.retract_by === "user" ? "" : ` ${t("retracted_by")} ${esc(NAME_OF(m.retract_by))}`} · ${esc(fmtTs(m.retract_at))}${t("close_paren")}</div>
       </div>`;
     return div;
   }
@@ -3106,11 +3106,11 @@ function renderMsg(m, thinking = []) {
     let d = null;
     try { d = JSON.parse(m.content); } catch {}
     const fieldsText = d && d.fields
-      ? Object.entries(d.fields).map(([k, v]) => `${k}→${v}`).join("，")
+      ? Object.entries(d.fields).map(([k, v]) => t("task_revision_field", [k, v])).join(t("workspace_sep"))
       : esc(m.content);
     const who = d && d.by ? esc(NAME_OF(d.by)) : "system";
     const tid = d && d.task_id != null ? `#${d.task_id}` : "";
-    const thid = d && d.thread_id != null ? `${t("thread_of")}${d.thread_id}）` : "";
+    const thid = d && d.thread_id != null ? `${t("thread_of")}${d.thread_id}${t("close_paren")}` : "";
     div.innerHTML = `
       <div class="avatar av-orchestrator">⚙</div>
       <div class="msg-body">
@@ -3119,7 +3119,7 @@ function renderMsg(m, thinking = []) {
           <span>${esc(fmtTs(m.ts))}</span>
           ${threadTag}
         </div>
-        <div class="msg-content">${who} ${t("revised_task")}${esc(tid)}${esc(thid)}：${esc(fieldsText)}</div>
+        <div class="msg-content">${who} ${t("revised_task")}${esc(tid)}${esc(thid)}${t("colon")}${esc(fieldsText)}</div>
       </div>`;
     return div;
   }
@@ -3779,9 +3779,9 @@ function renderProfilePlugins(editor, data) {
       disabled.add(field);
       const label = profileFieldLabel(editor.runtime, field);
       const reason = state.reason || state.message || t('plugin_unavailable');
-      const plugin = state.plugin && !String(reason).includes(state.plugin) ? `${t('plugin_prefix')} ${state.plugin}：` : '';
-      const path = state.path ? `（${state.path}）` : '';
-      lines.push(`${label}：${plugin}${reason}${path}`);
+      const plugin = state.plugin && !String(reason).includes(state.plugin) ? `${t('plugin_prefix')} ${state.plugin}${t('colon')}` : '';
+      const path = state.path ? `${t('open_paren')}${state.path}${t('close_paren')}` : '';
+      lines.push(`${label}${t('colon')}${plugin}${reason}${path}`);
     }
   }
   editor.pluginDisabled = disabled;
@@ -3796,7 +3796,7 @@ function renderProfilePlugins(editor, data) {
     }
   }
   if (lines.length) {
-    box.textContent = t('plugin_disabled_fields') + lines.join('；');
+    box.textContent = t('plugin_disabled_fields') + lines.join(t('workspace_sep'));
     box.hidden = false;
   }
   updateProfileSaveAvailability();
@@ -3861,7 +3861,7 @@ async function openProfileEditor(member, project = null) {
     profileStatus(data.instructions_overridden ? t('instructions_override_hint') : '');
     const effortSelect = $('#profile-reasoning_effort');
     if (data.reasoning_effort && ![...effortSelect.options].some(option => option.value === data.reasoning_effort)) {
-      const message = t('reasoning_out_of_range', [data.reasoning_effort, editor.runtime === 'dsh' ? 'DSH' : 'Codex']) + '。';
+      const message = t('reasoning_out_of_range', [data.reasoning_effort, editor.runtime === 'dsh' ? 'DSH' : 'Codex']) + t('sentence_end');
       effortSelect.setCustomValidity(message);
       profileStatus(message, true);
     }
@@ -3942,7 +3942,7 @@ $("#profile-form").addEventListener("submit", async e => {
         const refreshed = await api(`/members/${encodeURIComponent(editor.profile)}/config`, {cache: 'no-store'});
         if (profileEditor === editor) editor.revision = refreshed.revision || editor.revision;
       } catch {}
-      profileStatus(t('global_fields_saved', [saved.join('、') || t('none')]) + t('project_model_save_failed') + err.message, true);
+      profileStatus(t('global_fields_saved', [saved.join(t('workspace_sep')) || t('none')]) + t('project_model_save_failed') + err.message, true);
     } else if (editor.project && projectModelChanged.length && !globalChanged.length) {
       profileStatus(t('project_model_save_failed') + err.message, true);
     } else {
@@ -4358,7 +4358,7 @@ function renderTaskHistory(data) {
   try { prerequisites = Array.isArray(task.prerequisites) ? task.prerequisites : JSON.parse(task.prerequisites || '[]'); }
   catch { prerequisites = null; }
   const dependencyText = Array.isArray(prerequisites)
-    ? prerequisites.map(id => `#${id}`).join('、') || t('none') : t('dependency_invalid');
+    ? prerequisites.map(id => `#${id}`).join(t('workspace_sep')) || t('none') : t('dependency_invalid');
   const publication = {ready: t('published'), draft: t('draft'), needs_details: t('needs_details')};
   $("#task-history-summary").textContent = [
     `${task.title}\n${task.project} · ${task.status}`,
@@ -5252,7 +5252,7 @@ async function stopBot(profile, project, threadId = null) {
     if (!r.stopped && r.detail) parts.push(r.detail);
     const lead = r.stopped === true ? t('session_stopped')
       : t('stop_request_sent_wait');
-    showAlert(`${profile}：${lead}` + (parts.length ? `\n` + parts.join("\n") : ''));
+    showAlert(`${profile}${t('colon')}${lead}` + (parts.length ? `\n` + parts.join("\n") : ''));
     loadThinking();
   } catch (err) { showAlert(t("stop_failed") + err.message); }
 }

@@ -22,7 +22,12 @@ import sys
 from pathlib import Path
 
 FRONTEND = Path(__file__).resolve().parents[1] / 'frontend'
-CJK = re.compile(r'[\u4e00-\u9fff]')
+# CJK ideographs plus CJK/fullwidth punctuation (U+3000-303F, fullwidth
+# punctuation blocks U+FF01-FF0F/FF1A-FF20/FF3B-FF40/FF5B-FF65; fullwidth
+# letters and digits, and the fullwidth plus sign used as a button icon,
+# are intentionally excluded).
+CJK = re.compile(r'[\u4e00-\u9fff\u3000-\u303f\uff01-\uff0a\uff0c-\uff0f'
+                 r'\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]')
 
 # Intentional bilingual/data entries that must stay Chinese.
 EXEMPT_LINES = (
@@ -71,6 +76,37 @@ def attribute_hits(line):
     return found
 
 
+# First string argument of a t() call = dictionary key; strip it so the
+# remaining arguments (and any bare copy on the same line) are still checked.
+T_KEY = re.compile(r'\bt\s*\(\s*["\'][^"\']*["\']')
+# Whole <tag data-i18n...>fallback</tag> blocks: attribute and fallback text
+# are both dictionary-served and must not count as residue.
+I18N_ELEMENT = re.compile(r'<[^>]*data-i18n[^>]*>[^<]*<')
+# Any data-i18n*="..." attribute left after element stripping.
+DATA_I18N = re.compile(r'data-i18n(?:-[a-z-]+)?="[^"]*"')
+# JS setAttribute defaults served by a data-i18n marker on the same line.
+JS_ATTR_DEFAULT = re.compile(r'setAttribute\(["\'](?:title|aria-label|placeholder)["\'],'
+                             r'\s*["\'][^"\']*["\']\)')
+# Tag-internal fallback text of data-i18n elements.
+ELEMENT_TEXT = re.compile(r'>[^<>]*<')
+
+
+def stripped_code(line):
+    """Remove dictionary-served parts; the remainder is what must be clean."""
+    code = strip_trailing_comments(line)
+    # HTML attribute defaults replaced at runtime by their data-i18n marker.
+    for pattern, marker in ATTR_RULES:
+        if marker in code:
+            code = pattern.sub('', code)
+    if 'data-i18n' in code:
+        code = JS_ATTR_DEFAULT.sub('', code)
+        code = ELEMENT_TEXT.sub('><', code)
+    code = I18N_ELEMENT.sub('', code)
+    code = DATA_I18N.sub('', code)
+    code = T_KEY.sub('t(', code)
+    return code
+
+
 def is_comment_only(line):
     stripped = line.strip()
     return (stripped.startswith('//') or stripped.startswith('/*')
@@ -103,13 +139,14 @@ def main():
                 continue
             if not CJK.search(strip_trailing_comments(line)):
                 continue  # CJK only in trailing comments
-            if re.search(r'\bt\s*\(', line) or 'data-i18n' in line:
-                # Text routed through the dictionary; still check attribute
-                # values that carry CJK without their own data-i18n marker.
-                for detail in attribute_hits(line):
-                    hits.append(f'{path.name}:{lineno}: [{detail}] {line.strip()[:100]}')
-                continue
-            hits.append(f'{path.name}:{lineno}: {line.strip()[:120]}')
+            # Attribute values are checked against the original line (their
+            # data-i18n marker must be present before stripping).
+            for detail in attribute_hits(line):
+                hits.append(f'{path.name}:{lineno}: [{detail}] {line.strip()[:100]}')
+            # Everything else must be clean after removing dictionary-served
+            # parts (t() keys, data-i18n attributes and element fallbacks).
+            if CJK.search(stripped_code(line)):
+                hits.append(f'{path.name}:{lineno}: {line.strip()[:120]}')
     if hits:
         print(f'{len(hits)} candidate line(s) with hardcoded CJK copy:')
         for hit in hits:

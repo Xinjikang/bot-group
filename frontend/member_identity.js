@@ -11,7 +11,7 @@ function memberDisplayName(member) {
 }
 function memberLabel(member) {
   const name = memberDisplayName(member), profile = memberHostProfile(member);
-  return name === profile ? profile : `${name}（${profile}）`;
+  return name === profile ? profile : `${name}${window.t('open_paren')}${profile}${window.t('close_paren')}`;
 }
 
 // Textareas display the shared member label and retain each selected handle.
