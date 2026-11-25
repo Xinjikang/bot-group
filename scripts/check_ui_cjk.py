@@ -40,8 +40,14 @@ def strip_trailing_comments(line):
     for opener, closer in (('//', None), ('/*', '*/')):
         start = out.find(opener)
         while start != -1:
-            end = out.find(closer, start + 2) if closer else len(out)
-            out = out[:start] + out[end + len(closer) if closer else end:]
+            if closer:
+                end = out.find(closer, start + 2)
+                if end == -1:
+                    out = out[:start]  # unclosed block comment: drop the rest
+                    break
+                out = out[:start] + out[end + len(closer):]
+            else:
+                out = out[:start]
             start = out.find(opener)
     return out
 
