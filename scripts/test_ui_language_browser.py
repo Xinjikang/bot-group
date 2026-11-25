@@ -1,0 +1,215 @@
+"""Verify bilingual UI switching (req#178 task#333): settings entry, immediate
+effect, persistence, message originality and per-page spot checks.
+
+Uses isolated synthetic routes (no live backend); static assets are read from
+frontend/. Run: env -u PYTHONPATH py -3.10 -X utf8 -B scripts/test_ui_language_browser.py --evidence <abs dir>
+"""
+import argparse
+import json
+import mimetypes
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+
+from playwright.sync_api import sync_playwright
+
+
+FRONTEND = Path(__file__).resolve().parents[1] / 'frontend'
+TOPICS = [dict(id=7, project='p', title='隔离话题', status='open', members=['bot'])]
+OLD = dict(id=10, project='p', thread_id=7, sender='bot', sender_type='bot',
+           content='原文消息：切换语言不能改变我', ts='2026-11-11T12:00:00', mentions='[]', attachments=[])
+REQS = [dict(id=1, project='p', title='示例需求', status='open', archived=0)]
+TASKS = [dict(id=2, project='p', requirement_id=1, title='示例任务', status='pending',
+              claimed_by='', next_bot='bot', briefing_status='ready', created_at='2026-11-25T10:00:00')]
+
+
+class Fixture:
+    def __init__(self):
+        self.posts = 0
+
+    def route(self, route):
+        url = urlsplit(route.request.url)
+        path = url.path
+        if path.startswith('/app/'):
+            asset = (FRONTEND / (path[5:] or 'index.html')).resolve()
+            if FRONTEND not in asset.parents or not asset.is_file():
+                route.fulfill(status=404)
+            else:
+                route.fulfill(body=asset.read_bytes(),
+                              content_type=mimetypes.guess_type(asset.name)[0] or 'text/plain')
+            return
+        if path == '/messages':
+            topic = int(parse_qs(url.query).get('thread_id', ['0'])[0])
+            route.fulfill(json={'messages': [OLD] if topic in (0, 7) else []})
+            return
+        if path == '/msg':
+            self.posts += 1
+            route.fulfill(json={'message_id': 99})
+            return
+        if path in ('/events', '/desktop/events'):
+            route.fulfill(body=': test\n\n', content_type='text/event-stream')
+            return
+        data = {
+            '/auth/status': {'configured': False},
+            '/projects': {'projects': [{'name': 'p', 'display_name': '隔离项目'}]},
+            '/threads': {'threads': TOPICS},
+            '/members': {'members': [{'profile': 'bot', 'display_name': 'Bot', 'active': 1}]},
+            '/tasks': {'tasks': TASKS, 'requirements': REQS},
+        }.get(path, {})
+        route.fulfill(json=data)
+
+    def start(self, context):
+        context.route('**/*', self.route)
+        context.add_init_script('''const realInterval = window.setInterval;
+            window.setInterval = (fn, ms, ...args) => ms === 10000 ? 0 : realInterval(fn, ms, ...args);''')
+        page = context.new_page()
+        page.goto('http://ui-language.test/app/')
+        page.wait_for_function('S.messagesReady')
+        page.locator('[data-message-id="10"]').wait_for(timeout=3000)
+        return page
+
+
+def text_of(page, selector):
+    return page.locator(selector).first.inner_text().strip()
+
+
+def assert_zh(page):
+    assert text_of(page, '#btn-settings span[data-i18n]') == '设置'
+    assert text_of(page, '.col-threads .h-title') == '话题'
+    assert text_of(page, '.col-tasks .h-title') == '任务'
+    assert text_of(page, '#btn-send') == '发送'
+    assert text_of(page, '.task-head .th-status') == '状态'
+
+
+def assert_en(page):
+    assert text_of(page, '#btn-settings span[data-i18n]') == 'Settings'
+    assert text_of(page, '.col-threads .h-title') == 'Topics'
+    assert text_of(page, '.col-tasks .h-title') == 'Tasks'
+    assert text_of(page, '#btn-send') == 'Send'
+    assert text_of(page, '.task-head .th-status') == 'Status'
+
+
+def open_language_dialog(page):
+    page.locator('#btn-settings').click()
+    assert page.locator('#btn-language').inner_text().strip() == '语言 / Language'
+    page.locator('#btn-language').click()
+    page.locator('#dlg-language').wait_for(state='visible')
+
+
+def pick(page, value):
+    page.locator(f'#dlg-language input[value="{value}"]').check()
+
+
+def run(evidence):
+    if not evidence.is_absolute():
+        raise ValueError('--evidence must be absolute')
+    evidence.mkdir(parents=True, exist_ok=False)
+    results = []
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(channel='chrome', headless=True)
+        try:
+            context = browser.new_context(viewport={'width': 1280, 'height': 800})
+            fixture = Fixture()
+            page = fixture.start(context)
+
+            # 1) 初始中文 + 消息原文
+            assert page.evaluate('document.documentElement.lang') == 'zh-CN'
+            assert_zh(page)
+            assert '原文消息：切换语言不能改变我' in page.locator('[data-message-id="10"] .msg-content').inner_text()
+
+            # 2) 双语入口 + 选择 English 立即生效
+            open_language_dialog(page)
+            assert text_of(page, '#language-title') == '语言设置'
+            pick(page, 'en')
+            assert_en(page)
+            assert page.evaluate('document.documentElement.lang') == 'en'
+            assert page.evaluate("localStorage.getItem('ge_ui_language')") == 'en'
+            # 消息原文不变
+            assert '原文消息：切换语言不能改变我' in page.locator('[data-message-id="10"] .msg-content').inner_text()
+            # 动态任务面板已重渲染
+            assert text_of(page, '.task-head .th-title') == 'Tasks'
+            assert text_of(page, '#dlg-language #language-title') == 'Language'
+            page.locator('#language-close').click()
+            page.screenshot(path=str(evidence / 'chat-en-light-1280.png'))
+            results.append({'case': 'switch_to_en_immediate', 'result': 'passed'})
+
+            # 3) 重开记住选择
+            page.reload()
+            page.wait_for_function('S.messagesReady')
+            page.locator('[data-message-id="10"]').wait_for(timeout=3000)
+            assert page.evaluate('document.documentElement.lang') == 'en'
+            assert_en(page)
+            results.append({'case': 'persisted_after_reload', 'result': 'passed'})
+
+            # 4) 切回中文立即恢复
+            open_language_dialog(page)
+            pick(page, 'zh-CN')
+            assert_zh(page)
+            assert page.evaluate("localStorage.getItem('ge_ui_language')") == 'zh-CN'
+            page.locator('#language-close').click()
+            results.append({'case': 'switch_back_to_zh', 'result': 'passed'})
+
+            # 5) 设置页对照（设置菜单项 + 我的称呼弹窗）
+            page.locator('#btn-settings').click()
+            assert text_of(page, '#btn-background span') == '背景'
+            page.locator('#btn-settings').click()
+            page.evaluate("document.querySelector('#btn-user-name').click()")
+            page.locator('#dlg-user-name').wait_for(state='visible')
+            assert text_of(page, '#user-name-title') == '我的称呼'
+            page.locator('#user-name-cancel').click()
+            page.evaluate('setUILanguage("en")')
+            assert text_of(page, '#btn-user-name span') == 'My name'
+            page.locator('#btn-settings').click()
+            page.locator('#btn-user-name').click()
+            page.locator('#dlg-user-name').wait_for(state='visible')
+            assert text_of(page, '#user-name-title') == 'My name'
+            page.locator('#user-name-cancel').click()
+            page.evaluate('setUILanguage("zh-CN")')
+            results.append({'case': 'settings_page_spot_check', 'result': 'passed'})
+
+            # 6) 管理页对照：任务面板 + 成员管理弹窗
+            page.evaluate('setUILanguage("en")')
+            assert text_of(page, '.task-head .th-claimed') == 'Claimed'
+            assert text_of(page, '.task-head .th-next') == 'Next'
+            assert '示例需求' in page.locator('#task-list').inner_text()
+            page.evaluate("$('#dlg-members').showModal(); renderMemberAdmin();")
+            page.locator('#dlg-members').wait_for(state='visible')
+            assert text_of(page, '#dlg-members h3') == 'Group members (bot roster)'
+            page.locator('#dlg-members-close').click()
+            results.append({'case': 'admin_page_spot_check', 'result': 'passed'})
+
+            # 7) 无消息空态英文 + 深浅主题截图
+            page.evaluate("() => { S.msgs = []; renderMessages(); }")
+            page.wait_for_function("!!document.querySelector('#msg-empty')")
+            assert text_of(page, '#msg-empty') == 'No messages yet'
+            page.screenshot(path=str(evidence / 'empty-en-light-1280.png'))
+            page.evaluate("applyTheme('light')")
+            page.screenshot(path=str(evidence / 'empty-en-light-theme-1280.png'))
+            results.append({'case': 'empty_state_en', 'result': 'passed'})
+        finally:
+            browser.close()
+
+        # 窄屏 390px 抽查（语言弹窗 + 切换不溢出）
+        browser = pw.chromium.launch(channel='chrome', headless=True)
+        try:
+            context = browser.new_context(viewport={'width': 390, 'height': 800})
+            fixture = Fixture()
+            page = fixture.start(context)
+            open_language_dialog(page)
+            pick(page, 'en')
+            page.wait_for_function("document.documentElement.lang === 'en'")
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+            page.locator('#language-close').click()
+            assert text_of(page, '#btn-send') == 'Send'
+            page.screenshot(path=str(evidence / 'chat-en-390.png'))
+            results.append({'case': 'narrow_390_no_overflow', 'result': 'passed'})
+        finally:
+            browser.close()
+
+    (evidence / 'results.json').write_text(json.dumps(results, indent=2), encoding='utf-8')
+    print('PASS: bilingual switch, persistence, message originality, page spot checks, 390px')
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--evidence', type=Path, required=True)
+    run(parser.parse_args().evidence)

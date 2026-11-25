@@ -65,6 +65,9 @@ const ctx = {S: {currentProject: 'xjk', currentThread: 42, projects: [{name:'xjk
   renderMessages() {redraws.push(ctx.S.msgs.map(m=>m.id));},
   api(url, options) {requests.push({url,options}); return new Promise((resolve, reject) => pending.push({resolve, reject}));},
 };
+ctx.t = require('./i18n_vm_stub.cjs');
+ctx.window = {t: ctx.t};
+ctx.getUILanguage = () => 'zh-CN';
 vm.createContext(ctx);
 vm.runInContext(fs.readFileSync('frontend/member_identity.js', 'utf8'), ctx);
 vm.runInContext(slice('function restoreCurrentProject()', 'function renderProjectBar()'),ctx);

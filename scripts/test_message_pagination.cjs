@@ -13,6 +13,7 @@ const ctx = {S, $: s => s === '#msg-list' ? box : null,
   api: url => { calls.push(url); return new Promise(r => resolve = r); },
   renderMessages: () => { renders++; box.scrollHeight += 300; },
   getComputedStyle: () => ({overflowY: 'auto'})};
+ctx.t = require('./i18n_vm_stub.cjs');
 vm.createContext(ctx);
 vm.runInContext(html.slice(html.indexOf('async function refreshMessages()'), html.indexOf('function captureThinkingScroll(')), ctx);
 (async () => {

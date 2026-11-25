@@ -4,12 +4,12 @@ let userNameSaving = false;
 
 function applyUserDisplayName(data) {
   if (data.profile !== 'user' || typeof data.display_name !== 'string' || !data.display_name.trim())
-    throw new Error('称呼读取失败，请确认引擎已更新并重启');
+    throw new Error(window.t('name_load_failed'));
   const changed = S.userDisplayName !== data.display_name;
   S.userDisplayName = data.display_name;
   document.querySelector('#topbar-user-name').textContent = data.display_name;
   document.querySelector('#topbar-user-name').title = data.display_name;
-  document.querySelector('#btn-user-name').title = `我的称呼：${data.display_name}`;
+  document.querySelector('#btn-user-name').title = `${window.t('my_name_title')}${data.display_name}`;
   if (changed) {
     renderMessages();
     renderThreads();
@@ -30,7 +30,7 @@ async function loadUserDisplayName() {
 async function refreshUserDisplayName() {
   if (!S.isUserIdentity || userNameSaving || document.querySelector('#dlg-user-name').open) return;
   try { await loadUserDisplayName(); }
-  catch (error) { document.querySelector('#btn-user-name').title = `称呼读取失败：${error.message}`; }
+  catch (error) { document.querySelector('#btn-user-name').title = `${window.t('name_read_failed')}${error.message}`; }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -50,14 +50,14 @@ document.addEventListener('DOMContentLoaded', () => {
     if (button.hidden) {
       ++userNameRequest;
       closeDialogAnchored(dialog);
-      S.userDisplayName = '用户';
+      S.userDisplayName = window.t('user');
     }
   }
   button.addEventListener('click', async () => {
     if (dialog.open || userNameSaving) return;
     input.value = '';
     input.disabled = save.disabled = true;
-    report('正在读取称呼…');
+    report(window.t('name_reading'));
     openDialogAnchored(dialog, button);
     try {
       const data = await loadUserDisplayName();
@@ -67,7 +67,7 @@ document.addEventListener('DOMContentLoaded', () => {
       report('');
       input.focus();
       input.select();
-    } catch (error) { report(`读取失败：${error.message}。请关闭后重试。`, true); }
+    } catch (error) { report(`${window.t('name_read_failed')}${error.message}${window.t('name_retry')}`, true); }
   });
   document.querySelector('#user-name-cancel').onclick = () => closeDialogAnchored(dialog);
   dialog.addEventListener('close', () => {
@@ -82,20 +82,20 @@ document.addEventListener('DOMContentLoaded', () => {
     if (save.disabled || userNameSaving || !S.isUserIdentity) return;
     const name = input.value.trim();
     if (!name || name.length > 200 || /[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(input.value)) {
-      report('请输入 1–200 个字符的单行称呼。', true);
+      report(window.t('name_invalid'), true);
       input.focus();
       return;
     }
     userNameSaving = true;
     const request = ++userNameRequest, token = S.token;
     input.disabled = save.disabled = true;
-    report('正在保存…');
+    report(window.t('name_saving'));
     try {
       const data = await api('/user/display-name', {method: 'PATCH', body: JSON.stringify({display_name: name})});
       if (request !== userNameRequest || token !== S.token || !S.isUserIdentity) return;
       applyUserDisplayName(data);
       closeDialogAnchored(dialog);
-    } catch (error) { report(`保存失败：${error.message}。输入已保留，可以重试。`, true); }
+    } catch (error) { report(`${window.t('name_save_failed')}${error.message}${window.t('name_saved_retry')}`, true); }
     finally {
       userNameSaving = false;
       input.disabled = save.disabled = false;

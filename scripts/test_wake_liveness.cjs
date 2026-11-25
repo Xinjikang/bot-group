@@ -40,7 +40,8 @@ function harness({ thinking = [], failThinking = false } = {}) {
       });
     },
   };
-  vm.createContext(ctx);
+  ctx.t = require('./i18n_vm_stub.cjs');
+vm.createContext(ctx);
   // startThinkBubble → saveThinkingState 一整段：判活纯函数 + 心跳兜底 + pollReasoning 全覆盖
   vm.runInContext(section('function startThinkBubble(', 'window.addEventListener("pagehide"'), ctx);
   // The browser regression covers bubble rendering independently of liveness.

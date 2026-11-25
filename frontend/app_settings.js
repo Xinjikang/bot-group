@@ -1,5 +1,6 @@
 /* Administrator settings, version checks and durable upgrade receipts. */
 (() => {
+  const t = window.t;
   const root = document.querySelector('#app-settings');
   const toggle = document.querySelector('#btn-settings');
   const menu = document.querySelector('#app-settings-menu');
@@ -16,13 +17,13 @@
   const dialog = document.createElement('dialog');
   dialog.id = 'app-about';
   dialog.setAttribute('aria-labelledby', 'app-about-title');
-  dialog.innerHTML = `<h3 id="app-about-title">关于 BOT GROUP</h3>
+  dialog.innerHTML = `<h3 id="app-about-title">${t("about_title")}</h3>
     <p id="app-about-version"></p><p id="app-about-detail" role="status" aria-live="polite"></p>
     <p id="app-upgrade-progress" role="status" aria-live="polite"></p>
-    <div class="dlg-btns"><button type="button" id="app-about-close">关闭</button>
-    <button type="button" id="app-check-update">检查新版本</button>
-    <button type="button" id="app-run-upgrade" class="primary" hidden>升级</button>
-    <button type="button" id="app-upgrade-refresh" class="primary" hidden>刷新界面</button></div>`;
+    <div class="dlg-btns"><button type="button" id="app-about-close">${t("close")}</button>
+    <button type="button" id="app-check-update">${t("check_update")}</button>
+    <button type="button" id="app-run-upgrade" class="primary" hidden>${t("upgrade")}</button>
+    <button type="button" id="app-upgrade-refresh" class="primary" hidden>${t("refresh_ui")}</button></div>`;
   document.body.append(dialog);
   const detail = dialog.querySelector('#app-about-detail');
   const progressText = dialog.querySelector('#app-upgrade-progress');
@@ -31,10 +32,10 @@
   const refreshButton = dialog.querySelector('#app-upgrade-refresh');
   dialog.querySelector('#app-about-close').onclick = () => dialog.close();
   refreshButton.onclick = () => location.reload();
-  const phases = {queued: '准备升级…', downloading: '下载并校验新版本…', stopping: '等待 Bot 收尾并停止服务…',
-    backing_up: '备份程序与数据…', installing: '更新程序文件…', dependencies: '安装依赖…',
-    migrating: '验证数据库迁移…', checking: '检查运行环境…', rolling_back: '恢复原版本…',
-    rolled_back: '原版本已恢复…', rollback_failed: '恢复失败，请查看日志', restarting: '启动服务并验证…'};
+  const phases = {queued: t('phase_queued'), downloading: t('phase_downloading'), stopping: t('phase_stopping'),
+    backing_up: t('phase_backing_up'), installing: t('phase_installing'), dependencies: t('phase_dependencies'),
+    migrating: t('phase_migrating'), checking: t('phase_checking'), rolling_back: t('phase_rolling_back'),
+    rolled_back: t('phase_rolled_back'), rollback_failed: t('rollback_failed'), restarting: t('phase_restarting')};
   function showProgress(message, failed = false) {
     progressText.textContent = message;
     progressText.dataset.error = String(failed);
@@ -42,7 +43,7 @@
   function requestError(error) {
     const message = String(error.message || '').trim();
     const reason = !message || /^(Internal Server Error|Service Unavailable|Bad Gateway|Gateway Timeout)$/i.test(message)
-      ? '服务端处理请求失败，请稍后重试。' : message;
+      ? t('server_error_retry') : message;
     return `${error.status ? `HTTP ${error.status}：` : ''}${reason}`;
   }
   function close(focus = false) {
@@ -63,17 +64,17 @@
   }, 0));
   menu.addEventListener('click', event => { if (event.target.closest('button')) close(); });
   function render() {
-    dialog.querySelector('#app-about-version').textContent = `当前版本：${version?.version_label || info?.version_label || '读取中…'}`;
-    detail.textContent = pending ? '正在检查新版本…' : info?.status === 'ok'
-      ? (info.update_available ? `发现新版本 ${info.latest_version}` : '当前已是最新或更高版本。')
+    dialog.querySelector('#app-about-version').textContent = `${t('current_version')}${version?.version_label || info?.version_label || t('reading_version')}`;
+    detail.textContent = pending ? t('checking_update') : info?.status === 'ok'
+      ? (info.update_available ? `${t('new_version')}${info.latest_version}` : t('up_to_date'))
       : info?.status === 'development' ? `可用正式版本：${info.latest_version}；当前为 Git 开发版，请按提交记录核对版本差异。`
-      : info?.status === 'unknown' ? `可用正式版本：${info.latest_version}；当前源码缺少版本信息，暂时无法比较。`
-      : info?.status === 'unavailable' ? '检查新版本失败，请重试。' : '点击“检查新版本”获取最新版本。';
+      : info?.status === 'unknown' ? `${t('formal_version')}${info.latest_version}${t('version_info_missing')}`
+      : info?.status === 'unavailable' ? t('version_check_failed') : t('version_click_hint');
     if (info?.upgrade_blocked_reason) detail.textContent += `\n${info.upgrade_blocked_reason}`;
     checkButton.disabled = !!pending || submitting || monitoring;
     upgradeButton.hidden = !info?.update_available;
     upgradeButton.disabled = !!pending || submitting || monitoring || info?.can_upgrade === false || info?.status !== 'ok';
-    upgradeButton.textContent = info?.update_available ? `升级到 ${info.latest_version}` : '升级';
+    upgradeButton.textContent = info?.update_available ? `${t('upgrade_to')} ${info.latest_version}` : t('upgrade');
   }
   async function showAbout() {
     if (!allowed()) return;
@@ -82,7 +83,7 @@
     try {
       version = await api('/system/version', {cache: 'no-store', signal: AbortSignal.timeout(10000)});
       if (allowed()) render();
-    } catch { detail.textContent = '版本信息读取失败，请重试。'; }
+    } catch { detail.textContent = t('version_read_failed'); }
   }
   async function check(force = false) {
     if (!allowed() || pending || monitoring || (!force && Date.now() < nextCheck)) return;
@@ -96,7 +97,7 @@
       nextCheck = Date.now() + (data.status === 'unavailable' ? retry : interval);
       if (data.status !== 'unavailable') {
         notice.hidden = !data.update_available;
-        notice.textContent = data.update_available ? `新版本 ${data.latest_version}` : '';
+        notice.textContent = data.update_available ? `${t('new_version')}${data.latest_version}` : '';
       }
     } catch {
       if (generation === epoch) { nextCheck = Date.now() + retry; info = {status: 'unavailable'}; }
@@ -112,33 +113,33 @@
     submitting = true; render();
     const targetVersion = info.latest_version, generation = epoch;
     try {
-      if (!await showConfirm(`升级到 ${targetVersion}？\n系统将校验下载内容、暂停服务并备份程序与数据，然后更新并自动启动服务、刷新界面。Bot 收尾最多等待 120 秒；升级失败时自动恢复原版本。`)) return;
+      if (!await showConfirm(t('upgrade_confirm', [targetVersion]))) return;
       if (!allowed() || generation !== epoch) return;
       if (!dialog.open) dialog.showModal();
       refreshButton.hidden = true;
-      showProgress('正在提交升级请求，请稍候…');
+      showProgress(t('submitting_upgrade'));
       const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
       let operation = {id, target_version: targetVersion, created_at: Date.now() / 1000};
-      let initialMessage = '准备升级…';
+      let initialMessage = t('phase_queued');
       save(operation);
       try {
         operation = await api('/system/upgrade', {method: 'POST', body: JSON.stringify({request_id: id, version: targetVersion}), signal: AbortSignal.timeout(35000)});
       } catch (error) {
         if (error.status) { clear(); throw error; }
         // A lost response may already have launched the helper; reconcile by receipt ID.
-        initialMessage = '尚未收到升级请求的响应，正在查询升级状态，请勿重复提交…';
+        initialMessage = t('upgrade_response_lost');
       }
       await monitor(operation, initialMessage);
     } catch (error) {
       if (allowed() && generation === epoch) {
-        const message = `提交升级请求失败（POST /system/upgrade）。\n${requestError(error)}`;
+        const message = t('upgrade_submit_failed') + `\n${requestError(error)}`;
         showProgress(message, true);
         await showAlert(message);
       }
     }
     finally { submitting = false; render(); }
   }
-  async function monitor(operation, initialMessage = '准备升级…') {
+  async function monitor(operation, initialMessage = t('phase_queued')) {
     if (monitoring || !allowed()) return;
     monitoring = true; save(operation);
     S.upgrading = true; S.restarting = true; S.es?.close();
@@ -160,13 +161,13 @@
         try {
           const receipt = await api('/system/upgrade', {cache: 'no-store', signal: AbortSignal.timeout(5000)});
           if (receipt.id === operation.id) {
-            if (receipt.state === 'failed') { clear(); progress(receipt.error || '升级失败，请查看 logs/app-upgrade.log。', true); return; }
+            if (receipt.state === 'failed') { clear(); progress(receipt.error || t('upgrade_failed_logs'), true); return; }
             if (receipt.state === 'succeeded') {
               requestPath = '/health';
               const health = await api('/health', {cache: 'no-store', signal: AbortSignal.timeout(5000)});
               if (health.status === 'ok' && health.instance_id === receipt.new_instance_id && health.program_root === receipt.program_root && health.db_path === receipt.db_path) {
                 clear(); notice.hidden = true;
-                progress(`已升级到 ${receipt.target_version}，正在刷新界面…`);
+                progress(t('upgraded_refreshing', [receipt.target_version]));
                 refreshButton.hidden = false;
                 version = {version_label: receipt.target_version};
                 info = {status: 'ok', update_available: false};
@@ -174,16 +175,16 @@
                 location.reload();
                 return;
               }
-            } else progress(phases[receipt.phase] || '正在升级…');
-          } else if (receipt.id) { clear(); progress('升级请求已变化，请重新打开“关于”查看状态。', true); return; }
+            } else progress(phases[receipt.phase] || t('upgrading'));
+          } else if (receipt.id) { clear(); progress(t('upgrade_request_changed'), true); return; }
         } catch (error) {
           if (error.status === 401 || error.status === 403) return;
-          if (error.status) progress(`查询升级状态失败（GET ${requestPath}）。\n${requestError(error)}\n正在自动重试，请勿重复提交升级。`, true);
-          else progress('升级服务暂时断开，正在等待恢复…');
+          if (error.status) progress(t('upgrade_status_failed', [requestPath, requestError(error)]), true);
+          else progress(t('upgrade_service_down'));
         }
         await new Promise(resolve => setTimeout(resolve, 1500));
       }
-      if (generation === epoch && allowed()) progress('等待升级结果超时；重新打开“关于”可继续查看。服务未恢复时请检查 logs/app-upgrade.log。', true);
+      if (generation === epoch && allowed()) progress(t('upgrade_timeout'), true);
     } finally {
       if (!reloading) {
         monitoring = false; S.upgrading = false; S.restarting = false; S.restartMessage = '';

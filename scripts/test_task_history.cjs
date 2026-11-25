@@ -17,6 +17,7 @@ const ctx = {
   $: element, NAME_OF: name => name === 'dev' ? '沈清' : name,
   api(url) { requests.push(url); return new Promise((resolve, reject) => pending.push({resolve, reject})); },
 };
+ctx.t = require('./i18n_vm_stub.cjs');
 vm.createContext(ctx);
 vm.runInContext(html.slice(html.indexOf('const esc ='), html.indexOf('async function api(')), ctx);
 vm.runInContext(html.slice(html.indexOf('let taskHistoryRequest ='), html.indexOf('// ======================== 任务池栏拖拽')), ctx);
