@@ -3,9 +3,9 @@
   const element = document.querySelector('#hermes-gateway-status');
   const label = element.querySelector('.gateway-label');
   const labels = {
-    waiting: 'Hermes 网关待连接', connecting: 'Hermes 网关连接中', connected: 'Hermes 网关已连接',
-    offline: 'Hermes 网关离线', error: 'Hermes 网关连接异常', restart_required: 'Hermes 网关需要重启',
-    unknown: 'Hermes 网关状态未知',
+    waiting: 'gw_waiting', connecting: 'gw_connecting', connected: 'gw_connected',
+    offline: 'gw_offline', error: 'gw_error', restart_required: 'gw_restart_required',
+    unknown: 'gw_unknown',
   };
   let mode = null, state = 'unknown', received = 0, request = null, generation = 0;
   let engine = document.querySelector('#conn').dataset.state;
@@ -14,7 +14,7 @@
     element.hidden = !allowed() || mode === null || mode === 'subprocess';
     const current = engine !== 'connected' || Date.now() - received > 15000 ? 'unknown' : state;
     element.dataset.state = current;
-    label.textContent = labels[current] || labels.unknown;
+    label.textContent = window.t(labels[current] || labels.unknown);
   }
   async function refresh() {
     if (!allowed()) {
@@ -49,6 +49,7 @@
     },
   };
   document.addEventListener('visibilitychange', refresh);
+  document.addEventListener('ui-language-changed', render);
   setInterval(refresh, 3000);
   refresh();
 })();

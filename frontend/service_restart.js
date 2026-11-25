@@ -3,10 +3,9 @@
   const button = document.querySelector('#btn-restart');
   const key = 'ge_service_restart';
   let monitoring = false;
-  const stages = {
-    running: '正在重启…', draining: '正在收尾本地执行…', terminating: '正在停止本地执行…',
-    releasing: '正在回收资源…', stopping: '等待服务启动…',
-  };
+  const stageText = key => window.t('restart_stage_' + (key || 'stopping'));
+  const stages = {running: stageText('running'), draining: stageText('draining'), terminating: stageText('terminating'),
+    releasing: stageText('releasing'), stopping: stageText('stopping')};
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
   const read = () => { try { return JSON.parse(sessionStorage.getItem(key)); } catch { return null; } };
   const save = operation => { try { sessionStorage.setItem(key, JSON.stringify(operation)); } catch {} };
@@ -19,7 +18,7 @@
       cache: 'no-store', signal: AbortSignal.timeout(method === 'POST' ? 30000 : 5000)});
     const data = await response.json();
     if (!response.ok) {
-      const error = new Error(data.detail || `请求失败：${response.status}`);
+      const error = new Error(data.detail || window.t('request_failed', [response.status]));
       error.status = response.status;
       throw error;
     }
@@ -28,7 +27,7 @@
 
   function progress(message) {
     S.restartMessage = message;
-    button.querySelector('.settings-label').textContent = '重启中';
+    button.querySelector('.settings-label').textContent = window.t('restarting');
     button.title = message;
     setConn('connecting', message);
   }
@@ -39,7 +38,7 @@
     S.restarting = true;
     button.disabled = true;
     S.es?.close();
-    progress(operation ? '正在核对重启回执…' : '正在连接服务，准备重启…');
+    progress(operation ? window.t('restart_checking_receipt') : window.t('restart_connecting'));
     let failure = '';
     let reloading = false;
     try {
@@ -61,12 +60,12 @@
           if ('previous_id' in operation && (receipt.id || '') === operation.previous_id) {
             const keyed = !!operation.instance_id;
             if (keyed && receipt.current_instance_id !== operation.instance_id)
-              throw Object.assign(new Error('服务实例已变更，请查看当前服务状态。'), {terminal: true});
+              throw Object.assign(new Error(window.t('restart_instance_changed')), {terminal: true});
             const canRetry = keyed && operation.attempts === 1 && Date.now() < operation.retry_until;
             if (operation.attempts === 0 || canRetry) {
               operation.attempts++;
               save(operation);
-              progress('正在提交重启请求…');
+              progress(window.t('restart_submitting'));
               try {
                 receipt = await request('/admin/restart', 'POST', keyed ? {
                   request_id: operation.id, instance_id: operation.instance_id, previous_id: operation.previous_id
@@ -81,42 +80,42 @@
           if ('previous_id' in operation && receipt.id && receipt.id !== operation.previous_id) {
             // Older engines allocate their own ID; keyed engines must echo ours.
             if (operation.instance_id && (operation.id !== receipt.id || operation.instance_id !== receipt.instance_id))
-              throw Object.assign(new Error('服务已有其他重启回执，请查看当前服务状态。'), {terminal: true});
+              throw Object.assign(new Error(window.t('restart_other_receipt')), {terminal: true});
             operation = {id: receipt.id, instance_id: receipt.instance_id};
             save(operation);
           }
           if (receipt.id === operation.id) {
             if (receipt.state === 'failed') throw Object.assign(new Error(
-              `重启失败：${receipt.error || '未知原因'}。详情见 logs/service-restart.log。`), {terminal: true});
-            progress(stages[receipt.shutdown?.state] || '等待服务启动…');
+              window.t('restart_failed', [receipt.error || window.t('unknown_reason')])), {terminal: true});
+            progress(stages[receipt.shutdown?.state] || window.t('restart_waiting_start'));
             if (receipt.state === 'succeeded') {
-              progress('服务已启动，正在校验实例…');
+              progress(window.t('restart_verifying'));
               const health = await request('/health');
               if (health.status === 'ok' && health.instance_id === receipt.new_instance_id &&
                   health.instance_id !== receipt.instance_id &&
                   health.program_root === receipt.program_root && health.db_path === receipt.db_path) {
                 clear();
                 reloading = true;
-                progress('服务已恢复，正在刷新界面…');
+                progress(window.t('restart_refreshing'));
                 location.reload();
                 return;
               }
             }
           } else if ('previous_id' in operation) {
-            progress('正在等待本次重启的受理回执…');
+            progress(window.t('restart_waiting_receipt'));
           } else if (receipt.id) {
-            throw Object.assign(new Error('重启请求已变更，请查看服务状态'), {terminal: true});
+            throw Object.assign(new Error(window.t('restart_request_changed')), {terminal: true});
           }
         } catch (error) {
           if (error.terminal || error.status === 401 || error.status === 403) throw error;
-          progress(!operation ? '正在连接服务，准备重启…' :
-            'previous_id' in operation ? '正在核对重启请求是否已受理…' : '等待服务启动…');
+          progress(!operation ? window.t('restart_connecting') :
+            'previous_id' in operation ? window.t('restart_checking_accepted') : window.t('restart_waiting_start'));
         }
         await pause(1000);
       }
-      if (!operation) throw new Error('连接服务超时，重启请求尚未提交。请检查连接后重试。');
-      if ('previous_id' in operation) throw new Error('5 分钟内未取得本次重启的受理回执。刷新页面可继续核对回执。');
-      throw new Error('等待重启结果超时（5 分钟）：刷新页面可继续核对回执；详情见 logs/service-restart.log。');
+      if (!operation) throw new Error(window.t('restart_connect_timeout'));
+      if ('previous_id' in operation) throw new Error(window.t('restart_no_receipt_5min'));
+      throw new Error(window.t('restart_result_timeout'));
     } catch (error) {
       failure = error.message;
       if (error.terminal) clear();
@@ -126,8 +125,8 @@
         S.restarting = false;
         S.restartMessage = '';
         button.disabled = false;
-        button.querySelector('.settings-label').textContent = '重启服务';
-        button.title = '重启服务';
+        button.querySelector('.settings-label').textContent = window.t('restart_service');
+        button.title = window.t('restart_service');
         connectSSE();
         if (failure) showAlert(failure);
       }
@@ -138,7 +137,7 @@
     if (button.disabled || !S.isUserIdentity) return;
     button.disabled = true;
     try {
-      if (!await showConfirm('重启服务？Hermes 网关中的执行会继续运行，服务启动后接回原执行。Codex 等本地执行最多等待 120 秒收尾，超时后停止。重启期间暂停新任务派发和工具写入，服务恢复后自动刷新界面；失败原因保留在回执中。')) return;
+      if (!await showConfirm(window.t('restart_confirm'))) return;
       await monitor(null);
     } catch (error) { showAlert(error.message); }
     finally { button.disabled = monitoring; }

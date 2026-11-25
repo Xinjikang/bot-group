@@ -7,6 +7,7 @@ frontend/. Run: env -u PYTHONPATH py -3.10 -X utf8 -B scripts/test_ui_language_b
 import argparse
 import json
 import mimetypes
+import re
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -128,7 +129,8 @@ def run(evidence):
             # 动态任务面板已重渲染
             assert text_of(page, '.task-head .th-title') == 'Tasks'
             assert text_of(page, '#dlg-language #language-title') == 'Language'
-            page.locator('#language-close').click()
+            # 切换语言会关闭打开中的弹窗（一次性渲染组件按当前语言重建）
+            assert not page.locator('#dlg-language').evaluate('d => d.open')
             page.screenshot(path=str(evidence / 'chat-en-light-1280.png'))
             results.append({'case': 'switch_to_en_immediate', 'result': 'passed'})
 
@@ -145,7 +147,6 @@ def run(evidence):
             pick(page, 'zh-CN')
             assert_zh(page)
             assert page.evaluate("localStorage.getItem('ge_ui_language')") == 'zh-CN'
-            page.locator('#language-close').click()
             results.append({'case': 'switch_back_to_zh', 'result': 'passed'})
 
             # 5) 设置页对照（设置菜单项 + 我的称呼弹窗）
@@ -185,6 +186,36 @@ def run(evidence):
             page.evaluate("applyTheme('light')")
             page.screenshot(path=str(evidence / 'empty-en-light-theme-1280.png'))
             results.append({'case': 'empty_state_en', 'result': 'passed'})
+            # 8) 英文模式逐个弹窗扫描：界面文案无 CJK（服务器数据豁免）
+            cjk = re.compile(r'[\u4e00-\u9fff]')
+            exempt = {'隔离项目', '隔离话题', '示例需求', '示例任务', '原文消息：切换语言不能改变我',
+                      '语言 / Language', '简体中文', 'English'}
+            dialogs = [
+                ('#dlg-background', "document.querySelector('#dlg-background').showModal()"),
+                ('#engine-logs', "document.querySelector('#engine-logs').showModal()"),
+                ('#relay-nodes-dialog', "document.querySelector('#relay-nodes-dialog').showModal()"),
+                ('#dlg-project-entry', "document.querySelector('#dlg-project-entry').showModal()"),
+                ('#dlg-member-add', "document.querySelector('#dlg-member-add').showModal()"),
+                ('#app-about', "document.querySelector('#app-about').showModal()"),
+            ]
+            leaks = []
+            for selector, open_js in dialogs:
+                page.evaluate(open_js)
+                page.wait_for_function(f"document.querySelector('{selector}').open")
+                text = page.locator(selector).inner_text()
+                for line in text.split('\n'):
+                    line = line.strip()
+                    if cjk.search(line) and not any(e in line for e in exempt):
+                        leaks.append({'dialog': selector, 'text': line[:80]})
+                page.evaluate(f"document.querySelector('{selector}').close()")
+            # HUD 面板展开后外壳文案
+            page.evaluate("document.querySelector('#hud-toggle').click()")
+            for line in page.locator('#project-hud').inner_text().split('\n'):
+                line = line.strip()
+                if cjk.search(line) and not any(e in line for e in exempt):
+                    leaks.append({'dialog': '#project-hud', 'text': line[:80]})
+            assert not leaks, f'English UI still contains CJK copy: {leaks}'
+            results.append({'case': 'dialogs_and_hud_english_no_cjk', 'result': 'passed'})
         finally:
             browser.close()
 
@@ -198,7 +229,6 @@ def run(evidence):
             pick(page, 'en')
             page.wait_for_function("document.documentElement.lang === 'en'")
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
-            page.locator('#language-close').click()
             assert text_of(page, '#btn-send') == 'Send'
             page.screenshot(path=str(evidence / 'chat-en-390.png'))
             results.append({'case': 'narrow_390_no_overflow', 'result': 'passed'})

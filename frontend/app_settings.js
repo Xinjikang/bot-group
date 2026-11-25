@@ -17,13 +17,13 @@
   const dialog = document.createElement('dialog');
   dialog.id = 'app-about';
   dialog.setAttribute('aria-labelledby', 'app-about-title');
-  dialog.innerHTML = `<h3 id="app-about-title">${t("about_title")}</h3>
+  dialog.innerHTML = `<h3 id="app-about-title" data-i18n="about_title">关于 BOT GROUP</h3>
     <p id="app-about-version"></p><p id="app-about-detail" role="status" aria-live="polite"></p>
     <p id="app-upgrade-progress" role="status" aria-live="polite"></p>
-    <div class="dlg-btns"><button type="button" id="app-about-close">${t("close")}</button>
-    <button type="button" id="app-check-update">${t("check_update")}</button>
-    <button type="button" id="app-run-upgrade" class="primary" hidden>${t("upgrade")}</button>
-    <button type="button" id="app-upgrade-refresh" class="primary" hidden>${t("refresh_ui")}</button></div>`;
+    <div class="dlg-btns"><button type="button" id="app-about-close" data-i18n="close">关闭</button>
+    <button type="button" id="app-check-update" data-i18n="check_update">检查新版本</button>
+    <button type="button" id="app-run-upgrade" class="primary" data-i18n="upgrade" hidden>升级</button>
+    <button type="button" id="app-upgrade-refresh" class="primary" data-i18n="refresh_ui" hidden>刷新界面</button></div>`;
   document.body.append(dialog);
   const detail = dialog.querySelector('#app-about-detail');
   const progressText = dialog.querySelector('#app-upgrade-progress');
@@ -32,10 +32,10 @@
   const refreshButton = dialog.querySelector('#app-upgrade-refresh');
   dialog.querySelector('#app-about-close').onclick = () => dialog.close();
   refreshButton.onclick = () => location.reload();
-  const phases = {queued: t('phase_queued'), downloading: t('phase_downloading'), stopping: t('phase_stopping'),
-    backing_up: t('phase_backing_up'), installing: t('phase_installing'), dependencies: t('phase_dependencies'),
-    migrating: t('phase_migrating'), checking: t('phase_checking'), rolling_back: t('phase_rolling_back'),
-    rolled_back: t('phase_rolled_back'), rollback_failed: t('rollback_failed'), restarting: t('phase_restarting')};
+  const phases = {queued: 'phase_queued', downloading: 'phase_downloading', stopping: 'phase_stopping',
+    backing_up: 'phase_backing_up', installing: 'phase_installing', dependencies: 'phase_dependencies',
+    migrating: 'phase_migrating', checking: 'phase_checking', rolling_back: 'phase_rolling_back',
+    rolled_back: 'phase_rolled_back', rollback_failed: 'rollback_failed', restarting: 'phase_restarting'};
   function showProgress(message, failed = false) {
     progressText.textContent = message;
     progressText.dataset.error = String(failed);
@@ -67,7 +67,7 @@
     dialog.querySelector('#app-about-version').textContent = `${t('current_version')}${version?.version_label || info?.version_label || t('reading_version')}`;
     detail.textContent = pending ? t('checking_update') : info?.status === 'ok'
       ? (info.update_available ? `${t('new_version')}${info.latest_version}` : t('up_to_date'))
-      : info?.status === 'development' ? `可用正式版本：${info.latest_version}；当前为 Git 开发版，请按提交记录核对版本差异。`
+      : info?.status === 'development' ? window.t('about_dev_version', [info.latest_version])
       : info?.status === 'unknown' ? `${t('formal_version')}${info.latest_version}${t('version_info_missing')}`
       : info?.status === 'unavailable' ? t('version_check_failed') : t('version_click_hint');
     if (info?.upgrade_blocked_reason) detail.textContent += `\n${info.upgrade_blocked_reason}`;
@@ -175,7 +175,7 @@
                 location.reload();
                 return;
               }
-            } else progress(phases[receipt.phase] || t('upgrading'));
+            } else progress(t(phases[receipt.phase]) || t('upgrading'));
           } else if (receipt.id) { clear(); progress(t('upgrade_request_changed'), true); return; }
         } catch (error) {
           if (error.status === 401 || error.status === 403) return;
@@ -217,5 +217,6 @@
   window.addEventListener('focus', () => check());
   window.addEventListener('pageshow', () => check());
   setInterval(() => check(), 60000);
+  document.addEventListener('ui-language-changed', render);
   about.hidden = !allowed(); check(); restoreOperation();
 })();

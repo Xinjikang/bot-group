@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>bot-group 群聊与任务管理引擎</title>
+<title data-i18n="login_title">bot-group 群聊与任务管理引擎</title>
 <style>
 
 /* ==================== 星穹铁道风 · deep navy + stellar gold ==================== */
@@ -1181,9 +1181,9 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
   <div style="display:flex;flex-direction:column;gap:12px;">
     <!-- req#108 #186：移除「打开已登记项目」按钮+展开快捷列表（与 chip-all 下拉重复），打开已登记项目走「全部项目」下拉窗 -->
     <button type="button" id="project-entry-import" data-i18n="import_project">首次导入已有项目</button>
-    <p class="profile-help" style="margin:0;">预览现有文档，配置成员与授权后导入。</p>
+    <p class="profile-help" style="margin:0;" data-i18n="project_entry_import_hint">预览现有文档，配置成员与授权后导入。</p>
     <button type="button" id="project-entry-new" data-i18n="create_project_btn">新建项目（空白或场景模板）</button>
-    <p class="profile-help" style="margin:0;">确认基础文件后初始化，可查看进度并恢复失败步骤。</p>
+    <p class="profile-help" style="margin:0;" data-i18n="project_entry_new_hint">确认基础文件后初始化，可查看进度并恢复失败步骤。</p>
   </div>
   <div class="dlg-btns"><button type="button" id="project-entry-close" data-i18n="close">关闭</button></div>
 </dialog>
@@ -1206,7 +1206,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
       <p id="pj-registration-note" class="profile-help" hidden data-i18n="registration_note">填写已存在的项目目录完成登记，项目文件会保留。</p>
       <div id="pj-id-info"><label for="pj-d-id" data-i18n="stable_id">稳定 ID（自动生成）</label>
       <input id="pj-d-id" readonly style="width:100%"></div>
-      <label style="font-size:12px;color:var(--fg-2);margin:0;" data-i18n="display_name_label">项目显示名</label>
+      <label style="font-size:12px;color:var(--fg-2);margin:0;" data-i18n="pj_display_name_label">项目显示名</label>
       <input id="pj-d-name" required style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit;background:var(--card);color:var(--fg);">
       <label style="font-size:12px;color:var(--fg-2);margin:0;" data-i18n="root_label">项目主目录</label>
       <div style="display:flex;gap:8px;min-width:0;">
@@ -1219,7 +1219,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
         <label><input type="radio" name="project-directory-mode" value="shared" checked><span data-i18n="shared_root">共用项目主目录</span></label>
         <label><input type="radio" name="project-directory-mode" value="worktree"><span data-i18n="worktree_mode">独立 worktree</span></label>
       </div>
-      <div id="pj-worktree-options" hidden><label for="pj-d-worktree" data-i18n="worktree_root">worktree 根目录</label><input id="pj-d-worktree" style="width:100%"><p class="profile-help">主目录始终保留。default 使用主目录，其他成员在“成员与目录”中创建或接管工作区。</p></div>
+      <div id="pj-worktree-options" hidden><label for="pj-d-worktree" data-i18n="worktree_root">worktree 根目录</label><input id="pj-d-worktree" style="width:100%"><p class="profile-help" data-i18n="pj_worktree_options_hint">主目录始终保留。default 使用主目录，其他成员在“成员与目录”中创建或接管工作区。</p></div>
       <label for="pj-d-owner" style="font-size:12px;color:var(--fg-2);margin:0;" data-i18n="owner_label">项目负责人</label>
       <select id="pj-d-owner" style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit;background:var(--card);color:var(--fg);"></select>
       <p class="profile-help" style="margin:0;" data-i18n="owner_hint">任务自动重试耗尽后，向负责人发送阻塞汇总。未配置或负责人不可用时通知 user。</p>
@@ -1311,10 +1311,10 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
     <h3 id="profile-title" data-i18n="edit_member">编辑成员</h3>
     <p id="profile-plugin-status" class="profile-help" role="status" hidden></p>
     <div class="profile-tabs" id="profile-tabs" role="tablist" aria-label="Profile 配置">
-      <button type="button" id="profile-tab-description" role="tab" aria-controls="profile-panel-description" aria-selected="true" data-tab="description">描述</button>
+      <button type="button" id="profile-tab-description" role="tab" aria-controls="profile-panel-description" aria-selected="true" data-tab="description" data-i18n="description_tab">描述</button>
       <button type="button" id="profile-tab-soul" role="tab" aria-controls="profile-panel-soul" aria-selected="false" tabindex="-1" data-tab="soul">SOUL.md</button>
       <button type="button" id="profile-tab-env" role="tab" aria-controls="profile-panel-env" aria-selected="false" tabindex="-1" data-tab="env">.env</button>
-      <button type="button" id="profile-tab-model" role="tab" aria-controls="profile-panel-model" aria-selected="false" tabindex="-1" data-tab="model">模型与供应商</button>
+      <button type="button" id="profile-tab-model" role="tab" aria-controls="profile-panel-model" aria-selected="false" tabindex="-1" data-tab="model" data-i18n="model_tab">模型与供应商</button>
     </div>
     <div class="profile-panels">
       <section id="profile-panel-description" role="tabpanel" aria-labelledby="profile-tab-description">
@@ -1350,7 +1350,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
           <option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option><option value="ultra">ultra</option>
         </select>
         <p class="profile-help" data-i18n="reasoning_hint">可用强度取决于模型和供应商；已有按模型 reasoning_overrides 配置优先。</p>
-        <label id="profile-global-label" for="profile-apply-global"><input type="checkbox" id="profile-apply-global"><span id="profile-global-text">应用到全局</span></label>
+        <label id="profile-global-label" for="profile-apply-global"><input type="checkbox" id="profile-apply-global"><span id="profile-global-text" data-i18n="scope_global_apply">应用到全局</span></label>
         <p class="profile-help" id="profile-model-scope"></p>
       </section>
     </div>
@@ -1568,6 +1568,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
 // 切换语言后重渲染动态面板（任务列表重新拉取以重建界面文案；消息正文不变）。
 document.addEventListener("ui-language-changed", () => {
+    // 打开中的弹窗大多是一次性渲染；直接关闭，重开时按当前语言构建。
+    document.querySelectorAll("dialog[open]").forEach(d => d.close());
   renderThreads();
   renderMessages();
   loadTasks();
@@ -3585,7 +3587,7 @@ async function loadThreadMemberList(t) {
   } catch (err) {
     if (request !== threadMembersRequest || !$("#dlg-thread-members").open) return;
     box.textContent = _t("project_members_failed") + err.message;
-    const retry = document.createElemen_t('button');
+    const retry = document.createElement('button');
     retry.textContent = _t('retry');
     retry.addEventListener('click', () => loadThreadMemberList(t));
     box.appendChild(retry);
@@ -3605,12 +3607,12 @@ function renderThreadMemberList(t, members, request) {
   }
   for (const m of bots) {
     const isMember = inThread.has(m.profile);
-    const row = document.createElemen_t("div");
+    const row = document.createElement("div");
     row.className = "tm-row";
     row.innerHTML = `
       <span class="tm-name">${esc(memberDisplayName(m))} <span class="m-profile">${esc(memberHostProfile(m))}</span></span>
       <span class="tm-state ${isMember ? "tm-in" : "tm-out"}">${isMember ? _t("in_topic") : _t("not_in_topic")}${m.active ? '' : _t("disabled_mark")}</span>
-      <button data-profile="${esc(m.profile)}" data-join="${isMember ? 0 : 1}" ${!isMember && !m.active ? `disabled title="${_t('member_disabled_hint')}"` : ''}>${isMember ? "移出" : "加入"}</button>`;
+      <button data-profile="${esc(m.profile)}" data-join="${isMember ? 0 : 1}" ${!isMember && !m.active ? `disabled title="${_t('member_disabled_hint')}"` : ''}>${isMember ? _t("member_remove") : _t("member_add")}</button>`;
     row.querySelector("button").addEventListener("click", async (e) => {
       const p = e.target.dataset.profile;
       const join = e.target.dataset.join === "1";
@@ -4145,7 +4147,7 @@ function renderTasks(reqs, tasks) {
     block.addEventListener("toggle", () => {
       if (block.isConnected) taskGroupOpen.set(groupKey, block.open);
     });
-    block.innerHTML = `<summary class="req-title">${esc(req.title || _t("requirement_pound") + req.id)}${req.version ? `<span class="ver">${esc(req.version)}</span>` : ""}</summary>`;
+    block.innerHTML = `<summary class="req-title">${esc(req.title || _t("req_pound_label") + req.id)}${req.version ? `<span class="ver">${esc(req.version)}</span>` : ""}</summary>`;
     const count = document.createElement("span");
     count.className = "req-task-count";
     count.textContent = awaitingTasks ? _t("awaiting_split")

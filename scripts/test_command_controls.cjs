@@ -19,7 +19,7 @@ const popup = {hidden:true, innerHTML:'', style:{}, offsetHeight:120, offsetWidt
 let response = {commands:catalog}, apiError = null, calls = [], mentions = [], alerts = [];
 const t = require('./i18n_vm_stub.cjs');
 const ctx = vm.createContext({
-  t, $: () => popup, esc:String, window:{innerWidth:800, innerHeight:600},
+  t, $: () => popup, esc:String, window:{innerWidth:800, innerHeight:600, t},
   mpHide() {}, mpDetect: (ta, threadId) => mentions.push([ta.value, threadId]),
   api: async (path, options) => {
     calls.push({path, options});

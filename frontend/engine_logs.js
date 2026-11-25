@@ -5,12 +5,12 @@
   const dialog = document.createElement('dialog');
   dialog.id = 'engine-logs';
   dialog.setAttribute('aria-labelledby', 'engine-logs-title');
-  dialog.innerHTML = `<h3 id="engine-logs-title">引擎日志</h3>
-    <div class="engine-logs-tools"><label><input id="engine-logs-auto" type="checkbox" checked>自动刷新（每 2 秒）</label>
-    <button id="engine-logs-refresh" type="button">刷新</button></div>
+  dialog.innerHTML = `<h3 id="engine-logs-title" data-i18n="engine_logs_title">引擎日志</h3>
+    <div class="engine-logs-tools"><label><input id="engine-logs-auto" type="checkbox" checked><span data-i18n="engine_logs_auto">自动刷新（每 2 秒）</span></label>
+    <button id="engine-logs-refresh" type="button" data-i18n="refresh">刷新</button></div>
     <p id="engine-logs-status" role="status" aria-live="polite"></p>
-    <pre id="engine-logs-content" tabindex="0" aria-label="引擎日志内容"></pre>
-    <div class="dlg-btns"><button id="engine-logs-close" type="button">关闭</button></div>`;
+    <pre id="engine-logs-content" tabindex="0" aria-label="引擎日志内容" data-i18n-aria-label="engine_logs_content_aria"></pre>
+    <div class="dlg-btns"><button id="engine-logs-close" type="button" data-i18n="close">关闭</button></div>`;
   document.body.append(dialog);
   const content = dialog.querySelector('#engine-logs-content');
   const status = dialog.querySelector('#engine-logs-status');
@@ -35,19 +35,19 @@
     const controller = new AbortController();
     request = controller; refresh.disabled = true;
     const timeout = setTimeout(() => controller.abort(), 10000);
-    status.textContent = '正在读取引擎日志…'; status.dataset.error = 'false';
+    status.textContent = window.t('engine_logs_loading'); status.dataset.error = 'false';
     try {
       const data = await api('/system/logs', {cache: 'no-store', signal: controller.signal});
       if (generation !== epoch || !dialog.open || !allowed()) return;
       const follow = first || content.scrollHeight - content.scrollTop - content.clientHeight < 32;
       const oldTop = content.scrollTop;
-      content.textContent = data.text || (data.available ? '暂无引擎日志。' : '引擎日志尚未生成。');
+      content.textContent = data.text || (data.available ? window.t('engine_logs_none') : window.t('engine_logs_not_generated'));
       content.scrollTop = follow ? content.scrollHeight : oldTop;
       first = false;
-      status.textContent = `最近 ${data.lines} 行${data.truncated ? ' · 已截取日志末尾' : ''} · 更新于 ${new Date().toLocaleTimeString()}`;
+      status.textContent = window.t('engine_logs_status', [data.lines, data.truncated ? ' · ' + window.t('engine_logs_truncated') : '', new Date().toLocaleTimeString()]);
     } catch (error) {
       if (generation !== epoch || !dialog.open) return;
-      status.textContent = `读取失败：${error.name === 'AbortError' ? '请求超时' : error.message}。可点击刷新重试。`;
+      status.textContent = window.t('engine_logs_read_failed', [error.name === 'AbortError' ? window.t('engine_logs_timeout') : error.message]);
       status.dataset.error = 'true';
     } finally {
       clearTimeout(timeout);

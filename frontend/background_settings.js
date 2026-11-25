@@ -33,12 +33,12 @@
   const dialog = document.createElement('dialog');
   dialog.id = 'dlg-background';
   dialog.setAttribute('aria-labelledby', 'background-title');
-  dialog.innerHTML = `<h3 id="background-title">${window.t("background_title")}</h3>
-    <p class="profile-help">${window.t("background_hint")}</p>
-    <p class="profile-help">${window.t("background_formats")}</p>
+  dialog.innerHTML = `<h3 id="background-title" data-i18n="background_title">舷窗背景</h3>
+    <p class="profile-help" data-i18n="background_hint">图片保存在本地服务端，同一服务的页面共用背景。恢复默认会释放当前图片占用的空间。</p>
+    <p class="profile-help" data-i18n="background_formats">支持 PNG、JPEG、WebP，最大 10 MiB、2500 万像素。</p>
     <input id="background-file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
     <p id="background-status" class="profile-help" role="status" aria-live="polite"></p>
-    <div class="dlg-btns"><button type="button" id="background-select">${window.t("choose_image")}</button><button type="button" id="background-reset">恢复默认行星图</button><button type="button" id="background-close">关闭</button></div>`;
+    <div class="dlg-btns"><button type="button" id="background-select" data-i18n="choose_image">选择图片</button><button type="button" id="background-reset" data-i18n="background_reset">恢复默认行星图</button><button type="button" id="background-close" data-i18n="close">关闭</button></div>`;
   document.body.append(dialog);
   const input = dialog.querySelector('input'), status = dialog.querySelector('#background-status');
   function lock(value) {
@@ -105,7 +105,7 @@
       if (image.naturalWidth * image.naturalHeight > 25_000_000) throw new Error(window.t('background_too_many_pixels'));
       await request('PUT', file);
       removeLegacy(); apply(file); report(window.t('background_saved'));
-    } catch (error) { report(error.message + ' 原背景已保留。', true); }
+    } catch (error) { report(error.message + ' ' + window.t('background_kept'), true); }
     finally { if (preview) URL.revokeObjectURL(preview); lock(false); }
   };
   document.addEventListener('background-auth-ready', () => {

@@ -3,14 +3,14 @@
   const host = document.createElement('section');
   host.id = 'project-hud'; host.setAttribute('aria-label', '项目助手');
   host.innerHTML = `<div class="hud-shell">
-    <button class="hud-toggle" id="hud-toggle" aria-expanded="false" aria-controls="hud-panel"><span class="hud-light" aria-hidden="true"></span><span class="hud-caption"><span class="hud-name">${window.t('hud_name')}</span><span class="hud-status"> · ${window.t('hud_ready')}</span></span><span class="hud-chevron">${window.t('hud_expand')}</span></button>
+    <button class="hud-toggle" id="hud-toggle" aria-expanded="false" aria-controls="hud-panel"><span class="hud-light" aria-hidden="true"></span><span class="hud-caption"><span class="hud-name" data-i18n="hud_name">项目助手</span><span class="hud-status" data-i18n="hud_ready">准备就绪</span></span><span class="hud-chevron" data-i18n="hud_expand">展开</span></button>
     <div class="hud-panel" id="hud-panel" hidden>
-      <div class="hud-context"><span id="hud-context"></span><nav aria-label="${window.t('hud_tools_aria')}"><button class="hud-link hud-more" id="hud-more" aria-label="更多维护工具" aria-expanded="false">···</button></nav></div>
-      <nav class="hud-tools" id="hud-tools" aria-label="${window.t('hud_more_tools_aria')}" hidden><button class="hud-link" id="hud-history-toggle" hidden>历史备注</button><button class="hud-link" id="hud-settings-toggle">设置</button></nav>
-      <button class="hud-link hud-back" id="hud-back" hidden>← ${window.t("hud_back")}</button>
-      <div class="hud-tabs" id="hud-tabs" role="tablist" aria-label="${window.t('hud_content_aria')}">
-        <button id="hud-chat-tab" role="tab" aria-controls="hud-content" aria-selected="true">${window.t("hud_tab_chat")}</button>
-        <button id="hud-todos-tab" role="tab" aria-controls="hud-todos" aria-selected="false" tabindex="-1">${window.t("hud_tab_todos")}</button>
+      <div class="hud-context"><span id="hud-context"></span><nav aria-label="维护工具" data-i18n-aria-label="hud_tools_aria"><button class="hud-link hud-more" id="hud-more" aria-label="更多维护工具" data-i18n-aria-label="hud_more_tools_aria" aria-expanded="false">···</button></nav></div>
+      <nav class="hud-tools" id="hud-tools" aria-label="更多维护工具" data-i18n-aria-label="hud_more_tools_aria" hidden><button class="hud-link" id="hud-history-toggle" data-i18n="hud_history_notes" hidden>历史备注</button><button class="hud-link" id="hud-settings-toggle" data-i18n="settings">设置</button></nav>
+      <button class="hud-link hud-back" id="hud-back" data-i18n="hud_back" hidden>← 返回助手</button>
+      <div class="hud-tabs" id="hud-tabs" role="tablist" aria-label="助手内容" data-i18n-aria-label="hud_content_aria">
+        <button id="hud-chat-tab" role="tab" aria-controls="hud-content" aria-selected="true" data-i18n="hud_tab_chat">对话消息</button>
+        <button id="hud-todos-tab" role="tab" aria-controls="hud-todos" aria-selected="false" tabindex="-1" data-i18n="hud_tab_todos">待办事项</button>
       </div>
       <div class="hud-progress" id="hud-progress" role="status" hidden><span id="hud-progress-text"></span><time id="hud-progress-time"></time></div>
       <div class="hud-scroll">
@@ -19,16 +19,17 @@
         <div id="hud-content" role="tabpanel" aria-labelledby="hud-chat-tab" aria-live="polite"></div>
         <div id="hud-todos" role="tabpanel" aria-labelledby="hud-todos-tab" hidden></div>
         <p id="hud-error" class="hud-error-text" role="alert" hidden></p>
-        <button class="hud-link" id="hud-retry" hidden>${window.t("hud_recheck")}</button>
+        <button class="hud-link" id="hud-retry" data-i18n="hud_recheck" hidden>重新检查</button>
       </div>
-      <button class="hud-link" id="hud-latest" hidden>${window.t("hud_latest")}</button>
+      <button class="hud-link" id="hud-latest" data-i18n="hud_latest" hidden>查看最新回复 ↓</button>
       <form class="hud-compose" id="hud-compose">
-        <label class="hud-input-label" for="hud-input">${window.t("hud_input_label")}</label>
-        <textarea id="hud-input" maxlength="12000" placeholder="${window.t("hud_input_placeholder")}"></textarea>
-        <div class="hud-actions"><span class="hud-hint" id="hud-hint">${window.t("hud_ctrl_enter")}</span><button class="hud-primary" id="hud-send" type="submit">${window.t("send")}</button></div>
+        <label class="hud-input-label" for="hud-input" data-i18n="hud_input_label">发消息给维护助手</label>
+        <textarea id="hud-input" maxlength="12000" placeholder="输入回答，或补充说明…" data-i18n-placeholder="hud_input_placeholder"></textarea>
+        <div class="hud-actions"><span class="hud-hint" id="hud-hint" data-i18n="hud_ctrl_enter">Ctrl + Enter 发送</span><button class="hud-primary" id="hud-send" type="submit" data-i18n="send">发送</button></div>
       </form>
     </div></div>`;
   document.body.append(host);
+
   const el = id => host.querySelector('#hud-' + id);
   let current = null, scope = '', version = 0, expanded = false, settings = false, busy = false, selected = '', refreshing = false;
   let draftMode = false, draftId = '', onApply = null, beforeConfirm = null, errorText = '', chain = Promise.resolve();
@@ -128,7 +129,7 @@
       window.refreshProjectSettingsFromAssistant?.(data.project);
     }
     const navigation=data.state.navigation;
-    if(!draftMode&&navigation?.project===data.project&&Date.now()/1000-navigation.created<120&&['basic','agents','members','roles','permissions'].includes(navigation.page)){
+    if(!draftMode&&navigation?.project&&navigation.project===data.project&&Date.now()/1000-(navigation.created||0)<120&&['basic','agents','members','roles','permissions'].includes(navigation.page)){
       const key='hud-navigation:'+data.id+':'+navigation.id;
       let applied=appliedNavigation.has(key);
       try{applied=applied||sessionStorage.getItem(key)==='1';}catch{}

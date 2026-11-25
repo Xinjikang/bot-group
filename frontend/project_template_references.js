@@ -3,27 +3,27 @@
   window.renderTemplateReferences = (container, template, {snapshot = true} = {}) => {
     container.replaceChildren();
     const title = document.createElement('p');
-    title.textContent = template ? `${template.name} · ${template.id} · v${template.version}` : '此项目使用空白初始化或已有约定。';
+    title.textContent = template ? `${template.name} · ${template.id} · v${template.version}` : window.t('tr_blank_project');
     container.append(title);
     if (!template) return;
     const note = document.createElement('p'); note.className = 'profile-help';
-    note.textContent = '仅供参考，由用户自行复制到对应 Bot 配置；Codex 使用宿主支持的人格配置方式。' + (snapshot ? '当前展示应用时快照。' : '当前展示所选模板的参考原文。');
+    note.textContent = window.t('tr_note') + (snapshot ? window.t('tr_snapshot') : window.t('tr_source'));
     container.append(note);
     for (const reference of template.references || []) {
       const details = document.createElement('details'), summary = document.createElement('summary');
       details.className = 'template-reference';
-      summary.textContent = `${reference.name} · 查看角色与 SOUL 参考`;
+      summary.textContent = `${reference.name} · ${window.t('tr_view_ref')}`;
       const responsibilities = document.createElement('p'); responsibilities.textContent = reference.responsibilities;
       const pre = document.createElement('pre'); pre.textContent = reference.content;
       pre.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;';
       const state = document.createElement('span'); state.setAttribute('role', 'status');
-      const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = '复制参考';
+      const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = window.t('tr_copy');
       copy.className = 'template-copy';
       copy.addEventListener('click', async () => {
-        try { await navigator.clipboard.writeText(reference.content); state.textContent = '已复制'; }
-        catch { state.textContent = '剪贴板不可用，请从全文选择复制。'; }
+        try { await navigator.clipboard.writeText(reference.content); state.textContent = window.t('tr_copied'); }
+        catch { state.textContent = window.t('tr_clipboard_unavailable'); }
       });
-      const download = document.createElement('button'); download.type = 'button'; download.textContent = '下载参考';
+      const download = document.createElement('button'); download.type = 'button'; download.textContent = window.t('tr_download');
       download.className = 'template-download';
       download.addEventListener('click', () => {
         const url = URL.createObjectURL(new Blob([reference.content], {type: 'text/markdown;charset=utf-8'}));
@@ -38,12 +38,12 @@
   };
   const dialog = document.createElement('dialog'); dialog.id = 'dlg-template-reference';
   dialog.style.cssText = 'width:660px;max-width:calc(100vw - 24px);box-sizing:border-box;max-height:calc(100dvh - 24px);overflow:auto;';
-  dialog.innerHTML = '<h3>模板参考 · 最新参考</h3><div id="template-reference-content"></div><p id="template-reference-status" role="status"></p><div class="dlg-btns"><button id="template-reference-retry">重新读取</button><button id="template-reference-close">关闭</button></div>';
+  dialog.innerHTML = '<h3 data-i18n="tr_title">模板参考 · 最新参考</h3><div id="template-reference-content"></div><p id="template-reference-status" role="status"></p><div class="dlg-btns"><button id="template-reference-retry" data-i18n="tr_retry">重新读取</button><button id="template-reference-close" data-i18n="close">关闭</button></div>';
   document.body.append(dialog);
   let project = '', generation = 0;
   async function load() {
     const current = ++generation;
-    const status = dialog.querySelector('#template-reference-status'); status.textContent = '读取中…';
+    const status = dialog.querySelector('#template-reference-status'); status.textContent = window.t('loading');
     dialog.querySelector('#template-reference-content').replaceChildren();
     try {
       const result = await api(`/projects/${encodeURIComponent(project)}/template-reference`, {cache: 'no-store'});

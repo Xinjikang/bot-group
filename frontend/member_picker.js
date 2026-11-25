@@ -8,7 +8,7 @@
     container.replaceChildren();
     const toolbar = document.createElement('div'), create = document.createElement('button'), refresh = document.createElement('button');
     toolbar.className = 'member-picker-toolbar';
-    create.type = refresh.type = 'button'; create.textContent = '创建 profile'; refresh.textContent = '刷新列表';
+    create.type = refresh.type = 'button'; create.textContent = window.t('pj_create_profile'); refresh.textContent = window.t('mp_refresh_list');
     create.className = 'member-picker-create'; refresh.className = 'member-picker-refresh';
     const status = document.createElement('p'); status.className = 'profile-help'; status.setAttribute('role', 'status');
     toolbar.append(create, refresh); container.append(toolbar, status);
@@ -20,15 +20,15 @@
     create.addEventListener('click', () => openProfileCreate({project: options.project, template: options.template,
       onCreated: async item => { if (active()) options.onSelect(normalize(item), true); }}));
     refresh.addEventListener('click', async () => {
-      lock(true); status.textContent = '正在读取成员…';
+      lock(true); status.textContent = window.t('pj_loading_members');
       try {
         const items = await load(options.project);
         if (active()) options.onRefresh(items);
-      } catch (error) { if (active()) status.textContent = `读取失败：${error.message}。可刷新重试。`; }
+      } catch (error) { if (active()) status.textContent = window.t('mp_read_failed', [error.message]); }
       finally { if (active()) lock(false); }
     });
     const candidates = options.items.filter(item => !item.already_project_member);
-    if (!candidates.length) status.textContent = '暂无可加入的 Bot，可创建 profile 或刷新列表。';
+    if (!candidates.length) status.textContent = window.t('mp_no_candidates');
     for (const raw of candidates) {
       const item = normalize(raw), row = document.createElement('section'), label = document.createElement('label');
       row.className = 'import-card import-member';
@@ -40,7 +40,7 @@
       row.classList.toggle('selected', check.checked);
       const identity = document.createElement('span'), name = document.createElement('strong'), hint = document.createElement('small');
       name.textContent = item.display_name || item.profile;
-      hint.textContent = `${item.host_type} / ${item.profile}${item.already_project_member ? ' · 已加入项目' : ''}`;
+      hint.textContent = `${item.host_type} / ${item.profile}${item.already_project_member ? ' · ' + window.t('mp_already_member') : ''}`;
       identity.append(name, hint); label.append(check, identity); row.append(label);
       check.addEventListener('change', async () => {
         const checked = check.checked;
@@ -53,7 +53,7 @@
           }
           if (active()) options.onSelect(item, checked);
         } catch (error) {
-          if (active()) { check.checked = !checked; status.textContent = `选择失败：${error.message}。可重试。`; }
+          if (active()) { check.checked = !checked; status.textContent = window.t('mp_select_failed', [error.message]); }
         } finally { if (active()) lock(false); }
       });
       if (selected) {
@@ -69,7 +69,7 @@
   }
   const dialog = document.createElement('dialog');
   dialog.id = 'dlg-member-picker'; dialog.setAttribute('aria-labelledby', 'member-picker-title');
-  dialog.innerHTML = '<h3 id="member-picker-title">选择成员</h3><p class="profile-help">勾选待加入成员，点击“加入项目”后入组。角色与权限在项目设置中配置。</p><div id="member-picker-list"></div><p id="member-picker-status" class="profile-help" role="status"></p><div class="dlg-btns"><button type="button" id="member-picker-close">取消</button><button type="button" id="member-picker-join" class="primary">加入项目</button></div>';
+  dialog.innerHTML = '<h3 id="member-picker-title" data-i18n="mp_title">选择成员</h3><p class="profile-help" data-i18n="mp_hint">勾选待加入成员，点击“加入项目”后入组。角色与权限在项目设置中配置。</p><div id="member-picker-list"></div><p id="member-picker-status" class="profile-help" role="status"></p><div class="dlg-btns"><button type="button" id="member-picker-close" data-i18n="cancel">取消</button><button type="button" id="member-picker-join" class="primary" data-i18n="mp_join">加入项目</button></div>';
   document.body.append(dialog);
   const find = id => dialog.querySelector('#member-picker-' + id);
   let state = null;
@@ -104,7 +104,7 @@
     if (!current || current.busy || !current.selected.size) return;
     current.busy = true;
     dialog.querySelectorAll('button,input').forEach(node => node.disabled = true);
-    find('status').textContent = '正在加入项目…';
+    find('status').textContent = window.t('mp_joining');
     try {
       for (const item of [...current.selected.values()]) {
         await api('/bots/register', {method: 'POST', body: JSON.stringify({project: current.project,
@@ -117,7 +117,7 @@
       if (document.querySelector('#pj-detail-form').dataset.origName === current.project) await loadProjectMembers();
       await loadMembers();
     } catch (error) {
-      if (state === current) find('status').textContent = `加入失败：${error.message}。已成功成员保留，剩余选择可重试。`;
+      if (state === current) find('status').textContent = window.t('mp_join_failed', [error.message]);
     } finally {
       current.busy = false; find('close').disabled = false;
       if (state === current) paint();
