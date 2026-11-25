@@ -53,7 +53,7 @@ let html1 = render(ctx, { id: 1, ts: '2026-11-25T10:00:00', sender: 'a', sender_
   content: '@user 看一下', mentions: JSON.stringify(['user']), thread_id: 7 });
 assert(html1.includes('tag-mentions-you'), 'mentions-you tag rendered for zh');
 assert(html1.includes('提到我'), 'zh label is 提到我');
-assert(html1.includes('<span class="mention">@主人</span>'), 'mention span dyed with display name');
+assert(html1.includes('<span class="mention">@主人</span>'), 'mention span contains the display name');
 
 // 2) 同上下文英文词条 → 英文标记
 ctx = makeContext(en);

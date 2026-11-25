@@ -1,4 +1,4 @@
-"""Real Chromium, mocked APIs: @mention background dye + mentions-you badge.
+"""Real Chromium, mocked APIs: bold inline mentions and the mentions-you badge.
 
 bot-group req#178 task#334. Run:
   py -3.10 -X utf8 -B scripts/test_mentions_you_browser.py --evidence <dir>
@@ -65,7 +65,7 @@ def main():
         page.goto('http://mention-you.test/app/index.html')
         page.wait_for_function('S.messagesReady')
 
-        # 1) zh：提到我标记 + mention 底色/加粗
+        # 1) zh：提到我标记与透明背景的加粗点名
         badge = page.locator('[data-message-id="1"] .tag-mentions-you')
         assert badge.count() == 1, 'mentions-you badge rendered on the mentioned message'
         assert badge.inner_text() == '提到我', badge.inner_text()
@@ -73,7 +73,7 @@ def main():
         assert mention.inner_text() == '@用户', mention.inner_text()
         styles = mention.evaluate("el => { const s = getComputedStyle(el); return {bg: s.backgroundColor, weight: s.fontWeight, color: s.color}; }")
         assert styles['weight'] in ('600', '700'), styles
-        assert styles['bg'] != 'rgba(0, 0, 0, 0)', styles
+        assert styles['bg'] == 'rgba(0, 0, 0, 0)', styles
 
         # 2) 点别人的消息无标记
         assert page.locator('[data-message-id="2"] .tag-mentions-you').count() == 0
@@ -94,14 +94,14 @@ def main():
             page.wait_for_function("document.querySelector('[data-message-id=\"1\"] .tag-mentions-you')?.innerText === 'Mentions you'")
             page.screenshot(path=str(evidence / 'mentions_you_en.png'), full_page=True)
             (evidence / 'results.json').write_text(json.dumps([
-                {'case': 'mention_dye_and_badge_zh', 'result': 'passed'},
+                {'case': 'bold_transparent_mention_and_badge_zh', 'result': 'passed'},
                 {'case': 'no_badge_for_others', 'result': 'passed'},
                 {'case': 'badge_follows_language', 'result': 'passed'},
                 {'case': 'message_body_verbatim', 'result': 'passed'},
             ], ensure_ascii=False, indent=1), encoding='utf-8')
 
         browser.close()
-    print('PASS: mention background dye, mentions-you badge zh/en, no badge for others, body verbatim')
+    print('PASS: bold mention with transparent background, mentions-you badge zh/en, no badge for others, body verbatim')
 
 
 if __name__ == '__main__':
