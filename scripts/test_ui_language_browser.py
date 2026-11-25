@@ -49,6 +49,16 @@ class Fixture:
         if path in ('/events', '/desktop/events'):
             route.fulfill(body=': test\n\n', content_type='text/event-stream')
             return
+        if path.startswith('/projects/') and path.endswith('/workspaces'):
+            route.fulfill(json={'project': {'name': 'p', 'display_name': '隔离项目', 'worktree_root': 'E:/wt'},
+                                'members': [{'profile': 'bot', 'display_name': 'Bot', 'host_profile': 'bot',
+                                             'active': 1, 'directory_mode': 'shared', 'remote_workspace': False,
+                                             'remote_session_pending': False, 'binding_invalid': False,
+                                             'workspace': {'path': 'E:/wt/bot', 'valid': True, 'head': 'abc123'}}]})
+            return
+        if path.endswith('/removal'):
+            route.fulfill(json={'can_remove': True, 'blockers': []})
+            return
         data = {
             '/auth/status': {'configured': False},
             '/projects': {'projects': [{'name': 'p', 'display_name': '隔离项目'}]},
@@ -216,6 +226,47 @@ def run(evidence):
                     leaks.append({'dialog': '#project-hud', 'text': line[:80]})
             assert not leaks, f'English UI still contains CJK copy: {leaks}'
             results.append({'case': 'dialogs_and_hud_english_no_cjk', 'result': 'passed'})
+
+            # 9) 懒创建路径：项目详情成员 tab、移出成员弹窗、composer 图片按钮
+            page.evaluate("document.querySelector('#hud-toggle').click()")  # 收起 HUD，避免遮挡弹窗
+            page.evaluate("openProjectDetail('p')")
+            page.wait_for_function("$('#dlg-project-detail').open")
+            page.evaluate("document.querySelector('#pj-tab-members').click()")
+            page.wait_for_function("document.querySelectorAll('#pj-member-list .project-member-card').length > 0",
+                                   timeout=5000)
+            detail_leaks = []
+            for line in page.locator('#dlg-project-detail').inner_text().split('\n'):
+                line = line.strip()
+                if cjk.search(line) and not any(e in line for e in exempt) and 'Bot' not in line:
+                    detail_leaks.append(line[:80])
+            assert not detail_leaks, f'project detail members tab CJK: {detail_leaks}'
+            # 成员卡启用徽标/工作区/主目录断言英文
+            card = page.locator('.project-member-card').first
+            assert text_of(page, '.project-member-card .project-member-badge') == 'Enabled'
+            assert text_of(page, '.project-member-card .workspace') == 'Workspace'
+            assert 'project root' in card.inner_text()
+            # 移出成员弹窗
+            page.evaluate("document.querySelector('.project-member-card .member-more').click()")
+            page.wait_for_timeout(300)
+            remove_btn = page.locator('.project-member-menu .member-remove')
+            assert remove_btn.count() and remove_btn.first.is_visible()
+            remove_btn.first.click()
+            page.wait_for_function("document.querySelector('#dlg-member-remove') && "
+                                   "document.querySelector('#dlg-member-remove').open", timeout=3000)
+            remove_leaks = []
+            for line in page.locator('#dlg-member-remove').inner_text().split('\n'):
+                line = line.strip()
+                if cjk.search(line) and not any(e in line for e in exempt) and 'Bot' not in line:
+                    remove_leaks.append(line[:80])
+            assert not remove_leaks, f'member remove dialog CJK: {remove_leaks}'
+            assert text_of(page, '#member-remove-title') == 'Remove from project'
+            page.evaluate("document.querySelector('#dlg-member-remove').close()")
+            page.evaluate("document.querySelector('#dlg-project-detail').close()")
+            # composer 图片按钮 title/aria
+            add = page.locator('.image-add').first
+            assert add.get_attribute('title') == 'Add image'
+            assert add.get_attribute('aria-label') == 'Add image'
+            results.append({'case': 'lazy_rendered_paths_english', 'result': 'passed'})
         finally:
             browser.close()
 

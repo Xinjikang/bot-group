@@ -11,7 +11,7 @@ let response;
 let dismissNotice;
 let holdNotice = false;
 const context = vm.createContext({
-  S: {currentProject:'p'}, document: {querySelector: () => receipt},
+  S: {currentProject:'p'}, window: {t: key => key}, document: {querySelector: () => receipt},
   imageDestinationKey: () => 'p', imageDrafts: new Map([['p', []]]), imageSends: new Set(),
   refreshImageEditors() {}, api: async () => response, showAlert: text => {
     notices.push(text);

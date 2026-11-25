@@ -526,15 +526,15 @@ function renderProjectMembers(project, data) {
     row.className = 'project-member-card';
     row.dataset.profile = member.profile;
     row.innerHTML = `<div class="project-member-header"><div class="project-member-identity">
-      <div class="project-member-name"><button type="button" class="member-name-edit" title="点击编辑显示名（所有项目共用）" data-i18n-title="pj_name_edit_title">${esc(memberDisplayName(member))}</button><small>${esc(memberHostProfile(member))}</small>
-      <button type="button" role="switch" aria-checked="${!!member.active}" aria-label="成员启用状态" data-i18n-aria-label="pj_member_state" title="${member.active ? window.t('pj_disable_click') : window.t('pj_enable_click')}}" class="project-member-badge ${member.active ? 'enabled' : ''}">${member.active ? '启用' : '停用'}</button></div></div>
-      <div class="project-member-actions"><button type="button" class="workspace" data-i18n="pj_workspace">工作区</button>
-      <button type="button" class="member-more" aria-label="成员更多操作" data-i18n-aria-label="pj_member_more" aria-haspopup="menu" aria-expanded="false">⋯</button>
+      <div class="project-member-name"><button type="button" class="member-name-edit" title="${window.t('pj_name_edit_title')}" data-i18n-title="pj_name_edit_title">${esc(memberDisplayName(member))}</button><small>${esc(memberHostProfile(member))}</small>
+      <button type="button" role="switch" aria-checked="${!!member.active}" aria-label="${window.t('pj_member_state')}" data-i18n-aria-label="pj_member_state" title="${member.active ? window.t('pj_disable_click') : window.t('pj_enable_click')}" class="project-member-badge ${member.active ? 'enabled' : ''}">${member.active ? window.t('pj_enabled') : window.t('pj_disabled')}</button></div></div>
+      <div class="project-member-actions"><button type="button" class="workspace">${window.t('pj_workspace')}</button>
+      <button type="button" class="member-more" aria-label="${window.t('pj_member_more')}" data-i18n-aria-label="pj_member_more" aria-haspopup="menu" aria-expanded="false">⋯</button>
       <div class="project-member-menu" popover="auto" role="menu">
-      <button type="button" role="menuitem" class="edit" title="修改将影响共用此 profile 的项目" data-i18n-title="pj_edit_profile_title" data-i18n="pj_edit_profile">编辑 profile</button>
-      ${member.profile !== 'user' ? `<button type="button" role="menuitem" class="reset-session" title="${reset.title}" ${reset.disabled ? 'disabled' : ''}>${reset.label}</button><button type="button" role="menuitem" class="member-remove">移出项目</button>` : ''}
+      <button type="button" role="menuitem" class="edit" title="${window.t('pj_edit_profile_title')}" data-i18n-title="pj_edit_profile_title" data-i18n="pj_edit_profile">${window.t('pj_edit_profile')}</button>
+      ${member.profile !== 'user' ? `<button type="button" role="menuitem" class="reset-session" title="${reset.title}" ${reset.disabled ? 'disabled' : ''}>${reset.label}</button><button type="button" role="menuitem" class="member-remove">${window.t('pj_remove_member')}</button>` : ''}
       </div></div></div>
-      <div class="project-member-workspace ${state.valid && !state.head ? 'compact-status' : ''}"><span class="project-member-caption">${member.remote_workspace ? '远程' : ''}${independent ? '独立 worktree' : '项目主目录'}</span>
+      <div class="project-member-workspace ${state.valid && !state.head ? 'compact-status' : ''}"><span class="project-member-caption">${member.remote_workspace ? window.t('pj_remote_mark') : ''}${independent ? window.t('pj_worktree_independent') : window.t('pj_worktree_root')}</span>
       <div class="project-member-path" title="${esc(path)}">${esc(path)}</div>
       <p class="project-member-state ${state.valid ? 'valid' : 'invalid'}">${esc(workspaceStatus(state, member.remote_workspace))}</p></div>
       ${member.remote_session_pending !== undefined ? `<p class="project-member-state remote-session-status" role="status">${remoteSessionLabel(member)}</p>` : ''}
@@ -650,7 +650,7 @@ function openMemberRemoval(project, member) {
   if (document.querySelector('#dlg-member-remove')) return;
   const dialog = document.createElement('dialog');
   dialog.id = 'dlg-member-remove'; dialog.setAttribute('aria-labelledby', 'member-remove-title');
-  dialog.innerHTML = '<h3 id="member-remove-title" data-i18n="pj_remove_member">移出项目</h3><p class="member-remove-summary"></p><p class="profile-help" data-i18n="pj_remove_member_hint">移出后将解除本项目成员关系、角色与权限，并退出话题参与名单。历史消息、任务记录、profile 和工作目录保留，其他项目中的成员关系保持原样。后续可通过“添加成员”重新加入，并重新配置角色与权限。</p><p class="profile-help">请根据剩余成员的角色分工调整协作流程，明确相关职责的承担者。</p><p class="member-remove-status" role="status"></p><div class="member-remove-blockers"></div><div class="dlg-btns"><button type="button" class="cancel">取消</button><button type="button" class="recheck">重新检查</button><button type="button" class="confirm" disabled>移出项目</button></div>';
+  dialog.innerHTML = `<h3 id="member-remove-title">${window.t('pj_remove_member')}</h3><p class="member-remove-summary"></p><p class="profile-help">${window.t('pj_remove_member_hint')}</p><p class="profile-help">${window.t('pj_remove_member_role_hint')}</p><p class="member-remove-status" role="status"></p><div class="member-remove-blockers"></div><div class="dlg-btns"><button type="button" class="cancel">${window.t('cancel')}</button><button type="button" class="recheck">${window.t('pj_recheck')}</button><button type="button" class="confirm" disabled>${window.t('pj_remove_member')}</button></div>`;
   const projectName = S.projects.find(item => item.name === project)?.display_name || project;
   dialog.querySelector('.member-remove-summary').textContent = window.t('pj_remove_member_summary', [memberLabel(member), projectName]);
   const status = dialog.querySelector('.member-remove-status'), blockers = dialog.querySelector('.member-remove-blockers');
