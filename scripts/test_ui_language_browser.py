@@ -82,7 +82,7 @@ class Fixture:
             return
         data = {
             '/auth/status': {'configured': False},
-            '/projects': {'projects': [{'name': 'p', 'display_name': '隔离项目'}]},
+            '/projects': {'projects': [{'name': 'p', 'display_name': '隔离项目'}, {'name': 'other'}]},
             '/threads': {'threads': TOPICS},
             '/members': {'members': [{'profile': 'bot', 'display_name': 'Bot', 'active': 1}]},
             '/tasks': {'tasks': TASKS, 'requirements': REQS},
@@ -423,6 +423,16 @@ def run(evidence):
             assert text_of(page, '#btn-send') == 'Send'
             page.screenshot(path=str(evidence / 'chat-en-390.png'))
             results.append({'case': 'narrow_390_no_overflow', 'result': 'passed'})
+
+            page.locator('#chip-all').press('Enter')
+            names = page.locator('#pj-drop-list .pd-name')
+            assert names.filter(has=page.locator('.pd-cur')).all_text_contents() == ['隔离项目● current']
+            names.filter(has_text='other').click()
+            open_language_dialog(page)
+            pick(page, 'zh-CN')
+            page.locator('#chip-all').press('Enter')
+            assert names.filter(has=page.locator('.pd-cur')).all_text_contents() == ['other● 当前']
+            results.append({'case': 'current_project_label_after_switch', 'result': 'passed'})
         finally:
             browser.close()
 

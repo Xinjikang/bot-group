@@ -1950,7 +1950,7 @@ function renderProjectDropRows(list, projects, showArchived) {
     const row = document.createElement("div");
     row.className = "pj-drop-row";
     row.innerHTML = `
-      <span class="pd-name">${esc(p.display_name || p.name)}${S.currentProject === p.name ? '<span class="pd-cur">● ${t("current")}</span>' : ""}</span>
+      <span class="pd-name">${esc(p.display_name || p.name)}${S.currentProject === p.name ? `<span class="pd-cur">● ${t("current")}</span>` : ""}</span>
       <span class="pd-state ${archived ? "tm-out" : "tm-in"}">${archived ? t("archived") : t("active")}</span>
       <button type="button" class="pd-arch" data-name="${esc(p.name)}" data-arch="${archived ? 1 : 0}">${archived ? t("restore_project") : t("archive")}</button>`;
     // 点条目=切换项目（归档项目不可切）

@@ -18,6 +18,8 @@
 
 **中英文界面检查**
 
+`test_ui_language_browser.py` 也在 390px 宽度打开“全部项目”，核对英文标记，点击另一项目并切回中文后，核对“● 当前”仅出现在新选中的项目旁。
+
 界面中英文切换（req#178 task#333）的提交前静态检查运行 `py -3.10 -X utf8 -B scripts/check_ui_cjk.py`：扫描 frontend 全部 JS 与 index.html 的硬编码中文与 CJK/全角标点，豁免注释、词表、t() 词条 key、data-i18n 属性及元素 fallback、双语语言入口与服务器数据；title/aria-label/placeholder 属性值含 CJK 或全角标点时同元素必须带对应 data-i18n-* 标记，有命中退出码 1。界面中英文切换（req#178 task#333）用项目环境运行 `env -u PYTHONPATH py -3.10 -X utf8 -B scripts/test_ui_language_browser.py --evidence <报告绝对目录>`（Playwright 与 Chrome）。合成路由隔离验证：设置菜单「语言 / Language」双语入口、切换英文后聊天/设置/管理页文案立即跟进、重开记住选择、切回中文恢复、已发送消息原文不变、任务面板与成员管理对照、无消息空态英文、390px 窄屏不溢出、英文模式弹窗/HUD/懒创建路径（项目详情成员 tab、移出成员弹窗、composer 图片按钮）无 CJK 残留、属性层扫描（全部 aria-label/title/placeholder 属性含隐藏元素，豁免服务器数据/协议标记/双语入口）无 CJK 残留、时间线与权限入口（撤回消息半角括号、任务修订事件半角标点、权限 tab 选择器空态英文），截图写入证据目录。vm 用例执行 index.html 内联脚本片段时共用 `scripts/i18n_vm_stub.cjs` 提供的词表桩，与浏览器 zh-CN 行为一致；新增依赖全局 t()/getUILanguage 的片段用例在 ctx 中挂 `ctx.t`、`ctx.window = {t}`、`ctx.getUILanguage`。
 
 同一 Hermes profile 连接多台引擎使用 `python -X utf8 -B -m unittest scripts.test_relay_multiple_engines`。两套临时数据库和引擎进程、随机回环端口、TLS 监听及替身 Hermes 网关验证双向切换、同名会话、并发回信、重连与适配器重启。历史兼容用例读取本地 Git 标签 v0.3.3 和 v0.3.4 的原版插件执行握手与 RPC，需有这两个标签。相关安装与单节点回归见 `scripts.test_relay_installer`、`scripts.test_relay_plugin`、`scripts.test_relay_gateway`、`scripts.test_relay_dialer` 和 `scripts.test_plugin_listen_pairing`。
