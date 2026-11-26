@@ -137,7 +137,7 @@ class PluginWindowTests(unittest.TestCase):
         self.client = self.plugin.relay.RelayClient(self.cfg)
         self.delays = []
         self.enterContext(patch.dict(os.environ, {
-            "HERMES_PROFILE_NAME": self.cfg.member, "BOT_GROUP_RELAY_ADMIN": "chat:operator",
+            "HERMES_PROFILE_NAME": self.cfg.member,
             "HERMES_SESSION_CHAT_TYPE": "dm", "HERMES_SESSION_PLATFORM": "chat",
             "HERMES_SESSION_ACTOR_ID": "operator"}))
 

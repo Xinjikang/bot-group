@@ -1,6 +1,6 @@
 # 私聊工具身份核验的宿主会话来源口径（req#173 task#324）
 
-本文记录插件私聊工具（listen/register）身份核验可用的宿主会话来源字段，供插件实现与验收引用。核实对象为 Hermes 宿主源码（本机安装目录 `hermes-agent/`，只读核实，未改宿主源码），核实时间 2026-11-20。
+本文记录插件私聊工具可用的宿主会话来源字段，供插件实现与验收引用。核实对象为 Hermes 宿主源码（本机安装目录 `hermes-agent/`，只读核实，未改宿主源码），核实时间 2026-11-20。
 
 ## 一、字段定位（gateway/session_context.py）
 
@@ -18,17 +18,13 @@
 
 1. 插件私聊工具（`ctx.register_tool` 注册的 handler）由 gateway dispatcher 在 turn 上下文内调用，handler 运行在 gateway 进程内，可直接读取上述 ContextVar：`from gateway.session_context import get_session_env`，读到的即当前 turn 的权威绑定值。
 2. dispatcher 注入 handler 的 kwargs（session_id/task_id 等）是会话句柄不是身份，不可作为授权依据（沿用既有结论，只作审计日志）。
-3. 边界：随包 task_queue MCP 是 stdio 子进程，其环境由 `_build_safe_env` 构造（tools/mcp_tool_config.py），白名单不含 `HERMES_SESSION_*`；会话来源桥接 `_inject_session_context_env` 只服务 terminal/execute_code 等 spawn surface，不覆盖 MCP stdio 启动链。因此随包 MCP 进程读不到这些字段——私聊身份核验必须留在插件工具层（gateway 进程内），不能挪进随包 MCP 进程。
+3. 边界：随包 task_queue MCP 是 stdio 子进程，其环境由 `_build_safe_env` 构造（tools/mcp_tool_config.py），白名单不含 `HERMES_SESSION_*`；会话来源桥接 `_inject_session_context_env` 只服务 terminal/execute_code 等 spawn surface，不覆盖 MCP stdio 启动链。因此随包 MCP 进程读不到这些字段——私聊类型判断位于插件工具层（gateway 进程内），不能挪进随包 MCP 进程。
 
-## 三、私聊核验口径（建议）
+## 三、私聊调用
 
-三个维度逐项核对，任一步缺失或为空即默认拒绝：
+Hermes 网关负责发送者准入。插件的 listen、register、status 和 reconnect 工具读取当前轮次的 `HERMES_SESSION_CHAT_TYPE`，仅在值为 `dm` 时执行。渠道、发送者和会话标识用于审计。首次接入使用邀请或监听配对流程；重新拨号使用保存的引擎地址和凭据。
 
-1. 渠道白名单：`HERMES_SESSION_PLATFORM`（空则 `HERMES_SESSION_SOURCE`）必须在授权渠道白名单内；
-2. 私聊类型：`HERMES_SESSION_CHAT_TYPE == "dm"`（listen/register 是管理员私聊操作，group/channel/thread 一律拒绝）；
-3. 发送者：`HERMES_SESSION_ACTOR_ID` 非空且命中管理员白名单；为空（无单一发送者）直接拒绝。
-
-CLI 入口的授权不受上述字段影响，按本地 OS 主体核验（Windows 取内核身份而非 getpass.getuser()）。
+CLI 入口按本地 OS 主体核验。
 
 ## 四、隧道白名单断点坐实
 
@@ -52,7 +48,7 @@ CLI 入口的授权不受上述字段影响，按本地 OS 主体核验（Window
 - `gateway/session.py build_session_context`（1460-1479）：`actor = event if event.user_id 非空 else source`——**发送者（actor）= 本回合事件身份，会话路由（source）= 会话级身份**；SessionContext.actor_user_id / actor_user_name / turn_event 由此确定（SessionContext 定义 177-203，183-188 注释即此语义）。
 - `gateway/run.py _set_session_env`（3910-3940）：把 SessionContext 逐字段绑定进 ContextVar——`platform→HERMES_SESSION_PLATFORM`、`chat_type→HERMES_SESSION_CHAT_TYPE`、`user_id→HERMES_SESSION_USER_ID`、`actor_id/actor_name→HERMES_SESSION_ACTOR_ID/_NAME`（actor 为 None 时 set_session_vars 内部回退路由 user，gateway/session_context.py:182）。
 - 每条消息入站先 `reset_session_vars()`（run_inbound.py:164-168，防跨会话泄漏），绑定范围 = 当前 turn 的任务上下文；插件工具 handler 在 turn 内被 dispatcher 调用，进程内读 ContextVar 即当前 turn 的权威值。
-- 准入链：无 user_id / 未授权的入站在绑定前即被丢弃（run_inbound.py:228-233）——到达插件工具 handler 的 turn 必然已过宿主 `_is_user_authorized_for_source` 闸门；但插件自己的管理员白名单（BOT_GROUP_RELAY_ADMIN）是独立授权层，仍须 handler 内逐项核验。
+- 准入链：无 user_id / 未授权的入站在绑定前即被丢弃（run_inbound.py:228-233）——到达插件工具 handler 的 turn 必然已过宿主 `_is_user_authorized_for_source` 闸门。
 
 **问 3：字段缺失时怎样拒绝请求？**
 
@@ -62,7 +58,7 @@ CLI 入口的授权不受上述字段影响，按本地 OS 主体核验（Window
 2. 明确清空（`""`）：非消息 turn（如插件命令 handler 无 turn 上下文）或 `clear_session_vars` 之后（192-203）；
 3. ACTOR 特殊缺失：`_bound_session_value`（224-227）在轮次事件被折叠（turn_event.user_id 为空）时强制返回空串——「本轮无单一发送者」。
 
-拒绝语义：插件 `_check_authorized`（本仓 plugins/hermes/bot-group-relay/tools.py:46-56）已实现 fail-closed 骨架（白名单空→拒；caller 空→拒；不在名单→拒）。补全要求 = 把渠道（PLATFORM 为空或非白名单→拒）与类型（CHAT_TYPE ≠ "dm"→拒）加入同一条 fail-closed 链。**判定一律「空或非白名单 = 拒绝」，绝不拿 USER_ID 当发送者兜底**；session_id/task_id 只进审计日志。
+插件在会话类型为空或为 group、channel、thread 时返回私聊提示。
 
 ## 六、代码位置索引（供后端接入与审查复核）
 
@@ -73,4 +69,4 @@ CLI 入口的授权不受上述字段影响，按本地 OS 主体核验（Window
 | 逐字段绑定传入点 | gateway/run.py:3910-3940（_set_session_env） |
 | 入站重置与未授权丢弃 | gateway/run_inbound.py:164-168、228-233 |
 | 飞书入站源构造 | plugins/platforms/feishu/adapter.py:2561-2617、3192（p2p→dm） |
-| 插件侧现有核验（fail-closed 骨架） | 本仓 plugins/hermes/bot-group-relay/tools.py:29-56 |
+| 插件私聊类型核验 | 本仓 plugins/hermes/bot-group-relay/tools.py（`_is_direct_message`） |

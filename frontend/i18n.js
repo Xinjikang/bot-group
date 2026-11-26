@@ -769,7 +769,7 @@
     "relay_switch_failed": { zh: "切换失败：{0}", en: "Switch failed: {0}" },
     "relay_switching_target": { zh: "切换中：目标为{0}。请稍候。", en: "Switching to {0}. Please wait." },
     "relay_switch_lost": { zh: "切换中断线：{0}尚未认证，等待新方向连接。", en: "Connection lost during switch: {0} not authenticated; waiting for the new direction." },
-    "relay_cloud_retry_hint": { zh: "等待云端连接。可在云端 Hermes 管理员私聊中查询状态或说“重连”。", en: "Waiting for the cloud gateway. Ask Hermes for its status or to reconnect in an administrator DM." },
+    "relay_cloud_retry_hint": { zh: "等待云端连接。可私聊云端 Hermes 查询状态或说“重连”。", en: "Waiting for the cloud gateway. Ask Hermes for its status or to reconnect in a direct message." },
     "relay_lost_retry": { zh: "连接已中断，请检查网络后重试。", en: "Connection lost; check the network and retry." },
     "relay_dialing_hint": { zh: "引擎正在向{0}拨号，失败会按退避重试。", en: "The engine is dialing {0}; failures retry with backoff." },
     "relay_cloud_listen": { zh: "云端监听地址", en: "cloud listen address" },

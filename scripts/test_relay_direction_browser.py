@@ -226,7 +226,7 @@ def main():
         assert opener.evaluate('el => el === document.activeElement')
         opener.click()
         assert page.locator('#relay-direction-listen').get_attribute('aria-pressed') == 'true'
-        assert '云端 Hermes 管理员私聊' in page.locator('#relay-direction-status').inner_text()
+        assert '私聊云端 Hermes' in page.locator('#relay-direction-status').inner_text()
         assert page.locator('#relay-direction-apply').is_hidden()
         assert '未开启远程监听' in page.locator('#relay-direction-local').text_content()
         page.screenshot(path=str(evidence / 'direction-listen-offline-1280-dark.png'))

@@ -3,7 +3,7 @@
 覆盖：配对链接单次有效/重生成旧失效/日志脱敏/0600 文件；listen 绑定校验
 （禁通配/回环/非本机）；方向 B 真实监听 + 引擎拨号接入（复用 relay_dialer）
 + hello 握手/帧互通；MCP loopback 隧道 http_request→引擎转发→http_response
-回传；CLI/私聊入口身份核验拒绝路径。#316 出站链路回归由既有测试承担。
+回传；CLI 本地身份核验与私聊范围。#316 出站链路回归由既有测试承担。
 """
 import json
 import logging
@@ -963,7 +963,7 @@ class _SyncWs:
 
 
 class EntryAuthorizationTests(unittest.TestCase):
-    """CLI/私聊入口身份核验拒绝路径。"""
+    """CLI 本地身份核验与私聊范围。"""
 
     def test_cli_unauthorized_local_user_rejected(self):
         plg = _plugin()
@@ -1004,80 +1004,31 @@ class EntryAuthorizationTests(unittest.TestCase):
             self.assertFalse(cli._authorized_local_user(),
                              "内核身份取不到时拒绝，环境变量不算数")
 
-    def test_private_chat_requires_admin_allowlist(self):
-        plg = _plugin()
-        tools = plg["tools"]
-        # 未配置授权管理员：一律拒绝（默认拒绝，绝不裸奔）
-        with patch.object(tools, "_authorized_profiles", return_value=set()):
-            result = json.loads(tools.bot_group_listen(
-                {"address": "127.0.0.1", "port": 1}))
-            self.assertFalse(result["ok"])
-        # 配置白名单但会话上下文不是 dm 私聊：拒绝（正向匹配 dm，
-        # manager node2074/12711）
-        with patch.object(tools, "_authorized_profiles", return_value={"admin"}):
-            with patch.dict(os.environ, {
-                    "HERMES_SESSION_CHAT_TYPE": "group",
-                    "HERMES_SESSION_PLATFORM": "telegram",
-                    "HERMES_SESSION_ACTOR_ID": "admin"}):
-                result = json.loads(tools.bot_group_relay_status({}))
-                self.assertFalse(result["ok"], "群聊不是私聊，拒绝")
-        # dm 私聊 + 渠道与本轮 ACTOR_ID 命中白名单：放行（status 无副作用）
-        with patch.object(tools, "_authorized_profiles", return_value={"admin"}), \
-                patch.dict(os.environ, {
-                    "HERMES_SESSION_CHAT_TYPE": "dm",
-                    "HERMES_SESSION_PLATFORM": "telegram",
-                    "HERMES_SESSION_ACTOR_ID": "admin"}):
-            result = json.loads(tools.bot_group_relay_status({}))
-            self.assertTrue(result["ok"])
+    def test_relay_tools_require_host_dm_context(self):
+        tools = _plugin()["tools"]
+        handlers = (tools.bot_group_relay_status, tools.bot_group_register,
+                    tools.bot_group_listen, tools.bot_group_reconnect)
+        for chat_type in ("group", "channel", "thread", ""):
+            with patch.dict(os.environ, {"HERMES_SESSION_CHAT_TYPE": chat_type}):
+                for handler in handlers:
+                    with self.subTest(chat_type=chat_type, tool=handler.__name__):
+                        result = json.loads(handler({"chat_type": "dm"}, chat_type="dm"))
+                        self.assertFalse(result["ok"])
+                        self.assertIn("私聊", result["message"])
 
 
 class EntryIdentityAndProxyTests(unittest.TestCase):
-    """manager node2060 ①③：受信调用者身份（不可信 session_id 不绕过）、
-    CLI 交互/非交互配对材料语义、listen 必启随包 MCP 代理。"""
-
-    def test_caller_identity_is_trusted_dm_channel_actor_not_session_id(self):
-        """私聊入口身份=宿主受信会话字段（manager node2074/12711）：
-        正向匹配 chat_type=dm + 渠道与本轮 ACTOR_ID 核对白名单；不可信
-        kwargs 的 session_id 命中白名单也绝不放行（会话句柄不是身份）。"""
-        plg = _plugin()
-        tools = plg["tools"]
-        with patch.object(tools, "_authorized_profiles", return_value={"admin"}), \
-                patch.dict(os.environ, {
-                    "HERMES_SESSION_CHAT_TYPE": "dm",
-                    "HERMES_SESSION_PLATFORM": "telegram",
-                    "HERMES_SESSION_ACTOR_ID": "mallory"}):
-            # kwargs 带 session_id='admin'（不可信注入）→ actor=mallory 未
-            # 授权 → 拒绝（session_id 绝不成为授权身份）
-            result = json.loads(tools.bot_group_relay_status(
-                {}, session_id="admin", task_id="t-1"))
-            self.assertFalse(result["ok"], "不可信的 session_id 不得成为授权身份")
-        # 渠道限定条目 platform:actor 命中
-        with patch.object(tools, "_authorized_profiles",
-                          return_value={"telegram:admin"}), \
-                patch.dict(os.environ, {
-                    "HERMES_SESSION_CHAT_TYPE": "dm",
-                    "HERMES_SESSION_PLATFORM": "telegram",
-                    "HERMES_SESSION_ACTOR_ID": "admin",
-                    "HERMES_SESSION_ACTOR_NAME": "展示名"}):
-            result = json.loads(tools.bot_group_relay_status({}))
-            self.assertTrue(result["ok"], "渠道+ACTOR_ID 命中白名单放行")
-        # 渠道不符：同 actor 在别的渠道不命中限定条目
-        with patch.object(tools, "_authorized_profiles",
-                          return_value={"telegram:admin"}), \
-                patch.dict(os.environ, {
-                    "HERMES_SESSION_CHAT_TYPE": "dm",
-                    "HERMES_SESSION_PLATFORM": "lark",
-                    "HERMES_SESSION_ACTOR_ID": "admin"}):
-            result = json.loads(tools.bot_group_relay_status({}))
-            self.assertFalse(result["ok"], "渠道不符的限定条目不放行")
-        # 缺渠道或 ACTOR：拒绝
-        with patch.object(tools, "_authorized_profiles", return_value={"admin"}), \
-                patch.dict(os.environ, {
-                    "HERMES_SESSION_CHAT_TYPE": "dm",
-                    "HERMES_SESSION_PLATFORM": "",
-                    "HERMES_SESSION_ACTOR_ID": "admin"}):
-            result = json.loads(tools.bot_group_relay_status({}))
-            self.assertFalse(result["ok"], "缺渠道拒绝")
+    def test_gateway_dm_can_use_relay_tools(self):
+        plugin = _plugin()
+        tools = plugin["tools"]
+        with patch.dict(os.environ, {"HERMES_SESSION_CHAT_TYPE": "dm"}, clear=True):
+            with patch.object(plugin["pairing"], "status", return_value={"engines": []}):
+                self.assertEqual(json.loads(tools.bot_group_relay_status({}))["engines"], [])
+            with patch.object(plugin["listen"], "listen_serve", side_effect=ValueError("fixture")) as listen:
+                self.assertIn("fixture", json.loads(tools.bot_group_listen({}))["message"])
+                listen.assert_called_once()
+            result = json.loads(tools.bot_group_register({}))
+            self.assertIn("credential 或 invite", result["message"])
 
     def test_first_register_uses_host_profile_not_manual_override(self):
         from types import SimpleNamespace
