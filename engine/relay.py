@@ -582,7 +582,7 @@ def heartbeat(conn, member: str, *, generation: int, now=None) -> None:
 
 
 def mark_offline(conn, member: str, *, generation=None, now=None, reason="connection closed",
-                 heartbeat_before=None) -> None:
+                 heartbeat_before=None, announce=True) -> None:
     """断链标离线。generation 给定时按代条件写（旧代清理不覆盖新代 online）；
     不给定时按当前行代写（TTL 过期场景，与读到的行同代）。"""
     row = read_node(conn, member)
@@ -596,7 +596,7 @@ def mark_offline(conn, member: str, *, generation=None, now=None, reason="connec
         args.append(heartbeat_before)
     changed = conn.execute(sql, args).rowcount
     conn.commit()
-    if changed:
+    if changed and announce:
         logger.info("relay offline member=%s generation=%d reason=%s", member, target_gen, reason)
 
 

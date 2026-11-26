@@ -2,6 +2,8 @@
 import hashlib
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -53,6 +55,43 @@ class EngineWindowTests(DialerBase):
         with patch.object(relay_dialer, "start_dial") as dial:
             relay_dialer.restore_on_startup()
             dial.assert_not_called()
+
+    def test_online_disconnect_logged_before_next_dial_then_summarized(self):
+        # A real handshake receipt followed by loss of the established transport.
+        socket = MagicMock()
+        socket.socket.getpeercert.return_value = b"test cert"
+        socket.recv.side_effect = [json.dumps({"relay": {"kind": "hello_ok", "generation": 1}}),
+                                   ConnectionResetError()]
+        def connect(*args, **kwargs):
+            if dial.call_count == 1:
+                return socket
+            self.assertEqual(sum("dial unavailable" in line for line in logs.output), 1)
+            raise TimeoutError()
+        with self.assertLogs("engine", "INFO") as logs, \
+                patch.object(relay_dialer, "MAX_ATTEMPTS", 1), \
+                patch("websockets.sync.client.connect", side_effect=connect) as dial:
+            relay_dialer.dial_loop(REMOTE, self.worker)
+        outage = [line for line in logs.output if "dial unavailable" in line or "relay offline member=" in line]
+        self.assertEqual(len(outage), 1)
+        self.assertIn("ConnectionResetError", outage[0])
+        summary, = [line for line in logs.output if "dial abandoned" in line]
+        self.assertIn("attempts=2", summary)
+        self.assertIn("'dial receive failed: ConnectionResetError': 1", summary)
+
+    def test_heartbeat_send_failure_preserves_first_cause(self):
+        socket = MagicMock()
+        socket.socket.getpeercert.return_value = b"test cert"
+        socket.recv.side_effect = [json.dumps({"relay": {"kind": "hello_ok", "generation": 1}}),
+                                   TimeoutError()]
+        socket.send.side_effect = [None, BrokenPipeError()]
+        with self.assertLogs("engine", "INFO") as logs, \
+                patch.object(relay_dialer, "MAX_ATTEMPTS", 0), \
+                patch.object(relay_dialer, "HEARTBEAT_INTERVAL", 0), \
+                patch("websockets.sync.client.connect", side_effect=[socket, TimeoutError()]):
+            relay_dialer.dial_loop(REMOTE, self.worker)
+        outage = [line for line in logs.output if "dial unavailable" in line or "relay offline member=" in line]
+        self.assertEqual(len(outage), 1)
+        self.assertIn("send failed: BrokenPipeError", outage[0])
 
     def test_explicit_handshake_refusals_stop_at_once(self):
         for code, stage in [(4001, "auth"), (4002, "mcp"), (4003, "protocol"),
@@ -139,7 +178,7 @@ class PluginWindowTests(unittest.TestCase):
             self.assertFalse(json.loads(tool({}))["ok"])
             self.assertEqual(self.plugin.pairing.outbound_state(), stopped)
         for _ in range(2):
-            self.assertEqual(json.loads(tool({}))["state"], "connecting")
+            self.assertEqual(json.loads(tool({}))["state"], "requested")
         self.client = self.plugin.relay.RelayClient(self.cfg)
         ws = MagicMock()
         ws.__enter__.return_value = ws
@@ -196,7 +235,72 @@ class PluginWindowTests(unittest.TestCase):
         self.assertTrue(json.loads(tool({"engine_url": other}))["ok"])
         self.assertEqual(pairing.outbound_state()["state"], "stopped")
         with pairing.using_peer(peer):
-            self.assertEqual(pairing.outbound_state()["state"], "connecting")
+            self.assertEqual(pairing.outbound_state()["state"], "requested")
+
+    def test_crashed_worker_cannot_confirm_online(self):
+        pairing = self.plugin.pairing
+        script = """from pathlib import Path
+from unittest.mock import patch
+import os, sys
+from scripts.test_relay_plugin import _plugin
+with patch.object(_plugin.pairing, '_state_path', return_value=Path(sys.argv[1])):
+    with _plugin.pairing.outbound_worker() as owner:
+        _plugin.pairing.set_outbound_state('online', worker=owner)
+        os._exit(0)
+"""
+        subprocess.run([sys.executable, "-X", "utf8", "-B", "-c", script, str(pairing._state_path())],
+                       cwd=Path(__file__).resolve().parents[1], timeout=15, check=True)
+        self.assertEqual(pairing.outbound_state()["state"], "offline")
+        self.assertEqual(json.loads(self.plugin.tools.bot_group_reconnect({}))["state"], "requested")
+
+    def test_stopped_gateway_cross_process_request_and_restart(self):
+        engine = plugin_tests.FakeEngine().start()
+        self.addCleanup(engine.stop)
+        cfg = plugin_tests.make_cfg(engine.url)
+        pairing = self.plugin.pairing
+        pairing.save_register_credential(cfg.member, cfg.credential, engine_url=cfg.engine_url)
+
+        def dm_from_other_process():
+            script = """from pathlib import Path
+from unittest.mock import patch
+import sys
+from scripts.test_relay_plugin import _plugin
+with patch.object(_plugin.pairing, '_state_path', return_value=Path(sys.argv[1])):
+    print(_plugin.tools.bot_group_reconnect({}))
+"""
+            output = subprocess.check_output([sys.executable, "-X", "utf8", "-B", "-c", script,
+                                              str(pairing._state_path())], encoding="utf-8",
+                                             cwd=Path(__file__).resolve().parents[1], timeout=15)
+            return json.loads(output)["state"]
+
+        def wait_online():
+            deadline = time.monotonic() + 5
+            while pairing.outbound_state().get("state") != "online":
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.01)
+
+        client = self.plugin.relay.gateway_client(cfg, "")
+        try:
+            wait_online()
+            self.assertEqual(dm_from_other_process(), "online")
+        finally:
+            self.plugin.relay.stop_gateway_client(client)
+        self.assertFalse(client._thread.is_alive())
+        self.assertNotIn(client, self.plugin.relay._GATEWAY_CLIENTS.values())
+        self.assertEqual(pairing.status()["engines"][0]["outbound"]["state"], "offline")
+        # Records from previous gateways lack a live worker identity.
+        pairing.set_outbound_state("online")
+        self.assertEqual(pairing.outbound_state()["state"], "offline")
+        self.assertEqual(dm_from_other_process(), "requested")
+        self.assertEqual(json.loads(self.plugin.tools.bot_group_reconnect({}))["state"], "requested")
+        self.assertEqual(len(engine._clients), 1)
+        client = self.plugin.relay.gateway_client(cfg, "")
+        try:
+            wait_online()
+            self.assertEqual(dm_from_other_process(), "online")
+            self.assertEqual(len(engine._clients), 2)
+        finally:
+            self.plugin.relay.stop_gateway_client(client)
 
     def test_live_gateway_worker_resumes_once_from_admin_dm(self):
         engine = plugin_tests.FakeEngine().start()

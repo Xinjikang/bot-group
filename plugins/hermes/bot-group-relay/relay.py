@@ -62,6 +62,7 @@ class RelayClient:
         # 携带邀请时，重连只使用为本次邀请确认的凭据。
         self._credential = "" if cfg.invite else cfg.credential
         self._refusal = None
+        self._worker_id = None
         self._engine_url = ""
         self._stop = threading.Event()
         self._retry = threading.Event()
@@ -77,7 +78,7 @@ class RelayClient:
         from urllib.parse import urlsplit
         host = urlsplit(self.cfg.engine_url)
         pairing.set_outbound_state(status, member=self.cfg.member, engine_host=host.hostname,
-                                   engine_port=host.port, **fields)
+                                   engine_port=host.port, worker=self._worker_id, **fields)
 
     def start(self) -> None:
         self._thread.start()
@@ -148,6 +149,11 @@ class RelayClient:
     # ---------- 出站循环 ----------
 
     def _run(self) -> None:
+        from . import pairing
+        with pairing.outbound_worker() as self._worker_id:
+            self._dial()
+
+    def _dial(self) -> None:
         import websockets.sync.client as ws_sync
         from . import pairing
         window = relay_config.relay_retry.RetryRound()
@@ -224,6 +230,7 @@ class RelayClient:
                     try:
                         self._recv_loop(ws, streams)
                     finally:
+                        pairing.retire_outbound(self._worker_id)
                         streams.close_all()
             except Exception as exc:  # noqa: BLE001 断线重连
                 if self._stop.is_set():

@@ -171,6 +171,7 @@ class DialLink:
         self.peer_ip = peer_ip
         self.loop = None              # sync 客户端无 asyncio loop；close 走 sync 分支
         self._send_lock = threading.Lock()
+        self.send_failure = ""
         self._stream_seq = 0
         self.transports: dict[str, relay_server.RelayTransport] = {}
         self._snapshot_seq = 0
@@ -274,7 +275,8 @@ class DialLink:
             try:
                 self.ws.send(text)
             except Exception as exc:  # noqa: BLE001 断链即离线
-                relay_server._shutdown_link(self, f"send failed: {type(exc).__name__}")
+                self.send_failure = f"send failed: {type(exc).__name__}"
+                relay_server._shutdown_link(self, self.send_failure, announce=False)
                 raise ConnectionError("relay link send failed") from exc
 
     def close(self) -> None:
@@ -595,9 +597,9 @@ def dial_once(member: str, *, initial=None, round_state=None) -> bool:
                 last_sent = time.time()
             except ConnectionError:
                 break
-    relay_server._shutdown_link(link, close_reason)
+    relay_server._shutdown_link(link, close_reason, announce=False)
     if not refused:
-        _record_failure(member, "connection", _endpoint_address(endpoint), close_reason)
+        _record_failure(member, "connection", _endpoint_address(endpoint), link.send_failure or close_reason)
     return True
 
 
@@ -621,15 +623,14 @@ def dial_loop(member: str, task: dict, initial=None) -> None:
         if ok:
             window = relay_retry.RetryRound()
             task["attempt"] = 0
-            if not failure.get("terminal"):
-                window.reasons[failure.get("error") or "connection closed"] += 1
-                continue
         reason = failure.get("error") or "连接中断"
         if not window.reasons:
             logger.info("relay dial unavailable member=%s stage=%s reason=%s",
                         member, failure.get("stage"), reason)
         window.reasons[reason] += 1
         terminal = failure.get("terminal")
+        if ok and not terminal:
+            continue
         if terminal or window.attempts > MAX_ATTEMPTS:
             message = reason if terminal else "拨号重连次数耗尽，等待手动重试"
             with _TASKS_LOCK:

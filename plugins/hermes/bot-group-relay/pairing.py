@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import hmac
 import json
@@ -355,9 +356,75 @@ def pairing_metadata() -> dict:
         }
 
 
+_WORKER_STATES = {"connecting", "online", "backoff"}
+
+
+def _lock_worker(handle):
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+@contextmanager
+def outbound_worker():
+    """The OS releases the worker's lock on normal exit and on process death."""
+    worker = secrets.token_hex(16)
+    path = _peer_file().with_name(f"worker-{worker}.lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open("x+b") as handle:
+            _lock_worker(handle)
+            try:
+                yield worker
+            finally:
+                retire_outbound(worker)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def _worker_alive(worker):
+    if not isinstance(worker, str) or len(worker) != 32 or any(c not in "0123456789abcdef" for c in worker):
+        return False
+    path = _peer_file().with_name(f"worker-{worker}.lock")
+    try:
+        with path.open("r+b") as handle:
+            try:
+                _lock_worker(handle)
+            except OSError as exc:
+                if exc.errno in (errno.EACCES, errno.EAGAIN):
+                    return True
+                raise
+    except FileNotFoundError:
+        return False
+    # Only a dead worker leaves an unlocked file. All observers hold the pairing transaction.
+    path.unlink(missing_ok=True)
+    return False
+
+
+def _observed_outbound(state):
+    outbound = dict(state.get("outbound") or {})
+    worker = outbound.pop("worker", None)
+    if outbound.get("state") in _WORKER_STATES and not _worker_alive(worker):
+        outbound["state"] = "offline"
+    return outbound
+
+
+def retire_outbound(worker):
+    with _transaction():
+        state = _load_state()
+        outbound = state.get("outbound") or {}
+        if outbound.get("worker") == worker and outbound.get("state") in _WORKER_STATES:
+            outbound.pop("worker")
+            outbound["state"] = "offline"
+            _save_state(state)
+
+
 def outbound_state():
-    with _LOCK:
-        return _load_state().get("outbound") or {}
+    with _transaction():
+        return _observed_outbound(_load_state())
 
 
 def set_outbound_state(status, **fields):
@@ -372,13 +439,14 @@ def resume_outbound():
     with _transaction():
         state = _load_state()
         outbound = state.get("outbound") or {}
-        if outbound.get("state") == "stopped":
+        observed = _observed_outbound(state).get("state", "offline")
+        if observed in {"stopped", "offline"}:
             state["outbound"] = {field: outbound[field] for field in
                                  ("member", "engine_host", "engine_port") if field in outbound}
-            state["outbound"]["state"] = "connecting"
+            state["outbound"]["state"] = "requested"
             _save_state(state)
-            return "connecting", True
-        return outbound.get("state", "connecting"), False
+            return "requested", True
+        return observed, False
 
 
 def status():
@@ -387,10 +455,11 @@ def status():
     result["engines"] = []
     for peer in peer_ids():
         with using_peer(peer):
-            state = _load_state()
+            with _transaction():
+                state = _load_state()
+                outbound = _observed_outbound(state)
             register = state.get("register") or {}
             listener = state.get("pairing") or {}
-            outbound = state.get("outbound") or {}
             member = register.get("member") or listener.get("member") or outbound.get("member")
             if not member:
                 continue

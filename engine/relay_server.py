@@ -278,7 +278,7 @@ def _db_generation(link: NodeLink) -> int:
     return getattr(link, "db_generation", None) or link.generation
 
 
-def _shutdown_link(link: NodeLink, reason: str) -> None:
+def _shutdown_link(link: NodeLink, reason: str, *, announce=True) -> None:
     """断开一条成员连接：关 WS、所有流转发哨兵。
 
     只有「当前注册的连接」断开才把节点标 offline——旧代连接被新连接接替时
@@ -301,7 +301,7 @@ def _shutdown_link(link: NodeLink, reason: str) -> None:
             # 带代条件写 offline：本函数锁外执行，清理期间可能已被新连接接替，
             # 旧代清理不得覆盖新代状态（manager node1981 ②跨代窗口）。
             # 状态写库用本地状态代（manager node2057 ②：本地代贯穿离线写入）。
-            relay.mark_offline(conn, link.member, generation=_db_generation(link), reason=reason)
+            relay.mark_offline(conn, link.member, generation=_db_generation(link), reason=reason, announce=announce)
         finally:
             conn.close()
     try:

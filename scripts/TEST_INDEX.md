@@ -1,6 +1,6 @@
 # 测试脚本索引
 
-双向重连窗口使用项目 Python 运行 `-X utf8 -B -m unittest scripts.test_relay_retry scripts.test_relay_plugin scripts.test_relay_dialer scripts.test_plugin_listen_pairing scripts.test_relay_multiple_engines`。隔离数据库和配对目录、模拟时钟及随机回环端口覆盖 25 次拨号、601 秒固定等待、认证超时和明确拒绝、重启后停拨、私聊恢复、节点页重试和方向切换。运行 `-m scripts.test_relay_direction_browser --evidence <隔离报告目录>` 验证本机停止原因、同方向手动重试和云端私聊提示，节点卡片复用下文的 `test_relay_nodes_browser` 命令。
+双向重连窗口使用项目 Python 运行 `-X utf8 -B -m unittest scripts.test_relay_retry scripts.test_relay_plugin scripts.test_relay_dialer scripts.test_plugin_listen_pairing scripts.test_relay_multiple_engines`。隔离数据库和配对目录、模拟时钟及随机回环端口覆盖 25 次拨号、601 秒固定等待、认证超时和明确拒绝、重启后停拨、私聊恢复、节点页重试和方向切换。运行 `-m scripts.test_relay_direction_browser --evidence <隔离报告目录>` 验证本机停止原因、同方向手动重试和云端私聊提示，节点卡片复用下文的 `test_relay_nodes_browser` 命令。 `scripts.test_relay_retry` 另覆盖适配器退出、工作进程异常退出、独立进程私聊请求、恢复后复用连接，以及已认证链路掉线时的首次原因和耗尽汇总。
 
 远程节点删除和双向重连日志使用项目 Python 运行 `-X utf8 -B -m unittest scripts.test_relay_register_contract scripts.test_relay_plugin scripts.test_relay_gateway scripts.test_relay_dialer`，使用临时 SQLite、回环 WebSocket 和合成凭据。覆盖删除与重新配对、权限和执行占用、断开在线节点、旧凭据失效、连续超时去重及拨号耗尽。界面确认、取消和卡片刷新复用 `-m scripts.test_relay_nodes_browser --evidence <隔离报告目录>`（Playwright 和 Chrome）。
 

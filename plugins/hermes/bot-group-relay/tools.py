@@ -129,7 +129,9 @@ def bot_group_reconnect(args: dict, **kwargs) -> str:
     client = clients.get(peer)
     if client and rearmed:
         client._retry.set()
-    message = "已请求网关开始新一轮拨号" if rearmed else "网关正在拨号，沿用本轮重试"
+    message = "网关正在拨号，沿用本轮重试"
+    if state == "requested":
+        message = "重连请求已保存，等待网关拨号；若适配器已停止，请启动适配器"
     if state == "online":
         message = "已在线，沿用当前连接"
     return _tool_result(True, message, member=cfg.member, state=state)
