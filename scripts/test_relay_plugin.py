@@ -480,6 +480,28 @@ class RelayClientTests(unittest.TestCase):
             time.sleep(0.02)
         return client, engine
 
+    def test_each_outage_logs_once_and_retries_until_reconnected(self):
+        client = relay_mod.RelayClient(make_cfg(self.engine.url))
+        client.protocol_version, client.legacy_engine = 2, False
+        socket = mock.MagicMock()
+        attempts = [TimeoutError(), TimeoutError(), socket, TimeoutError(), socket]
+
+        def receive(ws, streams):
+            if not client._stop.is_set() and connect.call_count == 3:
+                raise ConnectionError('lost established connection')
+            client._stop.set()
+
+        with mock.patch('websockets.sync.client.connect', side_effect=attempts) as connect, \
+             mock.patch.object(client, '_handshake', return_value=True), \
+             mock.patch.object(client, '_recv_loop', side_effect=receive), \
+             mock.patch.object(client._retry, 'wait', side_effect=lambda **_: client._stop.set()
+                               if connect.call_count >= len(attempts) else None), \
+             self.assertLogs(relay_mod.logger, level='INFO') as logs:
+            client._run()
+        self.assertEqual(connect.call_count, 5)
+        self.assertEqual(sum('link down' in msg for msg in logs.output), 2)
+        self.assertEqual(sum('link restored' in msg and 'offline_seconds=' in msg for msg in logs.output), 2)
+
     def test_hello_fields_and_generation(self):
         client, engine = self._client()
         try:

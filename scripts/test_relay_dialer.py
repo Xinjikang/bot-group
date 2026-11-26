@@ -328,12 +328,19 @@ class DialerConnectionTests(DialerBase):
         relay_dialer.MAX_ATTEMPTS = 1
         self.addCleanup(setattr, relay_dialer, "BACKOFF_SEQUENCE", original_backoff)
         self.addCleanup(setattr, relay_dialer, "MAX_ATTEMPTS", original_max)
-        self._set_endpoint(65531)  # 无监听：连续失败
-        relay_dialer.start_dial(REMOTE)
-        deadline = time.monotonic() + 12
-        while time.monotonic() < deadline and \
-                relay_dialer._task_state(REMOTE) != "abandoned":
-            time.sleep(0.1)
+        import socket
+        reserved = socket.socket()
+        self.addCleanup(reserved.close)
+        reserved.bind(('127.0.0.1', 0))
+        self._set_endpoint(reserved.getsockname()[1])
+        with self.assertLogs(relay_dialer.logger, level='INFO') as logs:
+            relay_dialer.start_dial(REMOTE)
+            deadline = time.monotonic() + 12
+            while time.monotonic() < deadline and \
+                    relay_dialer._task_state(REMOTE) != "abandoned":
+                time.sleep(0.1)
+        self.assertEqual(sum('dial unavailable' in msg for msg in logs.output), 1)
+        self.assertEqual(sum('dial abandoned' in msg for msg in logs.output), 1)
         self.assertEqual(relay_dialer._task_state(REMOTE), "abandoned",
                          "重试耗尽应停止（不无限重试）")
         conn = db.get_connection()

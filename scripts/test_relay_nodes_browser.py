@@ -246,6 +246,12 @@ def main():
                 return
             req.fulfill(json=register_response(body))
             return
+        if path.startswith('/relay/nodes/') and req.request.method == 'DELETE':
+            member = path.rsplit('/', 1)[1]
+            writes.append(('DELETE', path, {}))
+            state['nodes'] = [n for n in state['nodes'] if n['member'] != member]
+            req.fulfill(json={'member': member, 'removed': True})
+            return
         if path.startswith('/relay/nodes/') and path.endswith('/revoke'):
             member = path[len('/relay/nodes/'):-len('/revoke')]
             state['revoke_posts'] += 1
@@ -658,6 +664,16 @@ def main():
         assert new_credential not in page.locator('#relay-nodes-dialog').inner_text()
         stored = page.evaluate('JSON.stringify({local: {...localStorage}, session: {...sessionStorage}})')
         assert new_credential not in stored
+        delete = spare_card.locator('[data-action="delete-node"]')
+        delete.click()
+        page.locator('#app-alert button', has_text='取消').click()
+        assert delete.is_visible()
+        assert not any(w[:2] == ('DELETE', '/relay/nodes/hermes-spare') for w in writes)
+        delete.click()
+        assert '聊天和任务历史会保留' in page.locator('#app-alert-message').inner_text()
+        page.locator('#app-alert button', has_text='确定').click()
+        spare_card.wait_for(state='detached')
+        assert sum(w[:2] == ('DELETE', '/relay/nodes/hermes-spare') for w in writes) == 1
         assert not errors, errors
         assert all(path.startswith('/relay/nodes') or path.startswith('/admin/source-ips')
                    or path == '/admin/listen'

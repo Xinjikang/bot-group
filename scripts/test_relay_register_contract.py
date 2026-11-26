@@ -38,6 +38,39 @@ class RelayRegisterContractTests(unittest.TestCase):
         self.assertEqual(node["credential_hash"], relay.hash_credential(result["credential"]))
         self.assertFalse(node["credential_revoked"])
 
+    def test_delete_releases_pairing_and_preserves_the_historical_identity(self):
+        from engine import ip_allowlist
+        with closing(self.conn()) as conn:
+            secret = relay.hash_credential('fixture')
+            relay.register_paired_node(conn, 'first', 'fixture', secret, device_key=secret,
+                                       direction='listen', peer_ip='192.0.2.3')
+            member = 'remote-fixture'
+            conn.execute('INSERT INTO relay_workspace_roots VALUES (?,?)', (member, '/fixture'))
+            conn.commit()
+            self.assertTrue(relay.verify_credential(conn, member, 'fixture'))
+            relay.remove_node(conn, member)
+            relay.remove_node(conn, member)
+            self.assertIsNone(relay.read_node(conn, member))
+            self.assertNotIn(member, [n['member'] for n in relay.list_nodes(conn)])
+            self.assertFalse(relay.verify_credential(conn, member, 'fixture'))
+            self.assertFalse(ip_allowlist.member_allowed(conn, member, '192.0.2.3'))
+            self.assertFalse(relay.paired_device(conn, secret))
+            self.assertIsNone(conn.execute('SELECT 1 FROM relay_workspace_roots WHERE member=?', (member,)).fetchone())
+            with self.assertRaises(relay.InvitationConflict):
+                relay.register_node(conn, member, '', rotate=True)
+            relay.register_paired_node(conn, 'second', 'fixture', relay.hash_credential('new'),
+                                       device_key=secret, direction='listen')
+            self.assertEqual(relay.authenticated_member(conn, 'fixture', 'new'), 'remote-fixture-2')
+
+    def test_existing_nodes_remain_visible_after_schema_upgrade(self):
+        with closing(self.conn()) as conn:
+            created = self._register(conn)
+            conn.execute('ALTER TABLE relay_nodes DROP COLUMN removed')
+            relay.initialize(conn)
+            relay.initialize(conn)
+            self.assertIn('remote-01', [node['member'] for node in relay.list_nodes(conn)])
+            self.assertTrue(relay.verify_credential(conn, 'remote-01', created['credential']))
+
     def test_repeat_first_register_keeps_hash_and_config(self):
         # 首次登记重复调用（rotate=false 遇已存在）：完全不动——hash 不变、
         # 不覆盖配置/期望摘要、不返回凭据

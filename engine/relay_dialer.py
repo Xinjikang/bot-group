@@ -44,10 +44,13 @@ RECV_TIMEOUT = 15.0
 
 def _record_failure(member: str, stage: str, address: str, error: str) -> None:
     with _FAILURES_LOCK:
+        first = member not in _FAILURES
         _FAILURES[member] = {
             'stage': stage, 'address': address, 'error': str(error)[:300],
             'ts': time.time(),
         }
+    if first:
+        logger.info("relay dial unavailable member=%s stage=%s", member, stage)
 
 
 def dial_failure(member: str) -> dict | None:
@@ -421,8 +424,6 @@ def _authenticate_dial(member: str, endpoint: dict, payload: dict, *, probe=Fals
             raise PairingProbeError(stage, reason) from None
         detail = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
         _record_failure(member, stage, uri, detail)
-        logger.warning("relay dial failed member=%s stage=%s error=%s",
-                       member, stage, type(exc).__name__)
         return None
 
 
@@ -540,6 +541,9 @@ def dial_once(member: str, *, initial=None) -> bool:
                          and _row["switch_target"] == "dial")
     finally:
         conn.close()
+    if _row is None or _row['credential_revoked']:
+        link.close()
+        return False
     if switching:
         relay.restore_switch_after_handshake(
             member, target="dial", generation=db_generation)
@@ -629,7 +633,6 @@ def dial_loop(member: str, task: dict, initial=None) -> None:
 def start_dial(member: str, *, initial=None) -> None:
     """启动/重启该成员的拨号任务。幂等：已连接（active DialLink）不动；
     存活任务退避中→poke 唤醒立即再拨；abandoned/线程已死→新建任务线程。"""
-    _clear_failure(member)
     with _TASKS_LOCK:
         task = _TASKS.get(member)
         if task is not None and task["thread"] is not None and task["thread"].is_alive():

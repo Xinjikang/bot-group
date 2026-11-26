@@ -458,6 +458,27 @@ class RelayFrameTests(RelayBase):
         finally:
             conn.close()
 
+    def test_delete_disconnects_node_and_rejects_old_credential(self):
+        from unittest.mock import patch
+        from engine import api
+        from fastapi import HTTPException
+        from websockets.exceptions import ConnectionClosed
+        ws, _ = self._link()
+        with self.assertRaises(HTTPException) as error:
+            api.relay_node_remove(REMOTE, (REMOTE, 'bot'))
+        self.assertEqual(error.exception.status_code, 403)
+        with patch.object(relay, 'capacity_used', return_value=1), self.assertRaises(HTTPException) as error:
+            api.relay_node_remove(REMOTE, ('user', 'user'))
+        self.assertEqual(error.exception.status_code, 409)
+        self.assertIsNotNone(relay_server.active_link(REMOTE))
+        api.relay_node_remove(REMOTE, ('user', 'user'))
+        with self.assertRaises(ConnectionClosed):
+            ws.recv(timeout=3)
+        self.assertIsNone(relay_server.active_link(REMOTE))
+        with self._connect() as old, self.assertRaises(ConnectionClosed) as closed:
+            self._hello(old)
+        self.assertEqual(closed.exception.rcvd.code, relay_server.CLOSE_BAD_CREDENTIAL)
+
     def test_link_close_sentinel_and_offline(self):
         ws, _ = self._link()
         gc, _ = self._remote_client()

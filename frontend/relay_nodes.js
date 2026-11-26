@@ -669,6 +669,12 @@
       reissue.dataset.action = 'reissue';
       reissue.textContent = window.t('relay_reissue');
       actions.append(reissue);
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.dataset.action = 'delete-node';
+      remove.className = 'relay-danger';
+      remove.textContent = window.t('relay_delete');
+      actions.append(remove);
       const directionButton = document.createElement('button');
       directionButton.type = 'button';
       directionButton.dataset.action = 'direction';
@@ -914,23 +920,26 @@
       $('#relay-add').focus();
     }
   }
-  async function revokeNode(member) {
+  async function revokeOrDeleteNode(member, deleting) {
     if (busy || !allowed() || !registrationReady() || !nodes.some(node => node.member === member)) return;
-    if (!await showConfirm(window.t('relay_revoke_confirm', [member]))) return;
+    if (!await showConfirm(window.t(deleting ? 'relay_delete_confirm' : 'relay_revoke_confirm', [member]))) return;
     if (busy || !allowed() || !dialog.open || !registrationReady()) return;
     busy = true;
     refreshControls();
-    report(nodesStatus, window.t('relay_revoking', [member]));
+    report(nodesStatus, window.t(deleting ? 'relay_deleting' : 'relay_revoking', [member]));
     try {
-      await api(`/relay/nodes/${encodeURIComponent(member)}/revoke`, {method: 'POST'});
+      const path = `/relay/nodes/${encodeURIComponent(member)}`;
+      if (deleting) await api(path, {method: 'DELETE'});
+      else await api(path + '/revoke', {method: 'POST'});
       writeUncertain = false;
       if (issued?.member === member) clearIssued();
-      if (dialog.open) report(nodesStatus, window.t('relay_revoked', [member]));
+      if (dialog.open) report(nodesStatus, window.t(deleting ? 'relay_deleted' : 'relay_revoked', [member]));
       await reload(true);
     } catch (error) {
       if (dialog.open) {
         if (!error.status) writeUncertain = true;
-        report(nodesStatus, window.t('relay_revoke_result', [error.status ? window.t('relay_revoke_failed') : window.t('relay_revoke_unconfirmed'), message(error), error.status ? '' : window.t('relay_verify_before_retry')]), true);
+        const prefix = deleting ? 'relay_delete' : 'relay_revoke';
+        report(nodesStatus, window.t('relay_revoke_result', [window.t(prefix + (error.status ? '_failed' : '_unconfirmed')), message(error), error.status ? '' : window.t('relay_verify_before_retry')]), true);
       }
     } finally {
       busy = false;
@@ -1483,7 +1492,9 @@
       removeIp(card.dataset.relayMember, button.dataset.ip);
       return;
     }
-    if (button.dataset.action === 'revoke') revokeNode(card.dataset.relayMember);
+    if (button.dataset.action === 'revoke' || button.dataset.action === 'delete-node') {
+      revokeOrDeleteNode(card.dataset.relayMember, button.dataset.action === 'delete-node');
+    }
     else if (button.dataset.action === 'reissue') reissueNode(card.dataset.relayMember);
   });
   list.addEventListener('submit', event => {

@@ -95,7 +95,7 @@ def remote_member(profile):
     from . import relay
     conn = db.get_connection()
     try:
-        return relay.read_node(conn, profile) is not None
+        return relay.read_node(conn, profile, include_removed=True) is not None
     finally:
         conn.close()
 

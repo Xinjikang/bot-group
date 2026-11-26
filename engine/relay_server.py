@@ -507,7 +507,11 @@ async def relay_ws(websocket: WebSocket) -> None:
             # 切换完成——但清切换态放在 link 注册（能收发帧）之后的异步
             # 恢复步骤（manager node2073：新链先注册，再经 relay lease
             # 做首次在途问询，完成后按仍有效的本地代与目标恢复派发）。
-            switching = relay.read_node(conn, member)["switch_state"] == "switching"
+            row = relay.read_node(conn, member)
+            if row is None:
+                await websocket.close(code=CLOSE_BAD_CREDENTIAL)
+                return
+            switching = row["switch_state"] == "switching"
         finally:
             conn.close()
     except (ValueError, KeyError, TypeError, asyncio.TimeoutError):
@@ -532,6 +536,14 @@ async def relay_ws(websocket: WebSocket) -> None:
             previous.return_timer.cancel()
         previous.close()
     try:
+        conn = db.get_connection()
+        try:
+            available = relay.verify_credential(conn, member, credential)
+        finally:
+            conn.close()
+        if not available:
+            await websocket.close(code=CLOSE_BAD_CREDENTIAL)
+            return
         hello_ok = {"relay": {"kind": "hello_ok", "generation": generation, "protocol_version": protocol_version},
                     "engine_url": _engine_url()}
         await websocket.send_text(json.dumps(hello_ok, ensure_ascii=False))

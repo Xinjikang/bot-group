@@ -146,6 +146,7 @@ class RelayClient:
         import websockets.sync.client as ws_sync
         from . import pairing
         backoff = RECONNECT_BASE
+        offline_since = None
         while not self._stop.is_set():
             if self._listener is None and pairing.listener_selected(self.cfg.member):
                 try:
@@ -189,6 +190,12 @@ class RelayClient:
                             self._on_status("offline")
                             continue
                         return
+                    if offline_since is None:
+                        logger.info("bot-group relay link up member=%s generation=%d", self.cfg.member, self._generation)
+                    else:
+                        logger.info("bot-group relay link restored member=%s generation=%d offline_seconds=%.1f",
+                                    self.cfg.member, self._generation, time.monotonic() - offline_since)
+                        offline_since = None
                     backoff = RECONNECT_BASE
                     pairing.select_role(self.cfg.member, "dial")
                     self._close_listener()
@@ -202,8 +209,10 @@ class RelayClient:
             except Exception as exc:  # noqa: BLE001 断线重连
                 if self._stop.is_set():
                     return
-                logger.warning("bot-group relay link down member=%s cause=%s",
-                               self.cfg.member, type(exc).__name__)
+                if offline_since is None:
+                    offline_since = time.monotonic()
+                    logger.info("bot-group relay link down member=%s cause=%s",
+                                self.cfg.member, type(exc).__name__)
             self._on_status("offline")
             self._generation = 0
             self._retry.wait(timeout=backoff)
@@ -271,8 +280,6 @@ class RelayClient:
         self._credential = credential
         self._generation = int(reply["relay"].get("generation") or 0)
         self._engine_url = reply.get("engine_url") or ""
-        logger.info("bot-group relay link up member=%s generation=%d",
-                    self.cfg.member, self._generation)
         return self._generation > 0
 
     def _recv_loop(self, ws, streams) -> None:

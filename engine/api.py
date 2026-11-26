@@ -350,6 +350,8 @@ def relay_node_register(body: _RelayRegisterBody, identity=Depends(_resolve_iden
                                      display_name=body.display_name,
                                      mcp_config=body.mcp_config,
                                      rotate=body.rotate)
+    except relay.InvitationConflict as exc:
+        raise HTTPException(409, str(exc)) from None
     finally:
         conn.close()
     # 凭据仅新创建或重签时生成下发；首次登记遇已存在成员不返回凭据、
@@ -357,6 +359,24 @@ def relay_node_register(body: _RelayRegisterBody, identity=Depends(_resolve_iden
     return {'member': body.member.strip(),
             'credential': result['credential'] if not body.credential else None,
             'created': result['created']}
+
+
+@router_api.delete('/relay/nodes/{member}')
+def relay_node_remove(member: str, identity=Depends(_resolve_identity)):
+    _admin_only(identity, '删除远程节点仅限管理员')
+    from . import relay, relay_server, relay_dialer
+    conn = db.get_connection()
+    try:
+        relay.remove_node(conn, member)
+    except relay.InvitationConflict as exc:
+        raise HTTPException(409, str(exc)) from None
+    finally:
+        conn.close()
+    relay_dialer.stop_dial(member)
+    link = relay_server.active_link(member)
+    if link:
+        link.close()
+    return {'member': member, 'removed': True}
 
 
 @router_api.post('/relay/nodes/{member}/revoke')
@@ -1582,7 +1602,9 @@ def get_profile_candidates(project: str = '', identity=Depends(_resolve_identity
         candidates = discovery.scan_candidates(conn, project)
         found = {candidate['bot_id'] for candidate in candidates if candidate['bot_id'] is not None}
         enrolled = {row['bot_id'] for row in conn.execute('SELECT bot_id FROM project_members WHERE project=?', (project,))}
-        for row in conn.execute("SELECT b.*, m.profile AS member_profile FROM bots b LEFT JOIN members m ON m.bot_id=b.id WHERE b.profile!='user' ORDER BY b.id"):
+        for row in conn.execute("SELECT b.*, m.profile AS member_profile FROM bots b LEFT JOIN members m ON m.bot_id=b.id "
+                                "WHERE b.profile!='user' AND NOT EXISTS (SELECT 1 FROM relay_nodes n "
+                                "WHERE n.member=m.profile AND n.removed=1) ORDER BY b.id"):
             if row['id'] in found or not discovery.candidate_available(row):
                 continue
             candidates.append({'bot_id': row['id'], 'host_type': row['host_type'], 'runtime': row['runtime'], 'profile': row['profile'],
@@ -1614,6 +1636,8 @@ def post_member(body: dict[str, Any]):
 
     conn = _conn()
     try:
+        from . import relay
+        relay.require_available_member(conn, profile)
         conn.execute(
             "INSERT INTO members (profile, display_name) VALUES (?, ?) "
             "ON CONFLICT(profile) DO UPDATE SET display_name=excluded.display_name",
@@ -1994,6 +2018,9 @@ def set_member_active(profile: str, body: dict[str, Any], identity=Depends(_reso
         )
     conn = _conn()
     try:
+        if active:
+            from . import relay
+            relay.require_available_member(conn, profile)
         if not conn.execute("SELECT 1 FROM members WHERE profile=?", (profile,)).fetchone():
             raise HTTPException(status_code=404, detail=f"member {profile} not found")
         previous = conn.execute('SELECT active FROM project_members WHERE project=? AND profile=?',

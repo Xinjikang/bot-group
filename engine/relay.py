@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS relay_nodes (
     switch_target     TEXT NOT NULL DEFAULT '',   -- 切换目标方向（随节点持久化，重启可读回）
     switch_error      TEXT NOT NULL DEFAULT '',   -- 最近一次切换/拨号失败原因（页面显示）
     created_at        REAL NOT NULL,
-    updated_at        REAL
+    updated_at        REAL,
+    removed           INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS relay_offline_mentions (
     message_id    INTEGER NOT NULL,
@@ -115,6 +116,7 @@ CREATE TABLE IF NOT EXISTS relay_project_workspaces (
 def initialize(conn) -> None:
     from . import relay_pairing
     conn.executescript(SCHEMA + relay_pairing.SCHEMA)
+    db._migrate_add_column(conn, 'relay_nodes', 'removed', 'INTEGER NOT NULL DEFAULT 0')
     # Previews from older versions have no further use for a saved candidate.
     with conn:
         conn.execute('UPDATE relay_dial_attempts SET candidate=NULL WHERE candidate IS NOT NULL')
@@ -422,8 +424,17 @@ def register_node(conn, member: str, credential: str, *, display_name: str = "",
       （防 UI 缺省 {} 清空），显式传入则按传入更新。
     """
     now = _now() if now is None else now
-    existing = read_node(conn, member)
+    started = not conn.in_transaction
+    if started:
+        conn.execute('BEGIN IMMEDIATE')
+    existing = read_node(conn, member, include_removed=True)
+    if existing is not None and existing['removed']:
+        if started:
+            conn.rollback()
+        raise InvitationConflict('该节点已删除，请重新添加远程 Hermes')
     if existing is not None and not rotate:
+        if started:
+            conn.rollback()
         return {"member": member, "credential": None, "created": False,
                 "node": existing}
     if existing is not None:
@@ -475,12 +486,44 @@ _NODE_SELECT = ('SELECT n.*, COALESCE(i.host_profile,n.member) AS host_profile F
                 'LEFT JOIN relay_node_identities i USING(member)')
 
 
-def read_node(conn, member: str):
-    return conn.execute(_NODE_SELECT + ' WHERE n.member=?', (member,)).fetchone()
+def read_node(conn, member: str, *, include_removed=False):
+    condition = '' if include_removed else ' AND n.removed=0'
+    return conn.execute(_NODE_SELECT + ' WHERE n.member=?' + condition, (member,)).fetchone()
 
 
 def list_nodes(conn):
-    return conn.execute(_NODE_SELECT + ' ORDER BY n.member').fetchall()
+    return conn.execute(_NODE_SELECT + ' WHERE n.removed=0 ORDER BY n.member').fetchall()
+
+
+def require_available_member(conn, member):
+    from fastapi import HTTPException
+    if conn.execute('SELECT 1 FROM relay_nodes WHERE member=? AND removed=1', (member,)).fetchone():
+        raise HTTPException(409, '该远程节点已删除，请重新配对后选择新成员')
+
+
+def remove_node(conn, member):
+    """Retire the routing identity so historical sessions cannot run on the local host."""
+    from . import router
+    with conn:
+        conn.execute('BEGIN IMMEDIATE')
+        node = read_node(conn, member, include_removed=True)
+        if node is None or node['removed']:
+            return
+        if capacity_used(conn, member):
+            raise InvitationConflict('节点有未结束的执行，请先结束执行再删除')
+        _cancel_renewals(conn, member)
+        conn.execute("""UPDATE relay_nodes SET removed=1,credential_revoked=1,credential_hash='',
+                        state='offline',dial_endpoint='',switch_state='',switch_target='',mcp_config='{}',
+                        updated_at=? WHERE member=?""", (_now(), member))
+        for table in ('relay_node_identities', 'relay_source_bindings', 'relay_workspace_roots',
+                      'relay_project_workspaces'):
+            conn.execute(f'DELETE FROM {table} WHERE member=?', (member,))
+        conn.execute('UPDATE project_members SET active=0 WHERE profile=? AND active=1', (member,))
+        conn.execute("UPDATE inbox SET status='expired' WHERE profile=? AND status='pending'", (member,))
+        conn.execute('UPDATE hermes_session_grants SET revoked=1 WHERE profile=?', (member,))
+        conn.execute("UPDATE relay_offline_mentions SET state='offline_expired',updated_at=? WHERE member=? "
+                     "AND state='offline_waiting' AND submission_id IS NULL", (_now(), member))
+        router.advance_past_profile(conn, member, commit=False)
 
 
 def set_mcp_verify(conn, member: str, *, state: str, error: str = "",
@@ -521,7 +564,7 @@ def mark_online(conn, member: str, *, code_version: str, mcp_fingerprint: str,
     （manager node1981 ②：状态 SQL 以当前连接代为条件）。"""
     conn.execute(
         "UPDATE relay_nodes SET state='online',code_version=?,mcp_fingerprint=?,"
-        "generation=?,last_heartbeat=?,updated_at=? WHERE member=? AND generation=?",
+        "generation=?,last_heartbeat=?,updated_at=? WHERE member=? AND generation=? AND removed=0",
         (code_version, mcp_fingerprint, generation, _now() if now is None else now,
          _now() if now is None else now, member, generation))
     conn.commit()
@@ -531,7 +574,7 @@ def heartbeat(conn, member: str, *, generation: int, now=None) -> None:
     """心跳只更新存活槽；绝不据此判任务结束（设计 4 章）。带当前代条件：
     旧连接迟到心跳（代不匹配）不覆盖新代状态（manager node1981 ②）。"""
     conn.execute("UPDATE relay_nodes SET last_heartbeat=?,state='online' "
-                 "WHERE member=? AND generation=?",
+                 "WHERE member=? AND generation=? AND removed=0",
                  (_now() if now is None else now, member, generation))
     conn.commit()
 

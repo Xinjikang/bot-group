@@ -26,7 +26,8 @@ def member_views(conn):
     for row in conn.execute(
         'SELECT m.*,b.profile AS host_profile,b.runtime, '
         "COALESCE(NULLIF(b.display_name,''),NULLIF(m.display_name,''),b.profile,m.profile) AS bot_display_name "
-        'FROM members m LEFT JOIN bots b ON b.id=m.bot_id ORDER BY m.profile'
+        'FROM members m LEFT JOIN bots b ON b.id=m.bot_id WHERE NOT EXISTS '
+        '(SELECT 1 FROM relay_nodes n WHERE n.member=m.profile AND n.removed=1) ORDER BY m.profile'
     ):
         member = dict(row)
         member['display_name'] = member.pop('bot_display_name')
@@ -69,6 +70,8 @@ def enroll(conn, bot_id, project):
     row = conn.execute('SELECT profile FROM members WHERE bot_id=?', (bot_id,)).fetchone()
     if row:
         member = row['profile']
+        from . import relay
+        relay.require_available_member(conn, member)
         conn.execute('UPDATE members SET display_name=? WHERE bot_id=?',
                      (bot['display_name'] or bot['profile'], bot_id))
     else:
