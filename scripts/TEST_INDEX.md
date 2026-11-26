@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+双向重连窗口使用项目 Python 运行 `-X utf8 -B -m unittest scripts.test_relay_retry scripts.test_relay_plugin scripts.test_relay_dialer scripts.test_plugin_listen_pairing scripts.test_relay_multiple_engines`。隔离数据库和配对目录、模拟时钟及随机回环端口覆盖 25 次拨号、601 秒固定等待、认证超时和明确拒绝、重启后停拨、私聊恢复、节点页重试和方向切换。运行 `-m scripts.test_relay_direction_browser --evidence <隔离报告目录>` 验证本机停止原因、同方向手动重试和云端私聊提示，节点卡片复用下文的 `test_relay_nodes_browser` 命令。
+
 远程节点删除和双向重连日志使用项目 Python 运行 `-X utf8 -B -m unittest scripts.test_relay_register_contract scripts.test_relay_plugin scripts.test_relay_gateway scripts.test_relay_dialer`，使用临时 SQLite、回环 WebSocket 和合成凭据。覆盖删除与重新配对、权限和执行占用、断开在线节点、旧凭据失效、连续超时去重及拨号耗尽。界面确认、取消和卡片刷新复用 `-m scripts.test_relay_nodes_browser --evidence <隔离报告目录>`（Playwright 和 Chrome）。
 
 引擎状态栏语言回归复用 `scripts/test_ui_language_browser.py --evidence <新证据目录绝对路径>`（项目 Python、Playwright、Chrome、合成路由），覆盖中英文切换时首次连接、已连接、重连和已断开的状态与文字。远程成员离线维护回归用项目 Python 运行 `-X utf8 -B -m scripts.run_isolated_tests --report <项目主目录 reports/tests 下的新绝对目录> scripts.test_hermes_session_reuse scripts.test_relay_gateway`，覆盖离线跳过、在线但无活动链路、上线后继续换证或释放订阅、心跳过期与断链只记录一次。出站拨号使用自带随机回环端点的 `-X utf8 -B -m unittest scripts.test_relay_dialer`。

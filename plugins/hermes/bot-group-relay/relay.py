@@ -26,8 +26,6 @@ from . import streams as streams_mod
 logger = logging.getLogger(__name__)
 
 HEARTBEAT_INTERVAL = 45.0      # 引擎 TTL 90s：45s 心跳留足余量
-RECONNECT_BASE = 1.0
-RECONNECT_CAP = 30.0
 CLOSE_BAD_PROTOCOL = 4003
 _GATEWAY_CLIENTS = {}
 _GATEWAY_LOCK = threading.Lock()
@@ -63,7 +61,7 @@ class RelayClient:
         self._generation = 0
         # 携带邀请时，重连只使用为本次邀请确认的凭据。
         self._credential = "" if cfg.invite else cfg.credential
-        self._rejected_key = ""
+        self._refusal = None
         self._engine_url = ""
         self._stop = threading.Event()
         self._retry = threading.Event()
@@ -73,6 +71,13 @@ class RelayClient:
                                         daemon=True)
 
     # ---------- 生命周期 ----------
+
+    def _outbound_state(self, status, **fields):
+        from . import pairing
+        from urllib.parse import urlsplit
+        host = urlsplit(self.cfg.engine_url)
+        pairing.set_outbound_state(status, member=self.cfg.member, engine_host=host.hostname,
+                                   engine_port=host.port, **fields)
 
     def start(self) -> None:
         self._thread.start()
@@ -145,8 +150,9 @@ class RelayClient:
     def _run(self) -> None:
         import websockets.sync.client as ws_sync
         from . import pairing
-        backoff = RECONNECT_BASE
-        offline_since = None
+        window = relay_config.relay_retry.RetryRound()
+        peer_name = f"{self.cfg.member}@{self.peer or 'default'}"
+        paused = pairing.outbound_state().get("state") == "stopped"
         while not self._stop.is_set():
             if self._listener is None and pairing.listener_selected(self.cfg.member):
                 try:
@@ -155,6 +161,8 @@ class RelayClient:
                     logger.warning("relay listener restore failed: %s", type(exc).__name__)
             if (pairing.listener_selected(self.cfg.member, confirmed=True)
                     and not pairing.outbound_requested(self.cfg.member)):
+                if window.attempts or window.reasons:
+                    window = relay_config.relay_retry.RetryRound()
                 self._retry.wait(timeout=2)
                 self._retry.clear()
                 continue
@@ -170,34 +178,45 @@ class RelayClient:
                 saved = pairing.load_register_credential(self.cfg.member, engine_url=self.cfg.engine_url)
                 if saved:
                     self._credential = saved
-            if self._rejected_key and self._credential == self._rejected_key:
-                self._stop.wait(1)
-                continue
+            if paused:
+                if pairing.outbound_state().get("state") == "stopped":
+                    self._retry.wait(timeout=2)
+                    self._retry.clear()
+                    continue
+                paused = False
+                window = relay_config.relay_retry.RetryRound()
+            if not window.attempts:
+                if not window.reasons:
+                    window = relay_config.relay_retry.RetryRound()
+                self._outbound_state("connecting")
+            window.attempts += 1
+            connected = False
+            stage = "tcp"
+            self._refusal = None
             try:
                 with ws_sync.connect(relay_config.ws_url(self.cfg.engine_url),
                                      proxy=None, open_timeout=10, close_timeout=2,
                                      ping_interval=20, ping_timeout=5,
                                      max_size=8 * 1024 * 1024) as ws:
+                    stage = "auth"
                     handshake = self._handshake(ws)
                     if self._stop.is_set():
                         return
                     if handshake is None:  # Pending or approved; reconnect without opening any streams.
+                        window = relay_config.relay_retry.RetryRound()
                         if self._stop.wait(1.0):
                             return
                         continue
                     if not handshake:
-                        if self._rejected_key:
-                            self._on_status("offline")
-                            continue
-                        return
-                    if offline_since is None:
-                        logger.info("bot-group relay link up member=%s generation=%d", self.cfg.member, self._generation)
+                        raise ValueError("invalid handshake receipt")
+                    connected = True
+                    stage = "connected"
+                    if window.reasons:
+                        window.finish(logger, "bot-group relay link restored", peer_name, "restored")
                     else:
-                        logger.info("bot-group relay link restored member=%s generation=%d offline_seconds=%.1f",
-                                    self.cfg.member, self._generation, time.monotonic() - offline_since)
-                        offline_since = None
-                    backoff = RECONNECT_BASE
+                        logger.info("bot-group relay link up member=%s generation=%d", peer_name, self._generation)
                     pairing.select_role(self.cfg.member, "dial")
+                    self._outbound_state("online")
                     self._close_listener()
                     self._on_status("online")
                     streams = streams_mod.StreamRegistry(self.cfg.home, ws, self.protocol_version,
@@ -209,15 +228,31 @@ class RelayClient:
             except Exception as exc:  # noqa: BLE001 断线重连
                 if self._stop.is_set():
                     return
-                if offline_since is None:
-                    offline_since = time.monotonic()
-                    logger.info("bot-group relay link down member=%s cause=%s",
-                                self.cfg.member, type(exc).__name__)
-            self._on_status("offline")
-            self._generation = 0
-            self._retry.wait(timeout=backoff)
-            self._retry.clear()
-            backoff = min(backoff * 2, RECONNECT_CAP)
+                refused = self._refusal or relay_config.relay_retry.rejection(exc)
+                if not refused and not connected and isinstance(exc, (ValueError, KeyError, TypeError, AttributeError)):
+                    refused = ("protocol", "认证回执无效")
+                reason = refused[1] if refused else relay_config.relay_retry.transient_reason(stage, exc)
+                if connected:
+                    window = relay_config.relay_retry.RetryRound()
+                if not window.reasons:
+                    logger.info("bot-group relay link down member=%s cause=%s", peer_name, reason)
+                window.reasons[reason] += 1
+                self._generation = 0
+                self._on_status("offline")
+                if (pairing.listener_selected(self.cfg.member, confirmed=True) and
+                        not pairing.outbound_requested(self.cfg.member)):
+                    self._outbound_state("listening")
+                    continue
+                if refused or window.attempts > len(relay_config.relay_retry.DELAYS):
+                    summary = window.finish(logger, "bot-group relay dial stopped", peer_name,
+                                            "rejected" if refused else "exhausted")
+                    self._outbound_state("stopped", reason=reason, **summary)
+                    paused = True
+                    continue
+                if not connected:
+                    self._outbound_state("backoff", reason=reason, attempts=window.attempts)
+                    self._retry.wait(timeout=relay_config.relay_retry.DELAYS[window.attempts - 1])
+                    self._retry.clear()
 
     def _handshake(self, ws, *, pairing_only=False) -> bool | None:
         snapshot = mcp_digest.snapshot(self.cfg.mcp_python,
@@ -242,28 +277,22 @@ class RelayClient:
             hello.update(invite=self.cfg.invite, join_proof=proof,
                          credential_commitment=hashlib.sha256(candidate.encode()).hexdigest())
         try:
-            self._rejected_key = ""
             ws.send(json.dumps(hello, ensure_ascii=False))
             reply = json.loads(ws.recv(timeout=10))
-        except Exception as exc:  # noqa: BLE001 关闭码经异常可见
-            code = getattr(getattr(exc, "rcvd", None), "code", None)
-            # 引擎按版本/凭据/摘要拒绝：重试无意义，结束出站循环
-            if code in (4001, 4002, 4003):
-                if code == CLOSE_BAD_PROTOCOL:
-                    reason = relay_config.relay_protocol.refusal(exc.rcvd.reason)
-                    logger.warning("bot-group relay member=%s %s", self.cfg.member, reason)
-                    if pairing_only:
-                        raise relay_config.relay_protocol.ProtocolMismatch(reason) from None
-                if code == 4001 and credential and self._follow_saved and not pairing_only:
-                    self._rejected_key = self._credential = credential
-                logger.warning("bot-group relay handshake rejected member=%s code=%s",
-                               self.cfg.member, code)
+        except Exception as exc:
+            self._refusal = relay_config.relay_retry.rejection(exc)
+            if self._refusal:
+                if pairing_only:
+                    if self._refusal[0] == "protocol":
+                        raise relay_config.relay_protocol.ProtocolMismatch(self._refusal[1]) from None
+                    raise ValueError(self._refusal[1]) from None
                 return False
             raise
         receipt = reply.get('relay') or {}
         try:
             self.protocol_version = relay_config.relay_protocol.selected(receipt)
-        except ValueError:
+        except relay_config.relay_protocol.ProtocolMismatch as exc:
+            self._refusal = relay_config.relay_retry.rejection(exc)
             ws.close(code=CLOSE_BAD_PROTOCOL, reason=relay_config.relay_protocol.REJECTION)
             return False
         self.legacy_engine = "protocol_version" not in receipt

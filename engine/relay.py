@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS relay_nodes (
     switch_error      TEXT NOT NULL DEFAULT '',   -- 最近一次切换/拨号失败原因（页面显示）
     created_at        REAL NOT NULL,
     updated_at        REAL,
-    removed           INTEGER NOT NULL DEFAULT 0
+    removed           INTEGER NOT NULL DEFAULT 0,
+    dial_stopped      TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS relay_offline_mentions (
     message_id    INTEGER NOT NULL,
@@ -117,6 +118,7 @@ def initialize(conn) -> None:
     from . import relay_pairing
     conn.executescript(SCHEMA + relay_pairing.SCHEMA)
     db._migrate_add_column(conn, 'relay_nodes', 'removed', 'INTEGER NOT NULL DEFAULT 0')
+    db._migrate_add_column(conn, 'relay_nodes', 'dial_stopped', "TEXT NOT NULL DEFAULT ''")
     # Previews from older versions have no further use for a saved candidate.
     with conn:
         conn.execute('UPDATE relay_dial_attempts SET candidate=NULL WHERE candidate IS NOT NULL')
@@ -1009,7 +1011,7 @@ def begin_switch(conn, member: str, target: str, *, now=None) -> None:
         raise ValueError("节点不存在")
     conn.execute(
         "UPDATE relay_nodes SET switch_state='switching',switch_target=?,"
-        "switch_error='',updated_at=? WHERE member=?",
+        "dial_stopped='',switch_error='',updated_at=? WHERE member=?",
         (target, _now() if now is None else now, member))
     conn.commit()
 
@@ -1028,7 +1030,7 @@ def complete_switch(conn, member: str, *, now=None, client=None) -> None:
     reconcile_switch_resume(conn, member, now=now, client=client)
     conn.execute(
         "UPDATE relay_nodes SET switch_state='',switch_target='',"
-        "direction=?,updated_at=? WHERE member=?",
+        "direction=?,dial_stopped='',updated_at=? WHERE member=?",
         (target, _now() if now is None else now, member))
     conn.commit()
 

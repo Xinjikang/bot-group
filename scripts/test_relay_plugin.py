@@ -500,7 +500,10 @@ class RelayClientTests(unittest.TestCase):
             client._run()
         self.assertEqual(connect.call_count, 5)
         self.assertEqual(sum('link down' in msg for msg in logs.output), 2)
-        self.assertEqual(sum('link restored' in msg and 'offline_seconds=' in msg for msg in logs.output), 2)
+        restored = [msg for msg in logs.output if 'link restored' in msg and 'offline_seconds=' in msg]
+        self.assertEqual(len(restored), 2)
+        self.assertIn('attempts=3', restored[0])
+        self.assertIn('attempts=2', restored[1])
 
     def test_hello_fields_and_generation(self):
         client, engine = self._client()
@@ -527,8 +530,12 @@ class RelayClientTests(unittest.TestCase):
         self.addCleanup(engine.stop)
         client = relay_mod.RelayClient(make_cfg(engine.url))
         client.start()
-        client._thread.join(timeout=3)
-        self.assertFalse(client._thread.is_alive(), "版本不匹配被拒后不重试")
+        self.addCleanup(client.stop)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and _plugin.pairing.outbound_state().get("state") != "stopped":
+            time.sleep(0.02)
+        self.assertEqual(_plugin.pairing.outbound_state()["result"], "rejected")
+        self.assertEqual(len(engine._clients), 1)
 
     def test_stale_generation_frame_dropped(self):
         client, engine = self._client()

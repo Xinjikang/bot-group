@@ -267,8 +267,8 @@ class DialerConnectionTests(DialerBase):
         self._set_endpoint(plugin.port, tls=True, fingerprint=wrong)
         relay_dialer.start_dial(REMOTE)
         time.sleep(1.5)
-        self.assertNotEqual(relay_dialer._task_state(REMOTE), "connected",
-                            "指纹不符不得认证成功")
+        self.assertEqual(relay_dialer._task_state(REMOTE), "abandoned")
+        self.assertIn("证书指纹不匹配", relay_dialer.dial_failure(REMOTE)["error"])
 
     def test_dial_tls_fingerprint_match_connects(self):
         import hashlib
@@ -304,8 +304,15 @@ class DialerConnectionTests(DialerBase):
 
     def test_reconnect_backoff_then_success(self):
         # 端点先不可达 → 退避重试；服务器后起 → 连上（重连退避不无限重试）
-        relay_dialer.start_dial(REMOTE)
-        self._set_endpoint(65531)  # 无监听端口：拨号必失败
+        import socket
+        with socket.socket() as reserved:
+            reserved.bind(("127.0.0.1", 0))
+            self._set_endpoint(reserved.getsockname()[1])
+            relay_dialer.start_dial(REMOTE)
+            deadline = time.monotonic() + 8
+            while not relay_dialer.dial_failure(REMOTE) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(relay_dialer.dial_failure(REMOTE)["stage"], "tcp")
         time.sleep(1.0)
         self.assertNotEqual(relay_dialer._task_state(REMOTE), "connected")
         plugin = FakePlugin(tls=True)
@@ -345,7 +352,7 @@ class DialerConnectionTests(DialerBase):
                          "重试耗尽应停止（不无限重试）")
         conn = db.get_connection()
         try:
-            self.assertTrue(relay.read_node(conn, REMOTE)["switch_error"],
+            self.assertTrue(relay.read_node(conn, REMOTE)["dial_stopped"],
                             "耗尽应记录失败原因供页面显示")
         finally:
             conn.close()

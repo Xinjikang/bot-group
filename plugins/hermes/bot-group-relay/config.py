@@ -12,9 +12,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 if (Path(__file__).resolve().parent / "engine" / "relay_protocol.py").is_file():
-    from .engine import relay_protocol
+    from .engine import relay_protocol, relay_retry
 else:
-    from engine import relay_protocol
+    from engine import relay_protocol, relay_retry
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parent

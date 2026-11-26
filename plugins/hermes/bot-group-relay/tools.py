@@ -100,6 +100,41 @@ def bot_group_relay_status(args: dict, **kwargs) -> str:
     return _tool_result(True, "状态查询成功", **pairing.status())
 
 
+def bot_group_reconnect(args: dict, **kwargs) -> str:
+    if not _check_authorized(kwargs):
+        return _tool_result(False, "仅授权管理员可通过私聊操作（BOT_GROUP_RELAY_ADMIN）")
+    from . import config, pairing, relay
+    url = str(args.get("engine_url") or "").rstrip("/")
+    peers = config.peer_configs()
+    with relay._GATEWAY_LOCK:
+        clients = {client.peer: client for client in relay._GATEWAY_CLIENTS.values()
+                   if client.cfg.home == config.host_home()}
+    for peer, client in clients.items():
+        peers.setdefault(peer, client.cfg)
+    matches = []
+    for peer, cfg in peers.items():
+        with pairing.using_peer(peer):
+            address, key = pairing.saved_register(cfg.member)
+        address = address or cfg.engine_url
+        if address and (key or cfg.credential) and (not url or address.rstrip("/") == url):
+            matches.append((peer, cfg, address))
+    if len(matches) != 1:
+        return _tool_result(False, "请指定已配对的引擎地址" if matches else "未找到匹配的已配对节点",
+                            engines=[address for _, _, address in matches])
+    peer, cfg, _ = matches[0]
+    with pairing.using_peer(peer):
+        if pairing.listener_selected(cfg.member, confirmed=True) and not pairing.outbound_requested(cfg.member):
+            return _tool_result(False, "当前由引擎拨号，请在引擎节点页重试", state="listening")
+        state, rearmed = pairing.resume_outbound()
+    client = clients.get(peer)
+    if client and rearmed:
+        client._retry.set()
+    message = "已请求网关开始新一轮拨号" if rearmed else "网关正在拨号，沿用本轮重试"
+    if state == "online":
+        message = "已在线，沿用当前连接"
+    return _tool_result(True, message, member=cfg.member, state=state)
+
+
 def bot_group_listen(args: dict, **kwargs) -> str:
     if not _check_authorized(kwargs):
         return _tool_result(False, "仅授权管理员可通过私聊操作（BOT_GROUP_RELAY_ADMIN）")
@@ -188,8 +223,11 @@ def register_tools(ctx) -> None:
           "credential": {"type": "string", "description": "已有节点凭据（可选）"},
           "invite": {"type": "string", "description": "首次接入的一次性邀请（可选）"}},
          []),
+        ("bot_group_reconnect", bot_group_reconnect,
+         "管理员私聊说“重连”时，对已配对引擎重新拨号。多个配对时用已保存的引擎地址选择。",
+         {"engine_url": {"type": "string", "description": "已配对的引擎地址"}}, []),
         ("bot_group_relay_status", bot_group_relay_status,
-         "查看 bot-group relay 监听/配对状态（脱敏）", {}, []),
+         "查看 bot-group relay 各配对的监听和拨号状态、停止原因及重试统计", {}, []),
     )
     for name, handler, description, properties, required in tools:
         parameters = {"type": "object", "properties": properties}

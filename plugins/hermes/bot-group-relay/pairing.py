@@ -308,6 +308,7 @@ def select_role(member, role):
         offer = state.get("pairing") or {}
         if offer.get("member") == member and offer.get("role") != role:
             offer.pop("dial_until", None)
+            state.pop("outbound", None)
             offer["role"] = role
             _save_state(state)
 
@@ -317,6 +318,7 @@ def request_outbound(member):
         state = _load_state()
         offer = state.get("pairing") or {}
         if offer.get("member") == member:
+            state.pop("outbound", None)
             offer["dial_until"] = time.time() + 45
             _save_state(state)
 
@@ -353,6 +355,32 @@ def pairing_metadata() -> dict:
         }
 
 
+def outbound_state():
+    with _LOCK:
+        return _load_state().get("outbound") or {}
+
+
+def set_outbound_state(status, **fields):
+    with _transaction():
+        state = _load_state()
+        state["outbound"] = {"state": status, **fields}
+        _save_state(state)
+
+
+def resume_outbound():
+    """Rearm the saved gateway worker, including tools running in another process."""
+    with _transaction():
+        state = _load_state()
+        outbound = state.get("outbound") or {}
+        if outbound.get("state") == "stopped":
+            state["outbound"] = {field: outbound[field] for field in
+                                 ("member", "engine_host", "engine_port") if field in outbound}
+            state["outbound"]["state"] = "connecting"
+            _save_state(state)
+            return "connecting", True
+        return outbound.get("state", "connecting"), False
+
+
 def status():
     from urllib.parse import urlsplit
     result = pairing_metadata()
@@ -362,14 +390,16 @@ def status():
             state = _load_state()
             register = state.get("register") or {}
             listener = state.get("pairing") or {}
-            member = register.get("member") or listener.get("member")
+            outbound = state.get("outbound") or {}
+            member = register.get("member") or listener.get("member") or outbound.get("member")
             if not member:
                 continue
             address, _ = saved_register(member)
             host = urlsplit(address)
-            result["engines"].append({"member": member, "engine_host": host.hostname,
-                "engine_port": host.port, "listen_port": listener.get("port"),
-                "role": listener.get("role") or ("dial" if address else "listen")})
+            result["engines"].append({"member": member, "engine_host": host.hostname or outbound.get("engine_host"),
+                "engine_port": host.port or outbound.get("engine_port"), "listen_port": listener.get("port"),
+                "outbound": outbound,
+                "role": listener.get("role") or ("dial" if address or outbound.get("engine_host") else "listen")})
     return result
 
 
@@ -392,6 +422,8 @@ def save_register_credential(member: str, credential: str, *, engine_url: str = 
     """Persist confirmed credentials before opening a normal authenticated link."""
     with _transaction():
         state = _load_state()
+        if (state.get("register") or {}).get("credential") != credential:
+            state.pop("outbound", None)
         state['register'] = {'member': member, 'credential': credential, 'saved_at': time.time()}
         if engine_url:
             state['register']['engine_url'] = engine_url.rstrip('/')

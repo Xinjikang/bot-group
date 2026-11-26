@@ -26,7 +26,7 @@ import urllib.parse
 from contextlib import closing
 from websockets.exceptions import ConnectionClosed
 
-from . import db, relay, relay_server
+from . import db, relay, relay_server, relay_retry
 
 logger = logging.getLogger(__name__)
 
@@ -36,21 +36,18 @@ _FAILURES: dict[str, dict] = {}
 _FAILURES_LOCK = threading.Lock()
 
 # 重连退避（指数封顶）与尝试上限：耗尽后 abandoned，等管理员动作。
-BACKOFF_SEQUENCE = (1, 2, 4, 8, 16, 30)
-MAX_ATTEMPTS = 10
+BACKOFF_SEQUENCE = relay_retry.DELAYS
+MAX_ATTEMPTS = len(BACKOFF_SEQUENCE)
 HEARTBEAT_INTERVAL = 30.0
 RECV_TIMEOUT = 15.0
 
 
-def _record_failure(member: str, stage: str, address: str, error: str) -> None:
+def _record_failure(member: str, stage: str, address: str, error: str, *, terminal=False) -> None:
     with _FAILURES_LOCK:
-        first = member not in _FAILURES
         _FAILURES[member] = {
             'stage': stage, 'address': address, 'error': str(error)[:300],
-            'ts': time.time(),
+            'ts': time.time(), 'terminal': terminal,
         }
-    if first:
-        logger.info("relay dial unavailable member=%s stage=%s", member, stage)
 
 
 def dial_failure(member: str) -> dict | None:
@@ -380,7 +377,7 @@ def _authenticate_dial(member: str, endpoint: dict, payload: dict, *, probe=Fals
         ws = ws_connect(uri, ssl=context, open_timeout=8, close_timeout=1, proxy=None)
         stage = "tls"
         if fingerprint and not _verify_fingerprint(ws, fingerprint, member):
-            raise ValueError("证书指纹不匹配")
+            raise PairingProbeError(stage, "证书指纹不匹配")
         stage = "auth"
         ws.send(json.dumps(payload, ensure_ascii=False))
         meta = json.loads(ws.recv(timeout=8))["relay"]
@@ -397,33 +394,32 @@ def _authenticate_dial(member: str, endpoint: dict, payload: dict, *, probe=Fals
             return meta['member'], expiry
         generation = int(meta.get("generation") or 0)
         if meta.get("kind") != "hello_ok" or generation <= 0:
-            raise ValueError("插件未返回有效认证回执")
+            raise PairingProbeError(stage, "插件未返回有效认证回执")
         reported = meta.get("member")
         if (reported or payload.get('activate_pairing')) and reported != payload['member']:
-            raise ValueError("成员上报与配对链接不一致")
+            raise PairingProbeError(stage, "成员上报与配对链接不一致")
         persistent = meta.get('credential') or ''
         if not isinstance(persistent, str) or (persistent and payload.get('activate_pairing')):
-            raise ValueError('插件返回了非预期的连接凭据')
+            raise PairingProbeError(stage, '插件返回了非预期的连接凭据')
         return ws, generation, persistent
     except Exception as exc:  # network, protocol or authentication failure
         if ws is not None:
             ws.close()
-        closed = getattr(exc, "rcvd", None)
-        if getattr(closed, "code", None) == relay_server.CLOSE_BAD_PROTOCOL:
-            reason = relay_server.relay_protocol.refusal(closed.reason)
-            if probe:
-                raise PairingProbeError("protocol", reason) from None
-            _record_failure(member, "protocol", uri, reason)
-            return None
-        if stage == "tcp":
+        refused = relay_retry.rejection(exc)
+        if refused:
+            stage, detail = refused
+        elif stage == "tcp":
             stage = _classify_connect_error(exc)
+        invalid = isinstance(exc, (ValueError, KeyError, TypeError, AttributeError))
         if probe:
-            if isinstance(exc, PairingProbeError):
+            if isinstance(exc, PairingProbeError) and stage != "tls":
                 raise
-            reason = {'tls': 'fingerprint_mismatch', 'auth': 'pairing_refused'}.get(stage, 'unreachable')
+            reason = detail if refused and stage == "protocol" else {
+                'tls': 'fingerprint_mismatch', 'auth': 'pairing_refused'}.get(stage, 'unreachable')
             raise PairingProbeError(stage, reason) from None
-        detail = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
-        _record_failure(member, stage, uri, detail)
+        if not refused:
+            detail = exc.reason if isinstance(exc, PairingProbeError) else relay_retry.transient_reason(stage, exc)
+        _record_failure(member, stage, uri, detail, terminal=bool(refused or invalid))
         return None
 
 
@@ -443,7 +439,7 @@ def connect_endpoint(conn, member, endpoint):
     payload = _hello_payload(conn, member)
     if not payload or not payload["credential"]:
         _record_failure(member, "auth", _endpoint_address(endpoint),
-                        "缺少配对凭据，请重新导入配对链接")
+                        "缺少配对凭据，请重新导入配对链接", terminal=True)
         return None
     has_ticket = bool(endpoint.get('activation_ticket'))
     if has_ticket and not payload.get('pairing_ticket'):
@@ -460,7 +456,7 @@ def connect_endpoint(conn, member, endpoint):
     return ws, remote_generation
 
 
-def dial_once(member: str, *, initial=None) -> bool:
+def dial_once(member: str, *, initial=None, round_state=None) -> bool:
     """Authenticate or reuse a first-join connection, then run the frame loop."""
     conn = db.get_connection()
     try:
@@ -472,7 +468,12 @@ def dial_once(member: str, *, initial=None) -> bool:
         if initial is not None:
             initial[0].close()
         _record_failure(member, "auth", _endpoint_address(endpoint or {}),
-                        "未配置拨号端点或凭据已吊销")
+                        "未配置拨号端点或凭据已吊销", terminal=True)
+        return False
+    if row["direction"] != "dial" and row["switch_target"] != "dial":
+        if initial:
+            initial[0].close()
+        _record_failure(member, "direction", _endpoint_address(endpoint), "当前方向为监听", terminal=True)
         return False
     if initial is None:
         with closing(db.get_connection()) as conn:
@@ -555,19 +556,27 @@ def dial_once(member: str, *, initial=None) -> bool:
                 relay_switch.send_return(conn, member, remote_generation, link.send_text)
         except ConnectionError:
             pass
-    logger.info("relay dial link up member=%s frame_generation=%d db_generation=%d",
-                member, remote_generation, db_generation)
+    if round_state is not None and round_state.reasons:
+        round_state.finish(logger, "relay dial restored", member, "restored")
+    else:
+        logger.info("relay dial link up member=%s frame_generation=%d db_generation=%d",
+                    member, remote_generation, db_generation)
     # 帧循环：收插件帧（heartbeat/mcp_report/frame/mcp_snapshot 响应），
-    # 每 HEARTBEAT_INTERVAL 发心跳；断链返回 False 由退避调度接管。
+    # 每 HEARTBEAT_INTERVAL 发心跳；曾认证的连接断开后另起一轮。
     last_sent = time.time()
     close_reason = "dial connection closed"
+    refused = None
     while True:
         try:
             raw = ws.recv(timeout=RECV_TIMEOUT)
         except TimeoutError:
             raw = None
         except Exception as exc:  # noqa: BLE001 断链
-            close_reason = f"dial receive failed: {type(exc).__name__}"
+            refused = relay_retry.rejection(exc)
+            if refused:
+                stage, reason = refused
+                _record_failure(member, stage, _endpoint_address(endpoint), reason, terminal=True)
+            close_reason = refused[1] if refused else f"dial receive failed: {type(exc).__name__}"
             break
         if raw is not None:
             try:
@@ -587,69 +596,74 @@ def dial_once(member: str, *, initial=None) -> bool:
             except ConnectionError:
                 break
     relay_server._shutdown_link(link, close_reason)
+    if not refused:
+        _record_failure(member, "connection", _endpoint_address(endpoint), close_reason)
     return True
 
 
 def dial_loop(member: str, task: dict, initial=None) -> None:
-    """拨号任务线程：认证成功后循环在 dial_once 内；失败按退避重试，
-    耗尽 MAX_ATTEMPTS 后 abandoned（写切换错误，等管理员重试/切回）。
-    manager node2102：退避等待可被 poke（管理员显式重试）提前唤醒。"""
-    attempt = 0
+    """Run one bounded retry window, resetting its budget after authentication."""
+    window = relay_retry.RetryRound()
     while not task["stop"].is_set():
-        task["attempt"] = attempt
-        if initial is not None:
-            ok = dial_once(member, initial=initial)
-            initial = None
-        else:
-            ok = dial_once(member)
+        window.attempts += 1
+        ok = dial_once(member, initial=initial, round_state=window)
+        initial = None
+        if task["stop"].is_set():
+            return
+        failure = dial_failure(member) or {}
+        with closing(db.get_connection()) as conn:
+            row = relay.read_node(conn, member)
+        if row is None:
+            return
+        target = row["switch_target"] or row["direction"]
+        if target != "dial" and (ok or failure.get("stage") == "direction" or row["direction"] != "dial"):
+            return
         if ok:
-            with closing(db.get_connection()) as conn:
-                row = relay.read_node(conn, member)
-            if row is None or (row["switch_target"] or row["direction"]) != "dial":
-                return
-            attempt = 0  # 曾认证成功：下次断链从最小退避重新开始
-        else:
-            attempt += 1
-            if attempt > MAX_ATTEMPTS:
-                conn = db.get_connection()
-                try:
-                    relay.record_switch_error(conn, member, "拨号重连次数耗尽，等待重试或切回")
-                finally:
-                    conn.close()
+            window = relay_retry.RetryRound()
+            task["attempt"] = 0
+            if not failure.get("terminal"):
+                window.reasons[failure.get("error") or "connection closed"] += 1
+                continue
+        reason = failure.get("error") or "连接中断"
+        if not window.reasons:
+            logger.info("relay dial unavailable member=%s stage=%s reason=%s",
+                        member, failure.get("stage"), reason)
+        window.reasons[reason] += 1
+        terminal = failure.get("terminal")
+        if terminal or window.attempts > MAX_ATTEMPTS:
+            message = reason if terminal else "拨号重连次数耗尽，等待手动重试"
+            with _TASKS_LOCK:
+                if task["stop"].is_set():
+                    return
+                with closing(db.get_connection()) as conn, conn:
+                    conn.execute("UPDATE relay_nodes SET dial_stopped=? WHERE member=? AND removed=0",
+                                 (message, member))
                 task["abandoned"] = True
-                logger.warning("relay dial abandoned member=%s", member)
-                return
-            backoff = BACKOFF_SEQUENCE[min(attempt, len(BACKOFF_SEQUENCE)) - 1]
-            task["poke"].clear()
-            deadline = time.monotonic() + backoff
-            while not task["stop"].is_set() and time.monotonic() < deadline:
-                if task["poke"].wait(timeout=min(1.0, deadline - time.monotonic())):
-                    break  # 管理员显式重试：跳过剩余退避立即再拨
+            window.finish(logger, "relay dial abandoned", member, "rejected" if terminal else "exhausted")
+            return
+        task["attempt"] = window.attempts
+        delay = BACKOFF_SEQUENCE[min(window.attempts, len(BACKOFF_SEQUENCE)) - 1]
+        task["stop"].wait(delay)
     if initial is not None:
         initial[0].close()
-    task["abandoned"] = False
 
 
 def start_dial(member: str, *, initial=None) -> None:
-    """启动/重启该成员的拨号任务。幂等：已连接（active DialLink）不动；
-    存活任务退避中→poke 唤醒立即再拨；abandoned/线程已死→新建任务线程。"""
+    """Start one round for this member; repeated requests reuse the active worker."""
     with _TASKS_LOCK:
         task = _TASKS.get(member)
-        if task is not None and task["thread"] is not None and task["thread"].is_alive():
-            # 在线重复点击维持幂等（不打断已连接通道）；离线/退避中则
-            # 唤醒立即重拨（manager node2102：同方向离线显式重试实际发起）。
-            link = relay_server.active_link(member)
+        if task and not task["abandoned"] and task["thread"].is_alive():
             if initial is not None:
                 initial[0].close()
-            if isinstance(link, DialLink):
-                task["abandoned"] = False
-                return
-            task["abandoned"] = False
-            task["attempt"] = 0
-            task["poke"].set()
             return
+        with closing(db.get_connection()) as conn, conn:
+            conn.execute("UPDATE relay_nodes SET dial_stopped='' WHERE member=? AND dial_stopped!=''", (member,))
+            # Earlier engines kept retry exhaustion in the direction-switch error field.
+            conn.execute("UPDATE relay_nodes SET switch_error='' WHERE member=? AND switch_error=?",
+                         (member, "拨号重连次数耗尽，等待重试或切回"))
+        _clear_failure(member)
         task = {"thread": None, "attempt": 0, "abandoned": False,
-                "stop": threading.Event(), "poke": threading.Event()}
+                "stop": threading.Event()}
         _TASKS[member] = task
         thread = threading.Thread(target=dial_loop, args=(member, task, initial),
                                   name=f"relay-dial-{member}", daemon=True)
@@ -667,6 +681,8 @@ def restore_on_startup() -> None:
         conn.close()
     for row in rows:
         member = row["member"]
+        if row["dial_stopped"] or row["credential_revoked"]:
+            continue
         if row["switch_state"] == "switching":
             if row["direction"] == row["switch_target"]:
                 # 重启清除：切换目标已达成（断链窗口内完成），清切换态

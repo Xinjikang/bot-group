@@ -168,7 +168,7 @@ def main():
             state['switch_posts'].append(deepcopy(body))
             if state['switch_mode'] == 'success':
                 state['node'].update({'direction': target, 'switch_state': '', 'switch_target': '',
-                                      'switch_error': '', 'state': 'online', 'offline_reason': '',
+                                      'switch_error': '', 'dial_stopped': '', 'state': 'online', 'offline_reason': '',
                                       'dial_state': 'connected' if target == 'dial' else 'idle',
                                       'dial_failure': None,
                                       'mcp_verify_state': '', 'mcp_verify_error': '',
@@ -180,7 +180,7 @@ def main():
                                       'mcp_verify_state': '', 'mcp_verify_error': ''})
             elif state['switch_mode'] == 'fail':
                 state['node'].update({'switch_target': target, 'switch_state': 'switching',
-                                      'switch_error': '拨号重连次数耗尽，等待重试或切回',
+                                      'switch_error': '', 'dial_stopped': '证书指纹不匹配',
                                       'state': 'offline', 'offline_reason': 'switch',
                                       'dial_state': 'abandoned',
                                       'mcp_verify_state': '', 'mcp_verify_error': '',
@@ -226,7 +226,8 @@ def main():
         assert opener.evaluate('el => el === document.activeElement')
         opener.click()
         assert page.locator('#relay-direction-listen').get_attribute('aria-pressed') == 'true'
-        assert '等待连接' in page.locator('#relay-direction-status').inner_text()
+        assert '云端 Hermes 管理员私聊' in page.locator('#relay-direction-status').inner_text()
+        assert page.locator('#relay-direction-apply').is_hidden()
         assert '未开启远程监听' in page.locator('#relay-direction-local').text_content()
         page.screenshot(path=str(evidence / 'direction-listen-offline-1280-dark.png'))
 
@@ -316,7 +317,7 @@ def main():
         page.locator('#relay-direction-dial').click()
         page.locator('#relay-direction-apply').click()
         page.wait_for_function('document.querySelector("#relay-direction-failure").textContent.includes("TLS")')
-        assert '切换失败' in page.locator('#relay-direction-status').inner_text()
+        assert '证书指纹不匹配' in page.locator('#relay-direction-status').inner_text()
         assert page.locator('#relay-direction-apply').is_visible()
         assert page.locator('#relay-direction-listen').is_enabled()
         page.screenshot(path=str(evidence / 'direction-failed-1280-dark.png'))

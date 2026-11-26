@@ -289,6 +289,9 @@
     } else if (online) {
       directionBadge.className = 'relay-badge online';
       directionBadge.textContent = window.t('relay_connected');
+    } else if (selected.dial_state === 'abandoned') {
+      directionBadge.className = 'relay-badge revoked';
+      directionBadge.textContent = window.t('relay_dial_stopped');
     } else if (selected.switch_error) {
       directionBadge.className = 'relay-badge revoked';
       directionBadge.textContent = window.t('relay_switch_failed_badge');
@@ -298,9 +301,6 @@
     } else if (selected.dial_state === 'connecting' || selected.dial_state === 'backoff') {
       directionBadge.className = 'relay-badge offline';
       directionBadge.textContent = selected.dial_state === 'backoff' ? window.t('relay_dial_backoff') : window.t('relay_dialing');
-    } else if (selected.dial_state === 'abandoned') {
-      directionBadge.className = 'relay-badge revoked';
-      directionBadge.textContent = window.t('relay_dial_stopped');
     } else if (selected.offline_reason === 'unexpected') {
       directionBadge.className = 'relay-badge offline';
       directionBadge.textContent = window.t('relay_dropped');
@@ -353,6 +353,11 @@
       } else if (mcpFailed) {
         status = window.t('relay_mcp_verify_failed');
       }
+    } else if (selected.dial_state === 'abandoned') {
+      status = selected.dial_stopped || window.t('relay_dial_exhausted');
+      statusError = true;
+    } else if (selected.dial_state === 'backoff' || selected.dial_state === 'connecting') {
+      status = window.t('relay_dialing_hint', [remote || window.t('relay_cloud_listen')]);
     } else if (selected.switch_error) {
       status = window.t('relay_switch_failed', [selected.switch_error]);
       statusError = true;
@@ -360,13 +365,10 @@
       status = window.t('relay_switching_target', [directionLabel(selected.switch_target || direction)]);
     } else if (selected.offline_reason === 'switch') {
       status = window.t('relay_switch_lost', [directionLabel(direction)]);
+    } else if (direction === 'listen') {
+      status = window.t('relay_cloud_retry_hint');
     } else if (selected.offline_reason === 'unexpected') {
       status = window.t('relay_lost_retry');
-      statusError = true;
-    } else if (selected.dial_state === 'backoff' || selected.dial_state === 'connecting') {
-      status = window.t('relay_dialing_hint', [remote || window.t('relay_cloud_listen')]);
-    } else if (selected.dial_state === 'abandoned') {
-      status = window.t('relay_dial_exhausted');
       statusError = true;
     } else {
       status = window.t('relay_current_waiting', [directionLabel(direction)]);
@@ -398,7 +400,8 @@
     directionVerify.textContent = mcpVerifying ? window.t('relay_mcp_verifying') : window.t('relay_reverify_mcp');
     pairingSection.hidden = direction !== 'dial' || (!!endpoint && !replacePairing);
     $('#relay-pairing-replace').hidden = direction !== 'dial' || !endpoint || replacePairing;
-    directionApply.hidden = !pairingSection.hidden || (onlineForView && !switching);
+    directionApply.hidden = !pairingSection.hidden || (onlineForView && !switching)
+      || (direction === 'listen' && serverDirection === 'listen' && !switching);
     directionApply.textContent = direction === serverDirection && !switching ? window.t('relay_retry_connect') : window.t('relay_apply_switch');
     pairingParse.disabled = busy || loading || directionBusy || pairingBusy || !nodesReady;
     pairingConfirm.disabled = busy || loading || directionBusy || pairingBusy || !pendingPairing;
@@ -506,7 +509,7 @@
     directionVerify.disabled = dirLocked || !!dirNode?.credential_revoked
       || mcpVerifyInflight.has(dirNode?.member);
     directionApply.disabled = dirLocked || (dirNode?.switch_state === 'switching'
-      && dirNode.switch_target === (directionView || nodeDirection(dirNode)) && !dirNode.switch_error && !dirNode.dial_failure);
+      && dirNode.switch_target === (directionView || nodeDirection(dirNode)) && !dirNode.switch_error && !dirNode.dial_failure && !dirNode.dial_stopped);
     $('#relay-direction-close').disabled = directionBusy || pairingBusy;
     $('#relay-pairing-replace').disabled = dirLocked;
     pairingUrl.disabled = dirLocked;
@@ -1212,7 +1215,7 @@
   function watchSwitch(member, target, token, generation) {
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     (async () => {
-      for (let attempt = 0; attempt < 60; attempt += 1) {
+      while (directionPanel.open) {
         await sleep(1000);
         if (token !== directionWatch || generation !== epoch || !dialog.open || !allowed()) return;
         const ok = await loadNodes(generation, true);
@@ -1220,6 +1223,8 @@
         const node = nodes.find(item => item.member === member);
         if (!node) return;
         renderDirection();
+        if (node.dial_state === 'abandoned') return;
+        if (node.dial_state === 'connecting' || node.dial_state === 'backoff') continue;
         if (node.switch_state !== 'switching') {
           if (node.state === 'online' && nodeDirection(node) === target) {
             report(directionStatus, window.t('relay_switch_done', [directionLabel(target)]));
@@ -1237,10 +1242,6 @@
           }
           return;
         }
-      }
-      if (token === directionWatch && generation === epoch) {
-        report(directionStatus, window.t('relay_switching_refresh'));
-        renderDirection();
       }
     })();
   }
@@ -1469,6 +1470,10 @@
       renderDirection();
       refreshControls();
       directionPanel.showModal();
+      const node = selectedDirectionNode();
+      if (node && (node.dial_state === 'connecting' || node.dial_state === 'backoff' || node.switch_state === 'switching')) {
+        watchSwitch(node.member, node.switch_target || nodeDirection(node), directionWatch, epoch);
+      }
       maybeVerifyMcp();
       return;
     }

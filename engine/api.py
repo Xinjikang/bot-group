@@ -264,9 +264,11 @@ def relay_nodes_list(identity=Depends(_resolve_identity)):
             'switch_target': r['switch_target'],
             'switch_error': r['switch_error'],
             'offline_reason': relay.offline_reason(conn, r['member']),
-            'dial_state': _dial_state(r['member']),
+            'dial_state': ('abandoned' if r['dial_stopped'] else _dial_state(r['member']))
+                if (r['switch_target'] or r['direction']) == 'dial' else 'idle',
+            'dial_stopped': r['dial_stopped'],
             'dial_endpoint': _dial_endpoint_view(conn, r['member']),
-            'dial_failure': _dial_failure(r['member']),
+            'dial_failure': _dial_failure(r['member']) if (r['switch_target'] or r['direction']) == 'dial' else None,
             # manager node2102：MCP 只读验证（实际受限调用结果，换代作废）
             'mcp_verify_state': r['mcp_verify_state'],
             'mcp_verify_error': r['mcp_verify_error'],

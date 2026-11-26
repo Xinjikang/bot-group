@@ -121,7 +121,7 @@ def _relay_asset_files(root: Path) -> dict[str, Path]:
                 path = Path(cur) / name
                 files[path.relative_to(root).as_posix()] = path
     # engine 最小子集：mcp/server.py 的 `from engine import mcp_http, process_query`
-    for name in ("__init__.py", "mcp_http.py", "process_query.py", "relay_protocol.py"):
+    for name in ("__init__.py", "mcp_http.py", "process_query.py", "relay_protocol.py", "relay_retry.py"):
         files[f"engine/{name}"] = root / "engine" / name
     return files
 
