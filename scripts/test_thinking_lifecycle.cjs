@@ -152,8 +152,8 @@ async function main() {
   await tick();
   const projectBubbles = [...projects.ctx.S.thinkBubbles.values()];
   assert.deepEqual(projectBubbles.map(b => b.reply_message_id), [51, null, null], 'persisted reply belongs only to the original p run');
-  assert.equal(projectBubbles[1].collapsed, false, 'q bubble stays open');
-  assert.equal(projectBubbles[2].collapsed, false, 'later p bubble stays open');
+  assert.equal(projectBubbles[1].collapsed, true, 'q bubble starts folded');
+  assert.equal(projectBubbles[2].collapsed, true, 'later p bubble starts folded');
   projects.ctx.refreshThinkRunsForMessage({sender: 'bot', thread_id: null, message_id: 999});
   assert.equal(projects.requests.length, 0, 'legacy events without execution do not fan out');
   for (const override of [{sender: 'other'}, {project: 'q'}, {thread_id: 42},
@@ -231,7 +231,7 @@ async function main() {
     assert.equal(continued[0].status, 'replied');
     assert.equal(continued[0].collapsed, true, 'the previous reply keeps its folded history');
     assert.equal(continued[1].status, 'thinking');
-    assert.equal(continued[1].collapsed, false);
+    assert.equal(continued[1].collapsed, true);
     assert.equal(continued[1].reply_message_id, null);
     assert.equal(continued[1].parent_id, 90);
     assert.deepEqual(Array.from(continued[1].entries, e => e.id), [3]);
@@ -250,7 +250,7 @@ async function main() {
     legacyLive.ctx.restoreThinkingState();
     const recoveredTail = [...legacyLive.ctx.S.thinkBubbles.values()][1];
     assert.equal(recoveredTail.status, 'thinking', 'old hidden live tail becomes active on refresh');
-    assert.equal(recoveredTail.collapsed, false);
+    assert.equal(recoveredTail.collapsed, true);
     assert.deepEqual(Array.from(recoveredTail.entries, e => e.id), [3]);
     assert.equal([...legacyLive.ctx.S.thinkBubbles.values()][0].entries.length, 1);
 
@@ -263,6 +263,7 @@ async function main() {
     const trailing = harness();
     trailing.ctx.startThinkBubble(wake(thread));
     const reading = [...trailing.ctx.S.thinkBubbles.values()][0];
+    reading.collapsed = false;
     reading.keepOpen = true;
     trailing.requests.shift().resolve({entries: [
       {id: 1, reasoning: 'before reply'}, {id: 2, reply_message_id: 90},
@@ -282,6 +283,7 @@ async function main() {
     const saved = harness(trailing.storage);
     saved.ctx.restoreThinkingState();
     assert.equal(saved.ctx.S.thinkBubbles.size, 1, 'refresh preserves appended cleanup');
+    assert.equal([...saved.ctx.S.thinkBubbles.values()][0].collapsed, false, 'refresh preserves manual expansion');
 
     // Simulate the old persisted layout from the reported screenshot.
     const legacy = JSON.parse(trailing.storage.get('group-engine.thinking.v2'));
@@ -306,11 +308,20 @@ async function main() {
   topic.ctx.startThinkBubble(firstWake);
   topic.requests.shift().resolve({entries: [{id: 1, reasoning: 'read inbox'}], latest_id: 1});
   await tick();
+  const firstBubble = [...topic.ctx.S.thinkBubbles.values()][0];
+  const manuallyOpened = parentId !== null;
+  if (manuallyOpened) Object.assign(firstBubble, {collapsed: false, keepOpen: true});
+  const legacyAutoOpen = JSON.parse(topic.storage.get('group-engine.thinking.v2'));
+  legacyAutoOpen.bubbles[0].collapsed = false;
+  const cached = harness(new Map([['group-engine.thinking.v2', JSON.stringify(legacyAutoOpen)]]));
+  cached.ctx.restoreThinkingState();
+  assert.equal([...cached.ctx.S.thinkBubbles.values()][0].collapsed, true, 'old auto-open default migrates');
   topic.ctx.startThinkBubble({...firstWake, wake_started_at: 125});
   topic.requests.shift().resolve({entries: [{id: 2, reasoning: 'continue thinking'}], latest_id: 2});
   await tick();
   let displayed = topic.ctx.thinkingBubblesForDisplay();
   assert.equal(displayed.length, 1, 'same topic turn appends across wakes');
+  assert.equal(displayed[0].collapsed, !manuallyOpened, 'merged wake respects manual expansion');
   assert.deepEqual(Array.from(displayed[0].entries, e => e.id), [1, 2]);
   assert.equal(topic.ctx.S.thinkBubbles.size, 2, 'collection windows remain separate');
   const current = [...topic.ctx.S.thinkRuns.values()][1];
@@ -321,7 +332,7 @@ async function main() {
   assert.equal(displayed.length, 1);
   assert.equal(displayed[0].reply_message_id, 2326);
   assert.equal(displayed[0].status, 'replied');
-  assert.equal(displayed[0].collapsed, true);
+  assert.equal(displayed[0].collapsed, !manuallyOpened);
   topic.ctx.saveThinkingState();
   const topicRestored = harness(topic.storage);
   vm.runInContext(section('function thinkingBubblesForDisplay()', 'function renderThinkBubble('), topicRestored.ctx);
@@ -329,6 +340,7 @@ async function main() {
   const restoredDisplay = topicRestored.ctx.thinkingBubblesForDisplay();
   assert.equal(restoredDisplay.length, 1, 'reply remains merged after refresh with null or explicit parent');
   assert.equal(restoredDisplay[0].status, 'replied');
+  assert.equal(restoredDisplay[0].collapsed, !manuallyOpened);
   assert.deepEqual(Array.from(restoredDisplay[0].entries, e => e.id), [1, 2]);
   topic.ctx.startThinkBubble({...firstWake, wake_started_at: 150});
   assert.equal(topic.ctx.thinkingBubblesForDisplay().length, 2, 'actual reply ends the merged bubble');

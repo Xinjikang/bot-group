@@ -12,6 +12,52 @@ ROOT = Path(__file__).resolve().parents[1]
 LABEL = '子代理正在执行后台任务'
 
 
+def verify_reading_position(page, gap):
+    result = page.evaluate("""gap => {
+        const box = document.querySelector('#msg-list');
+        const thread_id = S.currentThread;
+        const stamp = id => new Date(Date.UTC(2026, 10, 5, 10, id)).toISOString();
+        const message = id => ({id, project: 'p', thread_id, sender: 'bot', sender_type: 'bot',
+            mentions: '[]', ts: stamp(id), content: 'Message ' + id});
+        S.msgs = Array.from({length: 50}, (_, i) => message(i + 1));
+        renderMessages();
+        box.scrollTop = box.scrollHeight - box.clientHeight - gap;
+        const bounds = box.getBoundingClientRect();
+        const anchor = [...box.querySelectorAll('.msg-content')].find(el => {
+            const rect = el.getBoundingClientRect();
+            return rect.top >= bounds.top && rect.bottom <= bounds.bottom;
+        });
+        const initial = anchor.getBoundingClientRect().top;
+        const offset = () => gap ? anchor.getBoundingClientRect().top - initial
+            : box.scrollHeight - box.clientHeight - box.scrollTop;
+        const offsets = [offset()];
+        const source = {key: 'reading', profile: 'bot', session: 'reading', project: 'p',
+            thread_id, wake_started_at: Date.parse(stamp(2)) / 1000, spawned_at: stamp(2), segment: 0};
+        S.thinkRuns.set(source.key, source);
+        const bubble = createThinkSegment(source);
+        renderThinkBubbles();
+        offsets.push(offset());
+        const panel = box.querySelector('[data-bubble-key="reading:1"]');
+        const height = panel.offsetHeight;
+        bubble.entries.push({id: 1, timestamp: source.wake_started_at, reasoning: 'long reasoning '.repeat(600)});
+        renderThinkBubbles();
+        offsets.push(offset());
+        const folded = height > 0 && panel.offsetHeight === height
+            && !panel.querySelector('.think-bubble-body').offsetHeight;
+        bubble.status = 'inactive';
+        renderThinkBubbles();
+        offsets.push(offset());
+        S.msgs.push(message(51));
+        reconcileExecutionReplies(source, [{message_id: 51, sent_at: source.wake_started_at + 60}]);
+        renderMessages();
+        offsets.push(offset());
+        return {gap, folded, height, offsets, attached: !!box.querySelector('[data-message-id="51"] .think-entry')};
+    }""", gap)
+    assert result['folded'] and result['attached'], result
+    assert all(abs(offset) <= 1 for offset in result['offsets']), result
+    return result
+
+
 def run(evidence):
     execution = dict(profile='bot', project='p', session='bot-p-chat-10', kind='chat',
                      thread_id=10, wake_started_at=100, spawned_at='2026-11-05T12:00:00',
@@ -80,16 +126,23 @@ def run(evidence):
             assert page.locator('.tb-stop').count() == 1
             assert page.locator('.tb-dots-still').count() == 1
             assert '思考中' not in head.inner_text()
-            assert page.locator('.think-bubble-body').is_visible()
+            body = page.locator('.think-bubble-body')
+            toggle = head.locator('.tb-toggle')
+            assert body.is_hidden() and toggle.get_attribute('aria-expanded') == 'false'
+            page.screenshot(path=str(evidence / f'waiting-{kind}-{theme}-{width}.png'))
+            toggle.press('Enter')
+            assert body.is_visible() and toggle.get_attribute('aria-expanded') == 'true'
             assert page.evaluate("""() => {
                 const head = document.querySelector('.think-bubble-head');
                 return head.clientWidth > 240 && head.scrollWidth <= head.clientWidth + 1;
             }"""), 'background status must fit the message column'
-            page.screenshot(path=str(evidence / f'waiting-{kind}-{theme}-{width}.png'))
             page.reload()
             page.wait_for_function('S.thinkRuns.size === 1')
             show_topic(page, theme, width)
             head.filter(has_text=label).wait_for()
+            assert body.is_visible()
+            toggle.click()
+            assert body.is_hidden()
             execution['state'] = 'running'
             page.evaluate('loadThinking()')
             head.filter(has_text='思考中').wait_for()
@@ -104,7 +157,10 @@ def run(evidence):
             page.wait_for_function('[...S.thinkRuns.values()][0].finished')
             assert page.locator('.tb-stop').count() == 0
             assert label not in head.inner_text()
-            results.append({'kind': kind, 'theme': theme, 'width': width, 'result': 'passed'})
+            assert body.is_hidden()
+            viewport = verify_reading_position(page, 32 if theme == 'dark' else 0)
+            results.append({'kind': kind, 'theme': theme, 'width': width,
+                            'viewport': viewport, 'result': 'passed'})
             context.close()
         browser.close()
     (evidence / 'results.json').write_text(json.dumps(results, indent=2), encoding='utf-8')

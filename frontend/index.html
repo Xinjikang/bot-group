@@ -313,6 +313,7 @@ body::before{
   font-size:12px;color:var(--fg-2);border-bottom:1px solid var(--border-soft);
 }
 .think-bubble-head .tb-dots{display:flex;gap:4px}
+.tb-toggle{display:flex;align-items:center;gap:inherit;min-width:0;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:start;cursor:pointer}
 .think-bubble-head .tb-dots span{width:5px;height:5px;border-radius:50%;background:var(--accent);animation:tb 1.2s infinite}
 .think-bubble-head .tb-dots span:nth-child(2){animation-delay:.15s}
 .think-bubble-head .tb-dots span:nth-child(3){animation-delay:.3s}
@@ -2766,16 +2767,25 @@ function messageSelectionActive(box) {
     && selection.getRangeAt(0).intersectsNode(box);
 }
 
+function messageListAtBottom(box) {
+  // scrollTop can be fractional while scrollHeight and clientHeight are rounded.
+  return box.scrollHeight - box.clientHeight - box.scrollTop <= 1;
+}
+
 function captureMessageViewport(box) {
   const bounds = box.getBoundingClientRect();
   const selection = document.getSelection();
-  const focus = selection?.focusNode;
+  const focus = selection?.isCollapsed ? null : selection?.focusNode;
   const selected = focus && box.contains(focus)
     ? (focus.nodeType === 1 ? focus : focus.parentElement)?.closest('.msg-content, .think-bubble') : null;
-  const anchor = selected || [...box.querySelectorAll('.msg-content, .think-bubble')].find(el => {
+  const visible = el => {
     const rect = el.getBoundingClientRect();
     return rect.bottom > rect.top && rect.bottom > bounds.top && rect.top < bounds.bottom;
-  });
+  };
+  // A live bubble can move to its reply or disappear while a message stays in view.
+  const anchor = selected && visible(selected) ? selected
+    : [...box.querySelectorAll('.msg-content')].find(visible)
+      || [...box.querySelectorAll('.think-bubble')].find(visible);
   return anchor ? {element: anchor, top: anchor.getBoundingClientRect().top} : null;
 }
 
@@ -2807,9 +2817,7 @@ function renderMessages() {
     direction: focusedReply.selectionDirection, top: focusedReply.scrollTop,
   } : null;
   if (focusedReply) focusedReply.setAttribute("data-refresh-focus", "");
-  // 阅读历史消息时保留滚动位置；
-  // 只有本来贴底（距底 <80px）才跟随新消息滚到底
-  const stickToBottom = (box.scrollHeight - box.scrollTop - box.clientHeight) < 80
+  const stickToBottom = messageListAtBottom(box)
     && !messageSelectionActive(box) && !box.matches(':active');
   const scrollTop = box.scrollTop;
   const viewport = !stickToBottom && !focusedReply && box.messageView === S.messageView
@@ -4539,7 +4547,7 @@ function createThinkSegment(source) {
     thread_id: source.thread_id ?? null, project: source.project,
     spawned_at: source.spawned_at || new Date().toISOString(),
     parent_id: source.segment === 1 ? source.parent_id ?? null : source.lastReplyId ?? null,
-    entries: [], collapsed: false, timer: null,
+    entries: [], collapsed: true, timer: null,
     status: "thinking",
     reply_message_id: null, run: Symbol(), pollingRun: null,
     scrollPosition: { top: 0, left: 0 },
@@ -4830,10 +4838,15 @@ function reconcileExecutionReplies(source, replies) {
   }
   const ended = source.finished || source.processEndedAt != null || source.stopped;
   if (ended) groups.at(-1).entries.push(...tailEntries.splice(0));
-  const previousTail = old.find(b => b.reply_message_id == null);
+  let previousTail = old.find(b => b.reply_message_id == null);
+  const needsLiveTail = !ended && (tailEntries.length || source.state === "waiting_delegation");
   const keep = new Set();
   for (const {reply, entries: content} of groups) {
     let bubble = old.find(b => b.reply_message_id === reply.message_id);
+    if (!bubble && previousTail && !needsLiveTail) {
+      bubble = previousTail;
+      previousTail = null;
+    }
     if (!bubble) bubble = createThinkSegment(source);
     bubble.entries = content;
     bubble.reply_message_id = reply.message_id;
@@ -4843,7 +4856,7 @@ function reconcileExecutionReplies(source, replies) {
     source.currentKey = bubble.key;
     source.lastReplyId = reply.message_id;
   }
-  if (!ended && (tailEntries.length || source.state === "waiting_delegation")) {
+  if (needsLiveTail) {
     const tail = previousTail || createThinkSegment(source);
     tail.entries = tailEntries;
     tail.status = executionStallLabel(source) ? "stalled" : "thinking";
@@ -4893,8 +4906,9 @@ function renderThinkBubbles() {
     renderMessages();
   } else {
     const bubbles = new Map(thinkingBubblesForDisplay().map(b => [b.key, b]));
-    const stickToBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80
-      && !messageSelectionActive(box) && !box.matches(':active') && !box.contains(document.activeElement);
+    const stickToBottom = messageListAtBottom(box)
+      && !messageSelectionActive(box) && !box.matches(':active')
+      && !box.querySelector('.tr-text:focus');
     const top = box.scrollTop;
     const viewport = stickToBottom ? null : captureMessageViewport(box);
     captureThinkingScroll(box);
@@ -5002,7 +5016,8 @@ function restoreThinkingState() {
     }
     for (const bubble of saved.bubbles) {
       if (!S.thinkRuns.has(bubble.sourceKey) || !Array.isArray(bubble.entries)) continue;
-      S.thinkBubbles.set(bubble.key, {...bubble, timer: null, run: Symbol(), pollingRun: null});
+      S.thinkBubbles.set(bubble.key, {...bubble, collapsed: !bubble.keepOpen,
+        timer: null, run: Symbol(), pollingRun: null});
     }
     // Recover live tails saved by the old collector inside a replied bubble.
     for (const source of S.thinkRuns.values()) {
@@ -5072,6 +5087,7 @@ function thinkingBubblesForDisplay() {
       displayed = {...bubble, key: prior.key, run: prior.run,
         spawned_at: prior.spawned_at, parent_id: prior.parent_id,
         scrollPosition: prior.scrollPosition,
+        collapsed: prior.collapsed && bubble.collapsed,
         entries: [...entries.values()].sort((a, b) => a.id - b.id),
         displayKeys: [...prior.displayKeys, bubble.key]};
       result[result.indexOf(prior)] = displayed;
@@ -5116,10 +5132,10 @@ function renderThinkBubble(bubble, attached = false) {
   const dots = bubble.status !== "thinking" || backgroundWaiting
     ? '<span class="tb-dots tb-dots-still"><span></span><span></span><span></span></span>'
     : '<span class="tb-dots"><span></span><span></span><span></span></span>';
-  head.innerHTML = `<span class="tb-caret">${bubble.collapsed ? "▸" : "▾"}</span>
+  head.innerHTML = `<button type="button" class="tb-toggle" aria-expanded="${!bubble.collapsed}"><span class="tb-caret" aria-hidden="true">▾</span>
     ${dots}
     <span class="tb-name">${esc(name)}</span>
-    <span class="tb-state">${state}</span>
+    <span class="tb-state">${state}</span></button>
     ${bubble.status === "thinking" || stalled ? `<button type="button" class="tb-stop" title="${t("stop_member", [esc(name)])}" aria-label="${t("stop_member", [esc(name)])}">
       <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8.5" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="6.5" y="6.5" width="7" height="7" rx=".5" fill="currentColor"/></svg><span class="tb-stop-label">${t("stop_bot")}</span>
     </button>` : ""}`;
@@ -5145,7 +5161,7 @@ function renderThinkBubble(bubble, attached = false) {
     }
   }
   if (!attached) head.addEventListener("keydown", event => {
-    if (event.target.closest?.(".tb-stop")) return;
+    if (event.target.closest?.("button")) return;
     if (event.key === "Enter" || event.key === " ") { event.preventDefault(); head.click(); }
   });
   head.querySelector(".tb-stop")?.addEventListener("click", event => {
