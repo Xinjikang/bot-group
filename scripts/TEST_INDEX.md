@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+新建与导入项目的 Git 编辑器配置使用项目 Python 运行 `-X utf8 -B -m unittest scripts.test_project_import_supplement scripts.test_project_setup`。临时项目目录应位于 Git 仓库外。用例验证导入后空消息提交失败、显式消息提交成功、新建项目的成员 worktree 继承配置，以及已有仓库保留自定义编辑器。
+
 双向重连窗口使用项目 Python 运行 `-X utf8 -B -m unittest scripts.test_relay_retry scripts.test_relay_plugin scripts.test_relay_dialer scripts.test_plugin_listen_pairing scripts.test_relay_multiple_engines`。隔离数据库和配对目录、模拟时钟及随机回环端口覆盖 25 次拨号、601 秒固定等待、认证超时和明确拒绝、重启后停拨、私聊恢复、节点页重试和方向切换。运行 `-m scripts.test_relay_direction_browser --evidence <隔离报告目录>` 验证本机停止原因、同方向手动重试和云端私聊提示，节点卡片复用下文的 `test_relay_nodes_browser` 命令。 `scripts.test_relay_retry` 另覆盖适配器退出、工作进程异常退出、独立进程私聊请求、恢复后复用连接，以及已认证链路掉线时的首次原因和耗尽汇总。
 
 方向切换的两个时序用例可单独运行 `-X utf8 -B -m unittest scripts.test_plugin_listen_pairing.FirstJoinTests.test_gateway_direction_roundtrip scripts.test_plugin_listen_pairing.FirstJoinTests.test_gateway_restores_listen_only_pairing`。用例在插件完成出站认证并关闭原监听后模拟端口占用，监听恢复用例在断开原连接前安装认证观察点，配对预览前通过临时证书和 WebSocket Ping/Pong 确认回环监听已就绪。检查组合稳定性时，按上文五模块顺序启动三个独立进程，依次跑完，逐轮保存原始输出。可加 `-W default::ResourceWarning` 检查资源回收。

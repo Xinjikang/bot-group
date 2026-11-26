@@ -51,10 +51,13 @@ def initialize(publication, branch=None):
         empty.mkdir()
         try:
             result = run(staging, 'init', '--template=' + str(empty), *(['-b', branch] if branch else []))
+            if result.returncode:
+                raise HTTPException(409, '本地 Git 初始化失败，请检查 Git 配置')
+            result = run(staging, 'config', '--local', 'core.editor', 'true')
         except subprocess.TimeoutExpired as exc:
             raise HTTPException(409, 'Git 初始化超时，请重新预览') from exc
         if result.returncode:
-            raise HTTPException(409, '本地 Git 初始化失败，请检查 Git 配置')
+            raise HTTPException(409, '写入本地 Git 配置 core.editor 失败，请重新预览')
         target = files._safe(root / '.git')
         target.mkdir()
         publication.directories.append(target)

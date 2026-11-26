@@ -432,9 +432,20 @@ class SupplementTests(unittest.TestCase):
         self.assertEqual(supplements.git.run(self.root, 'remote').stdout.strip(), '')
         self.assertEqual(supplements.git.run(self.root, 'ls-files').stdout.strip(), '')
         self.assertIn('.env', (self.root / '.gitignore').read_text())
+        git = supplements.git.run
+        self.assertEqual(git(self.root, 'config', '--local', '--get', 'core.editor').stdout.strip(), 'true')
+        env = {'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1', 'LC_ALL': 'C'}
+        git(self.root, 'add', 'code.bin', env=env).check_returncode()
+        commit = ('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit')
+        missing_message = git(self.root, *commit, env=env)
+        self.assertNotEqual(missing_message.returncode, 0)
+        self.assertIn('empty commit message', missing_message.stderr)
+        self.assertFalse(supplements.git.inspect(self.root)['has_commit'])
+        git(self.root, *commit, '-m', 'Import baseline', env=env).check_returncode()
 
     def test_existing_git_and_gitignore_preserved(self):
         supplements.git.run(self.root, 'init')
+        supplements.git.run(self.root, 'config', '--local', 'core.editor', 'custom-editor').check_returncode()
         (self.root / '.gitignore').write_bytes(b'# custom\r\nprivate/\r\n')
         before = fingerprints(self.root)
         body, plan = self.reviewed(self.configured())

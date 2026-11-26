@@ -72,6 +72,7 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         for row in rows:
             self.assertEqual(setup.checked(row['path'], 'rev-parse', 'HEAD'), head)
+            self.assertEqual(setup.checked(row['path'], 'config', '--get', 'core.editor'), 'true')
         self.assertEqual(setup.checked(root, 'remote'), '')
         self.assertTrue((root / 'reports' / 'INDEX.md').is_file())
         self.assertFalse(setup.checked(root, 'ls-files', '--', 'reports'))
