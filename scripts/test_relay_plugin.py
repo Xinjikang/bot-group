@@ -78,7 +78,25 @@ MEMBER = "remote1"
 CREDENTIAL = "test-relay-credential"
 
 
-class FakeEngine:
+class _LoopbackServer:
+    def _serve(self):
+        asyncio.run(self._main())
+
+    def start(self):
+        self._thread.start()
+        if not self._ready.wait(timeout=10):
+            raise RuntimeError(f"{type(self).__name__} failed to start")
+        return self
+
+    def stop(self):
+        if self._thread.is_alive():
+            self._loop.call_soon_threadsafe(self._stop_event.set)
+            self._thread.join(timeout=10)
+            if self._thread.is_alive():
+                raise TimeoutError(f"{type(self).__name__} failed to stop")
+
+
+class FakeEngine(_LoopbackServer):
     """本地 websockets 模拟引擎 /relay/ws 服务端（可向插件主动发帧）。"""
 
     def __init__(self, *, reject_code=None):
@@ -87,7 +105,7 @@ class FakeEngine:
         self.reject_code = reject_code
         self._outbound = asyncio.Queue()
         self._clients = []
-        self._loop = asyncio.new_event_loop()
+        self._loop = None
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._ready = threading.Event()
         self.host = "127.0.0.1"
@@ -120,8 +138,10 @@ class FakeEngine:
             except Exception:
                 sender_task.cancel()
                 receiver_task.cancel()
+                await asyncio.gather(sender_task, receiver_task, return_exceptions=True)
 
         async def main():
+            self._loop = asyncio.get_running_loop()
             async with ws_async.serve(handler, self.host, 0) as server:
                 self.port = server.sockets[0].getsockname()[1]
                 self._ready.set()
@@ -129,25 +149,6 @@ class FakeEngine:
 
         self._stop_event = asyncio.Event()
         self._main = main
-
-    def _serve(self):
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._main())
-
-    def start(self):
-        self._thread.start()
-        if not self._ready.wait(timeout=10):
-            raise RuntimeError("fake engine failed to start")
-        return self
-
-    def stop(self):
-        for client in list(self._clients):
-            try:
-                asyncio.run_coroutine_threadsafe(client.close(), self._loop)
-            except Exception:
-                pass
-        self._loop.call_soon_threadsafe(self._stop_event.set)
-        self._thread.join(timeout=10)
 
     def send(self, envelope: dict) -> None:
         """引擎向插件发帧。"""
@@ -159,7 +160,7 @@ class FakeEngine:
         return f"ws://{self.host}:{self.port}/relay/ws"
 
 
-class FakeGateway:
+class FakeGateway(_LoopbackServer):
     """本地 websockets 模拟本机 gateway /api/ws（subprotocol 票据校验）。"""
 
     def __init__(self):
@@ -168,7 +169,7 @@ class FakeGateway:
         self.subprotocols = []
         self._outbound = asyncio.Queue()
         self._clients = []
-        self._loop = asyncio.new_event_loop()
+        self._loop = None
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._ready = threading.Event()
         self.host = "127.0.0.1"
@@ -195,8 +196,10 @@ class FakeGateway:
             except Exception:
                 sender_task.cancel()
                 receiver_task.cancel()
+                await asyncio.gather(sender_task, receiver_task, return_exceptions=True)
 
         async def main():
+            self._loop = asyncio.get_running_loop()
             async with ws_async.serve(handler, self.host, 0,
                                       subprotocols=["hermes-gateway-v1"]) as server:
                 self.port = server.sockets[0].getsockname()[1]
@@ -205,20 +208,6 @@ class FakeGateway:
 
         self._stop_event = asyncio.Event()
         self._main = main
-
-    def _serve(self):
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._main())
-
-    def start(self):
-        self._thread.start()
-        if not self._ready.wait(timeout=10):
-            raise RuntimeError("fake gateway failed to start")
-        return self
-
-    def stop(self):
-        self._loop.call_soon_threadsafe(self._stop_event.set)
-        self._thread.join(timeout=10)
 
     def send_event(self, frame: dict) -> None:
         """本机 gateway 向插件主动发事件帧。"""

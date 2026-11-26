@@ -155,6 +155,10 @@ class ListenServer:
         ssl_context = None
         if self.scheme == "wss":
             ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            # Each dial uses a fresh TLS context. Post-handshake session tickets
+            # can stall the WebSocket upgrade on the synchronous TLS transport.
+            if ssl.HAS_TLSv1_3:
+                ssl_context.num_tickets = 0
             ssl_context.load_cert_chain(self.cert_path, self.key_path)
         try:
             # 绑定失败（地址不可用/端口占用）抛异常：保持原状，不残留监听
@@ -491,10 +495,12 @@ class ListenServer:
                 proc.stdin.close()
             except Exception:  # noqa: BLE001
                 pass
+            proc.stdout.close()
             try:
                 proc.wait(timeout=10)
-            except Exception:  # noqa: BLE001
+            except subprocess.TimeoutExpired:
                 proc.kill()
+                proc.wait()
         if reply.get("error"):
             return 502, json.dumps({"error": str(reply["error"])[:500]},
                                    ensure_ascii=False)

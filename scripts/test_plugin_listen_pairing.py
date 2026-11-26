@@ -462,8 +462,10 @@ class DirectionBDialTests(unittest.TestCase):
                 self.end_headers()
                 self.wfile.write(body)
 
-        api_server = ThreadingHTTPServer(("127.0.0.1", 0), EngineAPI)
-        threading.Thread(target=api_server.serve_forever, daemon=True).start()
+        api_server = self.enterContext(ThreadingHTTPServer(("127.0.0.1", 0), EngineAPI))
+        worker = threading.Thread(target=api_server.serve_forever, daemon=True)
+        worker.start()
+        self.addCleanup(worker.join)
         self.addCleanup(api_server.shutdown)
         config_mod = __import__("engine.config", fromlist=["config"])
         with patch.object(config_mod, "host", return_value="127.0.0.1"), \
@@ -855,9 +857,10 @@ class DirectionBDialTests(unittest.TestCase):
                 self.end_headers()
                 self.wfile.write(body)
 
-        api = ThreadingHTTPServer(("127.0.0.1", 0), EngineAPI)
+        api = self.enterContext(ThreadingHTTPServer(("127.0.0.1", 0), EngineAPI))
         api_thread = threading.Thread(target=api.serve_forever, daemon=True)
         api_thread.start()
+        self.addCleanup(api_thread.join)
         self.addCleanup(api.shutdown)
         fake_ws = _SyncWs()
         link = relay_dialer.DialLink(REMOTE, fake_ws, 1, "203.0.113.9")
@@ -1622,6 +1625,22 @@ class FirstJoinTests(unittest.TestCase):
         self._client = None
         self._engine = None
 
+    def _start_pairing_listener(self, **options):
+        import ssl
+        from websockets.sync.client import connect
+
+        result = self.plg["listen"].listen_serve(**options)
+        server = result["_server"]
+        self.addCleanup(server.stop)
+        context = ssl.create_default_context(cafile=server.cert_path)
+        context.check_hostname = False
+        uri = f"wss://{server.address}:{server.bound_port()}"
+        with connect(uri, ssl=context, proxy=None, open_timeout=8, close_timeout=1) as ws:
+            self.assertTrue(ws.ping().wait(8), "pairing listener did not answer a ping")
+            if ws.socket.version() == "TLSv1.3":
+                self.assertFalse(ws.socket.session.has_ticket)
+        return result
+
     def _api_client(self):
         """懒起真实 uvicorn 隔离引擎（API 路由 + /relay/ws）——邀请方向
         需要真实 WS 端点供插件 RelayClient 连接。"""
@@ -1672,7 +1691,8 @@ class FirstJoinTests(unittest.TestCase):
             with urllib.request.urlopen(req, timeout=15) as resp:
                 return resp.status, json.loads(resp.read())
         except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read() or b"{}")
+            with exc:
+                return exc.code, json.loads(exc.read() or b"{}")
 
     def _confirm_invite(self, issued, member):
         import urllib.request
@@ -1713,11 +1733,10 @@ class FirstJoinTests(unittest.TestCase):
             with patch.object(plg_listen, "STATE_DIR", Path(tmp_dir)), \
                     patch.object(plg_listen, "validate_bind_address",
                                  return_value="127.0.0.1"):
-                result = plg_listen.listen_serve(
+                result = self._start_pairing_listener(
                     address="127.0.0.1", port=0, advertise="127.0.0.1",
                     member="remoteA", home=os.environ.get("TMPDIR", "."),
                     tls=True, mcp_entry="")
-            self.addCleanup(result["_server"].stop)
             pairing_url = result["pairing_url"]
         self.assertIn("member=remoteA", pairing_url,
                       "配对链接必须携带远端实际成员（req#175 验收 6）")
@@ -1773,9 +1792,8 @@ class FirstJoinTests(unittest.TestCase):
         plg_listen = self.plg['listen']
         with patch.object(plg_listen, 'STATE_DIR', Path(self._tmpdir.name)), \
                 patch.object(plg_listen, 'validate_bind_address', return_value='127.0.0.1'):
-            result = plg_listen.listen_serve(address='127.0.0.1', port=0, advertise='127.0.0.1',
+            result = self._start_pairing_listener(address='127.0.0.1', port=0, advertise='127.0.0.1',
                 member='remoteB', home=self._tmpdir.name, tls=True, mcp_entry='')
-        self.addCleanup(result['_server'].stop)
         url = result['pairing_url']
         token = parse_qs(urlsplit(url).query)['pairing_token'][0]
         body = {'pairing_url': url}
@@ -1815,9 +1833,8 @@ class FirstJoinTests(unittest.TestCase):
         plg_listen = self.plg['listen']
         with patch.object(plg_listen, 'STATE_DIR', Path(self._tmpdir.name)), \
                 patch.object(plg_listen, 'validate_bind_address', return_value='127.0.0.1'):
-            result = plg_listen.listen_serve(address='127.0.0.1', port=0, advertise='127.0.0.1',
+            result = self._start_pairing_listener(address='127.0.0.1', port=0, advertise='127.0.0.1',
                 member='remoteB', home=self._tmpdir.name, tls=True, mcp_entry='')
-        self.addCleanup(result['_server'].stop)
         body = {'pairing_url': result['pairing_url']}
 
         def prepare():
@@ -1863,9 +1880,8 @@ class FirstJoinTests(unittest.TestCase):
         plg_listen = self.plg['listen']
         with patch.object(plg_listen, 'STATE_DIR', Path(self._tmpdir.name)), \
                 patch.object(plg_listen, 'validate_bind_address', return_value='127.0.0.1'):
-            result = plg_listen.listen_serve(address='127.0.0.1', port=0, advertise='127.0.0.1',
+            result = self._start_pairing_listener(address='127.0.0.1', port=0, advertise='127.0.0.1',
                 member='remoteB', home=self._tmpdir.name, tls=True, mcp_entry='')
-        self.addCleanup(result['_server'].stop)
         body = {'pairing_url': result['pairing_url']}
         status, data = self._admin_post('/relay/pairings/preview', body)
         self.assertEqual(status, 200, data)
@@ -1953,9 +1969,8 @@ class FirstJoinTests(unittest.TestCase):
         plg_listen, pairing = self.plg['listen'], self.plg['pairing']
         with patch.object(plg_listen, 'STATE_DIR', Path(self._tmpdir.name)), \
                 patch.object(plg_listen, 'validate_bind_address', return_value='127.0.0.1'):
-            result = plg_listen.listen_serve(address='127.0.0.1', port=0, advertise='127.0.0.1',
+            result = self._start_pairing_listener(address='127.0.0.1', port=0, advertise='127.0.0.1',
                 member='remoteB', home=self._tmpdir.name, tls=True, mcp_entry='')
-        self.addCleanup(result['_server'].stop)
         authenticate = relay_dialer._authenticate_dial
         redeemed = []
 
@@ -2480,15 +2495,32 @@ class FirstJoinTests(unittest.TestCase):
                 patch.object(config, "_env", return_value=""), \
                 patch.object(listen, "STATE_DIR", Path(self._tmpdir.name)), \
                 patch.object(listen, "validate_bind_address", return_value="127.0.0.1"):
-            original = listen.listen_serve(address="127.0.0.1", port=0, member=member, no_proxy=True)
-            self.addCleanup(original["_server"].stop)
+            original = self._start_pairing_listener(address="127.0.0.1", port=0, member=member, no_proxy=True)
             body = {"pairing_url": original["pairing_url"]}
             status, preview = self._admin_post("/relay/pairings/preview", body)
             self.assertEqual(status, 200, preview)
             status, view = self._admin_post(f"/relay/pairings/{preview['pairing_id']}/confirm", body)
             self.assertEqual(status, 200, view)
             self.assertTrue(self._wait_dial_connected(node))
-            original["_server"].stop()
+            authenticated = threading.Event()
+            publish = threading.Event()
+            connect_endpoint = relay_dialer.connect_endpoint
+            original_closed = threading.Event()
+
+            def hold_publication(*args):
+                if not original_closed.wait(8):
+                    raise TimeoutError("original listener did not shut down")
+                result = connect_endpoint(*args)
+                if result:
+                    authenticated.set()
+                    if not publish.wait(8):
+                        raise TimeoutError("test handoff did not release authenticated connection")
+                return result
+            self.enterContext(patch.object(relay_dialer, "connect_endpoint", side_effect=hold_publication))
+            try:
+                original["_server"].stop()
+            finally:
+                original_closed.set()
             self.assertEqual(pairing.saved_register(member), ("", ""))
             # Simulate the earlier on-disk format with no role or bind metadata.
             state = pairing._load_state()
@@ -2498,17 +2530,6 @@ class FirstJoinTests(unittest.TestCase):
             cfg = config.load(SimpleNamespace(extra={"home": self._tmpdir.name}))
             self.assertEqual(cfg.engine_url, "")
             client = self._load_relay_module().RelayClient(cfg)
-            authenticated = threading.Event()
-            publish = threading.Event()
-            connect_endpoint = relay_dialer.connect_endpoint
-            def hold_publication(*args):
-                result = connect_endpoint(*args)
-                if result:
-                    authenticated.set()
-                    if not publish.wait(8):
-                        raise TimeoutError("test handoff did not release authenticated connection")
-                return result
-            self.enterContext(patch.object(relay_dialer, "connect_endpoint", side_effect=hold_publication))
             client.start()
             try:
                 self.assertTrue(authenticated.wait(15))
@@ -2542,7 +2563,13 @@ class FirstJoinTests(unittest.TestCase):
             setup = listen.listen_serve(address="127.0.0.1", port=0, member=member, no_proxy=True)
             setup["_server"].stop()
             token = pairing.issue_persistent(member)
-            client = plugin.RelayClient(cfg)
+            outbound_ready = threading.Event()
+
+            def on_status(state):
+                if state == "online":
+                    outbound_ready.set()
+
+            client = plugin.RelayClient(cfg, on_status=on_status)
             client.start()
             try:
                 self._confirm_invite(invite, member)
@@ -2552,6 +2579,8 @@ class FirstJoinTests(unittest.TestCase):
                         tls=True, fingerprint=setup["fingerprint"], pairing_token=token))
                 import socket
                 old = relay_server.active_link(node)
+                self.assertTrue(outbound_ready.wait(15), "plugin did not finish closing its listener")
+                self.assertIsNone(client._listener)
                 with socket.socket() as occupied:
                     occupied.bind(("127.0.0.1", setup["port"]))
                     status, body = self._admin_post(f"/relay/nodes/{node}/switch", {"direction": "dial"})
@@ -2629,11 +2658,10 @@ class FirstJoinTests(unittest.TestCase):
             with patch.object(plg_listen, "STATE_DIR", Path(tmp_dir)), \
                     patch.object(plg_listen, "validate_bind_address",
                                  return_value="127.0.0.1"):
-                result = plg_listen.listen_serve(
+                result = self._start_pairing_listener(
                     address="127.0.0.1", port=0, advertise="127.0.0.1",
                     member="remoteB", home=os.environ.get("TMPDIR", "."),
                     tls=True, mcp_entry="")
-            self.addCleanup(result["_server"].stop)
             body = {'pairing_url': result['pairing_url']}
             status, preview = self._admin_post('/relay/pairings/preview', body)
             self.assertEqual(status, 200, preview)
@@ -2740,8 +2768,8 @@ class FirstJoinTests(unittest.TestCase):
         port = server.socket.getsockname()[1]
         worker = threading.Thread(target=server.serve_forever, daemon=True)
         worker.start()
-        self.addCleanup(server.shutdown)
         self.addCleanup(worker.join, 2)
+        self.addCleanup(server.shutdown)
         conn = db.get_connection()
         try:
             relay.register_node(conn, REMOTE, CREDENTIAL)
