@@ -104,7 +104,6 @@ def bot_group_listen(args: dict, **kwargs) -> str:
             port=int(args.get("port") or 0),
             advertise=str(args.get("advertise") or ""),
             engine_url=str(args.get("engine_url") or ""),
-            tls=not bool(args.get("no_tls")),
             proxy_port=int(args.get("proxy_port") or 0),
             # 私聊上下文：链接绝不进入对话历史——写 0600 文件
             link_to_file=True)
@@ -130,11 +129,15 @@ def bot_group_register(args: dict, **kwargs) -> str:
               or os.environ.get("BOT_GROUP_RELAY_MEMBER") or relay_config.host_member())
     if not engine_url or not member or not (credential or invite):
         return _tool_result(False, "需要 engine_url/member 与 credential 或 invite")
+    try:
+        relay_config.ws_url(engine_url)
+    except ValueError as exc:
+        return _tool_result(False, str(exc))
     from . import relay as relay_mod
     cfg = relay_config.RelayConfig(
         engine_url=engine_url, member=member, credential=credential,
         invite=invite, mcp_python="",
-        home=relay_config.host_home())
+        home=relay_config.host_home(), fingerprint=args.get('fingerprint') or os.environ.get('BOT_GROUP_RELAY_FINGERPRINT', ''))
     from . import pairing
     peer = pairing.select_peer(member, engine_url=engine_url)
     client = relay_mod.RelayClient(cfg, peer=peer, follow_saved=False)
@@ -172,12 +175,12 @@ def register_tools(ctx) -> None:
          {"address": {"type": "string", "description": "绑定的本机网卡单播地址"},
           "port": {"type": "integer", "description": "监听端口"},
           "advertise": {"type": "string", "description": "对端可达地址/域名（可选）"},
-          "engine_url": {"type": "string", "description": "为已注册引擎准备反向监听时指定其地址"},
-          "no_tls": {"type": "boolean", "description": "禁用 TLS（仅隔离测试）"}},
+          "engine_url": {"type": "string", "description": "为已注册引擎准备反向监听时指定其地址"}},
          ["address", "port"]),
         ("bot_group_register", bot_group_register,
-         "bot-group 方向 A 注册：连引擎 WS 端点（复用 #316 出站链路）",
-         {"engine_url": {"type": "string", "description": "引擎地址（可选）"},
+         "bot-group 方向 A 注册：通过 WSS 向引擎注册",
+         {"engine_url": {"type": "string", "description": "引擎 HTTPS 地址"},
+          "fingerprint": {"type": "string", "description": "办公机邀请提供的证书指纹"},
           "member": {"type": "string", "description": "成员名（可选）"},
           "credential": {"type": "string", "description": "已有节点凭据（可选）"},
           "invite": {"type": "string", "description": "首次接入的一次性邀请（可选）"}},

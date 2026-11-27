@@ -4,6 +4,8 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import os
+import ssl
 import threading
 import uuid
 
@@ -15,8 +17,19 @@ _BACKOFF = (1, 2, 4, 8)
 BUDGET = 30.0
 
 
+def tls_options():
+    pem = os.environ.get('GROUP_ENGINE_TLS_CERT')
+    if not pem:
+        return {}
+    # The authenticated relay supplies this listener's unique self-signed leaf.
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.load_verify_locations(cadata=pem)
+    context.check_hostname = False
+    return {'verify': context, 'trust_env': False}
+
+
 async def _send(method, url, *, headers, body=None, params=None):
-    async with httpx.AsyncClient(timeout=BUDGET, follow_redirects=False) as client:
+    async with httpx.AsyncClient(timeout=BUDGET, follow_redirects=False, **tls_options()) as client:
         return await client.request(method, url, headers=headers, json=body, params=params)
 
 

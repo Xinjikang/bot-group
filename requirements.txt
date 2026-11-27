@@ -1,4 +1,5 @@
 fastapi>=0.110
+cryptography>=43  # persistent TLS identity for the remote relay listener
 psutil>=7.2.2,<8
 python-dotenv>=1.2,<2  # parse provider credentials without evaluating source code
 tomlkit>=0.13,<1  # preserve Codex config comments and unrelated fields

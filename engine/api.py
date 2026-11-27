@@ -422,7 +422,8 @@ def relay_node_renewal(member: str, identity=Depends(_resolve_identity)):
 
 def _issue_relay_invitation(identity, renew_member=None):
     _admin_only(identity, 'relay 邀请签发仅限管理员')
-    from . import relay, listen_control, config
+    from . import relay, listen_control, config, relay_certificate
+    fingerprint = relay_certificate.fingerprint()
     conn = db.get_connection()
     try:
         issued = relay.issue_invitation(conn, renew_member=renew_member)
@@ -434,7 +435,8 @@ def _issue_relay_invitation(identity, renew_member=None):
     address = listen_address or "127.0.0.1"
     host = f'[{address}]' if ':' in address else address
     return JSONResponse({'invite_token': issued['invite_token'], 'pairing_id': issued['pairing_id'],
-                         'expires_at': issued['expires_at'], 'engine_url': f"http://{host}:{config.port()}",
+                         'expires_at': issued['expires_at'], 'engine_url': f"https://{host}:{config.port()}",
+                         'fingerprint': fingerprint,
                          'listen_configured': bool(listen_address)}, headers={'Cache-Control': 'no-store'})
 
 

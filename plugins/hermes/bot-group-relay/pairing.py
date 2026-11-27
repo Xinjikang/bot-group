@@ -63,6 +63,10 @@ def peer_ids():
     return ["", *(p.parent.name for p in sorted((base.parent / "peers").glob("*/" + base.name)))]
 
 
+def upgrades_url(old, new):
+    return old.startswith('http://') and new.rstrip('/') == 'https://' + old[7:].rstrip('/')
+
+
 def select_peer(member, *, engine_url="", port=None, reserve=True):
     """Keep a legacy binding in place and allocate independent state for new peers."""
     url = engine_url.rstrip("/")
@@ -77,7 +81,7 @@ def select_peer(member, *, engine_url="", port=None, reserve=True):
             scope = register.get("scope") or []
             address = register.get("engine_url") or (scope[1] if len(scope) == 3 else "")
             listener = state.get("pairing") or {}
-            if url and register.get("member") == member and url == address.rstrip("/"):
+            if url and register.get("member") == member and (url == address.rstrip("/") or upgrades_url(address, url)):
                 return peer
             if not url and port and listener.get("member") == member and port == listener.get("port"):
                 return peer
@@ -487,13 +491,21 @@ def register_offer(member: str, engine_url: str, invite: str) -> tuple[str, str]
             hmac.new(seed, b'relay-node-key-v1', 'sha256').hexdigest())
 
 
-def save_register_credential(member: str, credential: str, *, engine_url: str = '', invite: str = '') -> None:
+def saved_fingerprint(member, url):
+    with _LOCK:
+        saved = _load_state().get('register') or {}
+        return saved.get('fingerprint', '') if saved.get('member') == member and saved.get('engine_url') == url else ''
+
+
+def save_register_credential(member: str, credential: str, *, engine_url: str = '', invite: str = '',
+                             fingerprint: str = '') -> None:
     """Persist confirmed credentials before opening a normal authenticated link."""
     with _transaction():
         state = _load_state()
         if (state.get("register") or {}).get("credential") != credential:
             state.pop("outbound", None)
-        state['register'] = {'member': member, 'credential': credential, 'saved_at': time.time()}
+        state['register'] = {'member': member, 'credential': credential, 'saved_at': time.time(),
+                             'fingerprint': fingerprint}
         if engine_url:
             state['register']['engine_url'] = engine_url.rstrip('/')
         if invite:

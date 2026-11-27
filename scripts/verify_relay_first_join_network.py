@@ -172,22 +172,19 @@ def verify_profiles_and_mentions(api, nodes, evidence, page=None):
         page.evaluate("selectProject('alpha')")
         page.wait_for_function("handles => handles.every(p => S.members.some(m => m.profile === p))",
                                arg=[n[0] for n in nodes])
-    for member, home, gateway, secure in nodes:
+    for member, home, gateway in nodes:
         url = f'/members/{member}/config'
         (home / '.env').write_text('MARK=initial', encoding='utf-8')
         old = result(api.get(url))
-        assert old['env_editable'] is secure and ('env' in old) is secure, member
+        assert old['env_editable'] and 'env' in old, member
         values = {k: old[k] for k in ('revision', 'soul', 'model', 'provider', 'reasoning_effort')}
         values.update(description=member, soul='魂' * 400000, model='fixture-model', provider='fixture')
-        if secure:
-            values['env'] = 'MARK=updated'
-        else:
-            assert api.put(url, json=dict(values, env='reject')).status_code == 409
+        values['env'] = 'MARK=updated'
         saved = result(api.put(url, json=values))
         current = result(api.get(url))
         assert current['revision'] == saved['revision'] and current['description'] == member
         assert (home / 'SOUL.md').read_text(encoding='utf-8') == current['soul'] == values['soul']
-        assert (home / '.env').read_text(encoding='utf-8') == ('MARK=updated' if secure else 'MARK=initial')
+        assert (home / '.env').read_text(encoding='utf-8') == 'MARK=updated'
         assert (home / saved['backup'] / 'manifest.json').is_file()
         assert api.put(url, json=values).status_code == 409
         if page:
@@ -196,14 +193,14 @@ def verify_profiles_and_mentions(api, nodes, evidence, page=None):
                 page.wait_for_function('!!profileEditor?.revision')
             open_editor()
             assert page.locator('#profile-description').input_value() == member
-            assert page.locator('#profile-env').is_enabled() is secure
+            assert page.locator('#profile-env').is_enabled()
             page.locator('#profile-description').fill('browser-' + member)
             page.locator('#profile-save').click()
             page.wait_for_function('profileEditor === null')
             open_editor()
             assert page.locator('#profile-description').input_value() == 'browser-' + member
             page.locator('#profile-cancel').click()
-    for member, home, _, _ in nodes:
+    for member, home, _ in nodes:
         assert result(api.get(f'/members/{member}/config'))['description'] == ('browser-' if page else '') + member
     for order in (nodes, nodes[::-1]):
         handles = [node[0] for node in order]
@@ -226,10 +223,10 @@ def verify_profiles_and_mentions(api, nodes, evidence, page=None):
         assert sent['mentions'] == handles
         with closing(db.get_connection()) as conn:
             assert {r[0] for r in conn.execute('SELECT profile FROM inbox WHERE message_id=?', (mid,))} == set(handles)
-            counts = [len(gw.submissions) for _, _, gw, _ in nodes]
+            counts = [len(gw.submissions) for _, _, gw in nodes]
             for _ in range(2):
                 assert queue.process_one(conn)
-            for (member, _, gateway, _), count in zip(nodes, counts):
+            for (member, _, gateway), count in zip(nodes, counts):
                 assert len(gateway.submissions) == count + 1, member
                 received = gateway.submissions[-1]
                 assert text in received['text']
@@ -270,7 +267,10 @@ def exercise(args, evidence):
         stack.callback(stop_engine)
         wait(lambda: server.started)
         api = stack.enter_context(httpx.Client(base_url=f'http://127.0.0.1:{args.port}', timeout=25, trust_env=False))
-        remote = stack.enter_context(httpx.Client(base_url=f'http://{args.lan}:{args.port}', timeout=5, trust_env=False))
+        from engine import relay_certificate
+        import ssl
+        trust = ssl.create_default_context(cadata=relay_certificate.public_pem())
+        remote = stack.enter_context(httpx.Client(base_url=f'https://{args.lan}:{args.port}', verify=trust, timeout=5, trust_env=False))
         profile = 'default'
         plugin_args = (args.plugin_dir,) if args.plugin_dir else ()
         pa, pb = _plugin_modules('first_join_a', *plugin_args), _plugin_modules('first_join_b', *plugin_args)
@@ -358,7 +358,7 @@ def exercise(args, evidence):
         assert remote.get('/health').status_code == 403
         assert issued['listen_configured'] and issued['engine_url'] == str(remote.base_url).rstrip('/')
         with host_env(profile, ha):
-            cfg = pa['config'].load(SimpleNamespace(extra={'engine_url': issued['engine_url'], 'invite': issued['invite_token'],
+            cfg = pa['config'].load(SimpleNamespace(extra={'engine_url': issued['engine_url'], 'invite': issued['invite_token'], 'fingerprint': issued['fingerprint'],
                                                            'mcp_python': sys.executable}))
         assert cfg and cfg.member == profile and Path(cfg.home) == ha
         out = importlib.import_module(pa['config'].__package__ + '.relay').RelayClient(cfg)
@@ -444,7 +444,7 @@ def exercise(args, evidence):
 
         stack.callback(stop_workers)
         if args.profile_mentions:
-            verify_profiles_and_mentions(api, [(a, ha, gateway_a, False), (b, hb, gateway_b, True)], evidence,
+            verify_profiles_and_mentions(api, [(a, ha, gateway_a), (b, hb, gateway_b)], evidence,
                                          ui.page if ui else None)
             return
         dispatch = mention

@@ -912,7 +912,7 @@ def _reported_mcp_config(conn, node, report, engine_url):
         address = listen_control.read_config(conn) if host and (host == 'localhost' or ip_allowlist._is_loopback(host)) else None
         if address:
             host = f'[{address}]' if ':' in address else address
-            url = f'http://{host}:{config.port()}'
+            url = f'https://{host}:{config.port()}'
     return {'command': command, 'args': [entry], 'env': {'GROUP_ENGINE_URL': url}}
 
 
@@ -979,6 +979,15 @@ def merge_mcp_spec(conn, member: str, spec: dict, *, engine_url: str = "",
         if key == "GROUP_ENGINE_URL":
             continue  # 可达 URL 以远端渲染为准（manager node1977 ③）
         merged_env[key] = value
+    if node['direction'] == 'listen':
+        from urllib.parse import urlsplit
+        from . import config, listen_control, relay_certificate
+        address = listen_control.read_config(conn)
+        target = urlsplit(merged_env.get('GROUP_ENGINE_URL', ''))
+        if address and target.hostname in (address, 'localhost', '127.0.0.1', '::1') and target.port == config.port():
+            host = f'[{address}]' if ':' in address else address
+            merged_env['GROUP_ENGINE_URL'] = f'https://{host}:{target.port}'
+            merged_env['GROUP_ENGINE_TLS_CERT'] = relay_certificate.public_pem()
     merged["env"] = merged_env
     return merged
 

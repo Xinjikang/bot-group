@@ -431,6 +431,9 @@ def _route_inbound(link: NodeLink, envelope: dict) -> bool:
 
 async def relay_ws(websocket: WebSocket) -> None:
     """/relay/ws 端点：成员级认证握手 → 帧路由循环。"""
+    if websocket.scope['scheme'] != 'wss':
+        await websocket.close(code=1008, reason='WSS required')
+        return
     await websocket.accept()
     member = None
     peer = None

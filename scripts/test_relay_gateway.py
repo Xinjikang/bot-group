@@ -60,7 +60,12 @@ class RelayBase(unittest.TestCase):
         self.app = _relay_app()
         self._sock = socket.socket()
         self._sock.bind(("127.0.0.1", 0))
-        self._server = uvicorn.Server(uvicorn.Config(self.app, log_level="error"))
+        import os
+        from engine import relay_certificate
+        pem = str(relay_certificate.identity()[0])
+        self._trust = patch.dict(os.environ, {'SSL_CERT_FILE': pem})
+        self._trust.start()
+        self._server = uvicorn.Server(relay_certificate.listener_config(self.app, pem, log_level="error"))
         self._thread = threading.Thread(
             target=self._server.run, kwargs={"sockets": [self._sock]}, daemon=True)
         self._thread.start()
@@ -69,7 +74,7 @@ class RelayBase(unittest.TestCase):
             if not self._thread.is_alive() or time.monotonic() >= deadline:
                 raise RuntimeError("relay 测试服务启动失败")
             time.sleep(0.01)
-        self.ws_url = f"ws://127.0.0.1:{self._sock.getsockname()[1]}/relay/ws"
+        self.ws_url = f"wss://127.0.0.1:{self._sock.getsockname()[1]}/relay/ws"
 
     def tearDown(self):
         relay_server.close_all()
@@ -78,6 +83,7 @@ class RelayBase(unittest.TestCase):
         self._sock.close()
         if self._thread.is_alive():
             raise RuntimeError("relay 测试服务未停止")
+        self._trust.stop()
         self._ctx.__exit__(None, None, None)
         self._version_patch.stop()
 
@@ -336,7 +342,7 @@ class RelayFrameTests(RelayBase):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(plugin._plugin.pairing, "_state_path", return_value=Path(tmp) / "state.json"), \
                 patch.object(plugin._plugin.config, "plugin_version", return_value=RELEASE_VERSION):
-            origin = self.ws_url.removesuffix("/relay/ws")
+            origin = self.ws_url.removesuffix("/relay/ws").replace("wss://", "https://")
             client = plugin.relay_mod.RelayClient(plugin.make_cfg(origin, home=tmp))
             client.start()
             try:

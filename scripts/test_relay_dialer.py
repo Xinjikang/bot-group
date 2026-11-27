@@ -18,7 +18,7 @@ from datetime import timedelta
 
 from websockets.sync.server import serve as ws_serve
 
-from engine import db, relay, relay_dialer, relay_server
+from engine import db, relay, relay_dialer, relay_protocol, relay_server
 from scripts.unified_test_support import isolated_database
 
 REMOTE = "remote1"
@@ -104,7 +104,8 @@ class FakePlugin:
                 conn.send(json.dumps({"relay": {"kind": "bad"}}))
                 return
             conn.send(json.dumps({"relay": {"kind": "hello_ok",
-                                            "generation": GENERATION}}))
+                                            "generation": GENERATION,
+                                            "protocol_version": relay_protocol.negotiate(hello)}}))
             if self.close_after_hello:
                 conn.close()
                 return
@@ -839,7 +840,7 @@ class SwitchFullChainTests(DialerBase):
 
     def _ws_handshake(self) -> dict:
         """方向 A 插件握手（真实 relay_ws 全逻辑）。"""
-        with self.client.websocket_connect("/relay/ws") as ws:
+        with self.client.websocket_connect("wss://testserver/relay/ws") as ws:
             ws.send_json({"relay": {"kind": "hello"}, "member": REMOTE,
                           "credential": CREDENTIAL, "code_version": self.RELEASE,
                           "mcp_fingerprint": "", "protocol_version": 1})
@@ -885,7 +886,7 @@ class SwitchFullChainTests(DialerBase):
             self.assertEqual(response.status_code, 200)
             # 握手保持连接存续：恢复线程在连接存续期间经 relay lease 完成
             # 首次核对并清切换态（manager node2073——连接关闭则线程放弃）
-            with self.client.websocket_connect("/relay/ws") as ws:
+            with self.client.websocket_connect("wss://testserver/relay/ws") as ws:
                 ws.send_json({"relay": {"kind": "hello"}, "member": REMOTE,
                               "credential": CREDENTIAL,
                               "code_version": self.RELEASE,
@@ -942,7 +943,7 @@ class SwitchFullChainTests(DialerBase):
         response = self.client.post(f"/relay/nodes/{REMOTE}/switch",
                                     json={"direction": "listen"})
         self.assertEqual(response.status_code, 200)
-        with self.client.websocket_connect("/relay/ws") as ws:
+        with self.client.websocket_connect("wss://testserver/relay/ws") as ws:
             ws.send_json({"relay": {"kind": "hello"}, "member": REMOTE,
                           "credential": CREDENTIAL, "code_version": self.RELEASE,
                           "mcp_fingerprint": "", "protocol_version": 1})
@@ -1049,7 +1050,7 @@ class SwitchFullChainTests(DialerBase):
             response = self.client.post(f"/relay/nodes/{REMOTE}/switch",
                                         json={"direction": "listen"})
             self.assertEqual(response.status_code, 200)
-            with self.client.websocket_connect("/relay/ws") as ws:
+            with self.client.websocket_connect("wss://testserver/relay/ws") as ws:
                 ws.send_json({"relay": {"kind": "hello"}, "member": REMOTE,
                               "credential": CREDENTIAL,
                               "code_version": self.RELEASE,
@@ -1132,7 +1133,7 @@ class SwitchFullChainTests(DialerBase):
         self.assertEqual(response.status_code, 200)
         self.assertIsInstance(relay_server.active_link(REMOTE), relay_dialer.DialLink,
                               "新方向认证前保留拨号连接")
-        with self.client.websocket_connect("/relay/ws") as ws:
+        with self.client.websocket_connect("wss://testserver/relay/ws") as ws:
             ws.send_json({"relay": {"kind": "hello"}, "member": REMOTE,
                           "credential": CREDENTIAL, "code_version": self.RELEASE,
                           "mcp_fingerprint": "", "protocol_version": 1})

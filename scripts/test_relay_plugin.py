@@ -102,6 +102,16 @@ class FakeEngine(_LoopbackServer):
     def __init__(self, *, reject_code=None):
         import websockets.asyncio.server as ws_async
         self.received = []
+        from engine import relay_certificate
+        import ssl
+        from cryptography.hazmat.primitives import hashes
+        with tempfile.TemporaryDirectory() as folder:
+            pem, cert = relay_certificate.identity(Path(folder))
+            self.fingerprint = cert.fingerprint(hashes.SHA256()).hex()
+            self.tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            if ssl.HAS_TLSv1_3:
+                self.tls.num_tickets = 0
+            self.tls.load_cert_chain(str(pem))
         self.reject_code = reject_code
         self._outbound = asyncio.Queue()
         self._clients = []
@@ -142,7 +152,7 @@ class FakeEngine(_LoopbackServer):
 
         async def main():
             self._loop = asyncio.get_running_loop()
-            async with ws_async.serve(handler, self.host, 0) as server:
+            async with ws_async.serve(handler, self.host, 0, ssl=self.tls) as server:
                 self.port = server.sockets[0].getsockname()[1]
                 self._ready.set()
                 await self._stop_event.wait()
@@ -157,7 +167,7 @@ class FakeEngine(_LoopbackServer):
 
     @property
     def url(self):
-        return f"ws://{self.host}:{self.port}/relay/ws"
+        return f"https://{self.host}:{self.port}"
 
 
 class FakeGateway(_LoopbackServer):
@@ -219,8 +229,8 @@ class FakeGateway(_LoopbackServer):
         return f"ws://{self.host}:{self.port}/api/ws"
 
 
-def make_cfg(engine_url: str, *, mcp_python: str = "", home: str = "/home/bot/.hermes") -> RelayConfig:
-    return RelayConfig(engine_url=engine_url, member=MEMBER, credential=CREDENTIAL,
+def make_cfg(engine_url: str, *, fingerprint="", mcp_python: str = "", home: str = "/home/bot/.hermes") -> RelayConfig:
+    return RelayConfig(engine_url=engine_url, fingerprint=fingerprint, member=MEMBER, credential=CREDENTIAL,
                        mcp_python=mcp_python, home=home)
 
 
@@ -427,7 +437,7 @@ class VersionTests(unittest.TestCase):
             engine = FakeEngine().start()
             self.addCleanup(engine.stop)
             cfg = unpacked.config.RelayConfig(
-                engine_url=engine.url.replace("ws://", "http://"),
+                engine_url=engine.url, fingerprint=engine.fingerprint,
                 member=MEMBER, credential=CREDENTIAL, mcp_python="", home="/home/bot/.hermes")
             client = unpacked.relay.RelayClient(cfg)
             client.start()
@@ -460,7 +470,7 @@ class RelayClientTests(unittest.TestCase):
         if reject_code is not None:
             engine = FakeEngine(reject_code=reject_code).start()
             self.addCleanup(engine.stop)
-        client = relay_mod.RelayClient(make_cfg(engine.url, mcp_python=mcp_python))
+        client = relay_mod.RelayClient(make_cfg(engine.url, fingerprint=engine.fingerprint, mcp_python=mcp_python))
         client.start()
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
@@ -517,7 +527,7 @@ class RelayClientTests(unittest.TestCase):
     def test_version_mismatch_rejected_no_retry(self):
         engine = FakeEngine(reject_code=4003).start()
         self.addCleanup(engine.stop)
-        client = relay_mod.RelayClient(make_cfg(engine.url))
+        client = relay_mod.RelayClient(make_cfg(engine.url, fingerprint=engine.fingerprint))
         client.start()
         self.addCleanup(client.stop)
         deadline = time.monotonic() + 3

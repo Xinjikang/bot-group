@@ -12,9 +12,6 @@ from unittest.mock import patch
 from engine import auth, db, listen_control, relay, signing_keys
 from scripts.unified_test_support import isolated_database
 
-TEST_PORT = 18820
-
-
 def _lan_ipv4() -> str | None:
     for entry in listen_control.enumerate_interfaces():
         if entry['family'] == 'IPv4':
@@ -25,7 +22,10 @@ def _lan_ipv4() -> str | None:
 def _http_get(host: str, port: int, timeout: float = 3.0) -> tuple[int, bytes]:
     """真实 TCP 连接发 GET /health，返回 (status, body)；连接失败返回 (None, b'')。"""
     try:
-        with socket.create_connection((host, port), timeout=timeout) as sock:
+        import ssl
+        from engine import relay_certificate
+        trust = ssl.create_default_context(cadata=relay_certificate.public_pem())
+        with socket.create_connection((host, port), timeout=timeout) as raw, trust.wrap_socket(raw, server_hostname=host) as sock:
             sock.sendall(b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
             data = b''
             while True:
@@ -50,6 +50,10 @@ class ListenControlTests(unittest.TestCase):
             signing_keys.initialize(conn)
         self.addCleanup(listen_control.ensure, None)
         self.lan = _lan_ipv4()
+        if self.lan:
+            with socket.socket() as allocation:
+                allocation.bind((self.lan, 0))
+                self.port = allocation.getsockname()[1]
 
     # ---- 枚举与校验 ----
 
@@ -80,11 +84,11 @@ class ListenControlTests(unittest.TestCase):
         # 控制仍生效：非回环未绑定来源 HTTP 403（第一层拦截不变）。
         if not self.lan:
             self.skipTest("本机无 LAN 单播地址")
-        state = listen_control.ensure(self.lan, port=TEST_PORT)
+        state = listen_control.ensure(self.lan, port=self.port)
         self.assertTrue(state['remote_enabled'], state)
         self.assertEqual(state['remote_address'], self.lan)
         # 真实 TCP 全链：本机源即 LAN 地址，未绑定 → 403
-        status, _ = _http_get(self.lan, TEST_PORT)
+        status, _ = _http_get(self.lan, self.port)
         self.assertEqual(status, 403, "零绑定启用后未绑定来源必须仍被拒")
 
     def test_real_listen_bindings_gate_and_disable(self):
@@ -94,23 +98,23 @@ class ListenControlTests(unittest.TestCase):
         with closing(db.get_connection()) as conn:
             from engine import ip_allowlist
             ip_allowlist.set_bindings(conn, "architect", [self.lan])
-        state = listen_control.ensure(self.lan, port=TEST_PORT)
+        state = listen_control.ensure(self.lan, port=self.port)
         self.assertTrue(state['remote_enabled'], state)
         self.assertEqual(state['remote_address'], self.lan)
-        self.assertEqual(state['remote_port'], TEST_PORT)
+        self.assertEqual(state['remote_port'], self.port)
         # 真实 TCP 全链：本机源即 LAN 地址，在绑定并集内 → 200
-        status, _ = _http_get(self.lan, TEST_PORT)
+        status, _ = _http_get(self.lan, self.port)
         self.assertEqual(status, 200, "绑定来源实际连通远程监听")
         # 移除绑定 → 再次连接被拒（真实 TCP 限源联动）
         with closing(db.get_connection()) as conn:
             from engine import ip_allowlist
             ip_allowlist.remove_binding(conn, "architect", self.lan)
-        status, _ = _http_get(self.lan, TEST_PORT)
+        status, _ = _http_get(self.lan, self.port)
         self.assertEqual(status, 403, "移除后再次连接必须被拒")
         # 停用远程监听：回退回环，远程地址不再可连
         state = listen_control.ensure(None)
         self.assertFalse(state['remote_enabled'])
-        status, _ = _http_get(self.lan, TEST_PORT)
+        status, _ = _http_get(self.lan, self.port)
         self.assertIsNone(status, "停用后远程地址不得再连通")
 
     # ---- 绑定失败保持本机可用 ----
@@ -122,10 +126,10 @@ class ListenControlTests(unittest.TestCase):
             from engine import ip_allowlist
             ip_allowlist.set_bindings(conn, "architect", [self.lan])
         blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        blocker.bind((self.lan, TEST_PORT))
+        blocker.bind((self.lan, self.port))
         blocker.listen(1)
         self.addCleanup(blocker.close)
-        state = listen_control.ensure(self.lan, port=TEST_PORT)
+        state = listen_control.ensure(self.lan, port=self.port)
         self.assertFalse(state['remote_enabled'], "端口被占必须如实报错且不启用")
         self.assertTrue(state['error'], "失败必须携带错误信息")
         with closing(db.get_connection()) as conn:
@@ -140,7 +144,7 @@ class ListenControlTests(unittest.TestCase):
         with closing(db.get_connection()) as conn:
             from engine import ip_allowlist
             ip_allowlist.set_bindings(conn, "architect", [self.lan])
-        listen_control.ensure(self.lan, port=TEST_PORT)
+        listen_control.ensure(self.lan, port=self.port)
         self.assertTrue(listen_control.status()['remote_enabled'])
         # 模拟进程退出：只停运行时服务、保留配置（进程退出不清 settings）
         with listen_control._lock:
@@ -149,10 +153,10 @@ class ListenControlTests(unittest.TestCase):
         with closing(db.get_connection()) as conn:
             self.assertEqual(listen_control.read_config(conn), self.lan,
                              "进程退出后配置必须保留")
-        state = listen_control.restore_on_startup(port=TEST_PORT)
+        state = listen_control.restore_on_startup(port=self.port)
         self.assertTrue(state['remote_enabled'], "重启后必须恢复上次监听配置")
         self.assertEqual(state['remote_address'], self.lan)
-        status, _ = _http_get(self.lan, TEST_PORT)
+        status, _ = _http_get(self.lan, self.port)
         self.assertEqual(status, 200)
 
 

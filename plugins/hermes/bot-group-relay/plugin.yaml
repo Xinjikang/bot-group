@@ -10,8 +10,12 @@ description: >
 author: bot-group
 optional_env:
   - name: BOT_GROUP_ENGINE_URL
-    description: "bot-group 引擎地址（http(s)://host:port，不带路径）"
+    description: "bot-group 引擎 HTTPS 地址（不带路径）"
     prompt: "bot-group engine URL"
+    password: false
+  - name: BOT_GROUP_RELAY_FINGERPRINT
+    description: "办公机邀请提供的 SHA-256 证书指纹"
+    prompt: "Engine certificate fingerprint (optional)"
     password: false
   - name: BOT_GROUP_RELAY_MEMBER
     description: "本机成员名（与引擎节点注册的 member 一致，通常为 profile 名）"

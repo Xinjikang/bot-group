@@ -1174,7 +1174,7 @@ class EntryIdentityAndProxyTests(unittest.TestCase):
         cli.register_cli(plugin_parser)
         for argv, expect in (
                 (["status"], "status"),
-                (["register", "--engine-url", "http://127.0.0.1:1",
+                (["register", "--engine-url", "https://127.0.0.1:1",
                   "--member", "m", "--credential", "c"], "register"),
                 (["listen", "--address", "127.0.0.1", "--port", "8443"],
                  "listen"),
@@ -1610,8 +1610,11 @@ class FirstJoinTests(unittest.TestCase):
             self._sock.bind(("127.0.0.1", 0))
             self.addCleanup(self._sock.close)
             self._api_port = self._sock.getsockname()[1]
-            self._server = uvicorn.Server(uvicorn.Config(
-                app, lifespan="off", log_level="error"))
+            from engine import relay_certificate
+            pem = str(relay_certificate.identity()[0])
+            self.enterContext(patch.dict(os.environ, {'SSL_CERT_FILE': pem}))
+            self._server = uvicorn.Server(relay_certificate.listener_config(
+                app, pem, lifespan="off", log_level="error"))
             self._worker = threading.Thread(
                 target=self._server.run, kwargs={"sockets": [self._sock]},
                 daemon=True)
@@ -1635,7 +1638,7 @@ class FirstJoinTests(unittest.TestCase):
         import urllib.error
         port = self._api_client()
         data = json.dumps(body or {}).encode() if body is not None else b"{}"
-        req = urllib.request.Request(f"http://127.0.0.1:{port}{path}",
+        req = urllib.request.Request(f"https://127.0.0.1:{port}{path}",
                                      data=data, method="POST",
                                      headers={"Content-Type": "application/json"})
         try:
@@ -1650,7 +1653,7 @@ class FirstJoinTests(unittest.TestCase):
         path = f"/relay/invitations/{issued['pairing_id']}"
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            with urllib.request.urlopen(f'http://127.0.0.1:{self._api_client()}{path}', timeout=5) as resp:
+            with urllib.request.urlopen(f'https://127.0.0.1:{self._api_client()}{path}', timeout=5) as resp:
                 view = json.load(resp)
             if view['state'] == 'pending_confirmation':
                 self.assertEqual(view['member'], member)
@@ -2024,7 +2027,7 @@ class FirstJoinTests(unittest.TestCase):
         with closing(db.get_connection()) as conn:
             relay.register_node(conn, 'remoteA', 'existing-isolated-credential')
         _, issued = self._admin_post('/relay/invitations')
-        base = f'http://127.0.0.1:{self._api_client()}'
+        base = f'https://127.0.0.1:{self._api_client()}'
         path = f"/relay/invitations/{issued['pairing_id']}"
         def status():
             with urllib.request.urlopen(base + path, timeout=5) as response:
@@ -2036,7 +2039,7 @@ class FirstJoinTests(unittest.TestCase):
                  'plugin_version': version, 'join_proof': 'ab' * 32,
                  'credential_commitment': relay.hash_credential('existing-isolated-credential')}
         for token in ('invalid-fixture-ticket', issued['invite_token']):
-            with connect(base.replace('http:', 'ws:') + '/relay/ws', proxy=None) as ws:
+            with connect(base.replace('https:', 'wss:') + '/relay/ws', proxy=None) as ws:
                 ws.send(json.dumps({**hello, 'invite': token}))
                 with self.assertRaises(ConnectionClosed) as rejection:
                     ws.recv(timeout=5)
@@ -2062,7 +2065,7 @@ class FirstJoinTests(unittest.TestCase):
         self.assertEqual(status, 200)
         version = relay_server._engine_release_version() or ''
         credential = 'isolated-specific-credential'
-        with connect(f'ws://127.0.0.1:{self._api_client()}/relay/ws', proxy=None) as ws:
+        with connect(f'wss://127.0.0.1:{self._api_client()}/relay/ws', proxy=None) as ws:
             ws.send(json.dumps({'relay': {'kind': 'hello'}, 'member': 'remoteA',
                                 'invite': issued['invite_token'], 'protocol_version': 1,
                                 'plugin_version': version, 'join_proof': 'ab' * 32,
@@ -2083,14 +2086,14 @@ class FirstJoinTests(unittest.TestCase):
         from websockets.sync.client import connect
         status, issued = self._admin_post('/relay/invitations')
         self.assertEqual(status, 200)
-        base = f'http://127.0.0.1:{self._api_client()}'
+        base = f'https://127.0.0.1:{self._api_client()}'
         member = 'remoteA'
         version = relay_server._engine_release_version() or ''
         proof, candidate = self.plg['pairing'].register_offer(member, base, issued['invite_token'])
         hello = {'relay': {'kind': 'hello'}, 'member': member, 'invite': issued['invite_token'],
                  'join_proof': proof, 'credential_commitment': relay.hash_credential(candidate),
                  'protocol_version': 1, 'plugin_version': version}
-        uri = base.replace('http:', 'ws:') + '/relay/ws'
+        uri = base.replace('https:', 'wss:') + '/relay/ws'
         with connect(uri, proxy=None) as ws:
             ws.send(json.dumps(hello))
             self.assertEqual(json.loads(ws.recv(timeout=5))['relay']['kind'], 'hello_pending')
@@ -2162,7 +2165,7 @@ class FirstJoinTests(unittest.TestCase):
         self.assertEqual(status, 200)
         config = self.plg['config']
         pairing = self.plg['pairing']
-        base = f'http://127.0.0.1:{self._api_client()}'
+        base = f'https://127.0.0.1:{self._api_client()}'
         member = 'remoteB'
         pairing.save_register_credential(member, 'previous-saved-key',
                                          engine_url=base, invite='previous-invite')
@@ -2192,7 +2195,7 @@ class FirstJoinTests(unittest.TestCase):
         config, cli = self.plg['config'], self.plg['cli']
         client_type = self._load_relay_module().RelayClient
         _, issued = self._admin_post('/relay/invitations')
-        url = f'http://127.0.0.1:{self._api_client()}'
+        url = f'https://127.0.0.1:{self._api_client()}'
         args = Namespace(command='register', engine_url=url, member='', credential='', invite=issued['invite_token'])
         with patch.object(cli, '_require_authorized'), patch.object(config, 'host_member', return_value='remoteB'), \
                 patch.dict(os.environ, {'BOT_GROUP_ENGINE_URL': '', 'BOT_GROUP_RELAY_INVITE': '',
@@ -2219,14 +2222,15 @@ class FirstJoinTests(unittest.TestCase):
 
     def test_renewal_command_updates_existing_node_and_waiting_gateway(self):
         from argparse import Namespace
-        url = f'http://127.0.0.1:{self._api_client()}'
+        url = f'https://127.0.0.1:{self._api_client()}'
         config, cli, pairing = self.plg['config'], self.plg['cli'], self.plg['pairing']
         profile, target = 'default', 'remote-default'
         with closing(db.get_connection()) as conn, conn:
             relay.register_paired_node(conn, 'original', profile, relay.hash_credential('old-key'),
                                        device_key='original-device', direction='listen')
             relay.revoke_credential(conn, target)
-        pairing.save_register_credential(profile, 'old-key', engine_url=url)
+        legacy_url = url.replace('https:', 'http:', 1)
+        pairing.save_register_credential(profile, 'old-key', engine_url=legacy_url)
         offline, online = threading.Event(), threading.Event()
         def status(state):
             if state == 'offline':
@@ -2234,13 +2238,13 @@ class FirstJoinTests(unittest.TestCase):
             if state == 'online':
                 online.set()
         gateway = self._load_relay_module().RelayClient(
-            config.RelayConfig(url, profile, 'old-key', '', self._tmpdir.name), on_status=status)
+            config.RelayConfig(legacy_url, profile, 'old-key', '', self._tmpdir.name), on_status=status)
         gateway.start()
         try:
             self.assertTrue(offline.wait(6))
             code, issued = self._admin_post(f'/relay/nodes/{target}/renewal')
             self.assertEqual(code, 200)
-            args = Namespace(command='register', engine_url=url, member='', credential='', invite=issued['invite_token'])
+            args = Namespace(command='register', engine_url=url, member='', credential='', invite=issued['invite_token'], fingerprint=issued['fingerprint'])
             with patch.object(cli, '_require_authorized'), patch.object(config, 'host_member', return_value=profile):
                 self.assertEqual(cli.dispatch(args), 0)
                 self.assertEqual(cli.dispatch(args), 0)
@@ -2248,6 +2252,7 @@ class FirstJoinTests(unittest.TestCase):
             with closing(db.get_connection()) as conn:
                 saved_url, key = pairing.saved_register(profile)
                 self.assertEqual(saved_url, url)
+                self.assertEqual(pairing.saved_fingerprint(profile, url), issued['fingerprint'])
                 self.assertEqual(relay.authenticated_member(conn, profile, key), target)
                 self.assertFalse(relay.verify_credential(conn, target, 'old-key'))
                 self.assertEqual([n['member'] for n in relay.list_nodes(conn)], [target])
@@ -2289,8 +2294,8 @@ class FirstJoinTests(unittest.TestCase):
         status, issued = self._admin_post("/relay/invitations")
         self.assertEqual(status, 200)
         token = issued["invite_token"]
-        self.assertTrue(issued["engine_url"].startswith("http://"))
-        engine_url = f"http://127.0.0.1:{self._api_client()}"
+        self.assertTrue(issued["engine_url"].startswith("https://"))
+        engine_url = f"https://127.0.0.1:{self._api_client()}"
         relay_config = self.plg["config"]
         # 合成包无版本文件：plugin_version 对齐引擎（同 tag 配套契约）
         engine_version = relay_server._engine_release_version() or ""
@@ -2382,7 +2387,7 @@ class FirstJoinTests(unittest.TestCase):
                      "protocol_version": 999}
         from websockets.exceptions import ConnectionClosed as _WSClosed
         with ws_sync.connect(
-                f"ws://127.0.0.1:{self._api_client()}/relay/ws",
+                f"wss://127.0.0.1:{self._api_client()}/relay/ws",
                 proxy=None, open_timeout=5) as ws:
             ws.send(json.dumps(bad_hello))
             try:
@@ -2490,7 +2495,7 @@ class FirstJoinTests(unittest.TestCase):
                     publish.set()
                     self.assertEqual(status, 200, view)
                     self._wait_direction(node, "listen")
-                self.assertEqual(pairing.saved_register(member)[0], f"http://127.0.0.1:{port}")
+                self.assertEqual(pairing.saved_register(member)[0], f"https://127.0.0.1:{port}")
                 self.assertFalse(pairing.listener_selected(member))
             finally:
                 publish.set()
@@ -2506,7 +2511,7 @@ class FirstJoinTests(unittest.TestCase):
         node = "remote-remoteA"
         status, invite = self._admin_post("/relay/invitations")
         self.assertEqual(status, 200)
-        cfg = config.RelayConfig(f"http://127.0.0.1:{self._api_client()}", member,
+        cfg = config.RelayConfig(f"https://127.0.0.1:{self._api_client()}", member,
                                  "", "", self._tmpdir.name, invite["invite_token"])
         with patch.object(config, "plugin_version", return_value=relay_server._engine_release_version() or ""), \
                 patch.object(listen, "STATE_DIR", Path(self._tmpdir.name)), \
@@ -2597,7 +2602,7 @@ class FirstJoinTests(unittest.TestCase):
         self._version_patch.start()
         self.addCleanup(self._version_patch.stop)
         client_a = plg_relay.RelayClient(relay_config.RelayConfig(
-            engine_url=f"http://127.0.0.1:{self._api_client()}",
+            engine_url=f"https://127.0.0.1:{self._api_client()}",
             member="remoteA", credential="", invite=issued["invite_token"],
             mcp_python="", home=os.environ.get("TMPDIR", ".")))
         client_a.start()

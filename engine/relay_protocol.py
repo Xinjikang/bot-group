@@ -2,7 +2,7 @@
 
 import base64
 
-VERSIONS = (3, 2, 1)
+VERSIONS = (4, 3, 2, 1)
 CURRENT = VERSIONS[0]
 REJECTION = "supported relay protocols: " + ",".join(map(str, VERSIONS))
 

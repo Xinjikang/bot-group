@@ -82,13 +82,13 @@ def register_cli(parser) -> None:
     p_listen.add_argument("--engine-url", default="", help="为已注册引擎准备反向监听时指定其地址")
     p_listen.add_argument("--cert", default="", help="TLS 证书 PEM（缺省自动生成自签）")
     p_listen.add_argument("--key", default="", help="TLS 私钥 PEM")
-    p_listen.add_argument("--no-tls", action="store_true", help="禁用 TLS（仅隔离测试）")
     p_listen.add_argument("--no-proxy", action="store_true", help="不启动 MCP loopback 代理")
     p_listen.add_argument("--proxy-port", type=int, default=0,
                           help="MCP loopback 代理端口（缺省自动分配）")
-    p_register = sub.add_parser("register", help="方向 A：连引擎 WS 端点注册（复用 #316）")
+    p_register = sub.add_parser("register", help="方向 A：通过 WSS 向引擎注册")
     p_register.add_argument("--engine-url", default="", help="引擎地址（缺省 BOT_GROUP_ENGINE_URL）")
     p_register.add_argument("--member", default="", help="成员名")
+    p_register.add_argument("--fingerprint", default="", help="办公机邀请提供的 SHA-256 证书指纹")
     p_register.add_argument("--credential", default="", help="节点凭据")
     p_register.add_argument("--invite", default="", help="一次性邀请（req#175 首次接入，兑换后换持久凭据）")
     sub.add_parser("status", help="当前监听/配对状态（脱敏）")
@@ -141,7 +141,6 @@ def dispatch(args) -> int:
                 address=args.address, port=args.port, advertise=args.advertise,
                 engine_url=getattr(args, "engine_url", ""),
                 cert_path=args.cert or None, key_path=args.key or None,
-                tls=not args.no_tls,
                 proxy_port=int(args.proxy_port or 0),
                 no_proxy=args.no_proxy,
                 # 交互终端用户本人在场：配对材料直接输出（manager node2060 ①
@@ -174,11 +173,16 @@ def dispatch(args) -> int:
             print("bot-group relay register: 需要 engine-url/member 与 "
                   "credential 或 invite", file=sys.stderr)
             return 1
+        try:
+            relay_config.ws_url(engine_url)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
         from . import relay as relay_mod
         cfg = relay_config.RelayConfig(engine_url=engine_url, member=member,
                                        credential=credential, invite=invite,
                                        mcp_python="",
-                                       home=relay_config.host_home())
+                                       home=relay_config.host_home(), fingerprint=getattr(args, 'fingerprint', '') or os.environ.get('BOT_GROUP_RELAY_FINGERPRINT', ''))
         peer = pairing.select_peer(member, engine_url=engine_url)
         client = relay_mod.RelayClient(cfg, follow_saved=False, peer=peer)
         if invite:

@@ -363,16 +363,18 @@ class PairingProbeError(ValueError):
 def _authenticate_dial(member: str, endpoint: dict, payload: dict, *, probe=False):
     """Verify the pinned peer before sending a pairing ticket; close on failure."""
     from websockets.sync.client import connect as ws_connect
-    scheme = "wss" if endpoint.get("tls") else "ws"
+    if endpoint.get("tls") is not True:
+        if probe:
+            raise PairingProbeError("tls", "WSS required")
+        _record_failure(member, "tls", _endpoint_address(endpoint), "旧 WS 节点需要更新 WSS 配对链接", terminal=True)
+        return None
     host = endpoint["host"]
-    uri = f"{scheme}://{f'[{host}]' if ':' in host else host}:{endpoint['port']}"
+    uri = f"wss://{f'[{host}]' if ':' in host else host}:{endpoint['port']}"
     fingerprint = str(endpoint.get("fingerprint") or "").strip().lower().replace(":", "")
-    context = None
-    if scheme == "wss":
-        context = ssl.create_default_context()
-        if fingerprint:
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
+    context = ssl.create_default_context()
+    if fingerprint:
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
     stage = "tcp"
     ws = None
     try:
@@ -501,8 +503,8 @@ def dial_once(member: str, *, initial=None, round_state=None) -> bool:
                 if _direction == "dial" and _target == "listen":
                     from . import relay_switch
                     with closing(db.get_connection()) as conn:
-                        relay_switch.send_return(conn, member, remote_generation, ws.send)
-                    return True
+                        return relay_switch.send_return(conn, member, remote_generation, ws.send,
+                                                        ws.relay_protocol_version)
                 return False
             except (OSError, ConnectionClosed):
                 return False
@@ -556,7 +558,7 @@ def dial_once(member: str, *, initial=None, round_state=None) -> bool:
         from . import relay_switch
         try:
             with closing(db.get_connection()) as conn:
-                relay_switch.send_return(conn, member, remote_generation, link.send_text)
+                relay_switch.send_return(conn, member, remote_generation, link.send_text, link.protocol_version)
         except ConnectionError:
             pass
     if round_state is not None and round_state.reasons:

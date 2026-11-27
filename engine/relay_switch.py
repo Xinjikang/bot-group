@@ -10,6 +10,7 @@ from . import db, listen_control, relay, relay_control, relay_dialer, relay_serv
 # Concurrent requests for one node must agree on which authenticated link is old.
 _locks = tuple(threading.Lock() for _ in range(32))
 RETURN_TIMEOUT = 45
+RETURN_UPGRADE = '切换到云端拨入需要 relay 协议 4，请先升级远程插件'
 _deferred = {}
 
 
@@ -25,12 +26,21 @@ def _return_port(conn, member):
     return None
 
 
-def send_return(conn, member, generation, send):
+def send_return(conn, member, generation, send, version):
+    if version < 4:
+        with conn:
+            conn.execute("UPDATE relay_nodes SET switch_state='',switch_target='',switch_error=? "
+                         "WHERE member=? AND direction='dial' AND switch_target='listen'",
+                         (RETURN_UPGRADE, member))
+        return False
     frame = {"relay": {"kind": "direction_dial", "generation": generation}}
     port = _return_port(conn, member)
     if port:
+        from . import relay_certificate
         frame["return_port"] = port
+        frame["return_fingerprint"] = relay_certificate.fingerprint()
     send(json.dumps(frame))
+    return True
 
 
 def _expire_return(member, old, ticket):
@@ -126,6 +136,9 @@ def switch(member, target):
             return {"member": member, "direction": target, "switch_state": "",
                     "dial_state": relay_dialer._task_state(member)}
 
+        if target == 'listen' and isinstance(old, relay_dialer.DialLink) and old.protocol_version < 4:
+            raise HTTPException(409, RETURN_UPGRADE)
+
         session = None
         if target == "dial":
             endpoint = relay.read_dial_endpoint(conn, member)
@@ -143,7 +156,7 @@ def switch(member, target):
             elif isinstance(old, relay_dialer.DialLink):
                 _arm_return(member, old)
                 try:
-                    send_return(conn, member, old.generation, old.send_text)
+                    send_return(conn, member, old.generation, old.send_text, old.protocol_version)
                 except ConnectionError:
                     pass  # The gateway may already have replaced the old connection.
             elif current == "dial" and old is None:
@@ -153,7 +166,7 @@ def switch(member, target):
                 ready = relay_server.active_link(member)
                 if isinstance(ready, relay_dialer.DialLink):
                     try:
-                        send_return(conn, member, ready.generation, ready.send_text)
+                        send_return(conn, member, ready.generation, ready.send_text, ready.protocol_version)
                     except ConnectionError:
                         relay_dialer.start_dial(member)
                 elif ready is None:

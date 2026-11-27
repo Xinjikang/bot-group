@@ -210,7 +210,7 @@ def main():
         if path == '/relay/nodes/hermes-remote/renewal' and req.request.method == 'POST':
             state['renewal_state'] = 'waiting'
             req.fulfill(json={'pairing_id': 'test-renewal', 'engine_url': 'https://engine.example',
-                              'invite_token': 'test-renewal-ticket'})
+                              'fingerprint': 'a' * 64, 'invite_token': 'test-renewal-ticket'})
             return
         if path == '/relay/invitations/test-renewal/cancel':
             state['renewal_state'] = 'cancelled'
@@ -358,11 +358,11 @@ def main():
         assert state['listen_posts'][-1] == {'address': '100.64.0.10'}
         assert page.locator('#relay-listen-summary').inner_text() == '实际监听 Tailscale · 100.64.0.10:18042'
         assert '允许来源' in page.locator('#relay-listen-sources').inner_text()
-        assert page.locator('#relay-listen-url').input_value() == 'http://100.64.0.10:18042'
+        assert page.locator('#relay-listen-url').input_value() == 'https://100.64.0.10:18042'
         assert page.locator('#relay-listen-url-row').is_visible()
         page.locator('#relay-listen-copy').click()
         page.wait_for_function('document.querySelector("#relay-listen-status").textContent.includes("已复制")')
-        assert page.evaluate('navigator.clipboard.readText()') == 'http://100.64.0.10:18042'
+        assert page.evaluate('navigator.clipboard.readText()') == 'https://100.64.0.10:18042'
         page.wait_for_function('!document.querySelector("#relay-listen-disable").disabled')
         page.locator('#relay-listen-disable').click()
         page.wait_for_function('document.querySelector("#relay-listen-badge").textContent === "仅本机"')
@@ -573,7 +573,8 @@ def main():
         page.locator('#relay-join-copy').click()
         new_credential = 'test-renewal-ticket'
         assert page.evaluate('navigator.clipboard.readText()') == (
-            'hermes -p "default" bot-group-relay register --engine-url "https://engine.example" --invite "test-renewal-ticket"')
+            'hermes -p "default" bot-group-relay register --engine-url "https://engine.example" '
+            f'--fingerprint "{"a" * 64}" --invite "test-renewal-ticket"')
         page.screenshot(path=str(evidence / 'relay-renewal-command.png'))
         remote['credential_revoked'] = False
         state['renewal_state'] = 'confirmed'

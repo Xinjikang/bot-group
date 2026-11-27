@@ -13,8 +13,11 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
 import json
 import logging
+import re
+import ssl
 import threading
 import time
 from dataclasses import replace
@@ -88,16 +91,33 @@ class RelayClient:
         with pairing.using_peer(self.peer):
             self._run()
 
+    @contextmanager
+    def _connect(self, **options):
+        from websockets.sync.client import connect
+        from . import pairing
+        uri = relay_config.ws_url(self.cfg.engine_url)
+        pin = self.cfg.fingerprint or pairing.saved_fingerprint(self.cfg.member, self.cfg.engine_url)
+        if pin:
+            if not isinstance(pin, str) or not re.fullmatch('[0-9a-fA-F]{64}', pin):
+                raise ssl.SSLCertVerificationError('无效的办公机证书指纹')
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+        else:
+            context = ssl.create_default_context()
+        with connect(uri, ssl=context, proxy=None, open_timeout=10, close_timeout=2, **options) as ws:
+            if pin and hashlib.sha256(ws.socket.getpeercert(binary_form=True)).hexdigest() != pin.lower():
+                raise ssl.SSLCertVerificationError('办公机证书与配对指纹不符')
+            yield ws
+
     def pair_invitation(self) -> None:
         """Persist administrator confirmation without claiming the gateway's daily link."""
-        from websockets.sync.client import connect
         from . import pairing
         if not self.cfg.invite:
             raise ValueError("missing invitation")
         while not pairing.load_register_credential(self.cfg.member, engine_url=self.cfg.engine_url,
                                                    invite=self.cfg.invite):
-            with connect(relay_config.ws_url(self.cfg.engine_url), proxy=None,
-                         open_timeout=10, close_timeout=2) as ws:
+            with self._connect() as ws:
                 if self._handshake(ws, pairing_only=True) is False:
                     raise ValueError("invitation rejected")
             if self._credential:
@@ -107,14 +127,15 @@ class RelayClient:
     def confirm_credential(self):
         """Save an explicitly supplied key only after an authenticated handshake."""
         from . import pairing
-        from websockets.sync.client import connect
-        if pairing.saved_register(self.cfg.member) == (self.cfg.engine_url, self.cfg.credential):
+        saved_pin = pairing.saved_fingerprint(self.cfg.member, self.cfg.engine_url)
+        if (pairing.saved_register(self.cfg.member) == (self.cfg.engine_url, self.cfg.credential)
+                and (not self.cfg.fingerprint or self.cfg.fingerprint.lower() == saved_pin)):
             return
-        with connect(relay_config.ws_url(self.cfg.engine_url), proxy=None,
-                     open_timeout=10, close_timeout=2) as ws:
+        with self._connect() as ws:
             if not self._handshake(ws):
                 raise ValueError("relay credential rejected")
-        pairing.save_register_credential(self.cfg.member, self.cfg.credential, engine_url=self.cfg.engine_url)
+        pairing.save_register_credential(self.cfg.member, self.cfg.credential, engine_url=self.cfg.engine_url,
+                                         fingerprint=self.cfg.fingerprint or pairing.saved_fingerprint(self.cfg.member, self.cfg.engine_url))
 
     def stop(self) -> None:
         self._stop.set()
@@ -154,7 +175,6 @@ class RelayClient:
             self._dial()
 
     def _dial(self) -> None:
-        import websockets.sync.client as ws_sync
         from . import pairing
         window = relay_config.relay_retry.RetryRound()
         peer_name = f"{self.cfg.member}@{self.peer or 'default'}"
@@ -181,8 +201,15 @@ class RelayClient:
                 self.cfg = replace(self.cfg, engine_url=saved_url, credential=key)
                 self._credential = key
             if self._follow_saved and (not self.cfg.invite or self._credential):
+                url, key = pairing.saved_register(self.cfg.member)
+                if pairing.upgrades_url(self.cfg.engine_url, url):
+                    self.cfg = replace(self.cfg, engine_url=url, credential=key, fingerprint='', invite='')
+                    self._credential = key
+                    paused = False
                 saved = pairing.load_register_credential(self.cfg.member, engine_url=self.cfg.engine_url)
                 if saved:
+                    if saved != self._credential:
+                        self.cfg = replace(self.cfg, fingerprint=pairing.saved_fingerprint(self.cfg.member, self.cfg.engine_url))
                     self._credential = saved
             if paused:
                 if pairing.outbound_state().get("state") == "stopped":
@@ -200,9 +227,7 @@ class RelayClient:
             stage = "tcp"
             self._refusal = None
             try:
-                with ws_sync.connect(relay_config.ws_url(self.cfg.engine_url),
-                                     proxy=None, open_timeout=10, close_timeout=2,
-                                     ping_interval=20, ping_timeout=5,
+                with self._connect(ping_interval=20, ping_timeout=5,
                                      max_size=16 * 1024 * 1024) as ws:
                     stage = "auth"
                     handshake = self._handshake(ws)
@@ -236,6 +261,8 @@ class RelayClient:
                 if self._stop.is_set():
                     return
                 refused = self._refusal or relay_config.relay_retry.rejection(exc)
+                if self.cfg.engine_url.startswith('http://'):
+                    refused = ('tls', '旧 WS 配对已停用，请在原节点重新签发 WSS 邀请')
                 if not refused and not connected and isinstance(exc, (ValueError, KeyError, TypeError, AttributeError)):
                     refused = ("protocol", "认证回执无效")
                 reason = refused[1] if refused else relay_config.relay_retry.transient_reason(stage, exc)
@@ -308,7 +335,7 @@ class RelayClient:
             self._on_status('pending_confirmation')
             return None
         if candidate and kind == 'hello_confirmed':
-            pairing.save_register_credential(self.cfg.member, candidate, **scope)
+            pairing.save_register_credential(self.cfg.member, candidate, fingerprint=self.cfg.fingerprint, **scope)
             self._credential = candidate
             return None
         if candidate or kind != 'hello_ok':

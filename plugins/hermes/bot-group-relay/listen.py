@@ -152,14 +152,12 @@ class ListenServer:
     def start(self) -> None:
         from websockets.sync.server import serve as ws_serve
         import ssl
-        ssl_context = None
-        if self.scheme == "wss":
-            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            # Each dial uses a fresh TLS context. Post-handshake session tickets
-            # can stall the WebSocket upgrade on the synchronous TLS transport.
-            if ssl.HAS_TLSv1_3:
-                ssl_context.num_tickets = 0
-            ssl_context.load_cert_chain(self.cert_path, self.key_path)
+        if self.scheme != "wss":
+            raise ValueError('WSS required')
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        if ssl.HAS_TLSv1_3:
+            ssl_context.num_tickets = 0
+        ssl_context.load_cert_chain(self.cert_path, self.key_path)
         try:
             # 绑定失败（地址不可用/端口占用）抛异常：保持原状，不残留监听
             self._server = ws_serve(self._peer_handler, self.address, self.port,
@@ -320,9 +318,11 @@ class ListenServer:
                     import ipaddress
                     peer = ipaddress.ip_address(ws.remote_address[0])
                     host = f"[{peer}]" if peer.version == 6 else str(peer)
-                    if not pairing.saved_register(self.member)[0]:
+                    address, _ = pairing.saved_register(self.member)
+                    pin = envelope.get('return_fingerprint')
+                    if (not address or address.startswith('http://')) and isinstance(pin, str) and len(pin) == 64:
                         pairing.save_register_credential(self.member, self._return_key,
-                                                        engine_url=f"http://{host}:{port}")
+                                                        engine_url=f"https://{host}:{port}", fingerprint=pin)
             pairing.request_outbound(self.member)
             wake = getattr(self, "wake_outbound", None)
             if wake:
@@ -594,12 +594,11 @@ def _listen_serve(*, address: str, port: int, advertise: str = "",
     存活周期（manager node2060 ①）：由调用方进程持有——私聊入口由网关
     进程持有 daemon 线程；CLI 入口 dispatch 前台运行（Ctrl-C 停止）。"""
     bind = validate_bind_address(address)
-    scheme = "wss" if tls else "ws"
-    cert, key = "", ""
-    fingerprint = ""
-    if tls:
-        cert, key = _ensure_cert(cert_path, key_path)
-        fingerprint = certificate_fingerprint(cert)
+    if not tls:
+        raise ValueError('WSS required')
+    scheme = "wss"
+    cert, key = _ensure_cert(cert_path, key_path)
+    fingerprint = certificate_fingerprint(cert)
     member = member or relay_config.host_member()
     if not member:
         raise ValueError("无法识别当前 Hermes 成员，请从对应的 Hermes 配置启动插件")

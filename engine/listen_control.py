@@ -139,12 +139,16 @@ def _run_remote_server(address: str, port: int) -> None:
     """后台线程：跑远程监听 Server（lifespan='off'），运行结果回写 _state。"""
     import uvicorn
     from .main import app
-    server = uvicorn.Server(uvicorn.Config(
-        app, host=address, port=port, lifespan='off', log_level='warning',
-        # req#171：来源判定只信 socket peer（与回环 Server 同配置）。
-        proxy_headers=False, forwarded_allow_ips='127.0.0.1',
-        # 远程监听停用时无需优雅排空（无长连接需保留），缩短退出等待
-        timeout_graceful_shutdown=1))
+    from . import relay_certificate
+    try:
+        pem, _ = relay_certificate.identity()
+        server_config = relay_certificate.listener_config(
+            app, pem, host=address, port=port, lifespan='off', log_level='warning',
+            proxy_headers=False, timeout_graceful_shutdown=1)
+    except (ValueError, OSError) as exc:
+        _state['error'] = f'远程监听证书无法加载：{exc}'
+        return
+    server = uvicorn.Server(server_config)
     with _lock:
         _state['server'] = server
     try:

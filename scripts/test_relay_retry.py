@@ -131,7 +131,7 @@ class PluginWindowTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.enterContext(patch.object(self.plugin.pairing, "_state_path",
                                       return_value=Path(directory.name) / "pairing.json"))
-        self.cfg = plugin_tests.make_cfg("ws://example.invalid")
+        self.cfg = plugin_tests.make_cfg("https://example.invalid")
         self.plugin.pairing.save_register_credential(self.cfg.member, self.cfg.credential,
                                                      engine_url=self.cfg.engine_url)
         self.client = self.plugin.relay.RelayClient(self.cfg)
@@ -256,9 +256,9 @@ with patch.object(_plugin.pairing, '_state_path', return_value=Path(sys.argv[1])
     def test_stopped_gateway_cross_process_request_and_restart(self):
         engine = plugin_tests.FakeEngine().start()
         self.addCleanup(engine.stop)
-        cfg = plugin_tests.make_cfg(engine.url)
+        cfg = plugin_tests.make_cfg(engine.url, fingerprint=engine.fingerprint)
         pairing = self.plugin.pairing
-        pairing.save_register_credential(cfg.member, cfg.credential, engine_url=cfg.engine_url)
+        pairing.save_register_credential(cfg.member, cfg.credential, engine_url=cfg.engine_url, fingerprint=cfg.fingerprint)
 
         def dm_from_other_process():
             script = """from pathlib import Path
@@ -305,8 +305,8 @@ with patch.object(_plugin.pairing, '_state_path', return_value=Path(sys.argv[1])
     def test_live_gateway_worker_resumes_once_from_admin_dm(self):
         engine = plugin_tests.FakeEngine().start()
         self.addCleanup(engine.stop)
-        cfg = plugin_tests.make_cfg(engine.url)
-        self.plugin.pairing.save_register_credential(cfg.member, cfg.credential, engine_url=cfg.engine_url)
+        cfg = plugin_tests.make_cfg(engine.url, fingerprint=engine.fingerprint)
+        self.plugin.pairing.save_register_credential(cfg.member, cfg.credential, engine_url=cfg.engine_url, fingerprint=cfg.fingerprint)
         calls = []
         def connect(uri, **kwargs):
             calls.append(uri)

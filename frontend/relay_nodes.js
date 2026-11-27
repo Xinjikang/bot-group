@@ -221,7 +221,7 @@
   }
   function engineHttpUrl(state) {
     return state?.remote_enabled && state.remote_address && state.remote_port
-      ? `http://${hostPort(state.remote_address, state.remote_port)}` : '';
+      ? `https://${hostPort(state.remote_address, state.remote_port)}` : '';
   }
   function listenReady() {
     return interfacesReady && statusReady && !listenLoading && !listenUncertain;

@@ -170,7 +170,7 @@ function createRelayJoinDialog(parent, {allowed, requireListen, registered, copy
         const profile = renewal && (renewal.host_profile || renewal.member);
         if (renewal && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(profile)) throw new Error('invalid profile');
         const hermes = renewal ? `hermes -p "${profile}"` : 'hermes';
-        $('command').value = `${hermes} bot-group-relay register --engine-url "${view.engine_url}" --invite "${view.invite_token}"`;
+        $('command').value = `${hermes} bot-group-relay register --engine-url "${view.engine_url}" --fingerprint "${view.fingerprint}" --invite "${view.invite_token}"`;
         $('invite').hidden = false;
       }
       await display(inbound ? {state: 'waiting'} : view, token);

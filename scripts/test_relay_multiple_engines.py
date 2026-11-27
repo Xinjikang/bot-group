@@ -9,6 +9,7 @@ import multiprocessing
 import os
 from pathlib import Path
 import queue
+import ssl
 import subprocess
 import tempfile
 import threading
@@ -21,7 +22,8 @@ from urllib.parse import parse_qs, urlsplit
 from websockets.sync.client import connect
 from websockets.sync.server import serve
 
-from engine import relay_protocol
+from engine import relay_certificate, relay_protocol
+from cryptography.hazmat.primitives import hashes
 from scripts.test_relay_gateway import RelayBase
 from scripts.test_relay_plugin import _load_plugin, _plugin
 
@@ -50,7 +52,7 @@ def run_engine(control):
     instance = RelayBase()
     instance.setUp()
     try:
-        control.send(instance.ws_url.removesuffix("/relay/ws").replace("ws://", "http://"))
+        control.send((instance.ws_url.removesuffix("/relay/ws").replace("wss://", "https://"), relay_certificate.fingerprint()))
         while True:
             command, payload = control.recv()
             if command == "stop":
@@ -134,11 +136,16 @@ class MultiEngineTests(unittest.TestCase):
                 ws.send(json.dumps({"relay": {"kind": "hello_ok", "generation": 1, "protocol_version": version}}))
                 connections.put(ws)
                 ws.wait_closed()
-            port = listen(self.stack, handle)
-            url = f"http://127.0.0.1:{port}"
+            pem, cert = relay_certificate.identity(Path(self.stack.enter_context(tempfile.TemporaryDirectory())))
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            if ssl.HAS_TLSv1_3:
+                context.num_tickets = 0
+            context.load_cert_chain(str(pem))
+            port = listen(self.stack, handle, ssl=context)
+            url = f"https://127.0.0.1:{port}"
             peer = _plugin.pairing.select_peer("default", engine_url=url)
             with _plugin.pairing.using_peer(peer):
-                _plugin.pairing.save_register_credential("default", credential, engine_url=url)
+                _plugin.pairing.save_register_credential("default", credential, engine_url=url, fingerprint=cert.fingerprint(hashes.SHA256()).hex())
             return connections
 
         def rpc(ws, method):
@@ -175,10 +182,12 @@ class MultiEngineTests(unittest.TestCase):
     def test_two_listeners_route_group_http_to_their_own_engine(self):
         self.stack.enter_context(patch.object(_plugin.listen, "validate_bind_address", return_value="127.0.0.1"))
         def pair():
-            result = _plugin.listen.listen_serve(address="127.0.0.1", port=0, tls=False)
+            result = _plugin.listen.listen_serve(address="127.0.0.1", port=0)
             self.stack.callback(result["_server"].stop)
             url = urlsplit(result["pairing_url"])
-            ws = self.stack.enter_context(connect(f"ws://{url.netloc}", proxy=None))
+            trust = ssl.create_default_context(cafile=str(_plugin.listen.STATE_DIR / "cert.pem"))
+            trust.check_hostname = False
+            ws = self.stack.enter_context(connect(f"wss://{url.netloc}", ssl=trust, proxy=None))
             ticket = parse_qs(url.query)["pairing_token"][0]
             ws.send(json.dumps({"relay": {"kind": "hello"}, "member": "default", "direction": "dial",
                                 "credential": ticket, **relay_protocol.offer()}))
@@ -244,10 +253,10 @@ class MultiEngineTests(unittest.TestCase):
                         process.join(3)
             self.stack.callback(stop)
             self.assertTrue(parent.poll(25))
-            url = parent.recv()
+            url, pin = parent.recv()
             peer = _plugin.pairing.select_peer(REMOTE, engine_url=url)
             with _plugin.pairing.using_peer(peer):
-                _plugin.pairing.save_register_credential(REMOTE, CREDENTIAL, engine_url=url)
+                _plugin.pairing.save_register_credential(REMOTE, CREDENTIAL, engine_url=url, fingerprint=pin)
             cfg = _plugin.config.peer_configs()[peer]
             client = _plugin.relay.RelayClient(cfg, peer=peer)
             client.start()
@@ -322,7 +331,7 @@ class HistoricalPluginTests(RelayBase):
                     plugin = _load_plugin(directory / plugin_path, "historical_plugins.relay_" + tag.replace(".", "_"))
                     current.enter_context(patch.object(plugin.tickets, "fetch_ticket",
                         return_value=({"api_origin": f"http://127.0.0.1:{port}"}, "fixture")))
-                    url = self.ws_url.removesuffix("/relay/ws").replace("ws://", "http://")
+                    url = self.ws_url.removesuffix("/relay/ws").replace("wss://", "https://")
                     client = plugin.relay.RelayClient(plugin.config.RelayConfig(url, REMOTE, CREDENTIAL, "", str(directory)))
                     client.start()
                     try:

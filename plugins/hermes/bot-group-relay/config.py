@@ -40,12 +40,13 @@ def plugin_version() -> str:
 
 @dataclass(frozen=True)
 class RelayConfig:
-    engine_url: str          # 引擎地址（http(s)://host:port，无路径）
+    engine_url: str          # HTTPS origin, or a legacy address awaiting renewal.
     member: str              # 引擎节点注册的成员名
     credential: str          # 节点连接凭据
     mcp_python: str          # 随包 MCP 解释器绝对路径（可空，自动探测）
     home: str                # 本机 gateway 控制 home（取票目标）
     invite: str = ""         # req#175 一次性邀请（云端连本机首次接入；兑换后换持久凭据）
+    fingerprint: str = ""
 
 
 def _env(name: str) -> str:
@@ -92,7 +93,8 @@ def load(config=None) -> RelayConfig | None:
     if not invite:
         from . import pairing
         saved_url, saved_key = pairing.saved_register(member)
-        if saved_url and (not engine_url or saved_url == engine_url.rstrip('/')):
+        if saved_url and (not engine_url or saved_url == engine_url.rstrip('/') or
+                          pairing.upgrades_url(engine_url, saved_url)):
             engine_url = saved_url
             credential = saved_key or credential
     if not engine_url or not member or not (credential or invite):
@@ -104,7 +106,7 @@ def load(config=None) -> RelayConfig | None:
         return None
     return RelayConfig(engine_url=engine_url.rstrip("/"), member=member,
                        credential=credential, invite=invite, mcp_python=mcp_python,
-                       home=home)
+                       home=home, fingerprint=extra.get('fingerprint') or _env('BOT_GROUP_RELAY_FINGERPRINT'))
 
 
 def peer_configs(config=None, *, reserve=False):
@@ -120,6 +122,9 @@ def peer_configs(config=None, *, reserve=False):
                 result[peer] = RelayConfig(url, member, key, platform_mcp_python(config),
                                            extra.get("home") or host_home())
     if primary:
+        upgraded = any(pairing.upgrades_url(primary.engine_url, cfg.engine_url) for cfg in result.values())
+        if upgraded:
+            return result
         same_peer = next((peer for peer, cfg in result.items()
                           if cfg.engine_url == primary.engine_url), None)
         if same_peer is not None:
@@ -132,5 +137,8 @@ def peer_configs(config=None, *, reserve=False):
 
 
 def ws_url(engine_url: str) -> str:
-    """引擎 /relay/ws 出站地址：http→ws、https→wss。"""
-    return engine_url.replace("https:", "wss:", 1).replace("http:", "ws:", 1) + "/relay/ws"
+    parsed = urlsplit(engine_url)
+    if (parsed.scheme != 'https' or not parsed.hostname or parsed.username is not None
+            or parsed.path not in ('', '/') or parsed.query or parsed.fragment):
+        raise ValueError('远程 relay 需要 HTTPS 引擎地址，请在原节点重新签发 WSS 邀请')
+    return 'wss://' + parsed.netloc + '/relay/ws'

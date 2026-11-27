@@ -113,7 +113,7 @@ class MemberSourceBindingTests(unittest.TestCase):
         self.bind("architect", [IP_A])
         self.bind("default", [IP_B])
         # A 凭据从 B 的 IP 连接：第一层放行（IP 在并集），握手第二层拒 4004
-        with self.remote(IP_B).websocket_connect("/relay/ws") as ws:
+        with self.remote(IP_B).websocket_connect("wss://testserver/relay/ws") as ws:
             ws.send_json(self.relay_hello("architect", CRED_A))
             with self.assertRaises(WebSocketDisconnect) as caught:
                 ws.receive_text()
@@ -122,14 +122,14 @@ class MemberSourceBindingTests(unittest.TestCase):
 
     def test_relay_ws_bound_source_accepted(self):
         self.bind("architect", [IP_A])
-        with self.remote(IP_A).websocket_connect("/relay/ws") as ws:
+        with self.remote(IP_A).websocket_connect("wss://testserver/relay/ws") as ws:
             ws.send_json(self.relay_hello("architect", CRED_A))
             reply = ws.receive_json()
             self.assertEqual(reply["relay"]["kind"], "hello_ok", "绑定内来源正常握手")
 
     def test_relay_ws_unbound_source_requires_invite_bootstrap(self):
         with self.assertRaises(WebSocketDisconnect) as blocked:
-            with self.remote(IP_C).websocket_connect("/relay/ws"):
+            with self.remote(IP_C).websocket_connect("wss://testserver/relay/ws"):
                 self.fail("无可用邀请时，未绑定来源不应进入握手")
         self.assertEqual(blocked.exception.code, 1008)
         conn = db.get_connection()
@@ -137,7 +137,7 @@ class MemberSourceBindingTests(unittest.TestCase):
             relay.issue_invitation(conn)
         finally:
             conn.close()
-        with self.remote(IP_C).websocket_connect("/relay/ws") as ws:
+        with self.remote(IP_C).websocket_connect("wss://testserver/relay/ws") as ws:
             ws.send_json(self.relay_hello("architect", CRED_A))
             with self.assertRaises(WebSocketDisconnect) as caught:
                 ws.receive_text()
@@ -164,7 +164,7 @@ class MemberSourceBindingTests(unittest.TestCase):
             issued = relay.issue_invitation(conn)
         finally:
             conn.close()
-        with self.remote(IP_C).websocket_connect("/relay/ws") as ws:
+        with self.remote(IP_C).websocket_connect("wss://testserver/relay/ws") as ws:
             hello = self.relay_hello("remoteX", "")
             hello.update(invite=issued['invite_token'], join_proof='bc' * 32,
                          credential_commitment=relay.hash_credential('isolated-source-test'))
@@ -195,7 +195,7 @@ class MemberSourceBindingTests(unittest.TestCase):
         finally:
             conn.close()
         # 重连：持久凭据 + 已绑定来源（不再用邀请）
-        with self.remote(IP_C).websocket_connect("/relay/ws") as ws:
+        with self.remote(IP_C).websocket_connect("wss://testserver/relay/ws") as ws:
             ws.send_json(self.relay_hello("remoteX", persistent))
             reply = ws.receive_json()
             self.assertEqual(reply["relay"]["kind"], "hello_ok")
@@ -205,7 +205,7 @@ class MemberSourceBindingTests(unittest.TestCase):
 
     def test_relay_ws_loopback_accepted(self):
         # 回环恒放行：本机 hello 直接通过来源核对
-        with self.loop.websocket_connect("/relay/ws") as ws:
+        with self.loop.websocket_connect("wss://testserver/relay/ws") as ws:
             ws.send_json(self.relay_hello("architect", CRED_A))
             reply = ws.receive_json()
             self.assertEqual(reply["relay"]["kind"], "hello_ok")
