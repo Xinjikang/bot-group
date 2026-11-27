@@ -21,9 +21,10 @@ def notification_targets(conn, project, sender):
 
 def select_task(conn, profile, project, preferred=None):
     """Resolve one exact task before starting the process; never mutate state."""
+    from .hermes_task_recovery import TASK_AVAILABLE
     rows = conn.execute(
         "SELECT t.* FROM tasks t JOIN requirements r ON r.id=t.requirement_id "
-        "WHERE t.project=? AND r.status IN ('open','blocked') AND r.archived=0 "
+        f"WHERE t.project=? AND r.status IN ('open','blocked') AND r.archived=0 AND {TASK_AVAILABLE} "
         "AND ((t.status='in_progress' AND t.claimed_by=?) "
         "OR (t.status='pending' AND t.next_bot=?)) "
         "ORDER BY (t.status='in_progress') DESC,r.id,t.id",

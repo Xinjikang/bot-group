@@ -10,6 +10,12 @@ logger = logging.getLogger(__name__)
 CHECK_INTERVAL = 15
 START_CHECK_INTERVAL = 0.2
 CHECK_LEASE = 60
+# Scope automatic task selection to its current owner. A handed-off task can run
+# for its new owner while the original member's recovery notice remains open.
+TASK_AVAILABLE = """NOT EXISTS (
+    SELECT 1 FROM hermes_task_recoveries h JOIN wake_jobs j ON j.id=h.job_id
+    WHERE h.state='unaccepted' AND h.task_id=t.id AND j.status='review'
+    AND j.project=t.project AND j.profile=CASE WHEN t.status='in_progress' THEN t.claimed_by ELSE t.next_bot END)"""
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS hermes_task_recoveries (
     request_id TEXT PRIMARY KEY,
@@ -203,10 +209,24 @@ def notice_states(conn, project):
                         "JOIN hermes_executions e ON e.execution_id=r.execution_id "
                         "JOIN wake_jobs j ON j.id=r.job_id "
                         "WHERE r.notice_message_id IS NOT NULL AND e.kind='work' AND e.thread_id IS NULL "
-                        "AND (r.state='released' OR (r.state='unaccepted' AND j.status='queued')) "
+                        "AND (r.state='released' OR (r.state='unaccepted' AND j.status='review')) "
                         "AND (? IS NULL OR e.project=?)", (project, project))
     return {r['notice_message_id']: ('released' if r['state'] == 'released' else
                                      'releasable' if _release_ready(r) else 'cleaning') for r in rows}
+
+
+def park_wake(conn, job_id):
+    """Release the queue slot and recover direct messages coalesced into the old wake."""
+    from . import wake
+    job = conn.execute("UPDATE wake_jobs SET status='review',detail='Hermes recovery ended without a task node; review before retry' "
+                       "WHERE id=? AND status='queued' RETURNING project,profile", (job_id,)).fetchone()
+    if job is None:
+        return False
+    pending = wake._snapshot_pending(conn, job['profile'], 'work', None, job['project'])
+    mid = next((m['message_id'] for m in pending if m['need_reply'] is not None), None)
+    if mid is not None:
+        wake.enqueue(conn, job['profile'], 'work', '@msg', mid, project=job['project'], commit=False)
+    return True
 
 
 def mark_unaccepted(conn, row, cue):
@@ -218,8 +238,7 @@ def mark_unaccepted(conn, row, cue):
         conn.execute("UPDATE wake_jobs SET status='cancelled',ended_at=?,detail='Unaccepted recovery no longer owns task' "
                      "WHERE id=? AND status='queued'", (db.now_iso(), cue['job_id']))
         return None
-    if conn.execute("UPDATE wake_jobs SET detail='Hermes recovery ended without a task node; review before retry' "
-                    "WHERE id=? AND status='queued'", (cue['job_id'],)).rowcount:
+    if park_wake(conn, cue['job_id']):
         return _notice(conn, row, cue, ended=True)
     return None
 
@@ -248,7 +267,7 @@ def release(conn, project, notice_id):
         if not _release_ready(cue):
             raise ValueError('本次执行结束或清理尚未确认，暂不能解除；请核对 Hermes 后重试')
         changed = conn.execute("UPDATE wake_jobs SET status='cancelled',ended_at=?,detail='Unaccepted recovery released by user' "
-                               "WHERE id=? AND profile=? AND project=? AND kind='work' AND status='queued'",
+                               "WHERE id=? AND profile=? AND project=? AND kind='work' AND status='review'",
                                (db.now_iso(), cue['job_id'], cue['profile'], project)).rowcount
         if not changed:
             raise ValueError('原催办已不处于待核对状态')

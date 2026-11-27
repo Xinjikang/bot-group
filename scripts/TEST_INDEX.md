@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+待核对催办与普通点名共存的回归使用 `python -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录下忽略的绝对报告目录> scripts.test_task_resume_recovery scripts.test_task_retry`。用例覆盖旧库恢复、连续重启、未读消息只派发一次、原任务保留待核对以及按原提醒解除。
+
 进程等待恢复和纠偏消息回归使用 `python -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录下忽略的绝对报告目录> scripts.test_hermes_process_waits scripts.test_steer_messages`。隔离 SQLite 和模拟网关验证旧进程退出证据、重启恢复、原唤醒投递、停止后切换会话、工作及话题纠偏、目标已读和其他成员未读。页面验证使用 `node scripts/test_thinking_lifecycle.cjs` 和 `python -X utf8 -B scripts/test_execution_state_browser.py --evidence <隔离报告目录>`，浏览器用例需要 Playwright 和 Chrome。
 
 新建与导入项目的 Git 编辑器配置使用项目 Python 运行 `-X utf8 -B -m unittest scripts.test_project_import_supplement scripts.test_project_setup`。临时项目目录应位于 Git 仓库外。用例验证导入后空消息提交失败、显式消息提交成功、新建项目的成员 worktree 继承配置，以及已有仓库保留自定义编辑器。

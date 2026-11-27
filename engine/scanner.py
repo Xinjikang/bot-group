@@ -166,6 +166,7 @@ def scan_tasks(conn) -> dict:
 
     返回 {claimable, stale, starved} 计数。
     """
+    from .hermes_task_recovery import TASK_AVAILABLE
     now = time.time()
 
     # 所有非归档项目
@@ -186,7 +187,7 @@ def scan_tasks(conn) -> dict:
         # 可领：pending 且 next_bot 非空
         claimable = conn.execute(
             "SELECT t.* FROM tasks t JOIN requirements r ON r.id=t.requirement_id "
-            "WHERE t.project=? AND t.status='pending' AND t.next_bot != '' "
+            f"WHERE t.project=? AND t.status='pending' AND t.next_bot != '' AND {TASK_AVAILABLE} "
             "AND r.status IN ('open','blocked') AND r.archived=0",
             (project,),
         ).fetchall()
@@ -194,7 +195,7 @@ def scan_tasks(conn) -> dict:
         # 催办：in_progress 且 claimed_at 超 2h
         stale = conn.execute(
             "SELECT t.* FROM tasks t JOIN requirements r ON r.id=t.requirement_id "
-            "WHERE t.project=? AND t.status='in_progress' "
+            f"WHERE t.project=? AND t.status='in_progress' AND {TASK_AVAILABLE} "
             "AND r.status IN ('open','blocked') AND r.archived=0",
             (project,),
         ).fetchall()

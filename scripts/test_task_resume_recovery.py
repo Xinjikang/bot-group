@@ -169,7 +169,7 @@ class ResumeRecoveryTests(unittest.TestCase):
         self.assertFalse(queue.process_one(self.conn))
         self.assertEqual(self.cue()['state'], 'unaccepted')
         self.assertEqual(self.task_tool('task_get').status_code, 409)
-        self.assertEqual(self.conn.execute('SELECT status FROM wake_jobs WHERE id=?', (self.job_id,)).fetchone()[0], 'queued')
+        self.assertEqual(self.conn.execute('SELECT status FROM wake_jobs WHERE id=?', (self.job_id,)).fetchone()[0], 'review')
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM nodes WHERE task_id=991').fetchone()[0], 0)
         self.assertEqual(sum(call.args == ('prompt.submit',) for call in client.rpc.call_args_list), 1)
 
@@ -190,8 +190,7 @@ class ResumeRecoveryTests(unittest.TestCase):
         db.recover_on_startup(self.conn)
         self.assertEqual(self.cue()['notice_message_id'], notice)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM messages WHERE sender='engine' AND content LIKE '%#991 自动续办受阻%'").fetchone()[0], 1)
-        self.assertFalse(wake.enqueue(self.conn, 'default', 'work', '@msg', project='alpha'))
-        self.conn.rollback()
+        self.assertTrue(wake.enqueue(self.conn, 'default', 'work', '@msg', project='alpha'))
         body = {'project': 'alpha', 'sender': 'user', 'text': f'/release-recovery {notice}'}
         with patch.object(session_fixture.auth, 'configured', return_value=False):
             premature = self.fixture.client.post('/msg', json=body)
@@ -328,7 +327,8 @@ class ResumeRecoveryTests(unittest.TestCase):
         client.rpc.return_value = self.snapshot([self.receipt('started', aid='callback-active')], running=True)
         self.assertFalse(self.poll(client))
         self.assertEqual([call.args for call in client.rpc.call_args_list], [('session.resume',)])
-        self.assertTrue(wake.enqueue(self.conn, 'architect', 'work', '@msg', project='alpha'))
+        from engine import router
+        router.route_message(self.conn, 'user', '@architect unrelated message', 'user', None, 'alpha')
         with patch.object(wake, 'session_busy', side_effect=lambda member, *_: member == 'default'), \
                 patch.object(wake, 'deliver', return_value={'ok': True}) as deliver:
             self.assertTrue(queue.process_one(self.conn))
@@ -381,7 +381,34 @@ class ResumeRecoveryTests(unittest.TestCase):
         db.recover_on_startup(self.conn)
         self.assertEqual(self.cue()['state'], 'unaccepted')
         self.assertFalse(queue.process_one(self.conn))
-        self.assertEqual(self.conn.execute('SELECT status FROM wake_jobs WHERE id=?', (self.job_id,)).fetchone()[0], 'queued')
+        self.assertEqual(self.conn.execute('SELECT status FROM wake_jobs WHERE id=?', (self.job_id,)).fetchone()[0], 'review')
+
+    def test_restart_recovers_coalesced_message_while_original_task_awaits_review(self):
+        from engine import router, scanner, task_retry
+        self.reserve()
+        client = Mock()
+        terminal = {**self.receipt('terminal'), 'outcome': 'failed'}
+        client.rpc.side_effect = [self.snapshot(), self.receipt('queued'), self.snapshot(), terminal]
+        self.poll(client)
+        self.poll(client)
+        # Recreate the legacy queue state with a new direct message already in the inbox.
+        self.conn.execute("UPDATE wake_jobs SET status='queued' WHERE id=?", (self.job_id,))
+        result = router.route_message(self.conn, 'user', '@default hello', 'user', None, 'alpha')
+        self.assertEqual(result['wake'], [])
+        for _ in range(2):
+            db.recover_on_startup(self.conn)
+        self.assertEqual(self.cue()['state'], 'unaccepted')
+        self.assertIsNone(task_retry.select_task(self.conn, 'default', 'alpha'))
+        self.assertEqual(scanner.scan_tasks(self.conn)['stale'], 0)
+        jobs = self.conn.execute("SELECT id,status,trigger_msg_id FROM wake_jobs WHERE profile='default' ORDER BY id").fetchall()
+        self.assertEqual([(j['status'], j['trigger_msg_id']) for j in jobs],
+                         [('review', None), ('queued', result['message_id'])])
+        with patch.object(wake, 'session_busy', return_value=False), patch.object(wake, 'deliver', return_value={'ok': True}) as deliver:
+            self.assertTrue(queue.process_one(self.conn))
+            self.assertFalse(queue.process_one(self.conn))
+        self.assertEqual(deliver.call_args.kwargs['trigger_msg_id'], result['message_id'])
+        self.assertIsNone(deliver.call_args.kwargs['task_id'])
+        self.assertEqual(self.conn.execute('SELECT status FROM tasks WHERE id=991').fetchone()[0], 'in_progress')
 
     def test_task_claim_uses_the_adopted_task_not_the_first_pending_task(self):
         self.conn.execute("UPDATE tasks SET status='pending',next_bot='default',claimed_by='',"

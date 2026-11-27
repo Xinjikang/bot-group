@@ -148,7 +148,8 @@ def capture(conn, row, receipt):
         conn.executemany('INSERT OR IGNORE INTO hermes_delegations(execution_id,delegation_id) VALUES(?,?)',
                          [(row['execution_id'], did) for did in ids])
         if row['task_id'] is None and row['kind'] == 'work':
-            tasks = conn.execute("SELECT id FROM tasks WHERE project=? AND status='in_progress' AND claimed_by=?",
+            tasks = conn.execute("SELECT t.id FROM tasks t WHERE t.project=? AND t.status='in_progress' AND t.claimed_by=? "
+                                 f"AND {recovery.TASK_AVAILABLE}",
                                  (row['project'], row['profile'])).fetchall()
             if len(tasks) == 1:
                 conn.execute('UPDATE hermes_executions SET task_id=? WHERE execution_id=?',

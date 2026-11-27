@@ -1119,6 +1119,10 @@ def recover_on_startup(conn: sqlite3.Connection) -> int:
 
     startup = time.time()
     conn.execute("BEGIN IMMEDIATE")
+    from . import hermes_task_recovery
+    for job in conn.execute("SELECT j.id FROM wake_jobs j JOIN hermes_task_recoveries r ON r.job_id=j.id "
+                            "WHERE j.status='queued' AND r.state='unaccepted' AND r.notice_message_id IS NOT NULL").fetchall():
+        hermes_task_recovery.park_wake(conn, job['id'])
     conn.execute("UPDATE wake_jobs SET status='done',ended_at=? WHERE status='running' AND EXISTS "
                  "(SELECT 1 FROM hermes_executions h WHERE h.job_id=wake_jobs.id)", (now_iso(),))
     cur = conn.execute(
