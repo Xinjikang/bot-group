@@ -79,7 +79,7 @@ Windows 新 home 保留来源中有效的 `windows.sandbox` 选择（`elevated`�
 
 `reuse_auth` 作为旧客户端兼容字段接受；两种宿主的创建均自动继承模型认证。Codex 的主账户文件认证同步见 [Codex profile 认证](../guides/CODEX-PROFILE-HOMES.md#file-authentication-synchronization)。
 
-Hermes 凭证扫描由 `engine/profile_credentials.py` 实现，以 AST 读取当前安装的 `auth.py` 注册行、`providers.py` overlay 和 `config_defaults.py` 中 provider 类环境变量定义，并合并本地 `models_dev_cache.json` 的 `env` 元数据。扫描保持离线，仅解析数据，保持 Hermes 模块未执行；当前适配结构参考 Hermes `afc3b7c6f3`。定义缺失或结构不兼容时中止并回滚创建，提示检查安装或更新引擎适配。
+Hermes 凭证扫描由 `engine/profile_credentials.py` 实现。引擎通过 AST 读取当前安装的 `auth.py` 注册行、`providers.py` overlay 和 `config_defaults.py` 中 provider 类环境变量定义，并合并本地 `models_dev_cache.json` 的 `env` 元数据。`OPTIONAL_ENV_VARS` 支持字典字面量和单参数 `OptionalEnvVars({...})` 两种形式。扫描离线读取静态条目，跳过宿主的延迟加载逻辑。定义缺失或结构不兼容时中止并回滚创建，提示检查安装或更新引擎适配。
 
 来源 YAML 的 `model`、`providers`、`custom_providers` 和 `model_aliases` 一同复制。`key_env` / `api_key_env` 显式声明的自定义变量名加入复制集合；直接 `api_key` 保留在模型定义中。`.env` 只复制集合中的赋值，保留引号内空白、等号、换行和特殊字符；消息渠道、浏览器及其他工具配置本轮保持独立。供应商声明的别名 key 和地址变量可同时复制。`auth_copied` 为本地凭证准备提示，当前供应商缺少可识别凭证时保留设置提示。动态 `key_cmd`、外部凭证库及运行时插件 provider 的迁移能力需另行适配。
 

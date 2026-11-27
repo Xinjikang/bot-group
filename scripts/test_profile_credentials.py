@@ -59,6 +59,19 @@ class ProviderCredentialTests(unittest.TestCase):
         self.assertTrue(ready)
         self.assertTrue(self.copy({'model': {'api_key': 'inline-value'}}, '')[1])
 
+    def test_wrapped_environment_metadata(self):
+        path = self.root / 'hermes-agent/hermes_cli/config_defaults.py'
+        original = path.read_text(encoding='utf-8')
+        path.write_text(original.replace('= {', '= OptionalEnvVars({').rstrip() + ')', encoding='utf-8')
+        values, ready = self.copy({'model': {'provider': 'ollama-cloud'}},
+                                  'OLLAMA_API_KEY=test\nCUSTOM_MODEL_OPTION=enabled\nFEISHU_APP_SECRET=channel')
+        self.assertTrue(ready)
+        self.assertEqual(values, {'OLLAMA_API_KEY': 'test', 'CUSTOM_MODEL_OPTION': 'enabled'})
+
+        path.write_text('OPTIONAL_ENV_VARS = OptionalEnvVars(load_settings())', encoding='utf-8')
+        with self.assertRaises(ValueError):
+            self.copy({}, '')
+
     def test_credential_round_trip_and_unrelated_key_is_not_ready(self):
         raw = "OLLAMA_API_KEY='line1\nline2\\\\path\\\'quoted'\n"
         values, ready = self.copy({'model': {'provider': 'ollama-cloud'}}, raw)

@@ -66,6 +66,12 @@ def main():
             page.locator('#import-mode').select_option('worktree')
             assert page.locator('#import-baseline').is_hidden()
             assert '创建首次提交' in page.locator('#import-baseline-initial').inner_text()
+            page.locator('#import-git-check').click()
+            agents_file = page.locator('#import-commit-files details').filter(
+                has=page.get_by_role('checkbox', name='提交 AGENTS.md', exact=True))
+            agents_file.locator('summary').click()
+            assert '+++ 新/AGENTS.md' in agents_file.locator('pre').inner_text()
+            assert agents_file.get_by_role('checkbox').is_checked()
             page.locator('#import-next').click()
             page.locator('#import-role-step').wait_for(state='visible')
             page.locator('#import-back').click()
@@ -276,6 +282,9 @@ def main():
                     ('writing', '主编', ['资料研究员', '作者', '审校'], 10),
                     ('blank', '项目负责人', [], 5)):
                 template_root = fixture.base / (template + '-owner')
+                hud_toggle = page.locator('#hud-toggle[aria-expanded=true]')
+                if hud_toggle.is_visible():
+                    hud_toggle.click()
                 page.evaluate('openProjectNew()')
                 page.locator('#project-entry-new').click()
                 page.locator('#import-root').fill(str(template_root))
@@ -329,8 +338,7 @@ def main():
                 assert owner_role['name'] == owner_name
                 page.evaluate('([project, roles]) => renderProjectRoles(project, roles)', [created_project, roles])
                 assert page.locator(f'#pj-role-list [data-role-id="{owner_role["id"]}"]').get_by_role('button', name='删除', exact=True).count() == 0
-                page.locator('#app-alert').wait_for(state='visible')
-                page.locator('#app-alert .primary').click()
+                assert not page.locator('#app-alert').is_visible(), 'Document review reminders apply to imported projects'
             assert not errors, errors
             browser.close()
         print('PASS: seven steps, real Git, 390px themes, template owner names/grants/notification/AGENTS/role protection')

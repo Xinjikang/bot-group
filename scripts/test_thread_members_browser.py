@@ -78,7 +78,16 @@ def main():
         def open_topic(value=topic):
             page.evaluate('t => openThreadMemberDlg(t, null)', value)
 
-        open_topic()
+        page.evaluate("""topic => {
+            S.currentProject = topic.project;
+            S.threads = [{...topic, status: 'settled'}];
+            renderThreads();
+            S.currentProject = 'other';
+        }""", topic)
+        card = page.locator('.thread-card').filter(has_text=topic['title'])
+        card.locator('.tc-menu-btn').click()
+        card.get_by_role('button', name='成员管理', exact=True).click()
+        assert topic['title'] in page.locator('#tm-thread-title').inner_text()
         page.wait_for_function("document.querySelectorAll('#thread-member-list .tm-row').length === 3")
         assert requests[-1]['project'] == ['p']
         assert '项目外成员' not in page.locator('#thread-member-list').inner_text()

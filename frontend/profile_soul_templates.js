@@ -11,7 +11,7 @@
     <pre id="profile-soul-template-preview" tabindex="0" aria-label="${window.t('st_preview_aria')}" hidden></pre>
     <p class="profile-help" id="profile-soul-template-status" role="status"></p>
     <div class="dlg-btns"><button type="button" id="profile-soul-template-retry">${window.t('st_retry')}</button>
-      <button type="button" id="profile-soul-template-close">${window.t('st_close')}</button>
+      <button type="button" id="profile-soul-template-close">${window.t('close')}</button>
       <button type="button" class="primary" id="profile-soul-template-apply" disabled>${window.t('st_apply')}</button></div>`;
   const find = id => dialog.querySelector('#profile-soul-template-' + id);
   // 弹窗内容在模块加载时构建一次；打开前按当前语言刷新静态文案。
@@ -20,7 +20,7 @@
     dialog.querySelector('label[for="profile-soul-template-role"]').textContent = window.t('st_role_label');
     find('preview').setAttribute('aria-label', window.t('st_preview_aria'));
     find('retry').textContent = window.t('st_retry');
-    find('close').textContent = window.t('st_close');
+    find('close').textContent = window.t('close');
     find('apply').textContent = window.t('st_apply');
   }
   let current = null, generation = 0;

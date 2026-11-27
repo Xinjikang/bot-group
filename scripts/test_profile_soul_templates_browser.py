@@ -87,6 +87,7 @@ def main():
         assert page.locator('label[for=member-create-instructions]').inner_text() == '个人指令 · AGENTS.md'
         page.locator('#member-create-soul-templates button').click()
         page.locator('#profile-soul-template-apply').wait_for(state='visible')
+        assert page.locator('#profile-soul-template-close').inner_text() == '关闭'
         page.wait_for_function("!document.querySelector('#profile-soul-template-apply').disabled")
         assert page.locator('#profile-soul-template-preview').text_content() == soul
         assert page.locator('#profile-soul-template-preview img').count() == 0
@@ -216,6 +217,10 @@ def main():
         finally:
             state['real_client'] = None
             fixture.doCleanups()
+        page.evaluate("setUILanguage('en')")
+        edit(); picker()
+        page.locator('#dlg-profile-soul-template').get_by_role('button', name='Close', exact=True).click()
+        assert not page.locator('#dlg-profile-soul-template').is_visible()
         assert not errors, errors
         browser.close()
     print('PASS: project-only SOUL references, create/edit drafts, preview, confirmation, retry, stale responses and narrow layout')

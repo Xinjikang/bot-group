@@ -493,6 +493,12 @@ updateModeHelp(); renderRoles(); renderMembers(); showStep(1); status(creationMo
   }
   el('git-init').addEventListener('change', () => { commitFiles = null; updateModeHelp(); });
   el('baseline').addEventListener('change', () => { commitFiles = null; el('commit-files').replaceChildren(); });
+  function renderCommitDiff(file) {
+    const diff = document.createElement('pre');
+    diff.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere';
+    diff.textContent = file.diff || window.t('imp_empty_or_binary');
+    return diff;
+  }
   async function checkGit() {
 const current = version; lock(true); status(window.t('imp_checking_git'));
     try {
@@ -515,11 +521,12 @@ caption.textContent = plan.baseline === 'existing' ? window.t('imp_baseline_exis
         if (plan.baseline === 'commit') for (const file of plan.files) {
           const row = document.createElement('details'), label = document.createElement('summary');
           const check = document.createElement('input'); check.type = 'checkbox'; check.checked = file.selected;
-check.setAttribute('aria-label', window.t('imp_commit_file') + ' ' + file.path);
+          check.setAttribute('aria-label', window.t('imp_commit_file') + ' ' + file.path);
           check.addEventListener('click', event => event.stopPropagation());
           check.addEventListener('change', () => { if (check.checked) commitFiles.add(file.path); else commitFiles.delete(file.path); });
-label.append(check, document.createTextNode(' ' + file.path + (file.excluded ? window.t('open_paren') + window.t('imp_excluded') + window.t('close_paren') : '')));
-          row.append(label, diff); el('commit-files').append(row);
+          label.append(check, document.createTextNode(' ' + file.path + (file.excluded ? window.t('open_paren') + window.t('imp_excluded') + window.t('close_paren') : '')));
+          row.append(label, renderCommitDiff(file));
+          el('commit-files').append(row);
         }
       }
 status(window.t('imp_git_checked')); return true;
@@ -643,10 +650,10 @@ summary.textContent = `${({create: window.t('imp_fa_create'), replace: window.t(
       text.append(item);
     }
     if (gitPlan?.baseline === 'commit') for (const file of gitPlan.files.filter(f => f.selected)) {
-      const item = document.createElement('details'), summary = document.createElement('summary'), diff = document.createElement('pre');
-summary.textContent = window.t('imp_review_diff') + ': ' + file.path;
-diff.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere'; diff.textContent = file.diff || window.t('imp_empty_or_binary');
-      item.append(summary, diff); text.append(item);
+      const item = document.createElement('details'), summary = document.createElement('summary');
+      summary.textContent = window.t('imp_review_diff') + window.t('colon') + file.path;
+      item.append(summary, renderCommitDiff(file));
+      text.append(item);
     }
     if (payload.directory_mode === 'worktree') for (const member of payload.members) {
       const bot = preview.bots.find(b => b.bot_id === member.bot_id), item = document.createElement('p');

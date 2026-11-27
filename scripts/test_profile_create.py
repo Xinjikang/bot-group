@@ -395,15 +395,15 @@ class ProfileCreateTests(unittest.TestCase):
 
     def test_db_failure_rolls_back_published_home_and_retry_works(self):
         root, body = self.fixture()
-        original = bot_identity.enroll
-        calls = []
-        def fail_final(*args):
-            calls.append(1)
-            if len(calls) == 2:
-                raise RuntimeError('synthetic failure')
-            return original(*args)
-        with patch.object(bot_identity, 'enroll', side_effect=fail_final):
+        published = []
+
+        def fail_after_publish(*args):
+            published.append((root / 'profiles' / body['profile'] / 'config.toml').is_file())
+            raise RuntimeError('synthetic failure')
+
+        with patch.object(profile_create.files, 'registration_defaults', side_effect=fail_after_publish):
             self.create(body, 400)
+        self.assertEqual(published, [True])
         self.assertFalse((root / 'profiles' / body['profile']).exists())
         self.assertEqual(list((root / 'profiles').iterdir()), [])
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM bots WHERE profile='new-dev'").fetchone()[0], 0)

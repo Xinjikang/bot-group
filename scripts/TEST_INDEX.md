@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+项目向导、话题成员和 SOUL 模板回归使用装有 Playwright 的项目 Python 与 Chrome。运行 `scripts/test_project_setup_browser.py` 验证首次提交前重新检查、展开文件差异、保留勾选并完成提交。运行 `scripts/test_thread_members_browser.py --evidence <报告目录>/members` 检查已收口话题的卡片菜单入口、成员列表及增删。运行 `scripts/test_profile_soul_templates_browser.py --evidence <报告目录>/soul` 检查中文和英文关闭按钮及模板引用。使用仓库外临时 Git、隔离数据库或拦截的 HTTP 请求。运行 `-m unittest scripts.test_profile_credentials scripts.test_profile_create` 验证 Hermes 两种凭证定义格式、动态表达式拒绝及创建回滚。
+
 待核对催办与普通点名共存的回归使用 `python -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录下忽略的绝对报告目录> scripts.test_task_resume_recovery scripts.test_task_retry`。用例覆盖旧库恢复、连续重启、未读消息只派发一次、原任务保留待核对以及按原提醒解除。
 
 进程等待恢复和纠偏消息回归使用 `python -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录下忽略的绝对报告目录> scripts.test_hermes_process_waits scripts.test_steer_messages`。隔离 SQLite 和模拟网关验证旧进程退出证据、重启恢复、原唤醒投递、停止后切换会话、工作及话题纠偏、目标已读和其他成员未读。页面验证使用 `node scripts/test_thinking_lifecycle.cjs` 和 `python -X utf8 -B scripts/test_execution_state_browser.py --evidence <隔离报告目录>`，浏览器用例需要 Playwright 和 Chrome。

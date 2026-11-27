@@ -42,7 +42,7 @@ def _assignment(path, name):
 
 
 def scan(root: Path, home: Path) -> Catalog:
-    """Adapter for Hermes afc3b7c6f3: registry rows, overlays and categorized env metadata."""
+    """Read static registry rows, overlays and categorized environment metadata."""
     cli = root / 'hermes-agent' / 'hermes_cli'
     result = Catalog()
     rows = _assignment(cli / 'auth.py', '_REGISTRY_ROWS')
@@ -61,6 +61,9 @@ def scan(root: Path, home: Path) -> Catalog:
             raise ValueError('Unsupported provider registry row')
     overlays = _assignment(cli / 'providers.py', 'HERMES_OVERLAYS')
     metadata = _assignment(cli / 'config_defaults.py', 'OPTIONAL_ENV_VARS')
+    if (isinstance(metadata, ast.Call) and isinstance(metadata.func, ast.Name)
+            and metadata.func.id == 'OptionalEnvVars' and len(metadata.args) == 1 and not metadata.keywords):
+        metadata = metadata.args[0]
     if not isinstance(overlays, ast.Dict) or not isinstance(metadata, ast.Dict):
         raise ValueError('Unsupported provider metadata')
     for key, entry in zip(overlays.keys, overlays.values):

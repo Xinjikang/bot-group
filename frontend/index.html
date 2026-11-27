@@ -3611,12 +3611,12 @@ $("#dlg-tm-close").addEventListener("click", () => closeDialogAnchored($("#dlg-t
 // 话题成员管理（需求1a：threads.members 增删——加 bot 立即唤醒看历史、删 bot 清 pending 由引擎做）
 let threadMembersRequest = 0;
 
-function openThreadMemberDlg(t, triggerEl) {
+function openThreadMemberDlg(thread, triggerEl) {
   const dlg = $("#dlg-thread-members");
   if (dlg.__outsideCloser) document.removeEventListener('click', dlg.__outsideCloser, true);
-  $("#tm-thread-title").textContent = t("topic_member_count", [t.title, safeJSON(t.members, []).length]);
+  $("#tm-thread-title").textContent = window.t("topic_member_count", [thread.title, safeJSON(thread.members, []).length]);
   openDialogAnchored(dlg, triggerEl);
-  loadThreadMemberList(t);
+  loadThreadMemberList(thread);
 }
 
 async function loadThreadMemberList(t) {
