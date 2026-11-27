@@ -67,14 +67,34 @@ class InstallCheckTest(unittest.TestCase):
         self._write_state()
         self.assertEqual(install.do_check(), 0)
 
-    def test_check_requirements_changed_returns_1(self):
-        self._write_state(requirements_sha256="deadbeef")
-        self.assertEqual(install.do_check(), 1)
-
-    def test_check_lock_changed_returns_1(self):
-        # 锁定清单内容变化（requirements.lock 被改但文件还在）→ 提示重跑 install
-        self._write_state(lock_sha256="deadbeef")
-        self.assertEqual(install.do_check(), 1)
+    def test_changed_manifests_refresh_only_after_target_environment_matches(self):
+        from importlib.metadata import version
+        declarations = self._data_dir / "requirements.txt"
+        declarations.write_text("pip>=1\n", encoding="utf-8")
+        self._lock.write_text(f"pip=={version('pip')}\n", encoding="utf-8")
+        with mock.patch.object(install, "REQUIREMENTS", declarations):
+            self._write_state(requirements_sha256="previous", lock_sha256="previous")
+            self.assertEqual(install.do_check(), 0)
+            saved = json.loads(install.state_path().read_text())
+            self.assertEqual(saved["installed_at"], "2026-10-16T00:00:00")
+            self.assertEqual(saved["requirements_sha256"], install._sha256(declarations))
+            self.assertEqual(saved["lock_sha256"], install._sha256(self._lock))
+            with mock.patch.object(install, "dependency_error", side_effect=AssertionError):
+                self.assertEqual(install.do_check(), 0)
+            for manifest, requirement, detail in (
+                (declarations, "pip<1", "要求 <1"),
+                (declarations, "bot-group-missing-fixture>=9", "缺少 bot-group-missing-fixture>=9"),
+                (self._lock, "pip==0", "要求 ==0"),
+            ):
+                with self.subTest(requirement=requirement):
+                    declarations.write_text("pip>=1\n", encoding="utf-8")
+                    manifest.write_text(requirement + "\n", encoding="utf-8")
+                    error = io.StringIO()
+                    with redirect_stderr(error):
+                        self.assertEqual(install.do_check(), 1)
+                    self.assertIn(detail, error.getvalue())
+                    self.assertIn("install", error.getvalue())
+                    self.assertEqual(json.loads(install.state_path().read_text()), saved)
 
     def test_check_python_mismatch_returns_1(self):
         self._write_state(python_version="2.7.0")
@@ -390,7 +410,7 @@ class InstallRepairTest(unittest.TestCase):
         # repair 验证 venv 依赖 + 记录 venv 实际版本，不重装
         with mock.patch.object(install, "venv_python_version", return_value="3.11.15"), \
                 mock.patch.object(install, "selfcheck"), \
-                mock.patch.object(install, "verify_lock_versions", return_value=True):
+                mock.patch.object(install, "dependency_error", return_value=""):
             self.assertEqual(install.do_repair(), 0)
         state = json.loads(install.state_path().read_text(encoding="utf-8"))
         self.assertEqual(state["python_version"], "3.11.15")
@@ -399,13 +419,13 @@ class InstallRepairTest(unittest.TestCase):
         # 缺陷：lock 漂移（如 fastapi==999.999.999）不得盖就绪章（node 1071 P1）
         with mock.patch.object(install, "venv_python_version", return_value="3.11.15"), \
                 mock.patch.object(install, "selfcheck"), \
-                mock.patch.object(install, "verify_lock_versions", return_value=False):
+                mock.patch.object(install, "dependency_error", return_value="lock drift"):
             self.assertEqual(install.do_repair(), 1)
         self.assertFalse(install.state_path().exists())
 
     def test_verify_lock_versions_requires_lock(self):
         with mock.patch.object(install, "LOCKFILE", Path("/nonexistent/lock")):
-            self.assertFalse(install.verify_lock_versions())
+            self.assertTrue(install.dependency_error())
 
     def test_repair_fails_when_selfcheck_broken(self):
         # 半安装/缺依赖：selfcheck 失败不写就绪（保持可重装）

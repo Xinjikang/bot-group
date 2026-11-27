@@ -116,7 +116,7 @@ Windows 四个 BAT 入口使用 ASCII 注释/提示与 CRLF，兼容默认及 UT
 
 macOS/Linux 在安装目录运行 `./upgrade.sh`；脚本从安装 venv 取得基础 Python，升级过程中允许重建 venv，并透传参数与退出码。Git 中的 shell 入口带执行位和 LF 换行；正式 ZIP 同样记录执行权限，安装器在 POSIX 恢复入口权限。较旧安装包可以先通过 `bash install.sh` 完成安装。
 
-锁定依赖的环境标记在目标 venv 内求值，`pywin32` 仅在 Windows 安装和校验。完整安装与 repair 都检查适用依赖的精确版本；启动 check 使用已验证的安装记录及依赖清单摘要。
+锁定依赖的环境标记在目标 venv 内求值，`pywin32` 仅在 Windows 安装和校验。完整安装与 repair 都检查适用依赖的精确版本；启动时若依赖声明或锁定清单的摘要变化，check 在目标虚拟环境核验当前平台的声明约束和锁定版本。全部满足后自动更新安装记录。缺包或版本不符时，重启页面显示具体依赖与安装命令，原服务继续运行。
 
 本机“选择目录”在 Windows 使用系统窗口、macOS 使用 osascript，Linux 使用 tkinter。Linux 需要图形桌面和 tkinter；缺少时页面提示直接输入路径。项目助手旧版 Hermes CLI 通道通过 `HERMES_DISABLE_LAZY_INSTALLS=1` 保持已选运行环境，临时数据目录保持工具隔离；依赖导入错误明确提示修复运行环境，其他子进程错误保留退出码。
 

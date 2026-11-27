@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tempfile
 from pathlib import Path
 
 PROGRAM_ROOT = Path(__file__).resolve().parents[2]
@@ -174,43 +175,26 @@ def selfcheck() -> None:
     subprocess.run([str(venv_python()), "-c", code], check=True)
 
 
-def verify_lock_versions() -> bool:
-    """在目标 venv 中求值环境标记并校验精确版本；缺包或锁定漂移保持未就绪。"""
-    if not LOCKFILE.exists():
-        return False
-    code = (
-        "import importlib.metadata as md, sys\n"
-        "from pip._vendor.packaging.requirements import Requirement\n"
-        "from pathlib import Path\n"
-        "bad = []\n"
-        "for raw in Path(sys.argv[1]).read_text(encoding='utf-8').splitlines():\n"
-        "    line = raw.split('#', 1)[0].strip()\n"
-        "    if not line:\n"
-        "        continue\n"
-        "    req = Requirement(line)\n"
-        "    if req.marker and not req.marker.evaluate():\n"
-        "        continue\n"
-        "    specs = list(req.specifier)\n"
-        "    if len(specs) != 1 or specs[0].operator != '==' or '*' in specs[0].version:\n"
-        "        bad.append(f'{req.name}: exact version required')\n"
-        "        continue\n"
-        "    name, want = req.name, specs[0].version\n"
-        "    try:\n"
-        "        got = md.version(name)\n"
-        "    except md.PackageNotFoundError:\n"
-        "        bad.append(f'{name}: missing')\n"
-        "        continue\n"
-        "    if got != want:\n"
-        "        bad.append(f'{name}: {got} != {want}')\n"
-        "if bad:\n"
-        "    print('LOCK DRIFT: ' + '; '.join(bad))\n"
-        "    sys.exit(1)\n"
-        "print('lock versions OK')\n"
-    )
-    out = subprocess.run(
-        [str(venv_python()), "-c", code, str(LOCKFILE)], capture_output=True, text=True
-    )
-    return out.returncode == 0
+def dependency_error() -> str:
+    """Validate both manifests inside the interpreter that runs the engine."""
+    command = [str(venv_python()), "-X", "utf8", str(Path(__file__).with_name("dependency_check.py")),
+               str(REQUIREMENTS), str(LOCKFILE)]
+    result = subprocess.run(command, capture_output=True, encoding="utf-8", errors="replace")
+    if result.returncode == 0:
+        return ""
+    return result.stdout.strip() or "无法在项目虚拟环境中核验依赖"
+
+
+def _save_state(data: dict) -> None:
+    path = state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staged = tempfile.NamedTemporaryFile(dir=path.parent, delete=False, mode="w", encoding="utf-8")
+    try:
+        with staged:
+            json.dump(data, staged, indent=2, ensure_ascii=False)
+        os.replace(staged.name, path)
+    finally:
+        Path(staged.name).unlink(missing_ok=True)
 
 
 def write_state() -> None:
@@ -221,9 +205,7 @@ def write_state() -> None:
         "lock_sha256": _sha256(LOCKFILE),
         "installed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
-    sp = state_path()
-    sp.parent.mkdir(parents=True, exist_ok=True)
-    sp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    _save_state(data)
 
 
 def do_install(rebuild: bool = False, base_python: str | None = None) -> int:
@@ -248,8 +230,8 @@ def do_install(rebuild: bool = False, base_python: str | None = None) -> int:
         env = first_config()
         print(f"[install] 首次配置：{env}")
         selfcheck()
-        if not verify_lock_versions():
-            raise RuntimeError('依赖版本与当前平台锁定清单不一致，请重新安装')
+        if problem := dependency_error():
+            raise RuntimeError(problem)
         print("[install] 自检通过")
         if os.name != 'nt':
             for name in ('bootstrap.sh', 'install.sh', 'start.sh', 'stop.sh', 'upgrade.sh'):
@@ -267,40 +249,43 @@ def do_install(rebuild: bool = False, base_python: str | None = None) -> int:
 
 
 def do_check() -> int:
-    """就绪检查（start 前调用）：缺环境/依赖摘要变化提示重跑 install，不误判就绪。"""
+    """就绪检查（start 前调用）：摘要变化时核验目标环境，通过后更新安装记录。"""
     if not venv_python().exists():
-        print("[check] 未找到 .venv，请先运行 install（install.sh / install.bat）", file=sys.stderr)
+        print("[check-error] 未找到 .venv，请先运行 install（install.sh / install.bat）", file=sys.stderr)
         return 1
     sp = state_path()
     if not sp.exists():
         # 旧环境（已有 .venv 但无安装记录）：给出可操作迁移提示，而非只叫用户重跑 install
         print(
-            "[check] 检测到已有 .venv 但缺少安装记录（旧版本环境）。\n"
-            "       请运行 install.bat repair（或 tools/install.py repair）验证并迁移现有环境（不重装依赖）；\n"
-            "       或运行 install.bat 重新安装。",
+            "[check-error] 已有 .venv 但缺少安装记录，请用项目解释器运行 tools/install.py repair",
             file=sys.stderr,
         )
         return 1
     try:
         state = json.loads(sp.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        print("[check] 安装状态损坏，请重新运行 install", file=sys.stderr)
+        print("[check-error] 安装状态损坏，请重新运行 install", file=sys.stderr)
+        return 1
+    if not isinstance(state, dict):
+        print("[check-error] 安装记录损坏，请重新运行 install", file=sys.stderr)
         return 1
     venv_version = venv_python_version()
     if not venv_version:
-        print("[check] venv 解释器无法运行，请重新运行 install", file=sys.stderr)
+        print("[check-error] venv 解释器无法运行，请重新运行 install", file=sys.stderr)
         return 1
     if state.get("python_version") != venv_version:
-        print("[check] venv 解释器版本变化，请重新运行 install", file=sys.stderr)
+        print("[check-error] venv 解释器版本变化，请重新运行 install", file=sys.stderr)
         return 1
-    if state.get("requirements_sha256") != _sha256(REQUIREMENTS):
-        print("[check] 依赖声明变化，请重新运行 install", file=sys.stderr)
-        return 1
-    if not LOCKFILE.exists():
-        print("[check] 缺少锁定清单，请重新运行 install", file=sys.stderr)
-        return 1
-    if state.get("lock_sha256") != _sha256(LOCKFILE):
-        print("[check] 锁定清单变化，请重新运行 install", file=sys.stderr)
+    try:
+        digests = {"requirements_sha256": _sha256(REQUIREMENTS), "lock_sha256": _sha256(LOCKFILE)}
+        if any(state.get(key) != value for key, value in digests.items()):
+            if problem := dependency_error():
+                command = "install.bat" if os.name == "nt" else "./install.sh"
+                print(f"[check-error] {problem}。请在项目目录运行 {command} 后重试", file=sys.stderr)
+                return 1
+            _save_state({**state, **digests})
+    except OSError as exc:
+        print(f"[check-error] 安装记录或依赖清单读写失败：{exc}", file=sys.stderr)
         return 1
     print(f"[check] Hermes/Codex：{json.dumps(detect_runtime(), ensure_ascii=False)}")
     print("[check] 就绪")
@@ -334,8 +319,8 @@ def do_repair() -> int:
         print(f"[repair] 依赖校验失败，请运行 install 重新安装：{exc}", file=sys.stderr)
         return 1
     # 核验已装依赖版本与锁定清单一致：lock 漂移（如 fastapi==999.999.999）不得盖就绪章
-    if not verify_lock_versions():
-        print("[repair] 已装依赖与 requirements.lock 锁定版本不一致，请运行 install 重新安装", file=sys.stderr)
+    if problem := dependency_error():
+        print(f"[repair] {problem}。请运行 install 重新安装", file=sys.stderr)
         return 1
     try:
         write_state()

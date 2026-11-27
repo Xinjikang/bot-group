@@ -24,22 +24,16 @@ class CompatibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             lock = Path(tmp) / 'requirements.lock'
             lock.write_text('common==1.0\npywin32==312; sys_platform == "win32"\n', encoding='utf-8')
-            with patch.object(install, 'LOCKFILE', lock), patch.object(install.subprocess, 'run') as run:
-                run.return_value.returncode = 0
-                self.assertTrue(install.verify_lock_versions())
-                code = run.call_args.args[0][2]
+            from engine.maintenance.dependency_check import problems
             for platform in ('darwin', 'linux', 'win32'):
                 environment = dict(default_environment(), sys_platform=platform)
-                with self.subTest(platform=platform), patch.object(sys, 'argv', ['check', str(lock)]), \
-                     patch('pip._vendor.packaging.markers.default_environment', return_value=environment), \
-                     patch('importlib.metadata.version', side_effect=lambda name: {'common': '1.0', 'pywin32': '312'}[name]) as version, \
-                     contextlib.redirect_stdout(io.StringIO()):
-                    exec(code, {})
+                with self.subTest(platform=platform), patch('pip._vendor.packaging.markers.default_environment', return_value=environment), patch(
+                    'importlib.metadata.version', side_effect=lambda name: {'common': '1.0', 'pywin32': '312'}[name]
+                ) as version:
+                    self.assertEqual(list(problems(lock, locked=True)), [])
                     self.assertEqual(version.call_count, 2 if platform == 'win32' else 1)
-            with patch.object(sys, 'argv', ['check', str(lock)]), \
-                 patch('importlib.metadata.version', return_value='0.0'), \
-                 contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
-                exec(code, {})
+            with patch('importlib.metadata.version', return_value='0.0'):
+                self.assertIn('common 已安装 0.0，要求 ==1.0', list(problems(lock, locked=True)))
 
     def test_install_refuses_to_stamp_dependency_drift(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
@@ -48,7 +42,7 @@ class CompatibilityTests(unittest.TestCase):
                 stack.enter_context(patch.object(install, name))
             stack.enter_context(patch.object(install, 'detect_runtime', return_value={}))
             stack.enter_context(patch.object(install, 'first_config', return_value=root / '.env'))
-            stack.enter_context(patch.object(install, 'verify_lock_versions', return_value=False))
+            stack.enter_context(patch.object(install, 'dependency_error', return_value='lock drift'))
             stamp = stack.enter_context(patch.object(install, 'write_state'))
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
@@ -131,7 +125,7 @@ class CompatibilityTests(unittest.TestCase):
             root = Path(tmp) / 'source'; root.mkdir()
             (root / 'upgrade.sh').write_bytes(b'#!/usr/bin/env bash\r\nexit 0\r\n')
             out = Path(tmp) / 'release'
-            with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stdout(io.StringIO()), patch.object(make_release, '_relay_checksums', return_value=''):
                 self.assertEqual(make_release.make_release(root, out, 'fixture', 'v1.0.0'), 0)
             archive = out / 'fixture-v1.0.0.zip'
             with zipfile.ZipFile(archive) as z:

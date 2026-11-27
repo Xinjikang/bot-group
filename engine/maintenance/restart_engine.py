@@ -24,9 +24,15 @@ def run(operation_id):
         options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
         # Detached Windows parents need explicit handles for child diagnostics.
         env = {**os.environ, 'GROUP_SERVICE_MAINTENANCE': '1'}
-        result = subprocess.run(command, cwd=ROOT, env=env, stdout=sys.stdout, stderr=sys.stderr, **options)
-        if result.returncode:
-            raise RuntimeError(f'服务启动脚本退出码 {result.returncode}，请查看 service-restart.log')
+        with (config.logs_dir() / 'service-restart.log').open('a+b', buffering=0) as log:
+            start = log.tell()
+            result = subprocess.run(command, cwd=ROOT, env=env, stdout=log, stderr=log, **options)
+            if result.returncode:
+                log.seek(start)
+                for line in log:
+                    if line.startswith(b'[check-error] '):
+                        raise RuntimeError(line.removeprefix(b'[check-error] ').decode('utf-8', 'replace').strip())
+                raise RuntimeError(f'服务启动脚本退出码 {result.returncode}')
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         headers = {}
         if auth.configured():

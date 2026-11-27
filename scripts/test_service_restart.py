@@ -215,16 +215,16 @@ class RestartTests(unittest.TestCase):
 @unittest.skipUnless(os.name == 'nt', 'Windows start.bat integration')
 class RestartIntegration(unittest.TestCase):
     def test_two_real_restarts_keep_database_and_release_old_process(self):
-        # Dedicated copied program/data/port. Only install.check is substituted;
-        # the BAT, helper, stop/start clients, server and HTTP paths are real.
+        # Use the same dependency check, launcher and helper as the installed engine.
         with tempfile.TemporaryDirectory(prefix='restart space ') as tmp:
             root = Path(tmp)
             shutil.copytree(ROOT / 'engine', root / 'engine', ignore=shutil.ignore_patterns('__pycache__', '.hermes-tmp*'))
             (root / 'tools').mkdir()
             for name in ('service.py', 'start_engine.py', 'stop_engine.py', 'restart_engine.py',
-                         'bootstrap.py', 'upgrade.py'):
+                         'bootstrap.py', 'upgrade.py', 'install.py'):
                 shutil.copy2(ROOT / 'tools' / name, root / 'tools' / name)
-            (root / 'tools' / 'install.py').write_text('import sys\nsys.exit(0)\n', encoding='utf-8')
+            for name in ('requirements.txt', 'requirements.lock'):
+                shutil.copy2(ROOT / name, root / name)
             shutil.copy2(ROOT / 'start.bat', root / 'start.bat')
             venv = root / '.venv'
             (venv / 'Scripts').mkdir(parents=True)
@@ -248,6 +248,9 @@ class RestartIntegration(unittest.TestCase):
                    'PATH': str(venv / 'Scripts') + os.pathsep + os.environ['PATH']}
             env.pop('GROUP_RESTART_INSTANCE', None)
             env.pop('GROUP_SERVICE_MAINTENANCE', None)
+            from engine.maintenance import install
+            with patch.dict(os.environ, env):
+                install.write_state()
             browser_probe = root / 'browser_probe.py'
             browser_calls = root / 'browser_calls.txt'
             browser_probe.write_text(
@@ -304,10 +307,9 @@ class RestartIntegration(unittest.TestCase):
                         with closing(sqlite3.connect(data / 'group.db')) as conn, conn:
                             conn.execute('CREATE TABLE restart_probe(value TEXT)')
                             conn.execute("INSERT INTO restart_probe VALUES('preserved')")
-                        (root / 'tools' / 'install.py').write_text(
-                            "import sys\nprint('install-check-stdout', flush=True)\n"
-                            "print('dependency-readiness-failed', file=sys.stderr, flush=True)\n"
-                            "sys.exit(1)\n", encoding='utf-8')
+                        requirements = root / 'requirements.txt'
+                        good = requirements.read_text(encoding='utf-8')
+                        requirements.write_text(good + '\nbot-group-missing-fixture>=9\n', encoding='utf-8')
                         failed = request('/admin/restart', 'POST')
                         def check_failed():
                             receipt = request('/admin/restart')
@@ -316,9 +318,10 @@ class RestartIntegration(unittest.TestCase):
                         wait_for(lambda: not restart._pid_alive(receipt['helper_pid']))
                         self.assertEqual(request('/health')['instance_id'], health['instance_id'])
                         log_text = (data / 'logs' / 'service-restart.log').read_text(encoding='utf-8', errors='replace')
-                        self.assertIn('install-check-stdout', log_text)
-                        self.assertIn('dependency-readiness-failed', log_text)
-                        (root / 'tools' / 'install.py').write_text('import sys\nsys.exit(0)\n', encoding='utf-8')
+                        self.assertIn('缺少 bot-group-missing-fixture>=9', log_text)
+                        self.assertIn('缺少 bot-group-missing-fixture>=9', receipt['error'])
+                        self.assertIn('install.bat', receipt['error'])
+                        requirements.write_text(good + '\n# updated declarations\n', encoding='utf-8')
                         for _ in range(2):
                             old_id, old_pid = health['instance_id'], health['pid']
                             operation = request('/admin/restart', 'POST')

@@ -52,6 +52,8 @@
 
 远程 Hermes 项目成员刷新回归使用 `python -X utf8 -B -m unittest scripts.test_relay_gateway.RelayConnectionSplitTests`。隔离 SQLite 与随机回环端口上的 WebSocket 验证名单在远程应答前返回、远端工作会话的有无、租约释放及离线状态。使用装有 Playwright 和 Chrome 的项目环境运行 `python -X utf8 -B scripts/test_member_name_browser.py`，验证慢节点等待期间可编辑成员，快节点先完成，回填保留输入焦点，失败仅标记对应远程行。
 
+启动依赖与页面重启回归使用项目虚拟环境执行 `python -X utf8 -B -m unittest scripts.test_install scripts.test_posix_compatibility scripts.test_service_restart scripts.test_service scripts.test_windows_bat`。覆盖声明和锁定清单变化、环境标记、缺包或版本不符回执、原实例保持在线、兼容声明自动刷新记录及重新启动。真实 Windows 重启使用临时程序副本、隔离数据库和随机端口。
+
 远程节点旧库升级启动回归使用 `python -X utf8 -B -m unittest scripts.test_service_restart.RestartTests.test_startup_migrates_legacy_relay_before_restoring_switch`。用项目 Python 在随机回环端口启动完整引擎，隔离临时库中预置缺少身份表的旧节点，核验健康接口、节点列表和切换恢复，最后通过管理员接口退出。
 
 ### Hermes 项目成员换模
