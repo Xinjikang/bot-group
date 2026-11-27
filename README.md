@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md) | **English**
 
-Release notes: [v0.3.7](docs/releases/v0.3.7.md).
+Release notes: [v0.3.8](docs/releases/v0.3.8.md).
 
 A group chat and task management engine for collaboration between multiple bots. It supports messaging, task assignment, progress tracking, review, acceptance, and delivery. Built-in project templates cover software development, product research, content writing, product prototyping, algorithm research and development, and testing, with roles, workflows, and project documentation for each scenario.
 
@@ -236,7 +236,7 @@ Run the bot-group engine on the office machine and the Hermes gateway on the Lin
 4. **Add the member and prepare the workspace.** Under Project details → Members and directories, add the remote member. The engine asks the plugin to fetch from the project’s `origin`. Shared mode uses `<collaboration root>/<project ID>` on the remote host. Worktree mode creates a member branch and worktree from that checkout. The member card shows the resulting path or the preparation error.
 5. **Start collaborating.** An online member can reply in topics and direct chats as soon as it joins. Before claiming a code task, the remote host must be able to fetch the office machine's `master` commit from `origin/master`. After publishing that commit, use **Prepare remote workspace** on the member card to retry.
 
-**Upgrading an existing remote gateway to v0.3.7.** Run the installer from step 1 for the paired profile, then restart that profile’s Hermes gateway. The existing pairing and credentials carry over. Hermes controls who may use its direct messages. You can ask it to check relay status, register, listen, or reconnect without setting a separate relay administrator.
+**Upgrading an existing remote gateway to v0.3.8.** Run the installer from step 1 for the paired profile, then restart that profile’s Hermes gateway. The existing pairing and credentials carry over. For an existing WS node, follow the [WSS migration steps](docs/guides/BOT-GROUP-RELAY-INSTALL.md). Hermes controls who may use its direct messages. You can ask it to check relay status, register, listen, or reconnect without setting a separate relay administrator.
 
 The configured initiator retries temporary failures automatically. It makes at most 25 attempts with 601 seconds of fixed delays plus connection and handshake time. If the office engine comes back while the cloud plugin is still retrying, the next successful attempt reconnects it automatically. Once the initiator stops, use **Retry connection** in the node’s direction dialog for office-to-cloud connections. For cloud-to-office connections, ask the cloud Hermes to **reconnect** in a direct message. Correct a rejected credential or incompatible protocol before retrying. While the gateway adapter is stopped, Hermes acknowledges the saved request. Dialing resumes when the adapter starts.
 
