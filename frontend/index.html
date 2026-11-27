@@ -3072,6 +3072,18 @@ function NAME_OF(p) {
   const m = S.members.find(x => x.profile === p);
   return m && m.display_name ? m.display_name : p;
 }
+function renderMentions(text, mentions) {
+  if (!mentions.length) return esc(text);
+  const handles = [...mentions].sort((a, b) => b.length - a.length)
+    .map(handle => handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const pattern = new RegExp("@(" + handles.join("|") + ")(?![A-Za-z0-9_-])", "g");
+  let html = "", end = 0;
+  for (const match of text.matchAll(pattern)) {
+    html += esc(text.slice(end, match.index)) + '<span class="mention">@' + esc(NAME_OF(match[1])) + '</span>';
+    end = match.index + match[0].length;
+  }
+  return html + esc(text.slice(end));
+}
 const fmtTs = (s) => String(s || "").replace("T", " ").slice(5, 16);
 // Stable member colors, independent of each project's freely defined roles.
 function AV_CLASS(profile) {
@@ -3158,12 +3170,7 @@ function renderMsg(m, thinking = []) {
     return div;
   }
 
-  // @ 高亮：content 里的 @profile 染色
-  let content = esc(m.content);
-  for (const p of mentions) {
-    content = content.replace(new RegExp("@" + p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"),
-      () => `<span class="mention">@${esc(NAME_OF(p))}</span>`);
-  }
+  const content = renderMentions(m.content, mentions);
 
   div.innerHTML = `
     <div class="avatar ${AV_CLASS(m.sender)}">${esc(Array.from(NAME_OF(m.sender))[0])}</div>
@@ -3930,6 +3937,7 @@ $("#profile-form").addEventListener("submit", async e => {
     body.config_path = editor.configPath;
   for (const field of fields) {
     const input = profileInput(field);
+    if (field === "env" && editor.original.env_editable === false) continue;
     body[field] = input.disabled
       ? (editor.original[field] || '')
       : input.value;
@@ -3947,7 +3955,7 @@ $("#profile-form").addEventListener("submit", async e => {
       if (!applyGlobal) body[field] = editor.original[field] || '';
     }
   }
-  const globalChanged = fields.filter(field => body[field] !== (editor.original[field] || ''));
+  const globalChanged = fields.filter(field => field in body && body[field] !== (editor.original[field] || ''));
   editor.saving = true;
   editor.globalSaved = false;
   editor.globalSavedFields = [];
@@ -3958,7 +3966,21 @@ $("#profile-form").addEventListener("submit", async e => {
   profileStatus(t("name_saving"));
   try {
     if (!editor.project || globalChanged.length) {
-      const result = await api(`/members/${encodeURIComponent(editor.profile)}/config`, { method: "PUT", body: JSON.stringify(body) });
+      const url = `/members/${encodeURIComponent(editor.profile)}/config`;
+      let result;
+      try {
+        result = await api(url, {method: "PUT", body: JSON.stringify(body)});
+      } catch (err) {
+        if (!editor.original.remote_profile || (err.status && ![502, 504].includes(err.status))) throw err;
+        const actual = await api(url, {cache: 'no-store'}).catch(() => null);
+        const normalize = value => String(value ?? '').replace(/\r\n/g, '\n');
+        if (!actual || actual.member_profile !== editor.profile || !actual.revision ||
+            !fields.filter(field => field in body).every(field =>
+              field in actual && normalize(actual[field]) === normalize(body[field]))) {
+          throw new Error(t('remote_profile_unconfirmed'));
+        }
+        result = actual;
+      }
       editor.revision = result.revision || editor.revision;
       editor.original = {...editor.original, ...body, revision: editor.revision};
       editor.globalSaved = true;
@@ -3980,7 +4002,7 @@ $("#profile-form").addEventListener("submit", async e => {
     } else if (editor.project && projectModelChanged.length && !globalChanged.length) {
       profileStatus(t('project_model_save_failed') + err.message, true);
     } else {
-      profileStatus(t('save_failed_no_fields') + err.message, true);
+      profileStatus((editor.original.remote_profile ? '' : t('save_failed_no_fields')) + err.message, true);
     }
   } finally {
     editor.saving = false;

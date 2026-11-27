@@ -1,6 +1,8 @@
 """Relay wire revisions. Release tags are diagnostic metadata."""
 
-VERSIONS = (2, 1)
+import base64
+
+VERSIONS = (3, 2, 1)
 CURRENT = VERSIONS[0]
 REJECTION = "supported relay protocols: " + ",".join(map(str, VERSIONS))
 
@@ -12,6 +14,14 @@ class ProtocolMismatch(ValueError):
 def offer():
     # A legacy responder reads only the single-version field.
     return {"protocol_version": 1, "protocol_versions": list(VERSIONS)}
+
+
+def profile_fields(values, *, decode=False):
+    """Keep UTF-8 field bytes bounded independently of JSON escape expansion."""
+    if decode:
+        return {k: base64.b64decode(v, validate=True).decode('utf-8') for k, v in values.items()}
+    return {k: base64.b64encode(v.encode('utf-8')).decode('ascii') for k, v in values.items()
+            if v is not None}
 
 
 def negotiate(hello):

@@ -41,6 +41,9 @@ def main():
                     assert body['revision'] == values['revision']
                     values.update(body)
                     values['revision'] = ('c' if path.endswith('/config') else 'd') * 64
+                    if state.pop('lose_config_receipt', False):
+                        req.fulfill(status=504, json={'detail': 'Remote receipt lost'})
+                        return
                 req.fulfill(json={**values, 'runtime': state['runtime']})
                 return
             req.fulfill(json={'projects': [], 'members': [], 'messages': [], 'threads': [], 'commands': []})
@@ -127,6 +130,19 @@ def main():
         screenshot.parent.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(screenshot))
         page.locator('#profile-cancel').click()
+        global_values.update(remote_profile=True, env_editable=False)
+        global_values.pop('env', None)
+        global_values['capabilities'] = {'env': {'available': False, 'reason': 'WSS required'}}
+        open_editor()
+        assert page.locator('#profile-env').is_disabled()
+        page.locator('#profile-tab-description').click()
+        page.locator('#profile-description').fill('verified after reconnect')
+        state['lose_config_receipt'] = True
+        before = len(writes)
+        save.click()
+        page.wait_for_function('!document.querySelector("#dlg-profile").open')
+        assert len(writes) == before + 1 and 'env' not in writes[-1][1]
+        assert global_values['description'] == 'verified after reconnect'
         assert not errors, errors
         browser.close()
     print('PASS: unified entry, project/global scopes, inheritance, partial failure retry, both runtimes and layout')

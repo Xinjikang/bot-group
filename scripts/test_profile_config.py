@@ -64,6 +64,27 @@ class ProfileConfigTests(unittest.TestCase):
         self.assertIn("TOKEN=test-only", result.json()["env"])
         self.assertEqual(self.client.get("/members/unknown/config", headers=self.headers).status_code, 404)
 
+    def test_remote_editor_requires_online_protocol_three(self):
+        from types import SimpleNamespace
+        from engine import remote_profiles
+        for link, reason in [(None, '离线'), (SimpleNamespace(closed=False, protocol_version=2), '升级')]:
+            with patch.object(remote_profiles.relay_server, 'active_link', return_value=link), self.subTest(reason=reason):
+                with self.assertRaises(HTTPException) as error:
+                    remote_profiles.read('remote-default')
+                self.assertEqual(error.exception.status_code, 409)
+                self.assertIn(reason, error.exception.detail)
+
+    def test_remote_save_lost_connection_is_indeterminate(self):
+        from types import SimpleNamespace
+        from engine import remote_profiles
+        link = SimpleNamespace(member='remote-default', closed=False, protocol_version=3, profile_tls=True)
+        with patch.object(remote_profiles.relay_server, 'active_link', side_effect=[link, None]), \
+                patch.object(remote_profiles.relay_control, 'request', side_effect=HTTPException(409, 'disconnected')):
+            with self.assertRaises(HTTPException) as error:
+                remote_profiles.save(link.member, {'revision': 'a' * 64})
+        self.assertEqual(error.exception.status_code, 504)
+        self.assertIn('待确认', error.exception.detail)
+
     def test_no_change_preserves_every_byte(self):
         before = pc._snapshot(self.folder)
         values = self.values()

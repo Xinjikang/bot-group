@@ -376,7 +376,7 @@ def _authenticate_dial(member: str, endpoint: dict, payload: dict, *, probe=Fals
     stage = "tcp"
     ws = None
     try:
-        ws = ws_connect(uri, ssl=context, open_timeout=8, close_timeout=1, proxy=None)
+        ws = ws_connect(uri, ssl=context, max_size=16 * 1024 * 1024, open_timeout=8, close_timeout=1, proxy=None)
         stage = "tls"
         if fingerprint and not _verify_fingerprint(ws, fingerprint, member):
             raise PairingProbeError(stage, "证书指纹不匹配")
@@ -526,6 +526,7 @@ def dial_once(member: str, *, initial=None, round_state=None) -> bool:
     link = DialLink(member, ws, remote_generation, peer_ip=endpoint["host"],
                     db_generation=db_generation)
     link.protocol_version = ws.relay_protocol_version
+    link.profile_tls = bool(endpoint.get("tls"))
     with relay_server._LINKS_LOCK:
         previous = relay_server._LINKS.get(member)
         relay_server._LINKS[member] = link

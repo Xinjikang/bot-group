@@ -203,7 +203,7 @@ class RelayClient:
                 with ws_sync.connect(relay_config.ws_url(self.cfg.engine_url),
                                      proxy=None, open_timeout=10, close_timeout=2,
                                      ping_interval=20, ping_timeout=5,
-                                     max_size=8 * 1024 * 1024) as ws:
+                                     max_size=16 * 1024 * 1024) as ws:
                     stage = "auth"
                     handshake = self._handshake(ws)
                     if self._stop.is_set():
@@ -365,6 +365,11 @@ class RelayClient:
                                          "generation": self._generation,
                                          "request_id": meta.get("request_id")},
                                 "direction": result}))
+            return
+        if kind == 'profile_request' and streams is not None and self.protocol_version >= 3:
+            from . import profile_editor
+            profile_editor.respond(ws, meta, envelope.get('profile'), self.cfg.home, self.cfg.mcp_python,
+                                   secure=relay_config.ws_url(self.cfg.engine_url).startswith('wss://'))
             return
         if kind == 'workspace_request':
             from . import workspaces

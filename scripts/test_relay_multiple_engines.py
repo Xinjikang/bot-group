@@ -183,7 +183,7 @@ class MultiEngineTests(unittest.TestCase):
             ws.send(json.dumps({"relay": {"kind": "hello"}, "member": "default", "direction": "dial",
                                 "credential": ticket, **relay_protocol.offer()}))
             ack = receive(ws, "hello_ok")["relay"]
-            self.assertEqual(ack["protocol_version"], 2)
+            self.assertEqual(ack["protocol_version"], relay_protocol.CURRENT)
             return ws, result["proxy_port"], ack["generation"]
 
         def group_send(port, message):
@@ -207,7 +207,8 @@ class MultiEngineTests(unittest.TestCase):
 
     def test_version_intersection_and_malformed_offers(self):
         self.assertEqual(relay_protocol.negotiate({"protocol_version": 1}), 1)
-        self.assertEqual(relay_protocol.negotiate({"protocol_version": 1, "protocol_versions": [3, 2, 1]}), 2)
+        self.assertEqual(relay_protocol.negotiate({"protocol_version": 1, "protocol_versions": [3, 2, 1]}), 3)
+        self.assertEqual(relay_protocol.negotiate({"protocol_version": 1, "protocol_versions": [2, 1]}), 2)
         for hello in ({}, {"protocol_version": True}, {"protocol_version": 9},
                       {"protocol_version": 1, "protocol_versions": [2]}):
             self.assertIsNone(relay_protocol.negotiate(hello))
@@ -261,7 +262,7 @@ class MultiEngineTests(unittest.TestCase):
         def response(channel):
             self.assertTrue(channel.poll(20))
             version, result = channel.recv()
-            self.assertEqual(version, 2)
+            self.assertEqual(version, relay_protocol.CURRENT)
             return result
 
         a, client_a, endpoint_a = start()

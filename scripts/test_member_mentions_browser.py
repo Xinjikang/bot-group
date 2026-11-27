@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     members = [dict(profile=handle, host_profile='default', display_name=name, active=1)
-               for handle, name in [('default', 'Hermes'), ('bot-36', 'Codex')]]
+               for handle, name in [('default', 'Hermes'), ('bot-36', 'Codex'),
+                                    ('remote-default', 'Luna'), ('remote-default-2', 'Nova')]]
     posts, errors = [], []
     state = {'fail': False}
     with sync_playwright() as pw:
@@ -52,6 +53,21 @@ def main():
             window.testAlerts = []; showAlert = async text => { window.testAlerts.push(text); };
         }''', members)
         field = page.locator('#composer-text')
+
+        for order in [('Luna', 'Nova'), ('Nova', 'Luna')]:
+            for name in order:
+                field.press_sequentially('@')
+                page.locator('#mention-pop .mp-item').filter(has_text=name).click()
+            field.press('Enter')
+            page.wait_for_function("document.querySelector('#composer-text').value === ''")
+            handles = [next(m['profile'] for m in members if m['display_name'] == name) for name in order]
+            assert posts[-1]['text'] == ' '.join('@' + h for h in handles)
+            shown = page.evaluate("""([content, handles]) => {
+                const msg = renderMsg({id: 1, sender: 'user', sender_type: 'user', ts: '',
+                    content, mentions: JSON.stringify(handles)}, []);
+                return [...msg.querySelectorAll('.msg-content .mention')].map(el => el.textContent);
+            }""", [posts[-1]['text'], handles])
+            assert shown == ['@' + name for name in order], shown
 
         def choose(target, query, label):
             target.fill(query)

@@ -351,17 +351,31 @@ def _commit(folder: Path, before: dict, after: dict) -> str | None:
     return str(backup.relative_to(folder)) if backup else None
 
 
+def _target(profile):
+    from . import bot_identity, codex_profile_config, db, dsh_profile_config, remote_profiles
+    conn = db.get_connection()
+    try:
+        bot = bot_identity.global_bot(conn, profile)
+    finally:
+        conn.close()
+    if bot and bot['host_type'] == 'relay':
+        return remote_profiles, profile
+    if bot and bot['runtime'] == 'codex':
+        return codex_profile_config, bot
+    if bot and bot['runtime'] == 'dsh':
+        return dsh_profile_config, bot
+    return None, _directory(profile)
+
+
 def read(profile: str) -> dict:
-    from . import codex_profile_config, dsh_profile_config
-    bot = codex_profile_config.resolve(profile)
-    if bot:
-        return codex_profile_config.read(bot)
-    bot = dsh_profile_config.resolve(profile)
-    if bot:
-        return dsh_profile_config.read(bot)
+    backend, target = _target(profile)
+    return backend.read(target) if backend else read_folder(target)
+
+
+def read_folder(folder: Path) -> dict:
     try:
         with _LOCK:
-            return _view(_snapshot(_directory(profile)))
+            return _view(_snapshot(folder))
     except (UnicodeError, YAMLError):
         raise HTTPException(400, "Profile 文件必须是有效 UTF-8，且 YAML 格式正确") from None
     except OSError:
@@ -369,16 +383,13 @@ def read(profile: str) -> dict:
 
 
 def save(profile: str, values: dict) -> dict:
-    from . import codex_profile_config, dsh_profile_config
-    bot = codex_profile_config.resolve(profile)
-    if bot:
-        return codex_profile_config.save(bot, values)
-    bot = dsh_profile_config.resolve(profile)
-    if bot:
-        return dsh_profile_config.save(bot, values)
+    backend, target = _target(profile)
+    return backend.save(target, values) if backend else save_folder(target, values)
+
+
+def save_folder(folder: Path, values: dict) -> dict:
     try:
         with _LOCK:
-            folder = _directory(profile)
             before = _snapshot(folder)
             current = _view(before)
             if values["revision"] != current["revision"]:
@@ -390,6 +401,8 @@ def save(profile: str, values: dict) -> dict:
                 meta["description_auto"] = False
                 after["profile.yaml"] = _dump(parser, meta, before["profile.yaml"])
             for field, name in (("soul", "SOUL.md"), ("env", ".env")):
+                if field not in values:
+                    continue
                 # Browsers normalize textarea CRLF. Preserve untouched bytes and the file's EOL style.
                 value = (values.get(field) or "").replace("\r\n", "\n")
                 if value != current[field].replace("\r\n", "\n"):
@@ -404,7 +417,7 @@ def save(profile: str, values: dict) -> dict:
             if any(content is not None and len(content) > _MAX_BYTES for content in after.values()):
                 raise HTTPException(400, "单个配置文件不能超过 2 MB")
             backup = _commit(folder, before, after)
-            return {"saved": True, "backup": backup}
+            return {"saved": True, "backup": backup, "revision": _revision(after)}
     except (UnicodeError, YAMLError):
         raise HTTPException(400, "Profile 文件必须是有效 UTF-8，且 YAML 格式正确") from None
     except OSError:

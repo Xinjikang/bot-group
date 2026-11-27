@@ -221,6 +221,7 @@
     "global_fields_saved": { zh: "已保存全局字段：{0}；", en: "Global fields saved: {0}; " },
     "project_model_save_failed": { zh: "项目模型保存失败：", en: "Project model save failed: " },
     "save_failed_no_fields": { zh: "保存失败（未保存任何字段）：", en: "Save failed (no fields saved): " },
+    "remote_profile_unconfirmed": { zh: "远端保存结果待确认。连接恢复后，请重新打开编辑窗口核对配置。", en: "Remote save could not be confirmed. Reopen the editor after reconnecting to verify the settings." },
     "members_empty": { zh: "members 表为空", en: "members table is empty" },
     "scope_all_members": { zh: "（未选项目：显示全部成员，启停需先选项目）", en: "(No project selected: showing all members; select a project to enable/disable)" },
     "enabled": { zh: "启用", en: "Enabled" },

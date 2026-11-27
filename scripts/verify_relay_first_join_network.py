@@ -163,6 +163,88 @@ def mention(api, member, gateway, other, uri, label):
             **({'mcp_read': verification['mcp_verify_state']} if verification else {})}
 
 
+def verify_profiles_and_mentions(api, nodes, evidence, page=None):
+    receipts = []
+    labels = {m['profile']: m['display_name'] for m in result(api.get('/members?project=alpha'))['members']}
+    if page:
+        page.reload(wait_until='domcontentloaded')
+        page.wait_for_function("S.projects.some(p => p.name === 'alpha')")
+        page.evaluate("selectProject('alpha')")
+        page.wait_for_function("handles => handles.every(p => S.members.some(m => m.profile === p))",
+                               arg=[n[0] for n in nodes])
+    for member, home, gateway, secure in nodes:
+        url = f'/members/{member}/config'
+        (home / '.env').write_text('MARK=initial', encoding='utf-8')
+        old = result(api.get(url))
+        assert old['env_editable'] is secure and ('env' in old) is secure, member
+        values = {k: old[k] for k in ('revision', 'soul', 'model', 'provider', 'reasoning_effort')}
+        values.update(description=member, soul='魂' * 400000, model='fixture-model', provider='fixture')
+        if secure:
+            values['env'] = 'MARK=updated'
+        else:
+            assert api.put(url, json=dict(values, env='reject')).status_code == 409
+        saved = result(api.put(url, json=values))
+        current = result(api.get(url))
+        assert current['revision'] == saved['revision'] and current['description'] == member
+        assert (home / 'SOUL.md').read_text(encoding='utf-8') == current['soul'] == values['soul']
+        assert (home / '.env').read_text(encoding='utf-8') == ('MARK=updated' if secure else 'MARK=initial')
+        assert (home / saved['backup'] / 'manifest.json').is_file()
+        assert api.put(url, json=values).status_code == 409
+        if page:
+            def open_editor():
+                page.evaluate('p => openProfileEditor(S.members.find(m => m.profile === p))', member)
+                page.wait_for_function('!!profileEditor?.revision')
+            open_editor()
+            assert page.locator('#profile-description').input_value() == member
+            assert page.locator('#profile-env').is_enabled() is secure
+            page.locator('#profile-description').fill('browser-' + member)
+            page.locator('#profile-save').click()
+            page.wait_for_function('profileEditor === null')
+            open_editor()
+            assert page.locator('#profile-description').input_value() == 'browser-' + member
+            page.locator('#profile-cancel').click()
+    for member, home, _, _ in nodes:
+        assert result(api.get(f'/members/{member}/config'))['description'] == ('browser-' if page else '') + member
+    for order in (nodes, nodes[::-1]):
+        handles = [node[0] for node in order]
+        text = ' '.join('@' + handle for handle in handles) + ' dual remote delivery'
+        if page:
+            field = page.locator('#composer-text')
+            for handle in handles:
+                field.press_sequentially('@')
+                page.locator('#mention-pop .mp-item').filter(has_text=labels[handle]).click()
+            field.press_sequentially('dual remote delivery')
+            with page.expect_response(lambda resp: urlsplit(resp.url).path == '/msg' and resp.request.method == 'POST') as response:
+                field.press('Enter')
+            sent = response.value.json()
+            from playwright.sync_api import expect
+            shown = page.locator(f'[data-message-id="{sent["message_id"]}"] .msg-content .mention')
+            expect(shown).to_have_text(['@' + labels[h] for h in handles])
+        else:
+            sent = result(api.post('/msg', json={'sender': 'user', 'project': 'alpha', 'text': text}))
+        mid = sent['message_id']
+        assert sent['mentions'] == handles
+        with closing(db.get_connection()) as conn:
+            assert {r[0] for r in conn.execute('SELECT profile FROM inbox WHERE message_id=?', (mid,))} == set(handles)
+            counts = [len(gw.submissions) for _, _, gw, _ in nodes]
+            for _ in range(2):
+                assert queue.process_one(conn)
+            for (member, _, gateway, _), count in zip(nodes, counts):
+                assert len(gateway.submissions) == count + 1, member
+                received = gateway.submissions[-1]
+                assert text in received['text']
+                row = conn.execute('SELECT e.submission_id FROM inbox i JOIN hermes_executions e '
+                                   'ON e.execution_id=i.relay_execution_id WHERE i.profile=? AND i.message_id=?',
+                                   (member, mid)).fetchone()
+                assert row and row[0] == received['submission_id']
+                receipts.append({'message_id': mid, 'member': member, 'submission_id': row[0]})
+                gateway.settled(received)
+            ids = [receipt['submission_id'] for receipt in receipts[-2:]]
+            wait(lambda: conn.execute("SELECT count(*) FROM hermes_executions WHERE submission_id IN (?,?) "
+                                      "AND state='terminal' AND cleanup_pending=0", ids).fetchone()[0] == 2)
+    evidence['dual_remote_receipts'] = receipts
+
+
 def exercise(args, evidence):
     from engine.main import app
     from engine import hermes_connections, hermes_gateway_client, hermes_runtime
@@ -361,6 +443,10 @@ def exercise(args, evidence):
                     assert not worker.is_alive(), 'isolated engine worker did not stop'
 
         stack.callback(stop_workers)
+        if args.profile_mentions:
+            verify_profiles_and_mentions(api, [(a, ha, gateway_a, False), (b, hb, gateway_b, True)], evidence,
+                                         ui.page if ui else None)
+            return
         dispatch = mention
         if ui:
             # Playwright owns the main thread's event loop. MCP stdio needs its own.
@@ -486,6 +572,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--plugin-dir', type=Path, help='Extracted distribution to verify with its bundled MCP')
     parser.add_argument('--browser', action='store_true', help='Perform pairing and switching in Chrome')
+    parser.add_argument('--profile-mentions', action='store_true', help='Verify two remote editors and dual mentions after pairing')
     parser.add_argument('--lan', required=True)
     parser.add_argument('--port', required=True, type=int)
     parser.add_argument('--evidence', required=True, type=Path)

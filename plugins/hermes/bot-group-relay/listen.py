@@ -163,7 +163,7 @@ class ListenServer:
         try:
             # 绑定失败（地址不可用/端口占用）抛异常：保持原状，不残留监听
             self._server = ws_serve(self._peer_handler, self.address, self.port,
-                                    ssl=ssl_context, max_size=8 * 1024 * 1024)
+                                    ssl=ssl_context, max_size=16 * 1024 * 1024)
         except OSError as exc:
             raise RuntimeError(f"监听绑定失败 {self.address}:{self.port}：{exc}") from exc
         self._thread = threading.Thread(target=self._server.serve_forever,
@@ -327,6 +327,11 @@ class ListenServer:
             wake = getattr(self, "wake_outbound", None)
             if wake:
                 wake()
+            return
+        if kind == 'profile_request' and streams is not None and streams.protocol_version >= 3:
+            from . import profile_editor
+            profile_editor.respond(ws, meta, envelope.get('profile'), self.home, self._mcp_python(),
+                                   secure=self.scheme == 'wss')
             return
         if kind == 'workspace_request':
             from . import workspaces

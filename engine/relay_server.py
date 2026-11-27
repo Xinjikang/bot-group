@@ -347,6 +347,10 @@ def _route_inbound(link: NodeLink, envelope: dict) -> bool:
         logger.warning("relay generation-mismatch frame dropped member=%s kind=%s gen=%s",
                        link.member, kind, frame_gen)
         return True
+    if kind == 'profile_result' and link.protocol_version >= 3:
+        from . import relay_control
+        relay_control.receive(link, meta.get('request_id'), envelope.get('profile'))
+        return True
     if kind in ('workspace_result', 'direction_result'):
         from . import relay_control
         field = 'workspace' if kind == 'workspace_result' else 'direction'
@@ -522,6 +526,7 @@ async def relay_ws(websocket: WebSocket) -> None:
 
     link = NodeLink(member, websocket, generation, peer_ip=peer)
     link.protocol_version = protocol_version
+    link.profile_tls = websocket.scope.get("scheme") == "wss"
     # 接替：先注册新连接（新连接成为当前代），旧连接的清理在锁外进行——
     # _shutdown_link 自取 _LINKS_LOCK，持锁调用会死锁；旧代清理因「非当前
     # 注册连接」不写 offline，不覆盖新连接状态（manager node1977 ①）。

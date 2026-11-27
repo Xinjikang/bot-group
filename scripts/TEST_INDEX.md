@@ -16,6 +16,8 @@
 
 ## 消息界面
 
+远程配置和同名点名联合回归使用 `python -B -X utf8 -m scripts.verify_relay_first_join_network --profile-mentions --browser --lan <本机隔离网卡IPv4> --port <分配端口> --hermes-source <Hermes源码> --evidence <绝对报告目录>`。可传 `--plugin-dir <解包目录>` 核验分发资产。两台临时网关的物理 profile 均为 default；检查大于 1 MiB 的配置双向回读、备份、版本冲突和 WS 环境文件保护，并验证两种点名顺序的页面显示、收件箱和网关 submission ID。独立界面回归使用 `python -B -X utf8 -m scripts.test_member_mentions_browser`。协议协商、旧插件与掉线处理使用 `python -B -X utf8 -m unittest scripts.test_profile_config scripts.test_relay_multiple_engines`。
+
 以下浏览器用例在安装了 Playwright 和 Chrome 的项目 Python 环境中运行，使用隔离消息数据。
 
 | 控件 | 验证方法 | 验收要点 |
