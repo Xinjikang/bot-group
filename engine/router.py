@@ -145,7 +145,8 @@ def _thread_round(conn: sqlite3.Connection, thread_id: int) -> int:
 
 
 def _insert_inbox_rows(
-    conn: sqlite3.Connection, message_id: int, profiles: list[str], project: str = ""
+    conn: sqlite3.Connection, message_id: int, profiles: list[str], project: str = "",
+    *, steering_targets=(),
 ) -> list[str]:
     """给这些 profile 插 pending 未读行。
 
@@ -154,8 +155,8 @@ def _insert_inbox_rows(
     active = _active_profiles(conn, profiles, project)
     for p in active:
         conn.execute(
-            "INSERT INTO inbox (message_id, profile, status) VALUES (?, ?, 'pending')",
-            (message_id, p),
+            "INSERT INTO inbox (message_id, profile, status) VALUES (?, ?, ?)",
+            (message_id, p, 'steering' if p in steering_targets else 'pending'),
         )
     return active
 
@@ -351,7 +352,9 @@ def _dfs_subtree(
     """
     if depth >= MAX_DEPTH:
         return None  # 深度到顶，剪枝
-    msg = conn.execute("SELECT mentions, need_reply FROM messages WHERE id=?", (msg_id,)).fetchone()
+    # The running turn owns all bot mentions on a steering message.
+    msg = conn.execute("SELECT mentions, need_reply FROM messages WHERE id=? AND NOT EXISTS "
+                       "(SELECT 1 FROM steer_messages WHERE message_id=messages.id)", (msg_id,)).fetchone()
     if msg is None:
         return None
     try:
@@ -638,6 +641,15 @@ def validate_mention_scope(conn: sqlite3.Connection, text: str | None,
     return mentions
 
 
+def publish_message(message_id, thread_id, sender, project, execution=None):
+    from . import events
+    if message_id is not None:
+        events.bus.publish("message.new", dict(message_id=message_id, thread_id=thread_id, sender=sender,
+                                              project=project, execution=execution))
+    if thread_id is not None:
+        events.bus.publish("thread.updated", dict(thread_id=thread_id))
+
+
 def route_message(
     conn: sqlite3.Connection,
     sender: str,
@@ -648,6 +660,7 @@ def route_message(
     attachment_ids: list[str] | None = None,
     need_reply: int = 1,
     execution: dict | None = None,
+    *, steering_targets=(),
 ) -> dict:
     """保存消息与 inbox；话题登记后台调度，点对点直接登记唤醒。
 
@@ -685,6 +698,8 @@ def route_message(
         thread = conn.execute("SELECT * FROM threads WHERE id=?", (thread_id,)).fetchone()
         if thread is None or thread["status"] == "closed":
             raise RouteError("话题不存在或已关闭。", 400)
+        if steering_targets and project != thread["project"]:
+            raise RouteError("话题不属于当前项目。", 400)
         project = thread["project"]
         members = _thread_members(conn, thread_id)
         mentions = validate_mention_scope(conn, text, project, members)
@@ -771,6 +786,8 @@ def route_message(
             (project, ts, sender, sender_type, text, json.dumps(mentions, ensure_ascii=False), thread_id, parent_id, round_no, depth, need_reply),
         )
         message_id = cur.lastrowid
+        if steering_targets:
+            conn.execute("INSERT INTO steer_messages(message_id) VALUES(?)", (message_id,))
 
         from .message_execution import record
         record(conn, message_id, execution)
@@ -803,9 +820,8 @@ def route_message(
         # 自己——必须排除，否则给自己插 pending + 唤醒自己，静默回执型消息自我唤醒成永动机
         # （话题路径本就在 recipients 排除 sender，点对点这里漏了，对齐）。
         recipients = [m for m in mentions if m != sender]
-        _insert_inbox_rows(conn, message_id, recipients, project)
-        for p in recipients:
-            wake_list.append((p, "work", "@msg"))
+        _insert_inbox_rows(conn, message_id, recipients, project, steering_targets=steering_targets)
+        wake_list.extend((p, "work", "@msg") for p in recipients if p not in steering_targets)
     else:
         # 话题消息
         if _thread_status(conn, thread_id) == "closed":
@@ -818,8 +834,8 @@ def route_message(
             )
         # pass 不插 inbox 行（免分发，防死循环）；实质发言给其他成员插行
         if not is_ack:
-            recipients = [m for m in members if m != sender]
-            recipients = _insert_inbox_rows(conn, message_id, recipients, project)
+            recipients = _insert_inbox_rows(conn, message_id, [m for m in members if m != sender],
+                                            project, steering_targets=steering_targets)
 
         # 更新 last_active_at + 隐藏话题有新消息自动展示（hidden 置回 0）
         conn.execute(

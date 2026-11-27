@@ -1,5 +1,7 @@
 # 测试脚本索引
 
+进程等待恢复和纠偏消息回归使用 `python -X utf8 -B -m scripts.run_isolated_tests --report <项目主目录下忽略的绝对报告目录> scripts.test_hermes_process_waits scripts.test_steer_messages`。隔离 SQLite 和模拟网关验证旧进程退出证据、重启恢复、原唤醒投递、停止后切换会话、工作及话题纠偏、目标已读和其他成员未读。页面验证使用 `node scripts/test_thinking_lifecycle.cjs` 和 `python -X utf8 -B scripts/test_execution_state_browser.py --evidence <隔离报告目录>`，浏览器用例需要 Playwright 和 Chrome。
+
 新建与导入项目的 Git 编辑器配置使用项目 Python 运行 `-X utf8 -B -m unittest scripts.test_project_import_supplement scripts.test_project_setup`。临时项目目录应位于 Git 仓库外。用例验证导入后空消息提交失败、显式消息提交成功、新建项目的成员 worktree 继承配置，以及已有仓库保留自定义编辑器。
 
 双向重连窗口使用项目 Python 运行 `-X utf8 -B -m unittest scripts.test_relay_retry scripts.test_relay_plugin scripts.test_relay_dialer scripts.test_plugin_listen_pairing scripts.test_relay_multiple_engines`。隔离数据库和配对目录、模拟时钟及随机回环端口覆盖 25 次拨号、601 秒固定等待、认证超时和明确拒绝、重启后停拨、私聊恢复、节点页重试和方向切换。运行 `-m scripts.test_relay_direction_browser --evidence <隔离报告目录>` 验证本机停止原因、同方向手动重试和云端私聊提示，节点卡片复用下文的 `test_relay_nodes_browser` 命令。 `scripts.test_relay_retry` 另覆盖适配器退出、工作进程异常退出、独立进程私聊请求、恢复后复用连接，以及已认证链路掉线时的首次原因和耗尽汇总。

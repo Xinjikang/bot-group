@@ -151,7 +151,7 @@ def record_terminal(conn, row, receipt, now):
                   receipt['outcome'], now, now + CLEANUP_BUDGET_SECONDS, detail, row['execution_id']))
 
 
-def apply_receipt(conn, execution_id, receipt, *, now=None):
+def apply_receipt(conn, execution_id, receipt, *, now=None, completed_processes=()):
     """Only the matching admission's authoritative terminal receipt releases it."""
     now = time.time() if now is None else now
     conn.execute('BEGIN IMMEDIATE')
@@ -190,6 +190,12 @@ def apply_receipt(conn, execution_id, receipt, *, now=None):
             if not isinstance(receipt.get('outcome'), str) or not receipt['outcome']:
                 raise ValueError('Terminal receipt has no outcome')
             from . import hermes_delegations
+            if completed_processes:
+                if row['cancel_reason'] or not hermes_delegations.owned(conn, row) or not hermes_delegations.waiting(conn, row):
+                    conn.commit()
+                    return row
+                conn.executemany('UPDATE hermes_delegations SET consumed=1 WHERE execution_id=? AND delegation_id=?',
+                                 [(execution_id, key) for key in completed_processes])
             # A native receipt alone does not acknowledge the task wake.
             if recovery is not None and recovery['state'] == 'started':
                 mid = hermes_task_recovery.mark_unaccepted(conn, row, recovery)

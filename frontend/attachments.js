@@ -127,7 +127,8 @@ async function sendImageMessage(body) {
   const draft = imageDrafts.get(key) || [];
   if ((!body.text && !draft.length) || imageSends.has(key)) return false;
   imageSends.add(key);
-  const isCommand = body.text?.trim().startsWith('/');
+  const text = body.text?.trim() || '';
+  const isCommand = text.startsWith('/') && !/^\/steer(?:\s|$)/.test(text);
   let commandResultReceived = false;
   if (isCommand) setCommandReceipt(body, window.t('att_cmd_running'), 'pending');
   refreshImageEditors();
@@ -143,7 +144,7 @@ async function sendImageMessage(body) {
       ids.push(item.id);
     }
     const result = await api('/msg', {method: 'POST', body: JSON.stringify({...body, attachment_ids: ids})});
-    if (result.handled) {
+    if (result.handled && !(result.command === '/steer' && result.message_id)) {
       commandResultReceived = true;
       setCommandReceipt(body, result.detail || `${result.command} ${result.ok ? window.t('att_cmd_done') : window.t('att_cmd_failed')}`,
         result.ok ? 'success' : 'error');

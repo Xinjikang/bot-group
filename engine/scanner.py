@@ -388,10 +388,14 @@ def scan_requirements(conn) -> int:
 
 def run_once(conn) -> dict:
     """执行一轮扫描，返回各来源计数。"""
-    from . import relay_pairing, router, steer_ledger
+    from . import hermes_gateway, relay_pairing, router, steer_ledger
     relay_pairing.expire_stale(conn)
     steer_ledger.reconcile_targets(conn)
     steer_ledger.expire_stale(conn)
+    for row in conn.execute("SELECT DISTINCT e.execution_id FROM hermes_executions e JOIN hermes_delegations d "
+                            "ON d.execution_id=e.execution_id WHERE e.state='manual' AND e.cancel_reason IS NULL "
+                            "AND d.consumed=0 AND d.delegation_id LIKE 'process:%'").fetchall():
+        hermes_gateway._start_worker(row['execution_id'])
     result = {
         "inbox": scan_inbox(conn),
         "tasks": scan_tasks(conn),

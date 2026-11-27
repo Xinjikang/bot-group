@@ -186,7 +186,7 @@ def main() -> int:
         finally:
             conn.close()
         check("/steer 落 steer_operations 账本 target_ended",
-              any(o["text"] == "请改用方案 B" and o["status"] == "target_ended" for o in ops),
+              any(o["text"] == "@be-dev-01 请改用方案 B" and o["status"] == "target_ended" for o in ops),
               f"pend={len(ops)}")
 
         # 11. /steer 参数提取：去掉 @目标，保留正文

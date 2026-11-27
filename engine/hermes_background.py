@@ -12,13 +12,44 @@ CREATE TABLE IF NOT EXISTS hermes_background_callbacks (
 """
 
 
+def _managed_process(call):
+    """Only a single process operation can identify a result without its own handle."""
+    function = call.get('function')
+    if not isinstance(function, dict):
+        return None
+    name, args = function.get('name'), function.get('arguments')
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            return None
+    if name == 'tool_call' and isinstance(args, dict):
+        calls = args.get('calls')
+        if not isinstance(calls, list) or len(calls) != 1 or not isinstance(calls[0], dict):
+            return None
+        name, args = calls[0].get('name'), calls[0].get('arguments')
+    if name == 'process_manage' and isinstance(args, dict):
+        return args.get('session_id')
+
+
 def process_updates(messages):
     """Yield the final notification contract observed for each tool-owned process."""
     states = {}
+    handles = {}
     for message in messages:
-        if not isinstance(message, dict) or message.get('role') != 'tool':
+        if not isinstance(message, dict):
             continue
-        if message.get('name', message.get('tool_name')) not in ('terminal', 'process_manage'):
+        if message.get('role') == 'assistant':
+            calls = message.get('tool_calls')
+            for call in calls if isinstance(calls, list) else ():
+                if isinstance(call, dict) and isinstance(call.get('id'), str) and call['id']:
+                    key = call['id']
+                    handles[key] = _managed_process(call) if key not in handles else None
+            continue
+        if message.get('role') != 'tool':
+            continue
+        name = message.get('name', message.get('tool_name'))
+        if name not in ('terminal', 'process_manage'):
             continue
         try:
             value = json.loads(message.get('content', ''))
@@ -27,6 +58,9 @@ def process_updates(messages):
         if not isinstance(value, dict):
             continue
         pid = value.get('session_id')
+        if pid is None and name == 'process_manage' and value.get('status') in ('exited', 'completed', 'killed'):
+            key = message.get('tool_call_id')
+            pid = handles.get(key) if isinstance(key, str) else None
         if not isinstance(pid, str) or not pid.startswith('proc_'):
             continue
         if value.get('status') in ('exited', 'completed', 'killed', 'failed', 'error', 'timeout'):

@@ -79,6 +79,9 @@
     /* 消息 */
     "no_messages": { zh: "暂无消息", en: "No messages yet" },
     "sent": { zh: "已发送", en: "Sent" },
+    "steer_seen": { zh: "已读", en: "Read" },
+    "steer_wait": { zh: "待确认", en: "Unconfirmed" },
+    "steer_failed": { zh: "未送达", en: "Undelivered" },
     "retract": { zh: "撤回", en: "Retract" },
     "retract_message_title": { zh: "撤回这条消息", en: "Retract this message" },
     "retracted": { zh: "已撤回", en: "Retracted" },

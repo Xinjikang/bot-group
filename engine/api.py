@@ -1012,10 +1012,11 @@ def post_msg(
                                     conn_id=id(conn), thread_id=thread_id)
 
         # req#83 task#146：斜杠命令分发（落到引擎 API 层，只对 sender=user，bot 的 /xxx 走普通消息）。
-        # 命令处理有独立事务（commands 留痕），先分发再走普通路由。命令分支返回即结束，不落普通消息。
+        # Commands own their transaction; /steer publishes its history entry without scheduling a second wake.
         if kind in ("user", "dev") and db.is_builtin_user(sender):
             s2 = slow_send_diag.now_pair() if diag_on else None
-            cmd_result = commands.dispatch(conn, project, sender, "user", text, thread_id)
+            cmd_result = commands.dispatch(conn, project, sender, "user", text, thread_id,
+                                           attachment_ids=attachment_ids, need_reply=body.get("need_reply", 1))
             if diag_on:  # S2：is_builtin_user + commands.dispatch 判断
                 slow_send_diag.step("S2", *slow_send_diag.diff_ms(s2, slow_send_diag.now_pair()),
                                     conn_id=id(conn), thread_id=thread_id)
@@ -1034,11 +1035,7 @@ def post_msg(
                                       attachment_ids=attachment_ids, need_reply=body.get("need_reply", 1), execution=execution)
         routed = time.perf_counter()
         message_id = result['message_id']
-        if result["message_id"] is not None:
-            events.bus.publish("message.new", {"message_id": result["message_id"], "thread_id": thread_id,
-                                               "sender": sender, "project": project, "execution": execution})
-        if thread_id is not None:
-            events.bus.publish("thread.updated", {"thread_id": thread_id})
+        router.publish_message(message_id, thread_id, sender, project, execution)
         published = time.perf_counter()
         outcome = 'ok'
         return result
@@ -2148,7 +2145,7 @@ def get_thinking():
         runs = {(r['session'], r['wake_started_at']): r for r in wake.active_runs()}
         # Background process waits and topic delegations remain visible from the local ledger.
         from . import hermes_delegations
-        for row in conn.execute("SELECT * FROM hermes_executions e WHERE state='waiting_delegation' "
+        for row in conn.execute("SELECT * FROM hermes_executions e WHERE state='manual' OR state='waiting_delegation' "
             "AND (kind='chat' OR EXISTS (SELECT 1 FROM hermes_delegations d WHERE d.execution_id=e.execution_id "
             "AND d.consumed=0 AND d.delegation_id LIKE 'process:%'))"):
             run = {key: row[key] for key in ('session', 'project', 'profile', 'kind', 'thread_id', 'parent_id', 'round', 'state', 'cancel_reason')}

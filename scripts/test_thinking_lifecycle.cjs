@@ -71,6 +71,13 @@ async function main() {
   assert.equal(waitingTail.status, 'thinking', 'background wait retains a live bubble beyond silence timeout');
   assert.equal(waitingTail.reply_message_id, null, 'an empty waiting tail survives reply reconciliation');
   assert.equal(waitingRun.finished, false);
+  const manual = harness();
+  manual.ctx.t = key => key;
+  manual.ctx.startThinkBubble({...wake(), state: 'manual'});
+  manual.requests.shift().resolve({entries: [], latest_id: 0, execution_state: 'manual',
+    replies: [{message_id: 23, sent_at: 101}]});
+  await tick();
+  assert.deepEqual([...manual.ctx.S.thinkBubbles.values()].map(b => b.status), ['replied', 'stalled']);
   const restoredWait = harness(delegation.storage);
   restoredWait.ctx.restoreThinkingState();
   restoredWait.ctx.snapshot = {runs: [topicWait], thinking: []};

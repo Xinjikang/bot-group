@@ -11,6 +11,16 @@ from engine import hermes_background as background
 from scripts import test_hermes_delegations as delegation_fixture
 
 
+def wait_observation(pid='proc_one', status='exited', result_key='call-wait'):
+    call = {'name': 'process_manage', 'arguments': {'action': 'wait', 'session_id': pid}}
+    return [
+        {'role': 'assistant', 'tool_calls': [{'id': 'call-wait', 'function': {
+            'name': 'tool_call', 'arguments': json.dumps({'calls': [call]})}}]},
+        {'role': 'tool', 'name': 'process_manage', 'tool_call_id': result_key,
+         'content': json.dumps({'status': status, 'exit_code': 0})},
+    ]
+
+
 class ProcessWaitTests(unittest.TestCase):
     current = delegation_fixture.DelegationTests.current
     receipt = delegation_fixture.DelegationTests.receipt
@@ -115,6 +125,70 @@ class ProcessWaitTests(unittest.TestCase):
         self.assertEqual(row['state'], 'terminal')
         self.assertFalse(waits.pending(self.conn, row))
 
+    def test_wait_tool_result_settles_the_launched_handle_in_same_turn(self):
+        self.assertEqual(self.wait(extra=wait_observation())['state'], 'terminal')
+
+    def old_wait(self, *, sid='sid', result_key='call-wait'):
+        self.wait()
+        self.conn.execute("UPDATE hermes_executions SET state='manual',execution_deadline=1 WHERE execution_id=?",
+                          (self.eid,))
+        self.conn.commit()
+        call, result = wait_observation(result_key=result_key)
+        with closing(sqlite3.connect(self.native_path)) as native:
+            native.execute("CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id,role,tool_calls,tool_call_id,"
+                           "tool_name,content,timestamp,active)")
+            stamp = self.row['started_at'] + 1
+            native.executemany('INSERT INTO messages VALUES(NULL,?,?,?,?,?,?,?,1)', [
+                (sid, 'assistant', json.dumps(call['tool_calls']), None, None, None, stamp),
+                (sid, 'tool', None, result_key, 'process_manage', result['content'], stamp)])
+            native.commit()
+
+    def test_restart_settles_old_wait_and_dispatches_original_message(self):
+        from engine import api, queue, router
+        self.old_wait()
+        self.assertEqual(api.get_thinking()['runs'][0]['state'], 'manual')
+        mid = router.route_message(self.conn, 'user', '@default fixture', 'user', None, 'alpha')['message_id']
+        self.conn.commit()
+        with patch.object(gateway, '_native_session_state', return_value=[]), \
+             patch.object(wake, 'deliver', return_value={'ok': True}) as deliver:
+            self.assertFalse(queue.process_one(self.conn))
+            remote = Mock()
+            remote.rpc.return_value = self.receipt()
+            with patch.object(gateway, 'connection', return_value=(remote, None, [])), \
+                 patch.object(gateway, '_start_worker', side_effect=gateway._watch), \
+                 patch.object(wake, '_handle_task_exit') as finish:
+                gateway.recover()
+            finish.assert_called_once()
+            self.assertEqual(self.current()['cleanup_pending'], 0)
+            self.assertEqual(self.current()['state'], 'terminal')
+            self.assertTrue(queue.process_one(self.conn))
+            self.assertEqual(deliver.call_args.kwargs['trigger_msg_id'], mid)
+            self.assertFalse(queue.process_one(self.conn))
+
+    def test_unconfirmed_wait_stays_visible_and_stop_then_new_succeeds(self):
+        from engine import api, commands, session_adapter, stop
+        self.old_wait(result_key='unrelated')
+        remote = Mock()
+        def rpc(method, **params):
+            if method == 'session.resume':
+                return dict(running=False, pending=[], messages=[])
+            if method == 'prompt.receipt':
+                return self.receipt()
+            self.assertEqual(method, 'process.stop')
+            return {}
+        remote.rpc.side_effect = rpc
+        with patch.object(gateway, 'connection', return_value=(remote, None, [])), \
+             patch.object(gateway, '_start_worker', side_effect=gateway._watch), \
+             patch.object(gateway, '_native_session_state', return_value=[]), \
+             patch.object(session_adapter, 'create_session', return_value='new-sid'), \
+             patch.object(wake, '_handle_task_exit'):
+            gateway.recover()
+            self.assertEqual(self.current()['state'], 'manual')
+            self.assertEqual(api.get_thinking()['runs'][0]['session'], self.row['session'])
+            self.assertFalse(commands._handle_new(self.conn, 'alpha', ['default'], '', None)['ok'])
+            self.assertTrue(stop.stop_profile('default', 'alpha')['stopped'])
+            self.assertTrue(commands._handle_new(self.conn, 'alpha', ['default'], '', None)['ok'])
+
     def test_mixed_process_and_delegation_wait_for_both_callbacks(self):
         delegated = self.receipt(dispatched=('child',))['result']['messages']
         row = self.wait(extra=delegated)
@@ -161,6 +235,16 @@ class ProcessWaitTests(unittest.TestCase):
 
 
 class ProcessProofTests(unittest.TestCase):
+    def test_unmatched_or_ambiguous_calls_and_wait_timeouts_do_not_prove_exit(self):
+        for messages in (wait_observation(result_key='other'), wait_observation(status='timeout')):
+            self.assertEqual(background.process_updates(messages), {})
+        call, result = wait_observation()
+        fn = call['tool_calls'][0]['function']
+        args = json.loads(fn['arguments'])
+        args['calls'].append({'name': 'process_manage', 'arguments': {'session_id': 'proc_two'}})
+        fn['arguments'] = json.dumps(args)
+        self.assertEqual(background.process_updates([call, result]), {})
+
     def test_callback_requires_structured_matching_automation_descriptor(self):
         raw = json.dumps(['completion', 'proc_one', 100.0])
         item = {'request_id': raw}

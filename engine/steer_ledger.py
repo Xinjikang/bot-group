@@ -27,7 +27,7 @@ from __future__ import annotations
 import sqlite3
 import uuid
 
-from . import db
+from . import db, steer_messages
 
 # 回执五层（U3/T4 硬约束，升序：越靠后证据越强）
 DELIVER_LAYERS = ("queued", "inserted", "persisted", "model_requested", "behavior_observed")
@@ -42,7 +42,8 @@ class SteerError(ValueError):
 
 def new_operation(conn: sqlite3.Connection, project: str, profile: str, kind: str,
                   thread_id: int | None, text: str, session_id: str = "",
-                  generation: int | None = None, run_started_at: float | None = None) -> dict:
+                  generation: int | None = None, run_started_at: float | None = None, *, message_id=None,
+                  commit=True) -> dict:
     """落一条纠偏操作（queued 待投递），返回 operation 记录。
 
     精确绑定运行（S4）：session_id / generation / run_started_at 在投递时绑定；
@@ -57,12 +58,13 @@ def new_operation(conn: sqlite3.Connection, project: str, profile: str, kind: st
     conn.execute(
         "INSERT INTO steer_operations "
         "(operation_id, project, profile, kind, thread_id, session_id, generation, "
-        " run_started_at, text, status, deliver_layer, created_at, updated_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " run_started_at, text, status, deliver_layer, created_at, updated_at, message_id) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (op_id, project, profile, kind, tid, session_id, generation, run_started_at,
-         text, "queued", "", now, now),
+         text, "queued", "", now, now, message_id),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return get_operation(conn, op_id)
 
 
@@ -95,10 +97,19 @@ def _advance(conn: sqlite3.Connection, operation_id: str, status: str,
         sets.append("leftover=?")
         params.append(leftover)
     params.append(operation_id)
-    conn.execute(
-        f"UPDATE steer_operations SET {', '.join(sets)} WHERE operation_id=?", params
+    cur = conn.execute(
+        f"UPDATE steer_operations SET {', '.join(sets)} WHERE operation_id=? AND status=?", [*params, row['status']]
     )
+    receipt = None
+    if cur.rowcount and row['message_id'] is not None:
+        if status == 'consumed' and deliver_layer in DELIVER_LAYERS[1:]:
+            receipt = 'seen'
+        elif status in ('target_ended', 'generation_stale', 'undelivered'):
+            receipt = 'failed'
+    changed = receipt and steer_messages.acknowledge(conn, row['message_id'], row['profile'], receipt)
     conn.commit()
+    if changed:
+        steer_messages.publish(row['message_id'], row['profile'], receipt)
     return get_operation(conn, operation_id)
 
 
@@ -125,7 +136,6 @@ def record_delivery(conn: sqlite3.Connection, operation_id: str, session_id: str
         "WHERE operation_id=?",
         (session_id, generation, run_started_at, db.now_iso(), operation_id),
     )
-    conn.commit()
     return _advance(conn, operation_id, "delivering", "queued",
                     result="已投递，等待消费证据")
 
@@ -205,6 +215,7 @@ def reconcile_targets(conn) -> int:
     会话级失效由目标 run 生命周期（run_started_at → wake_runs ended_at）判定。
     """
     changed = 0
+    failed_receipts = []
     for row in pending_operations(conn):
         status = reason = None
         if row['run_started_at'] is None and row['status'] == 'queued':
@@ -221,7 +232,12 @@ def reconcile_targets(conn) -> int:
             cur = conn.execute('UPDATE steer_operations SET status=?,result=?,updated_at=? WHERE operation_id=? AND status=?',
                                (status, reason, db.now_iso(), row['operation_id'], row['status']))
             changed += cur.rowcount
+            if cur.rowcount and row['message_id'] is not None and status in ('target_ended', 'undelivered'):
+                if steer_messages.acknowledge(conn, row['message_id'], row['profile'], 'failed'):
+                    failed_receipts.append((row['message_id'], row['profile']))
     conn.commit()
+    for mid, profile in failed_receipts:
+        steer_messages.publish(mid, profile, 'failed')
     return changed
 
 

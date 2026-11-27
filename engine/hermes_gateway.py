@@ -19,6 +19,7 @@ from .hermes_gateway_client import (GatewayClient, GatewayRefusal, GatewayTransp
 
 logger = logging.getLogger(__name__)
 _workers = set()
+_manual_retries = set()
 _lock = threading.Lock()
 
 
@@ -492,6 +493,8 @@ def _finish(conn, row, client):
     from . import wake, browser_resources, heartbeat, events, steer_ledger, hermes_delegations
     cleanup_detail = ''
     if client is not None:
+        from . import hermes_gateway_steer
+        hermes_gateway_steer.observe_session(conn, client, row['session_id'], row['started_at'])
         if row['cancel_reason'] == 'user' and row['kind'] == 'work' and row['outcome'] != 'not_submitted':
             snapshot = sessions.attach(client, row['session_id'])
             if snapshot.get('running') or snapshot.get('pending'):
@@ -585,7 +588,7 @@ def _record_uncertain(conn, execution_id, detail):
 
 
 def _watch(execution_id, *, retry_manual=False):
-    from . import hermes_task_recovery, wake
+    from . import hermes_delegations, hermes_task_recovery, wake
     client = None
     recovery_started_at = time.monotonic()
     leaving_recovery_probe = False
@@ -613,7 +616,6 @@ def _watch(execution_id, *, retry_manual=False):
                         if client is None:
                             client, _, _ = connection(row['profile'], home=row['home'],
                                                       command=json.loads(row['python']))
-                        from . import hermes_delegations
                         if hermes_delegations.poll(conn, row, client, task_cue=cue):
                             _sync_delegation_state(conn, ledger.read(conn, execution_id))
                             continue
@@ -628,7 +630,12 @@ def _watch(execution_id, *, retry_manual=False):
                         logger.exception('Hermes task recovery probe failed execution=%s', execution_id)
                     leaving_recovery_probe = True
                     return  # Retain the durable input and the queued wake for the next check.
-            if row['state'] == 'manual' and not retry_manual:
+            inspect_wait = (not row['cancel_reason'] and row['state'] in ('manual', 'waiting_delegation', 'unknown')
+                            and (row['state'] == 'manual' or (row['execution_deadline'] or 0) <= time.time())
+                            and hermes_delegations.waiting(conn, row)
+                            and hermes_delegations.owned(conn, row)
+                            and hermes_delegations.background_kind(conn, row) in ('process', 'mixed'))
+            if row['state'] == 'manual' and not retry_manual and not inspect_wait:
                 leaving_recovery_probe = True
                 return
             manual_attempt = retry_manual and row['state'] == 'manual'
@@ -652,13 +659,18 @@ def _watch(execution_id, *, retry_manual=False):
                     client, _, _ = connection(row['profile'], home=row['home'], command=json.loads(row['python']))
                     if wake._shutting_down.is_set():
                         continue
-                    sessions.attach(client, row['session_id'])
+                    sessions.attach(client, row['session_id'], omit_messages=True)
                 if row['state'] == 'terminal':
                     if _finish(conn, row, client):
                         return
                     time.sleep(1)
                     continue
-                from . import hermes_delegations
+                if inspect_wait:
+                    if hermes_delegations.recover_process_wait(conn, row, client):
+                        continue
+                    if row['state'] != 'manual':
+                        _record_uncertain(conn, execution_id, 'Background process completion unconfirmed')
+                    return
                 if (hermes_delegations.waiting(conn, row) or
                         (hermes_delegations.cycle(conn, row) and
                          (row['cancel_reason'] or (not hermes_delegations.owned(conn, row)
@@ -731,7 +743,11 @@ def _watch(execution_id, *, retry_manual=False):
             client.close()
         with _lock:
             _workers.discard(execution_id)
+            retry_stop = execution_id in _manual_retries
+            _manual_retries.discard(execution_id)
         try:
+            if retry_stop and not wake._shutting_down.is_set():
+                _start_worker(execution_id, retry_manual=True)
             if leaving_recovery_probe and not wake._shutting_down.is_set():
                 # HTTP can adopt while this worker is leaving. Check after unregistering.
                 current = ledger.read(conn, execution_id)
@@ -744,6 +760,8 @@ def _watch(execution_id, *, retry_manual=False):
 def _start_worker(execution_id, *, retry_cleanup=False, retry_manual=False):
     with _lock:
         if execution_id in _workers:
+            if retry_manual:
+                _manual_retries.add(execution_id)
             return
         if retry_cleanup:
             conn = db.get_connection()

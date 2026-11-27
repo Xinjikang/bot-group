@@ -243,6 +243,56 @@ def background_kind(conn, row):
     return 'mixed' if processes and processes < len(ids) else 'process' if processes else 'delegation'
 
 
+def completed_processes(row):
+    """Recover tool observations in the original native session after a lost notification."""
+    path = (Path(row['home']) / 'state.db').resolve()
+    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.25)) as native:
+        deadline = time.monotonic() + 1
+        native.set_progress_handler(lambda: time.monotonic() >= deadline, 1000)
+        # Project only process metadata; tool output and conversation text may be large.
+        rows = native.execute("""
+            SELECT role, tool_call_id, tool_calls,
+                   CASE WHEN role='tool' AND json_valid(content) THEN json_object(
+                       'status',json_extract(content,'$.status'),'session_id',json_extract(content,'$.session_id'))
+                   END
+            FROM messages WHERE session_id=? AND timestamp>=? AND active=1 AND
+                ((role='assistant' AND instr(tool_calls,'process_manage')>0)
+                 OR (role='tool' AND tool_name='process_manage'))
+            ORDER BY id""", (row['session_id'], row['started_at']))
+        def observations():
+            for role, key, calls, result in rows:
+                if role == 'assistant':
+                    try:
+                        calls = json.loads(calls)
+                    except ValueError:
+                        continue
+                    yield {'role': role, 'tool_calls': calls}
+                elif result and json.loads(result)['status'] in ('exited', 'completed', 'killed'):
+                    yield {'role': role, 'name': 'process_manage', 'tool_call_id': key, 'content': result}
+        return {key for key, active in background.process_updates(observations()).items() if not active}
+
+
+def recover_process_wait(conn, row, client):
+    """A native turn can finish before its logical execution's last process wait."""
+    from . import hermes_gateway_ledger as ledger
+    if not owned(conn, row):
+        return False
+    if adopt(conn, row, discover_turns(conn, row)):
+        return True
+    handles = {r[0] for r in conn.execute(
+        "SELECT delegation_id FROM hermes_delegations WHERE execution_id=? AND consumed=0 "
+        "AND delegation_id LIKE 'process:%'", (row['execution_id'],))}
+    completed = handles & completed_processes(row)
+    if not completed:
+        return False
+    receipt = client.rpc('prompt.receipt', session_id=row['session_id'], admission_id=row['admission_id'], timeout=5)
+    if receipt.get('status') != 'terminal':
+        return False
+    updated = ledger.apply_receipt(conn, row['execution_id'], receipt, completed_processes=completed)
+    return updated['state'] == 'terminal' or (updated['state'] == 'waiting_delegation'
+                                              and updated['execution_deadline'] > time.time())
+
+
 def poll(conn, row, client, *, task_cue=None):
     """Runs only on this execution's background reconciler, never on an HTTP read path."""
     if task_cue is not None:

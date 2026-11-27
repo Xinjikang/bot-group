@@ -226,6 +226,7 @@ CREATE TABLE IF NOT EXISTS inbox (
     relay_execution_id TEXT                 -- 处理该点对点消息的远端 Hermes 执行
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_profile_pending ON inbox(profile, status);
+CREATE INDEX IF NOT EXISTS idx_inbox_message_profile ON inbox(message_id, profile);
 
 -- ============ 唤醒队列 ============
 CREATE TABLE IF NOT EXISTS wake_jobs (
@@ -501,6 +502,7 @@ CREATE TABLE IF NOT EXISTS steer_operations (
     session_id     TEXT NOT NULL DEFAULT '',  -- 目标会话真实 session_id（投递时绑定）
     generation     INTEGER,                   -- 网关 execution_generation（投递时绑定，session.steer 精确运行绑定；设计 §4.8）
     run_started_at REAL,                      -- 目标 run 的 started_at（精确绑定运行，wake_runs 同键）
+    message_id     INTEGER REFERENCES messages(id),
     text           TEXT NOT NULL,             -- 纠偏正文
     status         TEXT NOT NULL DEFAULT 'queued',
         -- queued(已入队待投递) / delivering(已投递等消费证据) / consumed(已插入上下文)
@@ -517,6 +519,9 @@ CREATE TABLE IF NOT EXISTS steer_operations (
 );
 CREATE INDEX IF NOT EXISTS idx_steer_ops_run ON steer_operations(project, profile, kind, thread_id, run_started_at);
 CREATE INDEX IF NOT EXISTS idx_steer_ops_status ON steer_operations(status, created_at);
+CREATE TABLE IF NOT EXISTS steer_messages (
+    message_id INTEGER PRIMARY KEY REFERENCES messages(id)
+);
 
 -- Unknown reservations survive a crash and prevent automatic external-effect replay.
 CREATE TABLE IF NOT EXISTS mcp_operations (

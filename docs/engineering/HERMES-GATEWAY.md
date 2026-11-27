@@ -6,6 +6,8 @@ MCP 初始化失败恢复使用现有终态结果与 `session.mutate editor_mcp`
 
 ## 子代理等待
 
+`process_manage` 的退出结果有时只带状态和工具调用 ID。引擎用同一调用 ID 对应的单个操作定位进程，支持直接调用和 `tool_call` 包装。启动恢复和定期扫描可复核已有的进程等待，限定原会话、执行开始时间、已登记的进程句柄和匹配的执行终态回执，原子结算已退出的进程。其余进程与委派继续按各自的回执结算。缺少结束证据时保留占用，执行状态接口从持久账本恢复停止入口。
+
 `terminal` / `process_manage` 的结构化 `notify_on_complete=true` 回执也建立后台等待，以 `process:<原生进程 ID>` 保存到同一等待账本。工作和话题会话显示“后台进程正在执行”，混合等待显示“后台任务正在执行”。父轮次结束保留逻辑执行，完成回调收尾后才进入任务退出检查。进程状态、显式关闭通知及回调映射的协议见 [后台进程等待](../design/2026-11-10-hermes-background-process-wait.md)。
 
 进程回调发现限定原生 session、原执行 admission 之后的序号、`automation:` principal 与结构化自动通知身份，继续通过公开回执结算。观察通知保持等待，完成通知在回调 terminal 后结算对应进程；`hermes_background_callbacks` 在启动建表并持久保存多进程映射。恢复时保留原执行身份，HTTP 查询只返回本地 `background_kind`。任务取消、当前归属与重试预算遵循现有规则。

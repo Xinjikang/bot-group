@@ -227,6 +227,16 @@ def run(evidence):
         }""", arg=LABEL_STOP_TIMEOUT)
         assert len(state['stops']) == 3, state['stops']
         page.screenshot(path=str(evidence / 'execution-state-intent-after-manual.png'))
+        message = {'id': 101, 'sender': 'user', 'sender_type': 'user', 'content': '@bot-a 调整当前方案',
+                   'mentions': '["bot-a"]', 'ts': '2026-10-28T12:00:05', 'steer_receipts': {'bot-a': 'steering'}}
+        page.evaluate("m => { S.msgs = [m]; renderMessages(); }", message)
+        entry = page.locator('[data-message-id="101"]')
+        assert '待确认' in entry.inner_text()
+        page.evaluate("handleEvent({type:'steer.receipt', data:{message_id:101,profile:'bot-a',status:'seen'}})")
+        assert '已读' in entry.inner_text() and '待确认' not in entry.inner_text()
+        page.evaluate("m => { S.msgs = [m]; renderMessages(); }", message)
+        assert '已读' in entry.inner_text()
+        page.screenshot(path=str(evidence / 'steer-message-read.png'))
         page.close()
         browser.close()
 

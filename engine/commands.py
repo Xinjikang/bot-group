@@ -45,14 +45,14 @@ def _strip_command_word(text: str) -> tuple[str, str]:
     return "/" + word, tail.strip()
 
 
-def _extract_args(tail: str, targets: list[str]) -> str:
+def _extract_args(tail: str, targets: list[str], *, preserve_format=False) -> str:
     """从剩余文本里去掉 @目标名，得到纯参数（/steer 的纠偏文本、/new 无参数）。"""
     args = tail
     for t in targets:
         # 去掉 '@name' 字面（含前后空白归一）
         import re
         args = re.sub(r"@" + re.escape(t) + r"(?![A-Za-z0-9_\-])", " ", args)
-    return " ".join(args.split())
+    return args.strip() if preserve_format else " ".join(args.split())
 
 
 def _record_command(conn: sqlite3.Connection, project: str, sender: str, command: str,
@@ -142,7 +142,7 @@ def _handle_stop(conn: sqlite3.Connection, project: str, targets: list[str],
 
 
 def _handle_steer(conn: sqlite3.Connection, project: str, targets: list[str],
-                  args: str, thread_id: int | None) -> dict:
+                  args: str, thread_id: int | None, *, message_text: str, attachment_ids, need_reply) -> dict:
     """/steer：向运行中目标注入纠偏——定位运行中执行 + 调网关 session.steer + 回执映射回账本。
 
     命令框架层落 steer_operations 账本（queued），实际传输由 hermes_gateway_steer
@@ -150,9 +150,25 @@ def _handle_steer(conn: sqlite3.Connection, project: str, targets: list[str],
     """
     if not targets:
         raise CommandError("请用 @ 指定目标 bot（如 /steer @苏瑾 请改用方案 B）")
-    if not args:
+    if not args and not attachment_ids:
         raise CommandError("/steer 需要纠偏正文（如 /steer @苏瑾 请改用方案 B）")
-    from . import steer_ledger, hermes_gateway_steer, bot_identity
+    from . import steer_ledger, steer_messages, hermes_gateway_steer, bot_identity, router
+    targets = [target for target in targets if not db.is_builtin_user(target)]
+    if not targets:
+        raise CommandError("/steer 目标必须是 bot")
+    try:
+        with conn:
+            result = router.route_message(conn, 'user', message_text, 'user', thread_id, project,
+                                          attachment_ids=attachment_ids, need_reply=need_reply, steering_targets=targets)
+    except ValueError as exc:
+        raise CommandError(str(exc)) from exc
+    mid = result['message_id']
+    router.publish_message(mid, thread_id, 'user', project)
+    delivery_text = message_text
+    if attachment_ids:
+        from . import attachments
+        images = attachments.enrich(conn, [{'id': mid}])[0]['attachments']
+        delivery_text += '\n附件（按 id 调用 group_read_image）：' + json.dumps(images, ensure_ascii=False)
     kind = "chat" if thread_id is not None else "work"
     # req#137 task#267：dsh 首期无运行中纠偏通道——按宿主能力在进入 Hermes 执行
     # 查询/账本投递前拦截（命令留痕由 dispatch 层完成，不落 steer 账本）。
@@ -161,28 +177,25 @@ def _handle_steer(conn: sqlite3.Connection, project: str, targets: list[str],
     statuses = []
     details = []
     for t in targets:
-        if db.is_builtin_user(t):
-            continue  # 目标必须 bot，user 不记账本
         bot = bot_identity.resolve(conn, project, t)
         if bot and bot.get('runtime') == 'dsh':
             statuses.append('unsupported')
             details.append(f'@{t}：dsh 宿主暂不支持运行中纠偏（/steer）')
+            with conn:
+                steer_messages.acknowledge(conn, mid, t, 'failed')
+            steer_messages.publish(mid, t, 'failed')
             continue
-        op = steer_ledger.new_operation(conn, project, t, kind, thread_id, args)
+        # Publish the operation together with its binding before making the gateway call.
+        op = steer_ledger.new_operation(conn, project, t, kind, thread_id, delivery_text,
+                                        message_id=mid, commit=False)
         ops.append(op["operation_id"])
         outcome = hermes_gateway_steer.deliver_steer(
-            conn, project, t, kind, thread_id, args, op["operation_id"])
+            conn, project, t, kind, thread_id, delivery_text, op["operation_id"])
         statuses.append(outcome["status"])
         details.append(f"@{t}：{outcome['detail']}")
-    if not ops:
-        if statuses:
-            # 全部目标为 dsh（不支持）：明确能力提示，命令已留痕
-            return {"handled": True, "ok": False, "command": "/steer", "targets": targets,
-                    "statuses": statuses, "detail": "；".join(details)}
-        raise CommandError("/steer 目标必须是 bot（@ 里不含 user）")
     ok = all(s == "queued" for s in statuses)
     return {"handled": True, "ok": ok, "command": "/steer", "targets": targets,
-            "operations": ops, "statuses": statuses,
+            "message_id": mid, "operations": ops, "statuses": statuses,
             "detail": "；".join(details)}
 
 
@@ -267,7 +280,7 @@ def is_command(text: str | None) -> bool:
 
 
 def dispatch(conn: sqlite3.Connection, project: str, sender: str, sender_type: str,
-             text: str | None, thread_id: int | None) -> dict | None:
+             text: str | None, thread_id: int | None, *, attachment_ids=None, need_reply=1) -> dict | None:
     """命令分发入口。只对 sender=user 分发；非 user 返回 None（走普通消息路由）。
 
     返回 None 表示「不是命令或不该走命令分发」（调用方继续普通路由）；
@@ -292,13 +305,14 @@ def dispatch(conn: sqlite3.Connection, project: str, sender: str, sender_type: s
         available = " ".join(meta["name"] for meta in COMMAND_REGISTRY.values())
         raise CommandError(f"未知命令 {command}。可用命令：{available}")
 
-    args = _extract_args(tail, targets)
+    args = _extract_args(tail, targets, preserve_format=name == "steer")
     # 先落一条 accepted 留痕，handler 执行结果再回填 status/result
     cmd_id = _record_command(conn, project, sender, command, args, targets, thread_id, "accepted")
     # Release SQLite's writer before waiting for the spawn/switch mutex.
     conn.commit()
     try:
-        result = meta["handler"](conn, project, targets, args, thread_id)
+        kwargs = dict(message_text=tail, attachment_ids=attachment_ids, need_reply=need_reply) if name == "steer" else {}
+        result = meta["handler"](conn, project, targets, args, thread_id, **kwargs)
     except CommandError as exc:
         # 参数/目标校验失败 → 留痕 error 后冒泡，由 API 层转 400（S5 确定错误）。
         conn.execute("UPDATE commands SET status='error', result=? WHERE id=?",

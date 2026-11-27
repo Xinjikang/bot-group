@@ -91,14 +91,17 @@ def deliver_steer(conn: sqlite3.Connection, project: str, profile: str, kind: st
     home = located["home"]
 
     # 2. 发起前绑定（delivering，通道接受层；generation=网关 execution_generation）
-    steer_ledger.record_delivery(conn, operation_id, session_id, generation, started_at)
+    operation = steer_ledger.record_delivery(conn, operation_id, session_id, generation, started_at)
+    if operation['status'] != 'delivering':
+        return {'status': operation['status'], 'detail': operation['result']}
+    wire_text = _wire_text(operation)
 
     # 3. 传输调用（只 discover，不 ensure——目标已有 running 执行，网关必在运行）
     from .hermes_gateway import connection
     client = None
     try:
         client, _, _ = connection(profile, home=home, read_only=True)
-        result = client.rpc("session.steer", session_id=session_id, text=text,
+        result = client.rpc("session.steer", session_id=session_id, text=wire_text,
                             execution_generation=generation)
     except GatewayRefusal as exc:
         return _map_refusal(conn, operation_id, text, exc)
@@ -127,6 +130,12 @@ def deliver_steer(conn: sqlite3.Connection, project: str, profile: str, kind: st
     return {"status": "pending_verify", "detail": "回执未知，待核实"}
 
 
+def _wire_text(op):
+    if op['message_id'] is None:
+        return op['text']
+    return f"[群消息 #{op['message_id']} · {op['operation_id']}]\n{op['text']}"
+
+
 def observe_session(conn: sqlite3.Connection, client, session_id: str, started_at: float) -> int:
     """观察指定 session 的消费证据：delivering 操作匹配 OUT-OF-BAND marker 后 report_consumed(inserted)。
 
@@ -135,8 +144,8 @@ def observe_session(conn: sqlite3.Connection, client, session_id: str, started_a
     由 hermes_gateway._watch 在运行中执行轮询时调用（复用已有 client）。
     """
     ops = conn.execute(
-        "SELECT operation_id, text FROM steer_operations "
-        "WHERE session_id=? AND run_started_at=? AND status='delivering'",
+        "SELECT operation_id, text, message_id FROM steer_operations WHERE session_id=? AND run_started_at=? "
+        "AND (status='delivering' OR (message_id IS NOT NULL AND status='pending_verify'))",
         (session_id, started_at),
     ).fetchall()
     if not ops:
@@ -149,7 +158,7 @@ def observe_session(conn: sqlite3.Connection, client, session_id: str, started_a
         return 0
     changed = 0
     for op in ops:
-        text = op["text"]
+        text = _wire_text(op)
         for message in snapshot.get("messages") or []:
             if not isinstance(message, dict) or message.get("role") != "user":
                 continue
@@ -157,9 +166,14 @@ def observe_session(conn: sqlite3.Connection, client, session_id: str, started_a
             if not isinstance(ts, (int, float)) or ts < started_at:
                 continue  # 旧历史（本次 run 之前），不误归因
             content = message.get("content") or ""
-            if "OUT-OF-BAND USER MESSAGE" not in content:
+            if not isinstance(content, str) or not content.lstrip().startswith("[OUT-OF-BAND USER MESSAGE"):
                 continue
-            if text not in content:
+            if op['message_id'] is not None:
+                # Hermes can drain several independently tagged inputs into one user turn.
+                _, separator, body = content.lstrip().partition(']')
+                if not separator or f'\n{text}\n' not in f'\n{body.strip()}\n':
+                    continue
+            elif text not in content:
                 continue  # 正文不匹配，不误归因
             steer_ledger.report_consumed(conn, op["operation_id"], "inserted")
             changed += 1

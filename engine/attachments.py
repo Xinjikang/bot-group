@@ -69,6 +69,7 @@ def bind(conn, ids, message_id, project, owner):
 
 
 def enrich(conn, rows):
+    from . import steer_messages
     messages = [dict(row) for row in rows]
     by_id = {}
     for message in messages:
@@ -78,6 +79,7 @@ def enrich(conn, rows):
     for start in range(0, len(ids), 500):
         batch = ids[start:start + 500]
         placeholders = ",".join("?" for _ in batch)
+        steer_messages.enrich(conn, batch, by_id)
         for row in conn.execute(f"SELECT * FROM attachments WHERE message_id IN ({placeholders}) ORDER BY message_id,position", batch):
             by_id[row["message_id"]].setdefault("attachments", []).append(metadata(row))
     return messages

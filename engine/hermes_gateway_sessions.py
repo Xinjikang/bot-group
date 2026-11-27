@@ -34,8 +34,9 @@ def mutate(client, snapshot, operation, payload, *, request_id=None):
         expected_generation=snapshot['execution_generation'], operation=operation, payload=payload)
 
 
-def attach(client, session_id):
-    return initialization_rpc(client, 'session.resume', session_id=session_id)
+def attach(client, session_id, *, omit_messages=False):
+    options = {'omit_messages': True} if omit_messages else {}
+    return initialization_rpc(client, 'session.resume', session_id=session_id, **options)
 
 
 def new(client, *, title, workdir, system_prompt, model_args, request_id=None, launch_options=None, editor=None):

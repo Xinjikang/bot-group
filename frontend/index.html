@@ -981,7 +981,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 </style>
 <link rel="stylesheet" href="/app/dialogs.css?v=20261103-thread-autofill">
 <link rel="stylesheet" href="/app/appearance.css?v=20261031">
-<script src="/app/i18n.js?v=20261125-bilingual"></script>
+<script src="/app/i18n.js?v=20261127-steer"></script>
 </head>
 <body>
 <div id="app">
@@ -1543,7 +1543,7 @@ html[data-theme="light"] #app-settings-menu .theme-moon{display:block}
 .image-preview img{display:block;width:auto;height:auto;max-width:calc(100vw - 58px);max-height:calc(100dvh - 112px);object-fit:contain;flex-shrink:0}
 </style>
 <script src="/app/dialogs.js?v=20261021-field-errors"></script>
-<script src="/app/attachments.js?v=20261015-thread-opening"></script>
+<script src="/app/attachments.js?v=20261127-steer"></script>
 <script src="/app/commands.js"></script>
 <script src="/app/member_identity.js?v=20260930-mentions"></script>
 <script src="/app/user_settings.js?v=20261023"></script>
@@ -1713,6 +1713,7 @@ function setConn(state, connectingKey = "engine_connecting") {
   window.HermesGatewayStatus?.engineConnection(state);
 }
 
+S.recentSteerReceipts = new Map();
 function handleEvent(evt) {
   if(evt.type==='hud.changed')window.ProjectHUD?.changed();
   if(evt.type==='project.updated')loadProjects();
@@ -1729,6 +1730,19 @@ function handleEvent(evt) {
     // refreshMessages 走 since_id=lastMsgId 增量拉，已加载消息的 retract 字段永远不更新，
     // 所以撤回后总览仍显示原消息（P2 缺陷）。修复：按 evt.data.message_id 就地 patch
     // S.msgs 里对应条目的 retract_by/retract_at 再 render；不在当前 S.msgs（翻页外）则忽略。
+    case "steer.receipt": {
+      const {message_id, profile, status} = evt.data || {};
+      // A receipt can precede completion of the HTTP fetch for its message.
+      const receipts = S.recentSteerReceipts;
+      receipts.set(message_id, {...receipts.get(message_id), [profile]: status});
+      if (receipts.size > 256) receipts.delete(receipts.keys().next().value);
+      const msg = S.msgs.find(m => m.id === message_id);
+      if (msg) {
+        msg.steer_receipts = {...msg.steer_receipts, [profile]: status};
+        renderMessages();
+      }
+      break;
+    }
     case "message.retracted": {
       const d = evt.data || {};
       const mid = d.message_id;
@@ -3111,6 +3125,10 @@ function renderMsg(m, thinking = []) {
   // 话题内显示 @点名；散聊不显示（@谁看内容就够）
   const atTag = (m.thread_id && mentions.length) ? `<span class="tag tag-at">${t("at_mention")}</span>` : "";
   const closeTag = isClose ? `<span class="tag tag-close">${t("settle_tag")}</span>` : "";
+  const steerReceipts = Object.entries({...m.steer_receipts, ...S.recentSteerReceipts?.get(m.id)}).map(([profile, status]) => {
+    const label = status === 'seen' ? 'steer_seen' : status === 'failed' ? 'steer_failed' : 'steer_wait';
+    return `<span>${esc(NAME_OF(profile))} · ${t(label)}</span>`;
+  }).join("");
   // req#178 task#334：点到当前用户的消息旁显示对应语言标记
   const mentionsYouTag = mentions.includes("user")
     ? `<span class="tag tag-mentions-you">${t("mentions_you")}</span>` : "";
@@ -3154,7 +3172,7 @@ function renderMsg(m, thinking = []) {
         <span class="sender">${esc(m.sender_type === "engine" ? t("system_notice") : NAME_OF(m.sender))}</span>
         <span>${esc(fmtTs(m.ts))}</span>
         ${m.sender === "user" && m.thread_id && !isClose && !failed.delivery_failed ? `<span>${t("sent")}</span>` : ""}
-        ${threadTag}${atTag}${mentionsYouTag}${closeTag}
+        ${threadTag}${atTag}${mentionsYouTag}${closeTag}${steerReceipts}
         ${S.isUserIdentity ? `<button type="button" class="msg-retract-btn" data-retract="${m.id}" title="${t("retract_message_title")}">${t("retract")}</button>` : ""}
       </div>
       <div class="msg-content">${content}</div>
@@ -4617,7 +4635,7 @@ function executionStallLabel(source) {
 function applyExecutionState(source) {
   const label = executionStallLabel(source);
   if (!source.finished && !source.stopped && source.processEndedAt == null &&
-      source.state === "waiting_delegation") {
+      (source.state === "waiting_delegation" || source.state === "manual")) {
     const current = S.thinkBubbles.get(source.currentKey);
     if (!current || current.reply_message_id != null) createThinkSegment(source);
   }
@@ -4839,7 +4857,7 @@ function reconcileExecutionReplies(source, replies) {
   const ended = source.finished || source.processEndedAt != null || source.stopped;
   if (ended) groups.at(-1).entries.push(...tailEntries.splice(0));
   let previousTail = old.find(b => b.reply_message_id == null);
-  const needsLiveTail = !ended && (tailEntries.length || source.state === "waiting_delegation");
+  const needsLiveTail = !ended && (tailEntries.length || source.state === "waiting_delegation" || source.state === "manual");
   const keep = new Set();
   for (const {reply, entries: content} of groups) {
     let bubble = old.find(b => b.reply_message_id === reply.message_id);
